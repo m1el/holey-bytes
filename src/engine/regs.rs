@@ -11,6 +11,7 @@ pub struct Registers{
     pub a8: u8, pub b8: u8, pub c8: u8, pub d8: u64, pub e8: u64, pub f8: u64,
     pub a9: u8, pub b9: u8, pub c9: u8, pub d9: u64, pub e9: u64, pub f9: u64,
 }
+
 impl Registers {
     #[rustfmt::skip]
     pub fn new() -> Self{

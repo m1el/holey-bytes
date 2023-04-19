@@ -132,230 +132,87 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
             if self.index == self.program.len() {
                 break;
             }
-            let op = self.program[self.index];
-            println!("OP {} INDEX {}", self.program[self.index], self.index);
+            let op = (self.program[self.index], self.program[self.index + 1]);
+            println!("OP {} INDEX {}", op.0, self.index);
             match op {
-                NOP => self.index += 1,
-                ADD => {
-                    print!("Add");
+                (0, _) => {
+                    println!("NO OP");
                     self.index += 1;
-                    let mut lhs: Vec<u8> = vec![];
-                    let mut rhs: Vec<u8> = vec![];
-                    let mut lhs_signed = false;
-                    let mut rhs_signed = false;
-
-                    match self.program[self.index] {
-                        CONST_U8 => {
-                            self.index += 1;
-                            lhs.push(self.program[self.index]);
-                            print!(" constant {:?}", lhs[0]);
-                            lhs_signed = false;
-                            self.index += 1;
-                        }
-                        CONST_U64 => {
-                            self.index += 1;
-                            lhs.push(self.program[self.index]);
-                            self.index += 1;
-                            lhs.push(self.program[self.index]);
-                            self.index += 1;
-                            lhs.push(self.program[self.index]);
-                            self.index += 1;
-                            lhs.push(self.program[self.index]);
-
-                            lhs_signed = false;
-                            self.index += 1;
-                        }
-                        0xA0..=0xC9 => {
-                            println!("TRACE: 8 bit lhs");
-                        }
-                        0xD0..=0xFF => {
-                            println!("TRACE: 64 bit lhs");
-                        }
-                        op => return Err(InvalidOpcode(op)),
-                    }
-
-                    match self.program[self.index] {
-                        CONST_U8 => {
-                            self.index += 1;
-                            rhs.push(self.program[self.index]);
-                            rhs_signed = false;
-                            print!(" constant {:?}", rhs[0]);
-                            self.index += 1;
-                        }
-
-                        CONST_U64 => {
-                            self.index += 1;
-                            rhs.push(self.program[self.index]);
-                            self.index += 1;
-                            rhs.push(self.program[self.index]);
-                            self.index += 1;
-                            rhs.push(self.program[self.index]);
-                            self.index += 1;
-                            rhs.push(self.program[self.index]);
-
-                            print!(" constant {:?}", rhs[0]);
-                            rhs_signed = false;
-                            self.index += 1;
-                        }
-                        0xA0..=0xC9 => {
-                            println!("TRACE: 8 bit rhs");
-                        }
-                        0xD0..=0xFF => {
-                            println!("TRACE: 64 bit rhs");
-                        }
-
-                        _ => {
-                            panic!()
-                        }
-                    }
-                    match self.program[self.index] {
-                        0xA0 => {
-                            if lhs.len() > 1 {
-                                panic!("LHS is not an 8 bit number")
-                            }
-                            if rhs.len() > 1 {
-                                panic!("RHS is not an 8 bit number")
-                            }
-                            println!(" store in A0");
-
-                            let sum = lhs[0] + rhs[0];
-                            self.registers.a0 = sum;
-                            self.index += 1;
-                        }
-                        0xB0 => {
-                            if lhs.len() > 1 {
-                                panic!("LHS is not an 8 bit number")
-                            }
-                            if rhs.len() > 1 {
-                                panic!("RHS is not an 8 bit number")
-                            }
-                            println!(" store in B0");
-                            let sum = lhs[0] + rhs[0];
-                            self.registers.b0 = sum;
-                            self.index += 1;
-                        }
-                        0xC0 => {
-                            if lhs.len() > 1 {
-                                panic!("LHS is not an 8 bit number")
-                            }
-                            if rhs.len() > 1 {
-                                panic!("RHS is not an 8 bit number")
-                            }
-                            println!(" store in C0");
-                            let sum = lhs[0] + rhs[0];
-                            self.registers.c8 = sum;
-                            self.index += 1;
-                        }
-                        0xD0 => {
-                            if lhs.len() > 4 {
-                                panic!("LHS is not an 8 bit number")
-                            }
-                            if rhs.len() > 4 {
-                                panic!("RHS is not an 8 bit number")
-                            }
-                            println!(" store in D0");
-                            let lhs: u64 = Into::<u64>::into(lhs[3]) << 60;
-                            println!("{}", lhs);
-                            println!("{}", 2);
-                            // let rhs: u64 = (rhs[4] << 16).into();
-                            let rhs: u64 = 0;
-                            let sum = lhs + rhs;
-                            self.registers.d0 = sum;
-                            self.index += 1;
-                        }
-
-                        op => {
-                            println!("{}", op)
-                        }
-                    }
                 }
-                SUB => {
-                    print!("Sub");
-                    self.index += 1;
-                    let mut lhs: Vec<u8> = vec![];
-                    let mut rhs: Vec<u8> = vec![];
-                    let mut lhs_signed = false;
-                    let mut rhs_signed = false;
+                // Add a 8 bit num
+                (1, 1) => {
+                    let lhs = self.program[self.index + 2];
+                    println!("LHS 8BIT {}", lhs);
+                    let rhs = self.program[self.index + 3];
+                    println!("RHS 8BIT {}", rhs);
 
-                    match self.program[self.index] {
-                        0xA0 => {
-                            lhs.push(self.registers.a8);
-                            lhs_signed = false;
-                            print!(" constant {:?}", self.registers.a8);
-                            self.index += 1;
-                        }
-                        0xB0 => {
-                            lhs.push(self.registers.b8);
-                            lhs_signed = false;
-                            print!(" constant {:?}", self.registers.b8);
-                            self.index += 1;
-                        }
-                        CONST_U8 => {
-                            self.index += 1;
-                            lhs.push(self.program[self.index]);
-                            print!(" constant {:?}", lhs[0]);
-                            lhs_signed = false;
-                            self.index += 1;
-                        }
-                        op => return Err(InvalidOpcode(op)),
-                    }
+                    let ret = lhs + rhs;
+                    let reg = self.program[self.index + 4];
 
-                    match self.program[self.index] {
-                        0xB0 => {
-                            rhs.push(self.registers.b8);
-                            rhs_signed = false;
-                            print!(" constant {:?}", self.registers.b8);
-                            self.index += 1;
+                    match reg {
+                        0xA0..=0xC9 => {
+                            self.set_register_8(reg, ret);
+                        }
+                        0xD0..=0xF9 => {
+                            panic!("Register oversized")
                         }
                         _ => {
-                            panic!()
+                            panic!("Not a register.")
                         }
                     }
-                    match self.program[self.index] {
-                        0xA0 => {
-                            if lhs.len() > 1 {
-                                panic!("LHS is not an 8 bit number")
-                            }
-                            println!(" store in A8");
 
-                            let sum = lhs[0] - rhs[0];
-                            self.registers.a8 = sum;
-                            self.index += 1;
-                        }
-                        0xB0 => {
-                            if lhs.len() > 1 {
-                                panic!("LHS is not an 8 bit number")
-                            }
-                            if rhs.len() > 1 {
-                                panic!("RHS is not an 8 bit number")
-                            }
-                            println!(" store in B8");
-                            let sum = lhs[0] - rhs[0];
-                            self.registers.b8 = sum;
-                            self.index += 1;
-                        }
-                        0xC0 => {
-                            if lhs.len() > 1 {
-                                panic!("LHS is not an 8 bit number")
-                            }
-                            if rhs.len() > 1 {
-                                panic!("RHS is not an 8 bit number")
-                            }
-                            println!(" store in B8");
-                            let sum = lhs[0] - rhs[0];
-                            self.registers.c8 = sum;
-                            self.index += 1;
-                        }
-                        _ => {
-                            panic!()
-                        }
-                    }
+                    self.index += 5;
                 }
-                op => {
-                    println!("INVALID OPCODE {}", op);
+                // Add a 64 bit num
+                (1, 2) => {
+                    let mut lhs_array = [0; 8];
+                    let mut rhs_array = [0; 8];
+
+                    for (index, byte) in self.program[self.index + 2..self.index + 10]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        lhs_array[index] = *byte;
+                    }
+                    let lhs = u64::from_be_bytes(lhs_array);
+                    println!("LHS 64BIT {}", lhs);
+
+                    for (index, byte) in self.program[self.index + 10..self.index + 18]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        rhs_array[index] = *byte;
+                    }
+
+                    let rhs = u64::from_be_bytes(rhs_array);
+
+                    println!("RHS 64BIT {}", rhs);
+
+                    let ret = lhs + rhs;
+
+                    let reg = self.program[self.index + 18];
+                    println!("Store {} in {:02X}", ret, reg);
+
+                    match reg {
+                        0xA0..=0xC9 => {
+                            panic!("Register undersized")
+                        }
+                        0xD0..=0xF9 => {
+                            self.set_register_64(reg, ret);
+                        }
+                        _ => {
+                            panic!("Not a register.")
+                        }
+                    }
+
+                    self.index += 19;
+                }
+                op_pair => {
+                    println!("OP Pair {}", op_pair.0);
                     self.index += 1;
                 }
             }
+
             // Finish step
 
             if self.timer_callback.is_some() {
@@ -366,5 +223,87 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
             }
         }
         Ok(Halted)
+    }
+
+    pub fn set_register_8(&mut self, register: u8, value: u8) {
+        match register {
+            0xA0 => self.registers.a0 = value,
+            0xA1 => self.registers.a1 = value,
+            0xA2 => self.registers.a2 = value,
+            0xA3 => self.registers.a3 = value,
+            0xA4 => self.registers.a4 = value,
+            0xA5 => self.registers.a5 = value,
+            0xA6 => self.registers.a6 = value,
+            0xA7 => self.registers.a7 = value,
+            0xA8 => self.registers.a8 = value,
+            0xA9 => self.registers.a9 = value,
+            //
+            0xB0 => self.registers.b0 = value,
+            0xB1 => self.registers.b1 = value,
+            0xB2 => self.registers.b2 = value,
+            0xB3 => self.registers.b3 = value,
+            0xB4 => self.registers.b4 = value,
+            0xB5 => self.registers.b5 = value,
+            0xB6 => self.registers.b6 = value,
+            0xB7 => self.registers.b7 = value,
+            0xB8 => self.registers.b8 = value,
+            0xB9 => self.registers.b9 = value,
+            //
+            0xC0 => self.registers.c0 = value,
+            0xC1 => self.registers.c1 = value,
+            0xC2 => self.registers.c2 = value,
+            0xC3 => self.registers.c3 = value,
+            0xC4 => self.registers.c4 = value,
+            0xC5 => self.registers.c5 = value,
+            0xC6 => self.registers.c6 = value,
+            0xC7 => self.registers.c7 = value,
+            0xC8 => self.registers.c8 = value,
+            0xC9 => self.registers.c9 = value,
+
+            _ => {
+                panic!("Unlikely you are here if everyone behaved.\nThis register is not 8 bit")
+            }
+        }
+    }
+    pub fn set_register_64(&mut self, register: u8, value: u64) {
+        match register {
+            0xD0 => self.registers.d0 = value,
+            0xD1 => self.registers.d1 = value,
+            0xD2 => self.registers.d2 = value,
+            0xD3 => self.registers.d3 = value,
+            0xD4 => self.registers.d4 = value,
+            0xD5 => self.registers.d5 = value,
+            0xD6 => self.registers.d6 = value,
+            0xD7 => self.registers.d7 = value,
+            0xD8 => self.registers.d8 = value,
+            0xD9 => self.registers.d9 = value,
+            //
+            0xE0 => self.registers.f0 = value,
+            0xE1 => self.registers.f1 = value,
+            0xE2 => self.registers.f2 = value,
+            0xE3 => self.registers.f3 = value,
+            0xE4 => self.registers.f4 = value,
+            0xE5 => self.registers.f5 = value,
+            0xE6 => self.registers.f6 = value,
+            0xE7 => self.registers.f7 = value,
+            0xE8 => self.registers.f8 = value,
+            0xE9 => self.registers.f9 = value,
+
+            //
+            0xF0 => self.registers.f0 = value,
+            0xF1 => self.registers.f1 = value,
+            0xF2 => self.registers.f2 = value,
+            0xF3 => self.registers.f3 = value,
+            0xF4 => self.registers.f4 = value,
+            0xF5 => self.registers.f5 = value,
+            0xF6 => self.registers.f6 = value,
+            0xF7 => self.registers.f7 = value,
+            0xF8 => self.registers.f8 = value,
+            0xF9 => self.registers.f9 = value,
+
+            _ => {
+                panic!("Unlikely you are here if everyone behaved.\nThis register is not 64 bit")
+            }
+        }
     }
 }
