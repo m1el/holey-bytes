@@ -7,7 +7,7 @@ use holey_bytes::{
 fn main() -> Result<(), RuntimeErrors> {
     #[rustfmt::skip]
         let prog: Vec<u8> = vec![
-            // NOP as u8, NOP as u8,
+            NOP as u8, NOP as u8,
             // 10, 10,
 
             ADD as u8, EightBit as u8, 100, 20, 0xA7,
@@ -26,11 +26,11 @@ fn main() -> Result<(), RuntimeErrors> {
         ];
 
     let mut eng = Engine::new(prog);
-
+    println!("{:?}", eng.read_mem_addr_8(4));
     // eng.set_timer_callback(time);
-    eng.enviroment_call_table[10] = print_fn;
-    eng.run()?;
-    eng.dump();
+    // eng.enviroment_call_table[10] = print_fn;
+    // eng.run()?;
+    // eng.dump();
 
     Ok(())
 }

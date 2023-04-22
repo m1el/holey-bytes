@@ -20,6 +20,13 @@ use self::call_stack::CallStack;
 pub struct Page {
     pub data: [u8; 4096 * 2],
 }
+impl Page {
+    pub fn new() -> Self {
+        Self {
+            data: [0; 4096 * 2],
+        }
+    }
+}
 pub type EnviromentCall = fn(Registers) -> Result<Registers, u64>;
 
 pub fn empty_enviroment_call(reg: Registers) -> Result<Registers, u64> {
@@ -42,9 +49,9 @@ pub struct Engine {
 }
 
 impl Engine {
-    pub fn read_mem_addr(&mut self, address: u64) -> u8 {
+    pub fn read_mem_addr_8(&mut self, address: u64) -> Result<u8, RuntimeErrors> {
         // println!("{}", address);
-        255
+        self.memory.read_addr8(address)
     }
     pub fn set_timer_callback(&mut self, func: fn() -> u32) {
         self.timer_callback = Some(func);
@@ -53,6 +60,13 @@ impl Engine {
 
 impl Engine {
     pub fn new(program: Vec<u8>) -> Self {
+        let mut mem = memory::Memory::new();
+        for (addr, byte) in program.clone().into_iter().enumerate() {
+            let ret = mem.set_addr8(addr as u64, byte);
+            println!("{:?}", ret);
+        }
+        println!("{:?}", mem.read_addr8(0));
+
         Self {
             index: 0,
             program,
@@ -321,7 +335,7 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
 
                     trace!("addr {}", addr);
 
-                    let ret = self.read_mem_addr(addr);
+                    let ret = self.read_mem_addr_8(addr)?;
                     let reg = self.program[self.index + 10];
                     trace!("reg {}", reg);
                     self.set_register_8(reg, ret);
