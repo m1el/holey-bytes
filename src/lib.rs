@@ -1,12 +1,9 @@
 pub mod bytecode;
 pub mod engine;
+
 use bytecode::ops::*;
 use bytecode::types::{CONST_F64, CONST_U8};
 use engine::Engine;
-
-pub struct Page {
-    pub data: [u8; 4096 * 2],
-}
 
 pub fn time() -> u32 {
     9

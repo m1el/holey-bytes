@@ -5,6 +5,14 @@ this leaves us with an amount of registers that should be defined
 I'd like to use a letter and a number to represent registers 
 like `a0` or `d0` the first of which would be reserved for 8 bit numbers and the later of which 64 bit.
 
+
+
+holeybytes will be a load-store machine
+
+
+
+
+
 instructions
 ### NOP
 `0`

@@ -2,16 +2,21 @@ pub mod call_stack;
 pub mod config;
 pub mod regs;
 
+use crate::bytecode::ops::Operations::*;
 use crate::bytecode::ops::*;
 use crate::bytecode::types::*;
 
+use crate::engine::call_stack::FnCall;
 use crate::HaltStatus;
-use crate::Page;
 use crate::RuntimeErrors;
 use config::EngineConfig;
 use regs::Registers;
 
 use self::call_stack::CallStack;
+
+pub struct Page {
+    pub data: [u8; 4096 * 2],
+}
 
 pub struct Engine {
     pub index: usize,
@@ -24,6 +29,13 @@ pub struct Engine {
     timer_callback: Option<fn() -> u32>,
     memory: Vec<Page>,
     call_stack: CallStack,
+}
+
+impl Engine {
+    pub fn read_mem_addr(&mut self, address: u64) -> u8 {
+        // println!("{}", address);
+        255
+    }
 }
 
 impl Engine {
@@ -129,11 +141,11 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
         use RuntimeErrors::*;
         loop {
             // Break out of the loop
-            if self.index == self.program.len() {
+            if self.index + 1 == self.program.len() {
                 break;
             }
             let op = (self.program[self.index], self.program[self.index + 1]);
-            println!("OP {} INDEX {}", op.0, self.index);
+            // println!("OP {} INDEX {}", op.0, self.index);
             match op {
                 (0, _) => {
                     println!("NO OP");
@@ -142,9 +154,9 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
                 // Add a 8 bit num
                 (1, 1) => {
                     let lhs = self.program[self.index + 2];
-                    println!("LHS 8BIT {}", lhs);
+                    // println!("LHS 8BIT {}", lhs);
                     let rhs = self.program[self.index + 3];
-                    println!("RHS 8BIT {}", rhs);
+                    // println!("RHS 8BIT {}", rhs);
 
                     let ret = lhs + rhs;
                     let reg = self.program[self.index + 4];
@@ -161,7 +173,7 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
                         }
                     }
 
-                    self.index += 5;
+                    self.index += 4;
                 }
                 // Add a 64 bit num
                 (1, 2) => {
@@ -175,7 +187,7 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
                         lhs_array[index] = *byte;
                     }
                     let lhs = u64::from_be_bytes(lhs_array);
-                    println!("LHS 64BIT {}", lhs);
+                    // println!("LHS 64BIT {}", lhs);
 
                     for (index, byte) in self.program[self.index + 10..self.index + 18]
                         .into_iter()
@@ -186,12 +198,12 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
 
                     let rhs = u64::from_be_bytes(rhs_array);
 
-                    println!("RHS 64BIT {}", rhs);
+                    // println!("RHS 64BIT {}", rhs);
 
                     let ret = lhs + rhs;
 
                     let reg = self.program[self.index + 18];
-                    println!("Store {} in {:02X}", ret, reg);
+                    // println!("Store {} in {:02X}", ret, reg);
 
                     match reg {
                         0xA0..=0xC9 => {
@@ -207,8 +219,132 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
 
                     self.index += 19;
                 }
-                op_pair => {
-                    println!("OP Pair {}", op_pair.0);
+                (2, 1) => {
+                    let lhs = self.program[self.index + 2];
+                    // println!("LHS 8BIT {}", lhs);
+                    let rhs = self.program[self.index + 3];
+                    // println!("RHS 8BIT {}", rhs);
+                    let ret = lhs - rhs;
+                    let reg = self.program[self.index + 4];
+
+                    match reg {
+                        0xA0..=0xC9 => {
+                            self.set_register_8(reg, ret);
+                        }
+                        0xD0..=0xF9 => {
+                            panic!("Register oversized")
+                        }
+                        _ => {
+                            panic!("Not a register.")
+                        }
+                    }
+
+                    self.index += 4;
+                }
+                (2, 2) => {
+                    let mut lhs_array = [0; 8];
+                    let mut rhs_array = [0; 8];
+
+                    for (index, byte) in self.program[self.index + 2..self.index + 10]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        lhs_array[index] = *byte;
+                    }
+                    let lhs = u64::from_be_bytes(lhs_array);
+                    // println!("LHS 64BIT {}", lhs);
+
+                    for (index, byte) in self.program[self.index + 10..self.index + 18]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        rhs_array[index] = *byte;
+                    }
+
+                    let rhs = u64::from_be_bytes(rhs_array);
+
+                    // println!("RHS 64BIT {}", rhs);
+
+                    let ret = lhs - rhs;
+
+                    let reg = self.program[self.index + 18];
+                    // println!("Store {} in {:02X}", ret, reg);
+
+                    match reg {
+                        0xA0..=0xC9 => {
+                            panic!("Register undersized")
+                        }
+                        0xD0..=0xF9 => {
+                            self.set_register_64(reg, ret);
+                        }
+                        _ => {
+                            panic!("Not a register.")
+                        }
+                    }
+
+                    self.index += 19;
+                }
+                (2, 3) => {
+                    // 8 bit
+                    self.index += 4;
+                }
+                // TODO: Implement 64 bit register to register subtraction
+                (2, 4) => {
+                    // 64 bit
+                    self.index += 19;
+                }
+                // Read from address to register
+                (5, 0) => {
+                    let mut addr_array = [0; 8];
+
+                    for (index, byte) in self.program[self.index + 2..self.index + 10]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        addr_array[index] = *byte;
+                    }
+                    let addr = u64::from_be_bytes(addr_array);
+
+                    println!("addr {}", addr);
+
+                    let ret = self.read_mem_addr(addr);
+                    let reg = self.program[self.index + 10];
+                    println!("reg {}", reg);
+                    self.set_register_8(reg, ret);
+                    self.index += 9;
+                }
+
+                (100, _) => {
+                    if self.call_stack.len() > self.config.call_stack_depth {
+                        panic!("Callstack {}", self.call_stack.len());
+                    }
+
+                    let mut addr_array = [0; 8];
+
+                    for (index, byte) in self.program[self.index + 1..self.index + 9]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        println!("byte {}", byte);
+                        addr_array[index] = *byte;
+                    }
+                    let addr = usize::from_be_bytes(addr_array);
+                    if addr > self.program.len() {
+                        panic!("Invalid jump address {}", addr)
+                    } else {
+                        let call = FnCall { ret: self.index };
+                        self.call_stack.push(call);
+
+                        self.index = addr;
+                        println!("Jumping to {}", addr);
+
+                        self.dump();
+                        // panic!();
+                    }
+                }
+
+                _op_pair => {
+                    // println!("OP Pair {}", op_pair.0);
                     self.index += 1;
                 }
             }
