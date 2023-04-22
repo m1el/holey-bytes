@@ -1,13 +1,14 @@
+// #![no_std]
+extern crate alloc;
+
 pub mod bytecode;
 pub mod engine;
+pub mod memory;
 
 use bytecode::ops::*;
 use bytecode::types::{CONST_F64, CONST_U8};
 use engine::Engine;
 
-pub fn time() -> u32 {
-    9
-}
 #[derive(Debug)]
 pub enum RuntimeErrors {
     InvalidOpcode(u8),

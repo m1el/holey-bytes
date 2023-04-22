@@ -1,4 +1,5 @@
 #[rustfmt::skip]
+#[derive(Debug, Clone, Copy)]
 pub struct Registers{
     pub a0: u8, pub b0: u8, pub c0: u8, pub d0: u64, pub e0: u64, pub f0: u64,
     pub a1: u8, pub b1: u8, pub c1: u8, pub d1: u64, pub e1: u64, pub f1: u64,

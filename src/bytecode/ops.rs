@@ -11,6 +11,8 @@ pub enum Operations {
     // STOREs a register/constant into a memory address
     STORE = 6,
 
+    EnviromentCall = 10,
+
     JUMP = 100,
     JumpCond = 101,
     RET = 103,

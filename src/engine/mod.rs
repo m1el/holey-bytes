@@ -9,13 +9,20 @@ use crate::bytecode::types::*;
 use crate::engine::call_stack::FnCall;
 use crate::HaltStatus;
 use crate::RuntimeErrors;
+use alloc::vec::Vec;
 use config::EngineConfig;
+use log::trace;
 use regs::Registers;
 
 use self::call_stack::CallStack;
 
 pub struct Page {
     pub data: [u8; 4096 * 2],
+}
+pub type EnviromentCall = fn(Registers) -> Result<(), ()>;
+
+pub fn empty_enviroment_call(reg: Registers) -> Result<(), ()> {
+    Err(())
 }
 
 pub struct Engine {
@@ -28,6 +35,7 @@ pub struct Engine {
     last_timer_count: u32,
     timer_callback: Option<fn() -> u32>,
     memory: Vec<Page>,
+    pub enviroment_call_table: [EnviromentCall; 256],
     call_stack: CallStack,
 }
 
@@ -35,6 +43,9 @@ impl Engine {
     pub fn read_mem_addr(&mut self, address: u64) -> u8 {
         // println!("{}", address);
         255
+    }
+    pub fn set_timer_callback(&mut self, func: fn() -> u32) {
+        self.timer_callback = Some(func);
     }
 }
 
@@ -47,13 +58,15 @@ impl Engine {
             config: EngineConfig::default(),
             last_timer_count: 0,
             timer_callback: None,
-            memory: vec![],
-            call_stack: vec![],
+            enviroment_call_table: [empty_enviroment_call; 256],
+            memory: Vec::new(),
+            call_stack: Vec::new(),
         }
     }
+
     pub fn dump(&self) {
-        println!("Registers");
-        println!(
+        trace!("Registers");
+        trace!(
             "A {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
             self.registers.a0,
             self.registers.a1,
@@ -66,7 +79,7 @@ impl Engine {
             self.registers.a8,
             self.registers.a9,
         );
-        println!(
+        trace!(
             "B {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
             self.registers.b0,
             self.registers.b1,
@@ -79,7 +92,7 @@ impl Engine {
             self.registers.b8,
             self.registers.b9,
         );
-        println!(
+        trace!(
             "C {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X} {:02X}",
             self.registers.c0,
             self.registers.c1,
@@ -92,8 +105,7 @@ impl Engine {
             self.registers.c8,
             self.registers.c9,
         );
-
-        println!(
+        trace!(
             "D0-D4 {:016X} {:016X} {:016X} {:016X} {:016X}
 D5-D9 {:016X} {:016X} {:016X} {:016X} {:016X}",
             self.registers.d0,
@@ -107,7 +119,7 @@ D5-D9 {:016X} {:016X} {:016X} {:016X} {:016X}",
             self.registers.d8,
             self.registers.d9,
         );
-        println!(
+        trace!(
             "E0-E4 {:016X} {:016X} {:016X} {:016X} {:016X}
 E5-E9 {:016X} {:016X} {:016X} {:016X} {:016X}",
             self.registers.e0,
@@ -121,7 +133,7 @@ E5-E9 {:016X} {:016X} {:016X} {:016X} {:016X}",
             self.registers.e8,
             self.registers.e9,
         );
-        println!(
+        trace!(
             "F0-F4 {:016X} {:016X} {:016X} {:016X} {:016X}
 F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
             self.registers.f0,
@@ -148,7 +160,7 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
             // println!("OP {} INDEX {}", op.0, self.index);
             match op {
                 (0, _) => {
-                    println!("NO OP");
+                    trace!("NO OP");
                     self.index += 1;
                 }
                 // Add a 8 bit num
@@ -305,18 +317,25 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
                     }
                     let addr = u64::from_be_bytes(addr_array);
 
-                    println!("addr {}", addr);
+                    trace!("addr {}", addr);
 
                     let ret = self.read_mem_addr(addr);
                     let reg = self.program[self.index + 10];
-                    println!("reg {}", reg);
+                    trace!("reg {}", reg);
                     self.set_register_8(reg, ret);
                     self.index += 9;
                 }
 
+                (10, int) => {
+                    println!("Enviroment Call {}", int);
+                    self.enviroment_call_table[int as usize](self.registers);
+                    self.index += 2;
+                }
+
                 (100, _) => {
                     if self.call_stack.len() > self.config.call_stack_depth {
-                        panic!("Callstack {}", self.call_stack.len());
+                        trace!("Callstack {}", self.call_stack.len());
+                        break;
                     }
 
                     let mut addr_array = [0; 8];
@@ -325,7 +344,7 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
                         .into_iter()
                         .enumerate()
                     {
-                        println!("byte {}", byte);
+                        trace!("byte {}", byte);
                         addr_array[index] = *byte;
                     }
                     let addr = usize::from_be_bytes(addr_array);
@@ -336,7 +355,7 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
                         self.call_stack.push(call);
 
                         self.index = addr;
-                        println!("Jumping to {}", addr);
+                        trace!("Jumping to {}", addr);
 
                         self.dump();
                         // panic!();
