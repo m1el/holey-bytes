@@ -7,6 +7,7 @@ use crate::bytecode::ops::*;
 use crate::bytecode::types::*;
 
 use crate::engine::call_stack::FnCall;
+use crate::memory;
 use crate::HaltStatus;
 use crate::RuntimeErrors;
 use alloc::vec::Vec;
@@ -15,14 +16,15 @@ use log::trace;
 use regs::Registers;
 
 use self::call_stack::CallStack;
-
+#[derive(Debug, Clone, Copy)]
 pub struct Page {
     pub data: [u8; 4096 * 2],
 }
-pub type EnviromentCall = fn(Registers) -> Result<(), ()>;
+pub type EnviromentCall = fn(Registers) -> Result<Registers, u64>;
 
-pub fn empty_enviroment_call(reg: Registers) -> Result<(), ()> {
-    Err(())
+pub fn empty_enviroment_call(reg: Registers) -> Result<Registers, u64> {
+    trace!("Registers {:?}", reg);
+    Err(0)
 }
 
 pub struct Engine {
@@ -34,7 +36,7 @@ pub struct Engine {
     /// BUG: This DOES NOT account for overflowing
     last_timer_count: u32,
     timer_callback: Option<fn() -> u32>,
-    memory: Vec<Page>,
+    memory: memory::Memory,
     pub enviroment_call_table: [EnviromentCall; 256],
     call_stack: CallStack,
 }
@@ -59,7 +61,7 @@ impl Engine {
             last_timer_count: 0,
             timer_callback: None,
             enviroment_call_table: [empty_enviroment_call; 256],
-            memory: Vec::new(),
+            memory: memory::Memory::new(),
             call_stack: Vec::new(),
         }
     }
@@ -328,7 +330,13 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
 
                 (10, int) => {
                     println!("Enviroment Call {}", int);
-                    self.enviroment_call_table[int as usize](self.registers);
+                    let ret = self.enviroment_call_table[int as usize](self.registers);
+                    match ret {
+                        Ok(_) => {}
+                        Err(err) => {
+                            return Err(HostError(err));
+                        }
+                    }
                     self.index += 2;
                 }
 
