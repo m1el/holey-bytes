@@ -1,24 +1,27 @@
 pub mod call_stack;
 pub mod config;
+pub mod enviroment_calls;
 pub mod regs;
 
-use crate::bytecode::ops::Operations::*;
-use crate::bytecode::ops::*;
-use crate::bytecode::types::*;
+use crate::bytecode::{
+    ops::{Operations::*, *},
+    types::*,
+};
 
-use crate::engine::call_stack::FnCall;
-use crate::memory;
-use crate::HaltStatus;
-use crate::RuntimeErrors;
-use alloc::vec::Vec;
-use config::EngineConfig;
-use log::trace;
-use regs::Registers;
+use {
+    crate::{engine::call_stack::FnCall, memory, HaltStatus, RuntimeErrors},
+    alloc::vec::Vec,
+    config::EngineConfig,
+    log::trace,
+    regs::Registers,
+};
 
 use self::call_stack::CallStack;
+// pub const PAGE_SIZE: usize = 8192;
+
 #[derive(Debug, Clone, Copy)]
 pub struct Page {
-    pub data: [u8; 4096 * 2],
+    pub data: [u8; 8192],
 }
 impl Page {
     pub fn new() -> Self {
@@ -27,18 +30,17 @@ impl Page {
         }
     }
 }
-pub type EnviromentCall = fn(Registers) -> Result<Registers, u64>;
 
-pub fn empty_enviroment_call(reg: Registers) -> Result<Registers, u64> {
-    trace!("Registers {:?}", reg);
+pub fn empty_enviroment_call(engine: &mut Engine) -> Result<&mut Engine, u64> {
+    trace!("Registers {:?}", engine.registers);
     Err(0)
 }
 
 pub struct Engine {
     pub index: usize,
-    program: Vec<u8>,
+    program:   Vec<u8>,
     registers: Registers,
-    config: EngineConfig,
+    config:    EngineConfig,
 
     /// BUG: This DOES NOT account for overflowing
     last_timer_count: u32,
@@ -47,7 +49,7 @@ pub struct Engine {
     pub enviroment_call_table: [EnviromentCall; 256],
     call_stack: CallStack,
 }
-
+use crate::engine::enviroment_calls::EnviromentCall;
 impl Engine {
     pub fn read_mem_addr_8(&mut self, address: u64) -> Result<u8, RuntimeErrors> {
         // println!("{}", address);
@@ -62,10 +64,9 @@ impl Engine {
     pub fn new(program: Vec<u8>) -> Self {
         let mut mem = memory::Memory::new();
         for (addr, byte) in program.clone().into_iter().enumerate() {
-            let ret = mem.set_addr8(addr as u64, byte);
-            println!("{:?}", ret);
+            let _ = mem.set_addr8(addr as u64, byte);
         }
-        println!("{:?}", mem.read_addr8(0));
+        trace!("{:?}", mem.read_addr8(0));
 
         Self {
             index: 0,
@@ -75,7 +76,7 @@ impl Engine {
             last_timer_count: 0,
             timer_callback: None,
             enviroment_call_table: [empty_enviroment_call; 256],
-            memory: memory::Memory::new(),
+            memory: mem,
             call_stack: Vec::new(),
         }
     }
@@ -165,8 +166,7 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
         );
     }
     pub fn run(&mut self) -> Result<HaltStatus, RuntimeErrors> {
-        use HaltStatus::*;
-        use RuntimeErrors::*;
+        use {HaltStatus::*, RuntimeErrors::*};
         loop {
             // Break out of the loop
             if self.index + 1 == self.program.len() {
@@ -245,7 +245,7 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
                         }
                     }
 
-                    self.index += 19;
+                    self.index += 18;
                 }
                 (2, 1) => {
                     let lhs = self.program[self.index + 2];
@@ -335,18 +335,25 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
 
                     trace!("addr {}", addr);
 
-                    let ret = self.read_mem_addr_8(addr)?;
-                    let reg = self.program[self.index + 10];
-                    trace!("reg {}", reg);
-                    self.set_register_8(reg, ret);
-                    self.index += 9;
+                    let ret = self.read_mem_addr_8(addr);
+                    match ret {
+                        Ok(ret) => {
+                            let reg = self.program[self.index + 10];
+                            trace!("reg {}", reg);
+                            self.set_register_8(reg, ret);
+                            self.index += 10;
+                        }
+                        Err(err) => trace!("{:?}", err),
+                    }
                 }
 
                 (10, int) => {
-                    println!("Enviroment Call {}", int);
-                    let ret = self.enviroment_call_table[int as usize](self.registers);
+                    trace!("Enviroment Call {}", int);
+                    let ret = self.enviroment_call_table[int as usize](self);
                     match ret {
-                        Ok(_) => {}
+                        Ok(eng) => {
+                            trace!("Resuming execution at {}", eng.index);
+                        }
                         Err(err) => {
                             return Err(HostError(err));
                         }
@@ -366,9 +373,9 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
                         .into_iter()
                         .enumerate()
                     {
-                        trace!("byte {}", byte);
                         addr_array[index] = *byte;
                     }
+
                     let addr = usize::from_be_bytes(addr_array);
                     if addr > self.program.len() {
                         panic!("Invalid jump address {}", addr)

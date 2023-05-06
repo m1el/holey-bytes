@@ -21,15 +21,18 @@ impl Memory {
 impl Memory {
     pub fn read_addr8(&mut self, address: u64) -> Result<u8, RuntimeErrors> {
         let (page, offset) = addr_to_page(address);
-        println!("page {} offset {}", page, offset);
+        trace!("page {} offset {}", page, offset);
         match self.inner.get(&page) {
             Some(page) => {
                 let val = page.data[offset as usize];
+                trace!("Value {}", val);
                 Ok(val)
             }
-            None => Err(RuntimeErrors::PageUnmapped(page)),
+            None => {
+                trace!("page not mapped");
+                Err(RuntimeErrors::PageNotMapped(page))
+            }
         }
-        // trace!("Value read {} from page {} offset {}", val, page, offset);
     }
     pub fn read_addr64(&mut self, address: u64) -> u64 {
         unimplemented!()

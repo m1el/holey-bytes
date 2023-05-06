@@ -5,17 +5,29 @@ pub enum Operations {
     SUB = 2,
     MUL = 3,
     DIV = 4,
+    MOD = 5,
+
+    And = 6,
+    Or = 7,
+    Xor = 8,
+    Not = 9,
 
     // LOADs a memory address/constant into a register
-    LOAD = 5,
+    LOAD = 15,
     // STOREs a register/constant into a memory address
-    STORE = 6,
+    STORE = 16,
 
-    EnviromentCall = 10,
+    MapPage = 17,
+    UnmapPage = 18,
+
+    // SHIFT LEFT 16 A0
+    Shift = 20,
 
     JUMP = 100,
     JumpCond = 101,
     RET = 103,
+
+    EnviromentCall = 255,
 }
 
 pub enum SubTypes {
@@ -41,5 +53,7 @@ pub enum JumpConditionals {
     Equal = 0,
     NotEqual = 1,
     LessThan = 2,
-    GreaterThan = 3,
+    LessThanOrEqualTo = 3,
+    GreaterThan = 4,
+    GreaterThanOrEqualTo = 5,
 }
