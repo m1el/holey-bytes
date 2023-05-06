@@ -347,20 +347,6 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
                     }
                 }
 
-                (10, int) => {
-                    trace!("Enviroment Call {}", int);
-                    let ret = self.enviroment_call_table[int as usize](self);
-                    match ret {
-                        Ok(eng) => {
-                            trace!("Resuming execution at {}", eng.index);
-                        }
-                        Err(err) => {
-                            return Err(HostError(err));
-                        }
-                    }
-                    self.index += 2;
-                }
-
                 (100, _) => {
                     if self.call_stack.len() > self.config.call_stack_depth {
                         trace!("Callstack {}", self.call_stack.len());
@@ -389,6 +375,20 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
                         self.dump();
                         // panic!();
                     }
+                }
+
+                (255, int) => {
+                    trace!("Enviroment Call {}", int);
+                    let ret = self.enviroment_call_table[int as usize](self);
+                    match ret {
+                        Ok(eng) => {
+                            trace!("Resuming execution at {}", eng.index);
+                        }
+                        Err(err) => {
+                            return Err(HostError(err));
+                        }
+                    }
+                    self.index += 2;
                 }
 
                 _op_pair => {
