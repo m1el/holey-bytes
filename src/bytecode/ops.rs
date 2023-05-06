@@ -7,10 +7,10 @@ pub enum Operations {
     DIV = 4,
     MOD = 5,
 
-    And = 6,
-    Or = 7,
-    Xor = 8,
-    Not = 9,
+    AND = 6,
+    OR = 7,
+    XOR = 8,
+    NOT = 9,
 
     // LOADs a memory address/constant into a register
     LOAD = 15,
