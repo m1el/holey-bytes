@@ -33,7 +33,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "holey_bytes"
+name = "hbvm"
 version = "0.1.0"
 dependencies = [
  "hashbrown",
