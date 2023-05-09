@@ -31,6 +31,7 @@ fn main() -> Result<(), RuntimeErrors> {
     eng.enviroment_call_table[10] = print_fn;
     eng.run()?;
     eng.dump();
+    println!("{:#?}", eng.registers);
 
     Ok(())
 }

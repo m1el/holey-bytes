@@ -3,30 +3,50 @@ pub mod config;
 pub mod enviroment_calls;
 pub mod regs;
 
-use crate::bytecode::{
-    ops::{Operations::*, *},
-    types::*,
-};
-
 use {
-    crate::{engine::call_stack::FnCall, memory, HaltStatus, RuntimeErrors},
+    self::call_stack::CallStack,
+    crate::{
+        bytecode::{
+            ops::{Operations::*, *},
+            types::*,
+        },
+        engine::call_stack::FnCall,
+        memory, HaltStatus, RuntimeErrors,
+    },
     alloc::vec::Vec,
     config::EngineConfig,
     log::trace,
     regs::Registers,
 };
-
-use self::call_stack::CallStack;
 // pub const PAGE_SIZE: usize = 8192;
 
+pub struct RealPage {
+    pub ptr: *mut u8,
+}
+
 #[derive(Debug, Clone, Copy)]
-pub struct Page {
+pub struct VMPage {
     pub data: [u8; 8192],
 }
-impl Page {
+impl VMPage {
     pub fn new() -> Self {
         Self {
             data: [0; 4096 * 2],
+        }
+    }
+}
+
+pub enum Page {
+    VMPage(VMPage),
+    RealPage(RealPage),
+}
+impl Page {
+    pub fn data(&self) -> [u8; 4096 * 2] {
+        match self {
+            Page::VMPage(vmpage) => vmpage.data,
+            Page::RealPage(_) => {
+                unimplemented!("Memmapped hw page not yet supported")
+            }
         }
     }
 }
@@ -37,17 +57,17 @@ pub fn empty_enviroment_call(engine: &mut Engine) -> Result<&mut Engine, u64> {
 }
 
 pub struct Engine {
-    pub index: usize,
-    program:   Vec<u8>,
-    registers: Registers,
-    config:    EngineConfig,
+    pub index:     usize,
+    pub program:   Vec<u8>,
+    pub registers: Registers,
+    pub config:    EngineConfig,
 
     /// BUG: This DOES NOT account for overflowing
-    last_timer_count: u32,
-    timer_callback: Option<fn() -> u32>,
-    memory: memory::Memory,
+    pub last_timer_count: u32,
+    pub timer_callback: Option<fn() -> u32>,
+    pub memory: memory::Memory,
     pub enviroment_call_table: [EnviromentCall; 256],
-    call_stack: CallStack,
+    pub call_stack: CallStack,
 }
 use crate::engine::enviroment_calls::EnviromentCall;
 impl Engine {
@@ -319,8 +339,49 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
                 // TODO: Implement 64 bit register to register subtraction
                 (2, 4) => {
                     // 64 bit
-                    self.index += 19;
+
+                    let mut lhs_array = [0; 8];
+                    let mut rhs_array = [0; 8];
+
+                    for (index, byte) in self.program[self.index + 2..self.index + 10]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        lhs_array[index] = *byte;
+                    }
+                    let lhs = u64::from_be_bytes(lhs_array);
+
+                    for (index, byte) in self.program[self.index + 10..self.index + 18]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        rhs_array[index] = *byte;
+                    }
+
+                    let rhs = u64::from_be_bytes(rhs_array);
+
+                    // println!("RHS 64BIT {}", rhs);
+
+                    let ret = lhs - rhs;
+
+                    let reg = self.program[self.index + 18];
+                    // println!("Store {} in {:02X}", ret, reg);
+
+                    match reg {
+                        0xA0..=0xC9 => {
+                            panic!("Register undersized")
+                        }
+                        0xD0..=0xF9 => {
+                            self.set_register_64(reg, ret);
+                        }
+                        _ => {
+                            panic!("Not a register.")
+                        }
+                    }
+
+                    self.index += 18;
                 }
+
                 // Read from address to register
                 (5, 0) => {
                     let mut addr_array = [0; 8];

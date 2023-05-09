@@ -1,10 +1,13 @@
-use hashbrown::HashMap;
-use log::trace;
+use crate::engine::VMPage;
 
-use crate::{engine::Page, RuntimeErrors};
+use {
+    crate::{engine::Page, RuntimeErrors},
+    alloc::vec::Vec,
+    hashbrown::HashMap,
+    log::trace,
+};
 
 pub struct Memory {
-    //TODO: hashmap with the start bytes as key and end bytes as offset
     inner: HashMap<u64, Page>,
 }
 
@@ -13,9 +16,12 @@ impl Memory {
         Self {
             inner: HashMap::new(),
         }
+        //
     }
 
-    pub fn map_vec(&mut self, address: u64, vec: Vec<u8>) {}
+    pub fn map_vec(&mut self, address: u64, vec: Vec<u8>) {
+        panic!("Mapping vectors into pages is not supported yet");
+    }
 }
 
 impl Memory {
@@ -24,7 +30,7 @@ impl Memory {
         trace!("page {} offset {}", page, offset);
         match self.inner.get(&page) {
             Some(page) => {
-                let val = page.data[offset as usize];
+                let val = page.data()[offset as usize];
                 trace!("Value {}", val);
                 Ok(val)
             }
@@ -43,13 +49,13 @@ impl Memory {
         let ret: Option<(&u64, &mut Page)> = self.inner.get_key_value_mut(&page);
         match ret {
             Some((_, page)) => {
-                page.data[offset as usize] = value;
+                page.data()[offset as usize] = value;
             }
             None => {
-                let mut pg = Page::new();
+                let mut pg = VMPage::new();
                 pg.data[offset as usize] = value;
-                self.inner.insert(page, pg);
-                println!("Mapped page {}", page);
+                self.inner.insert(page, Page::VMPage(pg));
+                trace!("Mapped page {}", page);
             }
         }
         Ok(())

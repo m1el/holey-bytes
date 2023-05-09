@@ -30,6 +30,13 @@ pub enum Operations {
     EnviromentCall = 255,
 }
 
+pub enum PageMapTypes {
+    // Have the host make a new VMPage
+    VMPage = 0,
+    // Ask the host to map a RealPage into memory
+    RealPage = 1,
+}
+
 pub enum SubTypes {
     EightBit = 1,
     SixtyFourBit = 2,
