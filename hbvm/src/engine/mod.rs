@@ -2,6 +2,8 @@ pub mod call_stack;
 pub mod config;
 pub mod enviroment_calls;
 pub mod regs;
+#[cfg(test)]
+pub mod tests;
 
 use {
     self::call_stack::CallStack,
@@ -66,7 +68,7 @@ pub struct Engine {
     pub last_timer_count: u32,
     pub timer_callback: Option<fn() -> u32>,
     pub memory: memory::Memory,
-    pub enviroment_call_table: [EnviromentCall; 256],
+    pub enviroment_call_table: [Option<EnviromentCall>; 256],
     pub call_stack: CallStack,
 }
 use crate::engine::enviroment_calls::EnviromentCall;
@@ -87,7 +89,7 @@ impl Engine {
             let _ = mem.set_addr8(addr as u64, byte);
         }
         trace!("{:?}", mem.read_addr8(0));
-
+        let ecall_table: [Option<EnviromentCall>; 256] = [None; 256];
         Self {
             index: 0,
             program,
@@ -95,7 +97,7 @@ impl Engine {
             config: EngineConfig::default(),
             last_timer_count: 0,
             timer_callback: None,
-            enviroment_call_table: [empty_enviroment_call; 256],
+            enviroment_call_table: ecall_table,
             memory: mem,
             call_stack: Vec::new(),
         }
@@ -187,6 +189,9 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
     }
     pub fn run(&mut self) -> Result<HaltStatus, RuntimeErrors> {
         use {HaltStatus::*, RuntimeErrors::*};
+        if self.program.len() == 0 {
+            return Ok(Halted);
+        }
         loop {
             // Break out of the loop
             if self.index + 1 == self.program.len() {
@@ -425,7 +430,7 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
 
                     let addr = usize::from_be_bytes(addr_array);
                     if addr > self.program.len() {
-                        panic!("Invalid jump address {}", addr)
+                        return Err(InvalidJumpAddress(addr as u64));
                     } else {
                         let call = FnCall { ret: self.index };
                         self.call_stack.push(call);
@@ -434,7 +439,6 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
                         trace!("Jumping to {}", addr);
 
                         self.dump();
-                        // panic!();
                     }
                 }
 
@@ -452,9 +456,8 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
                     self.index += 2;
                 }
 
-                _op_pair => {
-                    // println!("OP Pair {}", op_pair.0);
-                    self.index += 1;
+                op_pair => {
+                    panic!("OP Pair {} - {}", op_pair.0, op_pair.1);
                 }
             }
 
@@ -465,6 +468,7 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
                 if (ret - self.last_timer_count) >= self.config.quantum {
                     return Ok(Running);
                 }
+                self.last_timer_count = ret;
             }
         }
         Ok(Halted)
