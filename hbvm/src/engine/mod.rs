@@ -7,14 +7,7 @@ pub mod tests;
 
 use {
     self::call_stack::CallStack,
-    crate::{
-        bytecode::{
-            ops::{Operations::*, *},
-            types::*,
-        },
-        engine::call_stack::FnCall,
-        memory, HaltStatus, RuntimeErrors,
-    },
+    crate::{engine::call_stack::FnCall, memory, HaltStatus, RuntimeErrors},
     alloc::vec::Vec,
     config::EngineConfig,
     log::trace,
@@ -468,7 +461,7 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
                 }
 
                 op_pair => {
-                    panic!("OP Pair {} - {}", op_pair.0, op_pair.1);
+                    return Err(InvalidOpcodePair(op_pair.0, op_pair.1));
                 }
             }
 

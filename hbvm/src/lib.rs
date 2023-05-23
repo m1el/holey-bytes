@@ -7,7 +7,7 @@ pub mod memory;
 
 #[derive(Debug, PartialEq)]
 pub enum RuntimeErrors {
-    InvalidOpcode(u8),
+    InvalidOpcodePair(u8, u8),
     RegisterTooSmall,
     HostError(u64),
     PageNotMapped(u64),

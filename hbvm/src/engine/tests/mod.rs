@@ -6,6 +6,14 @@ use {
 };
 
 #[test]
+fn invalid_program() {
+    let prog = vec![1, 23];
+    let mut eng = Engine::new(prog);
+    let ret = eng.run();
+    assert_eq!(ret, Err(InvalidOpcodePair(1, 23)));
+}
+
+#[test]
 fn empty_program() {
     let prog = vec![];
     let mut eng = Engine::new(prog);
@@ -27,7 +35,7 @@ fn max_quantum_reached() {
 
 #[test]
 fn jump_out_of_bounds() {
-    use crate::engine::Operations::JUMP;
+    use crate::bytecode::ops::Operations::JUMP;
     let prog = vec![JUMP as u8, 0, 0, 0, 0, 0, 0, 1, 0];
     let mut eng = Engine::new(prog);
     let ret = eng.run();
@@ -44,7 +52,7 @@ fn invalid_system_call() {
 
 #[test]
 fn add_u8() {
-    use crate::engine::{Operations::ADD, SubTypes::EightBit};
+    use crate::bytecode::ops::{Operations::ADD, SubTypes::EightBit};
 
     let prog = vec![ADD as u8, EightBit as u8, 1, 1, 0xA0];
     let mut eng = Engine::new(prog);
@@ -54,7 +62,7 @@ fn add_u8() {
 
 #[test]
 fn sub_u8() {
-    use crate::engine::{Operations::SUB, SubTypes::EightBit};
+    use crate::bytecode::ops::{Operations::SUB, SubTypes::EightBit};
 
     let prog = vec![SUB as u8, EightBit as u8, 2, 1, 0xA0];
     let mut eng = Engine::new(prog);
@@ -63,7 +71,7 @@ fn sub_u8() {
 }
 #[test]
 fn mul_u8() {
-    use crate::engine::{Operations::MUL, SubTypes::EightBit};
+    use crate::bytecode::ops::{Operations::MUL, SubTypes::EightBit};
 
     let prog = vec![MUL as u8, EightBit as u8, 1, 1, 0xA0];
     let mut eng = Engine::new(prog);
@@ -73,10 +81,45 @@ fn mul_u8() {
 
 #[test]
 fn div_u8() {
-    use crate::engine::{Operations::DIV, SubTypes::EightBit};
+    use crate::bytecode::ops::{Operations::DIV, SubTypes::EightBit};
 
     let prog = vec![DIV as u8, EightBit as u8, 1, 1, 0xA0];
     let mut eng = Engine::new(prog);
     let _ = eng.run();
     assert_eq!(eng.registers.a0, 2);
+}
+
+#[test]
+fn set_register_8() {
+    let prog = alloc::vec![];
+    let mut eng = Engine::new(prog);
+    eng.set_register_8(0xA0, 1);
+    assert_eq!(eng.registers.a0, 1);
+}
+
+#[test]
+fn set_register_64() {
+    let prog = alloc::vec![];
+    let mut eng = Engine::new(prog);
+    eng.set_register_64(0xD0, 1);
+    assert_eq!(eng.registers.d0, 1);
+}
+
+#[test]
+fn load_u8() {
+    use crate::bytecode::ops::{Operations::LOAD, RWSubTypes::AddrToReg};
+
+    let prog = vec![LOAD as u8, AddrToReg as u8, 0, 0, 0, 0, 0, 0, 1, 0, 0xA0];
+    let mut eng = Engine::new(prog);
+    let ret = eng.memory.set_addr8(256, 1);
+    assert_eq!(ret, Ok(()));
+    let _ = eng.run();
+    assert_eq!(eng.registers.a0, 1);
+}
+#[test]
+fn set_memory_8() {
+    let prog = vec![];
+    let mut eng = Engine::new(prog);
+    let ret = eng.memory.set_addr8(256, 1);
+    assert_eq!(ret, Ok(()));
 }
