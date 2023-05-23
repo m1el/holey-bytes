@@ -284,8 +284,7 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
                             panic!("Not a register.")
                         }
                     }
-
-                    self.index += 4;
+                    self.index += 5;
                 }
                 (2, 2) => {
                     let mut lhs_array = [0; 8];
