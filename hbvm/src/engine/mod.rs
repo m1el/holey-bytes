@@ -444,15 +444,26 @@ F5-F9 {:016X} {:016X} {:016X} {:016X} {:016X}",
 
                 (255, int) => {
                     trace!("Enviroment Call {}", int);
-                    let ret = self.enviroment_call_table[int as usize](self);
-                    match ret {
-                        Ok(eng) => {
-                            trace!("Resuming execution at {}", eng.index);
+                    let ecall = self.enviroment_call_table[int as usize];
+
+                    match ecall {
+                        Some(call) => {
+                            let ret = call(self);
+
+                            match ret {
+                                Ok(eng) => {
+                                    trace!("Resuming execution at {}", eng.index);
+                                }
+                                Err(err) => {
+                                    return Err(HostError(err));
+                                }
+                            }
                         }
-                        Err(err) => {
-                            return Err(HostError(err));
+                        None => {
+                            return Err(InvalidSystemCall(int));
                         }
                     }
+
                     self.index += 2;
                 }
 

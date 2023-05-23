@@ -12,6 +12,7 @@ pub enum RuntimeErrors {
     HostError(u64),
     PageNotMapped(u64),
     InvalidJumpAddress(u64),
+    InvalidSystemCall(u8),
 }
 
 // If you solve the halting problem feel free to remove this
