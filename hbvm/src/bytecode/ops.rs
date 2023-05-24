@@ -1,6 +1,7 @@
 #[repr(u8)]
 pub enum Operations {
     NOP = 0,
+
     ADD = 1,
     SUB = 2,
     MUL = 3,
@@ -37,16 +38,17 @@ pub enum PageMapTypes {
     RealPage = 1,
 }
 
-pub enum SubTypes {
-    EightBit = 1,
-    SixtyFourBit = 2,
-    Register8 = 3,
-    Register64 = 4,
-}
 pub enum MathOpSubTypes {
     Unsigned = 0,
     Signed = 1,
     FloatingPoint = 2,
+}
+
+pub enum MathOpSides {
+    RegisterConstant = 0,
+    RegisterRegister = 1,
+    ConstantConstant = 2,
+    ConstantRegister = 3,
 }
 
 pub enum RWSubTypes {

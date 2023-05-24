@@ -1,45 +1,28 @@
-Holey Bytes has two bit widths
-8 bit to help with byte level manipulation and 64 bit numbers because nothing else should ever be used in a modern setting
+# Math operations
+```
+MATH_OP
+    Add
+    Sub
+    Mul
+    Div
+    Mod
+```
+```
+MATH_TYPE
+    Unsigned
+    Signed
+    FloatingPoint
+```
 
-this leaves us with an amount of registers that should be defined
-I'd like to use a letter and a number to represent registers 
-like `a0` or `d0` the first of which would be reserved for 8 bit numbers and the later of which 64 bit.
+```
+MATH_OP_SIDES
+    Register Constant
+    Register Register
+    Constant Constant
+    Constant Register
+```
+`[MATH_OP] [MATH_OP_SIDES] [MATH_TYPE] [IMM_LHS] [IMM_RHS] [REG]`
 
 
 
-holeybytes will be a load-store machine
 
-
-
-
-
-instructions
-### NOP
-`0`
-
-### ADD_8 TYPE LHS RHS LOCATION
-`1`
-### SUB TYPE LHS RHS LOCATION
-`2`
-### MUL TYPE LHS RHS LOCATION
-`3`
-### MUL TYPE LHS RHS LOCATION
-`4`
-### DIV TYPE LHS RHS LOCATION
-`5`
-
-### JUMP ADDR
-`100`
-an unconditional jump to an address
-
-### JUMP_EQ LHS RHS ADDR
-`101`
-A conditional jump 
-if LHS is equal to RHS then jump to address
-### JUMP_NEQ LHS RHS ADDR
-`102`
-A conditional jump 
-if LHS is not equal to RHS then jump to address
-
-### RET
-pop off the callstack

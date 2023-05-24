@@ -60,7 +60,7 @@ impl Memory {
         }
         Ok(())
     }
-    pub fn set_addr64(&mut self, address: u64, value: u64) -> u64 {
+    pub fn set_addr64(&mut self, address: u64, value: u64) -> Result<(), RuntimeErrors> {
         unimplemented!()
     }
 }

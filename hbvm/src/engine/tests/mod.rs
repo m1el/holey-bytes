@@ -7,10 +7,10 @@ use {
 
 #[test]
 fn invalid_program() {
-    let prog = vec![1, 23];
+    let prog = vec![1, 0];
     let mut eng = Engine::new(prog);
     let ret = eng.run();
-    assert_eq!(ret, Err(InvalidOpcodePair(1, 23)));
+    assert_eq!(ret, Err(InvalidOpcodePair(1, 0)));
 }
 
 #[test]
@@ -52,9 +52,9 @@ fn invalid_system_call() {
 
 #[test]
 fn add_u8() {
-    use crate::bytecode::ops::{Operations::ADD, SubTypes::EightBit};
+    use crate::bytecode::ops::{MathOpSides::ConstantConstant, Operations::ADD};
 
-    let prog = vec![ADD as u8, EightBit as u8, 1, 1, 0xA0];
+    let prog = vec![ADD as u8, ConstantConstant as u8, 100, 98, 0xA0];
     let mut eng = Engine::new(prog);
     let _ = eng.run();
     assert_eq!(eng.registers.a0, 2);
@@ -62,18 +62,18 @@ fn add_u8() {
 
 #[test]
 fn sub_u8() {
-    use crate::bytecode::ops::{Operations::SUB, SubTypes::EightBit};
+    use crate::bytecode::ops::Operations::SUB;
 
-    let prog = vec![SUB as u8, EightBit as u8, 2, 1, 0xA0];
+    let prog = vec![SUB as u8];
     let mut eng = Engine::new(prog);
     let _ = eng.run();
     assert_eq!(eng.registers.a0, 1);
 }
 #[test]
 fn mul_u8() {
-    use crate::bytecode::ops::{Operations::MUL, SubTypes::EightBit};
+    use crate::bytecode::ops::{MathOpSides::ConstantConstant, Operations::MUL};
 
-    let prog = vec![MUL as u8, EightBit as u8, 1, 1, 0xA0];
+    let prog = vec![MUL as u8, ConstantConstant as u8, 1, 2, 0xA0];
     let mut eng = Engine::new(prog);
     let _ = eng.run();
     assert_eq!(eng.registers.a0, 2);
@@ -81,9 +81,9 @@ fn mul_u8() {
 
 #[test]
 fn div_u8() {
-    use crate::bytecode::ops::{Operations::DIV, SubTypes::EightBit};
+    use crate::bytecode::ops::Operations::DIV;
 
-    let prog = vec![DIV as u8, EightBit as u8, 1, 1, 0xA0];
+    let prog = vec![DIV as u8];
     let mut eng = Engine::new(prog);
     let _ = eng.run();
     assert_eq!(eng.registers.a0, 2);
@@ -121,5 +121,13 @@ fn set_memory_8() {
     let prog = vec![];
     let mut eng = Engine::new(prog);
     let ret = eng.memory.set_addr8(256, 1);
+    assert_eq!(ret, Ok(()));
+}
+
+#[test]
+fn set_memory_64() {
+    let prog = vec![];
+    let mut eng = Engine::new(prog);
+    let ret = eng.memory.set_addr64(256, 1);
     assert_eq!(ret, Ok(()));
 }

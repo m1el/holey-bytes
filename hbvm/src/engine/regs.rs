@@ -1,16 +1,16 @@
 #[rustfmt::skip]
 #[derive(Debug, Clone, Copy)]
 pub struct Registers {
-    pub a0: u8, pub b0: u8, pub c0: u8, pub d0: u64, pub e0: u64, pub f0: u64,
-    pub a1: u8, pub b1: u8, pub c1: u8, pub d1: u64, pub e1: u64, pub f1: u64,
-    pub a2: u8, pub b2: u8, pub c2: u8, pub d2: u64, pub e2: u64, pub f2: u64,
-    pub a3: u8, pub b3: u8, pub c3: u8, pub d3: u64, pub e3: u64, pub f3: u64,
-    pub a4: u8, pub b4: u8, pub c4: u8, pub d4: u64, pub e4: u64, pub f4: u64,
-    pub a5: u8, pub b5: u8, pub c5: u8, pub d5: u64, pub e5: u64, pub f5: u64,
-    pub a6: u8, pub b6: u8, pub c6: u8, pub d6: u64, pub e6: u64, pub f6: u64,
-    pub a7: u8, pub b7: u8, pub c7: u8, pub d7: u64, pub e7: u64, pub f7: u64,
-    pub a8: u8, pub b8: u8, pub c8: u8, pub d8: u64, pub e8: u64, pub f8: u64,
-    pub a9: u8, pub b9: u8, pub c9: u8, pub d9: u64, pub e9: u64, pub f9: u64,
+    pub a0: u64, pub b0: u64, pub c0: u64, pub d0: u64, pub e0: u64, pub f0: u64,
+    pub a1: u64, pub b1: u64, pub c1: u64, pub d1: u64, pub e1: u64, pub f1: u64,
+    pub a2: u64, pub b2: u64, pub c2: u64, pub d2: u64, pub e2: u64, pub f2: u64,
+    pub a3: u64, pub b3: u64, pub c3: u64, pub d3: u64, pub e3: u64, pub f3: u64,
+    pub a4: u64, pub b4: u64, pub c4: u64, pub d4: u64, pub e4: u64, pub f4: u64,
+    pub a5: u64, pub b5: u64, pub c5: u64, pub d5: u64, pub e5: u64, pub f5: u64,
+    pub a6: u64, pub b6: u64, pub c6: u64, pub d6: u64, pub e6: u64, pub f6: u64,
+    pub a7: u64, pub b7: u64, pub c7: u64, pub d7: u64, pub e7: u64, pub f7: u64,
+    pub a8: u64, pub b8: u64, pub c8: u64, pub d8: u64, pub e8: u64, pub f8: u64,
+    pub a9: u64, pub b9: u64, pub c9: u64, pub d9: u64, pub e9: u64, pub f9: u64,
 }
 
 impl Registers {
