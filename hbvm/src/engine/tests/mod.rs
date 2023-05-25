@@ -90,19 +90,11 @@ fn div_u8() {
 }
 
 #[test]
-fn set_register_8() {
+fn set_register() {
     let prog = alloc::vec![];
     let mut eng = Engine::new(prog);
-    eng.set_register_8(0xA0, 1);
+    eng.set_register(0xA0, 1);
     assert_eq!(eng.registers.a0, 1);
-}
-
-#[test]
-fn set_register_64() {
-    let prog = alloc::vec![];
-    let mut eng = Engine::new(prog);
-    eng.set_register_64(0xD0, 1);
-    assert_eq!(eng.registers.d0, 1);
 }
 
 #[test]
