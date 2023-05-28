@@ -24,7 +24,7 @@ impl IndexMut<u8> for Registers {
 
 impl Default for Registers {
     fn default() -> Self {
-        Self([Value { u: 0 }; 60])
+        Self([Value { i: 0 }; 60])
     }
 }
 
@@ -55,13 +55,12 @@ macro_rules! value_def {
 }
 
 value_def! {
-    u: u64, unsigned;
-    s: i64, signed;
+    i: u64, int;
     f: f64, float;
 }
 
 impl Debug for Value {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        self.unsigned().fmt(f)
+        self.int().fmt(f)
     }
 }
