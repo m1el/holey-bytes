@@ -1,5 +1,5 @@
 use hbvm::{
-    bytecode::ops::{opcode::*},
+    bytecode::ops::{Operations::*},
     engine::Engine,
     RuntimeErrors, HaltStatus,
 };
@@ -8,8 +8,8 @@ fn main() -> Result<(), RuntimeErrors> {
     // TODO: Grab program from cmdline
     #[rustfmt::skip]
         let prog: Vec<u8> = vec![
-            NOP,            
-            JUMP, 0, 0, 0, 0, 0, 0, 0, 0,
+            NOP as u8,            
+            JUMP as u8, 0, 0, 0, 0, 0, 0, 0, 0,
         ];
 
     let mut eng = Engine::new(prog);
