@@ -1,3 +1,5 @@
+use log::info;
+
 pub mod call_stack;
 pub mod config;
 pub mod enviroment_calls;
@@ -7,12 +9,13 @@ pub mod tests;
 
 use {
     self::call_stack::CallStack,
-    crate::{memory, HaltStatus, RuntimeErrors},
+    crate::{engine::enviroment_calls::EnviromentCall, memory, HaltStatus, RuntimeErrors},
     alloc::vec::Vec,
     config::EngineConfig,
     log::trace,
     regs::Registers,
 };
+
 // pub const PAGE_SIZE: usize = 8192;
 
 pub struct RealPage {
@@ -23,8 +26,8 @@ pub struct RealPage {
 pub struct VMPage {
     pub data: [u8; 8192],
 }
-impl VMPage {
-    pub fn new() -> Self {
+impl Default for VMPage {
+    fn default() -> Self {
         Self {
             data: [0; 4096 * 2],
         }
@@ -52,10 +55,10 @@ pub fn empty_enviroment_call(engine: &mut Engine) -> Result<&mut Engine, u64> {
 }
 
 pub struct Engine {
-    pub index:     usize,
-    pub program:   Vec<u8>,
+    pub pc: usize,
+    pub program: Vec<u8>,
     pub registers: Registers,
-    pub config:    EngineConfig,
+    pub config: EngineConfig,
 
     /// BUG: This DOES NOT account for overflowing
     pub last_timer_count: u32,
@@ -64,12 +67,11 @@ pub struct Engine {
     pub enviroment_call_table: [Option<EnviromentCall>; 256],
     pub call_stack: CallStack,
 }
-use crate::engine::enviroment_calls::EnviromentCall;
+
 impl Engine {
     pub fn set_timer_callback(&mut self, func: fn() -> u32) {
         self.timer_callback = Some(func);
     }
-    pub fn set_register(&mut self, register: u8, value: u64) {}
 }
 
 impl Engine {
@@ -81,9 +83,9 @@ impl Engine {
         trace!("{:?}", mem.read_addr8(0));
         let ecall_table: [Option<EnviromentCall>; 256] = [None; 256];
         Self {
-            index: 0,
+            pc: 0,
             program,
-            registers: Registers::new(),
+            registers: Registers::default(),
             config: EngineConfig::default(),
             last_timer_count: 0,
             timer_callback: None,
@@ -95,6 +97,6 @@ impl Engine {
 
     pub fn dump(&self) {}
     pub fn run(&mut self) -> Result<HaltStatus, RuntimeErrors> {
-        Ok(HaltStatus::Halted)
+        Ok(HaltStatus::Running)
     }
 }

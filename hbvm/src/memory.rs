@@ -52,7 +52,7 @@ impl Memory {
                 page.data()[offset as usize] = value;
             }
             None => {
-                let mut pg = VMPage::new();
+                let mut pg = VMPage::default();
                 pg.data[offset as usize] = value;
                 self.inner.insert(page, Page::VMPage(pg));
                 trace!("Mapped page {}", page);
