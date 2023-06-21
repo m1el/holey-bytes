@@ -1,9 +1,8 @@
 #![no_std]
 extern crate alloc;
 
-pub mod bytecode;
-pub mod engine;
-pub mod memory;
+pub mod validate;
+pub mod vm;
 
 #[derive(Debug, PartialEq)]
 pub enum RuntimeErrors {

@@ -1,2 +1,2 @@
 [workspace]
-members = ["hbvm", "compiler"]
+members = ["hbasm", "hbbytecode", "hbvm"]

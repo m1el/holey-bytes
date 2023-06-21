@@ -3,6 +3,13 @@ name = "hbvm"
 version = "0.1.0"
 edition = "2021"
 
+[profile.release]
+lto = true
+
 [dependencies]
-log = "*"
-hashbrown = "0.13.2"
+delegate          = "0.9"
+hashbrown         = "0.13"
+hbbytecode.path   = "../hbbytecode"
+log               = "0.4"
+paste             = "1.0"
+static_assertions = "1.0"
