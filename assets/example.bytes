@@ -1,4 +1,0 @@
-load 10 A1
-load 0 A0
-add A0 1
-jump_less_than A0 A1 0
