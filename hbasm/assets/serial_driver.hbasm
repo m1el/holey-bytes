@@ -1,0 +1,7 @@
+jmp r0, start
+start:
+    jmp r0, init_serial_port
+
+-- Uses r20 to set the port
+init_serial_port:
+    add r20, r30, r10
