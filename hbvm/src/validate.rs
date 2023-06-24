@@ -1,21 +1,31 @@
+/// Program validation error kind
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorKind {
+    /// Unknown opcode
     InvalidInstruction,
+    /// VM doesn't implement this valid opcode
     Unimplemented,
+    /// Attempted to copy over register boundary
     RegisterArrayOverflow,
 }
 
+/// Error
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Error {
+    /// Kind
     pub kind: ErrorKind,
+    /// Location in bytecode
     pub index: usize,
 }
 
+/// Perform bytecode validation. If it passes, the program should be
+/// sound to execute.
 pub fn validate(mut program: &[u8]) -> Result<(), Error> {
     use hbbytecode::opcode::*;
 
     let start = program;
     loop {
+        // Match on instruction types and perform necessary checks
         program = match program {
             [] => return Ok(()),
             [LD..=ST, reg, _, _, _, _, _, _, _, _, _, count, ..]

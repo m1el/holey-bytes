@@ -1,10 +1,16 @@
 mod paging;
 
-use self::paging::{PageTable, Permission, PtEntry};
-use alloc::boxed::Box;
+use core::mem::MaybeUninit;
 
+use self::paging::{PageTable, Permission, PtEntry};
+use super::{trap::HandleTrap, VmRunError};
+use alloc::boxed::Box;
+use derive_more::Display;
+
+/// HoleyBytes virtual memory
 #[derive(Clone, Debug)]
 pub struct Memory {
+    /// Root page table
     root_pt: *mut PageTable,
 }
 
@@ -47,13 +53,23 @@ impl Memory {
                 entry = PtEntry::new(Box::into_raw(pt) as _, Permission::Node);
             }
 
-            self.root_pt_mut()[0] = entry;
+            (*self.root_pt)[0] = entry;
         }
     }
 
     /// Load value from an address
-    pub unsafe fn load(&self, addr: u64, target: *mut u8, count: usize) -> Result<(), ()> {
+    ///
+    /// # Safety
+    /// Applies same conditions as for [`core::ptr::copy_nonoverlapping`]
+    pub unsafe fn load(
+        &mut self,
+        addr: u64,
+        target: *mut u8,
+        count: usize,
+        traph: &mut impl HandleTrap,
+    ) -> Result<(), LoadError> {
         self.memory_access(
+            MemoryAccessReason::Load,
             addr,
             target,
             count,
@@ -64,96 +80,193 @@ impl Memory {
                 )
             },
             |src, dst, count| core::ptr::copy_nonoverlapping(src, dst, count),
+            traph,
         )
+        .map_err(|_| LoadError)
     }
 
     /// Store value to an address
-    pub unsafe fn store(&mut self, addr: u64, source: *const u8, count: usize) -> Result<(), ()> {
+    ///
+    /// # Safety
+    /// Applies same conditions as for [`core::ptr::copy_nonoverlapping`]
+    pub unsafe fn store(
+        &mut self,
+        addr: u64,
+        source: *const u8,
+        count: usize,
+        traph: &mut impl HandleTrap,
+    ) -> Result<(), StoreError> {
         self.memory_access(
+            MemoryAccessReason::Store,
             addr,
             source.cast_mut(),
             count,
             |perm| perm == Permission::Write,
             |dst, src, count| core::ptr::copy_nonoverlapping(src, dst, count),
+            traph,
         )
+        .map_err(|_| StoreError)
     }
 
     /// Copy a block of memory
-    pub unsafe fn block_copy(&mut self, src: u64, dst: u64, count: u64) -> Result<(), ()> {
-        let count = usize::try_from(count).expect("?conradluget a better CPU");
+    ///
+    /// # Safety
+    /// - Same as for [`Self::load`] and [`Self::store`]
+    /// - Your faith in the gods of UB
+    ///     - Addr-san claims it's fine but who knows is she isn't lying :ferrisSus:
+    pub unsafe fn block_copy(
+        &mut self,
+        src: u64,
+        dst: u64,
+        count: usize,
+        traph: &mut impl HandleTrap,
+    ) -> Result<(), MemoryAccessReason> {
+        // Yea, i know it is possible to do this more efficiently, but I am too lazy.
 
-        let mut srcs = PageSplitter::new(src, count, self.root_pt);
-        let mut dsts = PageSplitter::new(dst, count, self.root_pt);
-        let mut c_src = srcs.next().ok_or(())?;
-        let mut c_dst = dsts.next().ok_or(())?;
+        const STACK_BUFFER_SIZE: usize = 512;
 
-        loop {
-            let min_size = c_src.size.min(c_dst.size);
+        // Decide if to use stack-allocated buffer or to heap allocate
+        // Deallocation is again decided on size at the end of the function
+        let mut buf = MaybeUninit::<[u8; STACK_BUFFER_SIZE]>::uninit();
+        let buf = if count <= STACK_BUFFER_SIZE {
+            buf.as_mut_ptr().cast()
+        } else {
             unsafe {
-                core::ptr::copy(c_src.ptr, c_dst.ptr, min_size);
-            }
+                let layout = core::alloc::Layout::from_size_align_unchecked(count, 1);
+                let ptr = alloc::alloc::alloc(layout);
+                if ptr.is_null() {
+                    alloc::alloc::handle_alloc_error(layout);
+                }
 
-            match (
-                match c_src.size.saturating_sub(min_size) {
-                    0 => srcs.next(),
-                    size => Some(PageSplitResult { size, ..c_src }),
-                },
-                match c_dst.size.saturating_sub(min_size) {
-                    0 => dsts.next(),
-                    size => Some(PageSplitResult { size, ..c_dst }),
-                },
-            ) {
-                (None, None) => return Ok(()),
-                (Some(src), Some(dst)) => (c_src, c_dst) = (src, dst),
-                _ => return Err(()),
+                ptr
             }
+        };
+
+        // Perform memory block transfer
+        let status = (|| {
+            // Load to buffer
+            self.memory_access(
+                MemoryAccessReason::Load,
+                src,
+                buf,
+                count,
+                |perm| {
+                    matches!(
+                        perm,
+                        Permission::Readonly | Permission::Write | Permission::Exec
+                    )
+                },
+                |src, dst, count| core::ptr::copy(src, dst, count),
+                traph,
+            )
+            .map_err(|_| MemoryAccessReason::Load)?;
+
+            // Store from buffer
+            self.memory_access(
+                MemoryAccessReason::Store,
+                dst,
+                buf,
+                count,
+                |perm| perm == Permission::Write,
+                |dst, src, count| core::ptr::copy(src, dst, count),
+                traph,
+            )
+            .map_err(|_| MemoryAccessReason::Store)?;
+
+            Ok::<_, MemoryAccessReason>(())
+        })();
+
+        // Deallocate if used heap-allocated array
+        if count > STACK_BUFFER_SIZE {
+            alloc::alloc::dealloc(
+                buf,
+                core::alloc::Layout::from_size_align_unchecked(count, 1),
+            );
         }
+
+        status
     }
 
-    #[inline]
-    pub fn root_pt(&self) -> &PageTable {
-        unsafe { &*self.root_pt }
-    }
-
-    #[inline]
-    pub fn root_pt_mut(&mut self) -> &mut PageTable {
-        unsafe { &mut *self.root_pt }
-    }
-
+    /// Split address to pages, check their permissions and feed pointers with offset
+    /// to a specified function.
+    ///
+    /// If page is not found, execute page fault trap handler.
+    #[allow(clippy::too_many_arguments)] // Silence peasant
     fn memory_access(
-        &self,
+        &mut self,
+        reason: MemoryAccessReason,
         src: u64,
         mut dst: *mut u8,
         len: usize,
-        permission_check: impl Fn(Permission) -> bool,
-        action: impl Fn(*mut u8, *mut u8, usize),
+        permission_check: fn(Permission) -> bool,
+        action: fn(*mut u8, *mut u8, usize),
+        traph: &mut impl HandleTrap,
     ) -> Result<(), ()> {
-        for PageSplitResult { ptr, size, perm } in PageSplitter::new(src, len, self.root_pt) {
-            if !permission_check(perm) {
-                return Err(());
+        let mut pspl = AddrSplitter::new(src, len, self.root_pt);
+        loop {
+            match pspl.next() {
+                // Page found
+                Some(Ok(AddrSplitOk { ptr, size, perm })) => {
+                    if !permission_check(perm) {
+                        return Err(());
+                    }
+
+                    // Perform memory action and bump dst pointer
+                    action(ptr, dst, size);
+                    dst = unsafe { dst.add(size) };
+                }
+                Some(Err(AddrSplitError { addr, size })) => {
+                    // Execute page fault handler
+                    if traph.page_fault(reason, self, addr, size, dst) {
+                        // Shift the splitter address
+                        pspl.bump(size);
+
+                        // Bump dst pointer
+                        dst = unsafe { dst.add(size as _) };
+                    } else {
+                        return Err(()); // Unhandleable
+                    }
+                }
+                None => return Ok(()),
             }
-
-            action(ptr, dst, size);
-            dst = unsafe { dst.add(size) };
         }
-
-        Ok(())
     }
 }
 
-struct PageSplitResult {
+/// Result from address split
+struct AddrSplitOk {
+    /// Pointer to the start for perform operation
     ptr: *mut u8,
+
+    /// Size to the end of page / end of desired size
     size: usize,
+
+    /// Page permission
     perm: Permission,
 }
 
-struct PageSplitter {
+struct AddrSplitError {
+    /// Address of failure
     addr: u64,
+
+    /// Requested page size
+    size: PageSize,
+}
+
+/// Address splitter into pages
+struct AddrSplitter {
+    /// Current address
+    addr: u64,
+
+    /// Size left
     size: usize,
+
+    /// Page table
     pagetable: *const PageTable,
 }
 
-impl PageSplitter {
+impl AddrSplitter {
+    /// Create a new page splitter
     pub const fn new(addr: u64, size: usize, pagetable: *const PageTable) -> Self {
         Self {
             addr,
@@ -161,19 +274,29 @@ impl PageSplitter {
             pagetable,
         }
     }
+
+    /// Bump address by size X
+    fn bump(&mut self, page_size: PageSize) {
+        self.addr += page_size as u64;
+        self.size = self.size.saturating_sub(page_size as _);
+    }
 }
 
-impl Iterator for PageSplitter {
-    type Item = PageSplitResult;
+impl Iterator for AddrSplitter {
+    type Item = Result<AddrSplitOk, AddrSplitError>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // The end, everything is fine
         if self.size == 0 {
             return None;
         }
 
         let (base, perm, size, offset) = 'a: {
             let mut current_pt = self.pagetable;
+
+            // Walk the page table
             for lvl in (0..5).rev() {
+                // Get an entry
                 unsafe {
                     let entry = (*current_pt).get_unchecked(
                         usize::try_from((self.addr >> (lvl * 9 + 12)) & ((1 << 9) - 1))
@@ -182,34 +305,102 @@ impl Iterator for PageSplitter {
 
                     let ptr = entry.ptr();
                     match entry.permission() {
-                        Permission::Empty => return None,
+                        // No page → page fault
+                        Permission::Empty => {
+                            return Some(Err(AddrSplitError {
+                                addr: self.addr,
+                                size: PageSize::from_lvl(lvl)?,
+                            }))
+                        }
+
+                        // Node → proceed waking
                         Permission::Node => current_pt = ptr as _,
+
+                        // Leaft → return relevant data
                         perm => {
                             break 'a (
+                                // Pointer in host memory
                                 ptr as *mut u8,
                                 perm,
-                                match lvl {
-                                    0 => 4096,
-                                    1 => 1024_usize.pow(2) * 2,
-                                    2 => 1024_usize.pow(3),
-                                    _ => return None,
-                                },
+                                PageSize::from_lvl(lvl)?,
+                                // In-page offset
                                 self.addr as usize & ((1 << (lvl * 9 + 12)) - 1),
-                            )
+                            );
                         }
                     }
                 }
             }
-            return None;
+            return None; // Reached the end (should not happen)
         };
 
-        let avail = (size - offset).clamp(0, self.size);
-        self.addr += size as u64;
-        self.size = self.size.saturating_sub(size);
-        Some(PageSplitResult {
-            ptr: unsafe { base.add(offset) },
+        // Get available byte count in the selected page with offset
+        let avail = (size as usize - offset).clamp(0, self.size);
+        self.bump(size);
+
+        Some(Ok(AddrSplitOk {
+            ptr: unsafe { base.add(offset) }, // Return pointer to the start of region
             size: avail,
             perm,
-        })
+        }))
+    }
+}
+
+/// Page size
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageSize {
+    /// 4 KiB page (on level 0)
+    Size4K = 4096,
+
+    /// 2 MiB page (on level 1)
+    Size2M = 1024 * 1024 * 2,
+
+    /// 1 GiB page (on level 2)
+    Size1G = 1024 * 1024 * 1024,
+}
+
+impl PageSize {
+    /// Convert page table level to size of page
+    fn from_lvl(lvl: u8) -> Option<Self> {
+        match lvl {
+            0 => Some(PageSize::Size4K),
+            1 => Some(PageSize::Size2M),
+            2 => Some(PageSize::Size1G),
+            _ => None,
+        }
+    }
+}
+
+/// Unhandled load access trap
+#[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
+pub struct LoadError;
+
+/// Unhandled store access trap
+#[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
+pub struct StoreError;
+
+#[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
+pub enum MemoryAccessReason {
+    Load,
+    Store,
+}
+
+impl From<MemoryAccessReason> for VmRunError {
+    fn from(value: MemoryAccessReason) -> Self {
+        match value {
+            MemoryAccessReason::Load => Self::LoadAccessEx,
+            MemoryAccessReason::Store => Self::StoreAccessEx,
+        }
+    }
+}
+
+impl From<LoadError> for VmRunError {
+    fn from(_: LoadError) -> Self {
+        Self::LoadAccessEx
+    }
+}
+
+impl From<StoreError> for VmRunError {
+    fn from(_: StoreError) -> Self {
+        Self::StoreAccessEx
     }
 }

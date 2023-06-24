@@ -8,6 +8,7 @@ lto = true
 
 [dependencies]
 delegate          = "0.9"
+derive_more       = "0.99"
 hashbrown         = "0.13"
 hbbytecode.path   = "../hbbytecode"
 log               = "0.4"

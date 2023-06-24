@@ -11,8 +11,11 @@
 //   program size. If you are (rightfully) worried about the UB, for now just
 //   append your program with 11 zeroes.
 
-mod mem;
-mod value;
+use self::trap::HandleTrap;
+
+pub mod mem;
+pub mod trap;
+pub mod value;
 
 use {
     crate::validate,
@@ -23,6 +26,7 @@ use {
     value::Value,
 };
 
+/// Extract a parameter from program
 macro_rules! param {
     ($self:expr, $ty:ty) => {{
         assert_impl_one!($ty: OpParam);
@@ -37,6 +41,7 @@ macro_rules! param {
     }};
 }
 
+/// Perform binary operation `#0 ← #1 OP #2`
 macro_rules! binary_op {
     ($self:expr, $ty:ident, $handler:expr) => {{
         let ParamBBB(tg, a0, a1) = param!($self, ParamBBB);
@@ -51,6 +56,7 @@ macro_rules! binary_op {
     }};
 }
 
+/// Perform binary operation with immediate `#0 ← #1 OP imm #2`
 macro_rules! binary_op_imm {
     ($self:expr, $ty:ident, $handler:expr) => {{
         let ParamBBD(tg, a0, imm) = param!($self, ParamBBD);
@@ -61,6 +67,7 @@ macro_rules! binary_op_imm {
     }};
 }
 
+/// Jump at `#3` if ordering on `#0 <=> #1` is equal to expected
 macro_rules! cond_jump {
     ($self:expr, $ty:ident, $expected:ident) => {{
         let ParamBBD(a0, a1, jt) = param!($self, ParamBBD);
@@ -72,36 +79,59 @@ macro_rules! cond_jump {
     }};
 }
 
-pub struct Vm<'a> {
+/// HoleyBytes Virtual Machine
+pub struct Vm<'a, T> {
+    /// Holds 256 registers
+    ///
+    /// Writing to register 0 is considered undefined behaviour
+    /// in terms of HoleyBytes program execution
     pub registers: [Value; 256],
+
+    /// Memory implementation
     pub memory: Memory,
+
+    /// Trap handler
+    pub traph: T,
+
+    // Program counter
     pc: usize,
+
+    /// Program
     program: &'a [u8],
 }
 
-impl<'a> Vm<'a> {
+impl<'a, T: HandleTrap> Vm<'a, T> {
+    /// Create a new VM with program and trap handler
+    ///
     /// # Safety
     /// Program code has to be validated
-    pub unsafe fn new_unchecked(program: &'a [u8]) -> Self {
+    pub unsafe fn new_unchecked(program: &'a [u8], traph: T) -> Self {
         Self {
             registers: [Value::from(0_u64); 256],
             memory: Default::default(),
+            traph,
             pc: 0,
             program,
         }
     }
 
-    pub fn new_validated(program: &'a [u8]) -> Result<Self, validate::Error> {
+    /// Create a new VM with program and trap handler only if it passes validation
+    pub fn new_validated(program: &'a [u8], traph: T) -> Result<Self, validate::Error> {
         validate::validate(program)?;
-        Ok(unsafe { Self::new_unchecked(program) })
+        Ok(unsafe { Self::new_unchecked(program, traph) })
     }
 
-    pub fn run(&mut self) -> HaltReason {
+    /// Execute program
+    ///
+    /// Program can return [`VmRunError`] if a trap handling failed
+    pub fn run(&mut self) -> Result<(), VmRunError> {
         use hbbytecode::opcode::*;
         loop {
+            // Fetch instruction
             let Some(&opcode) = self.program.get(self.pc)
-                else { return HaltReason::ProgramEnd };
+                else { return Ok(()) };
 
+            // Big match
             unsafe {
                 match opcode {
                     NOP => param!(self, ()),
@@ -196,45 +226,30 @@ impl<'a> Vm<'a> {
                             _ => 0,
                         };
 
-                        if self
-                            .memory
-                            .load(
-                                self.read_reg(base).as_u64() + off + n as u64,
-                                self.registers.as_mut_ptr().add(usize::from(dst) + n).cast(),
-                                usize::from(count).saturating_sub(n),
-                            )
-                            .is_err()
-                        {
-                            return HaltReason::LoadAccessEx;
-                        }
+                        self.memory.load(
+                            self.read_reg(base).as_u64() + off + n as u64,
+                            self.registers.as_mut_ptr().add(usize::from(dst) + n).cast(),
+                            usize::from(count).saturating_sub(n),
+                            &mut self.traph,
+                        )?;
                     }
                     ST => {
                         let ParamBBDH(dst, base, off, count) = param!(self, ParamBBDH);
-                        if self
-                            .memory
-                            .store(
-                                self.read_reg(base).as_u64() + off,
-                                self.registers.as_ptr().add(usize::from(dst)).cast(),
-                                count.into(),
-                            )
-                            .is_err()
-                        {
-                            return HaltReason::LoadAccessEx;
-                        }
+                        self.memory.store(
+                            self.read_reg(base).as_u64() + off,
+                            self.registers.as_ptr().add(usize::from(dst)).cast(),
+                            count.into(),
+                            &mut self.traph,
+                        )?;
                     }
                     BMC => {
                         let ParamBBD(src, dst, count) = param!(self, ParamBBD);
-                        if self
-                            .memory
-                            .block_copy(
-                                self.read_reg(src).as_u64(),
-                                self.read_reg(dst).as_u64(),
-                                count,
-                            )
-                            .is_err()
-                        {
-                            return HaltReason::LoadAccessEx;
-                        }
+                        self.memory.block_copy(
+                            self.read_reg(src).as_u64(),
+                            self.read_reg(dst).as_u64(),
+                            count as _,
+                            &mut self.traph,
+                        )?;
                     }
                     BRC => {
                         let ParamBBB(src, dst, count) = param!(self, ParamBBB);
@@ -261,7 +276,8 @@ impl<'a> Vm<'a> {
                     JGTU => cond_jump!(self, sint, Greater),
                     ECALL => {
                         param!(self, ());
-                        return HaltReason::Ecall;
+                        self.traph
+                            .ecall(&mut self.registers, &mut self.pc, &mut self.memory);
                     }
                     ADDF => binary_op!(self, as_f64, ops::Add::add),
                     MULF => binary_op!(self, as_f64, ops::Mul::mul),
@@ -274,21 +290,29 @@ impl<'a> Vm<'a> {
                     }
                     ADDFI => binary_op_imm!(self, as_f64, ops::Add::add),
                     MULFI => binary_op_imm!(self, as_f64, ops::Mul::mul),
-                    _ => return HaltReason::InvalidOpcode,
+                    op => {
+                        if !self.traph.invalid_op(
+                            &mut self.registers,
+                            &mut self.pc,
+                            &mut self.memory,
+                            op,
+                        ) {
+                            return Err(VmRunError::InvalidOpcodeEx);
+                        }
+                    }
                 }
             }
         }
     }
 
+    /// Read register
     #[inline]
     unsafe fn read_reg(&self, n: u8) -> Value {
-        if n == 0 {
-            0_u64.into()
-        } else {
-            *self.registers.get_unchecked(n as usize)
-        }
+        *self.registers.get_unchecked(n as usize)
     }
 
+    /// Write a register.
+    /// Writing to register 0 is no-op.
     #[inline]
     unsafe fn write_reg(&mut self, n: u8, value: Value) {
         if n != 0 {
@@ -297,12 +321,16 @@ impl<'a> Vm<'a> {
     }
 }
 
+/// Virtual machine halt error
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u8)]
-pub enum HaltReason {
-    ProgramEnd,
-    Ecall,
-    InvalidOpcode,
+pub enum VmRunError {
+    /// Unhandled invalid opcode exceptions
+    InvalidOpcodeEx,
+
+    /// Unhandled load access exception
     LoadAccessEx,
+
+    /// Unhandled store access exception
     StoreAccessEx,
 }
