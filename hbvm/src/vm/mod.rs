@@ -297,7 +297,7 @@ impl<'a, T: HandleTrap> Vm<'a, T> {
                             &mut self.memory,
                             op,
                         ) {
-                            return Err(VmRunError::InvalidOpcodeEx);
+                            return Err(VmRunError::InvalidOpcodeEx(op));
                         }
                     }
                 }
@@ -326,11 +326,11 @@ impl<'a, T: HandleTrap> Vm<'a, T> {
 #[repr(u8)]
 pub enum VmRunError {
     /// Unhandled invalid opcode exceptions
-    InvalidOpcodeEx,
+    InvalidOpcodeEx(u8),
 
     /// Unhandled load access exception
-    LoadAccessEx,
+    LoadAccessEx(u64),
 
     /// Unhandled store access exception
-    StoreAccessEx,
+    StoreAccessEx(u64),
 }

@@ -83,7 +83,7 @@ impl Memory {
             |src, dst, count| core::ptr::copy_nonoverlapping(src, dst, count),
             traph,
         )
-        .map_err(|_| LoadError)
+        .map_err(LoadError)
     }
 
     /// Store value to an address
@@ -106,7 +106,7 @@ impl Memory {
             |dst, src, count| core::ptr::copy_nonoverlapping(src, dst, count),
             traph,
         )
-        .map_err(|_| StoreError)
+        .map_err(StoreError)
     }
 
     /// Copy a block of memory
@@ -121,7 +121,7 @@ impl Memory {
         dst: u64,
         count: usize,
         traph: &mut impl HandleTrap,
-    ) -> Result<(), MemoryAccessReason> {
+    ) -> Result<(), BlkCopyError> {
         // Yea, i know it is possible to do this more efficiently, but I am too lazy.
 
         const STACK_BUFFER_SIZE: usize = 512;
@@ -160,7 +160,10 @@ impl Memory {
                 |src, dst, count| core::ptr::copy(src, dst, count),
                 traph,
             )
-            .map_err(|_| MemoryAccessReason::Load)?;
+            .map_err(|addr| BlkCopyError {
+                access_reason: MemoryAccessReason::Load,
+                addr,
+            })?;
 
             // Store from buffer
             self.memory_access(
@@ -172,9 +175,12 @@ impl Memory {
                 |dst, src, count| core::ptr::copy(src, dst, count),
                 traph,
             )
-            .map_err(|_| MemoryAccessReason::Store)?;
+            .map_err(|addr| BlkCopyError {
+                access_reason: MemoryAccessReason::Store,
+                addr,
+            })?;
 
-            Ok::<_, MemoryAccessReason>(())
+            Ok::<_, BlkCopyError>(())
         })();
 
         // Deallocate if used heap-allocated array
@@ -202,14 +208,19 @@ impl Memory {
         permission_check: fn(Permission) -> bool,
         action: fn(*mut u8, *mut u8, usize),
         traph: &mut impl HandleTrap,
-    ) -> Result<(), ()> {
+    ) -> Result<(), u64> {
         let mut pspl = AddrSplitter::new(src, len, self.root_pt);
         loop {
             match pspl.next() {
                 // Page found
-                Some(Ok(AddrSplitOk { ptr, size, perm })) => {
+                Some(Ok(AddrSplitOk {
+                    vaddr,
+                    ptr,
+                    size,
+                    perm,
+                })) => {
                     if !permission_check(perm) {
-                        return Err(());
+                        return Err(vaddr);
                     }
 
                     // Perform memory action and bump dst pointer
@@ -225,7 +236,7 @@ impl Memory {
                         // Bump dst pointer
                         dst = unsafe { dst.add(size as _) };
                     } else {
-                        return Err(()); // Unhandleable
+                        return Err(addr); // Unhandleable
                     }
                 }
                 None => return Ok(()),
@@ -236,6 +247,9 @@ impl Memory {
 
 /// Result from address split
 struct AddrSplitOk {
+    /// Virtual address
+    vaddr: u64,
+
     /// Pointer to the start for perform operation
     ptr: *mut u8,
 
@@ -339,6 +353,7 @@ impl Iterator for AddrSplitter {
         self.bump(size);
 
         Some(Ok(AddrSplitOk {
+            vaddr: self.addr,
             ptr: unsafe { base.add(offset) }, // Return pointer to the start of region
             size: avail,
             perm,
@@ -373,11 +388,11 @@ impl PageSize {
 
 /// Unhandled load access trap
 #[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
-pub struct LoadError;
+pub struct LoadError(u64);
 
 /// Unhandled store access trap
 #[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
-pub struct StoreError;
+pub struct StoreError(u64);
 
 #[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
 pub enum MemoryAccessReason {
@@ -385,23 +400,29 @@ pub enum MemoryAccessReason {
     Store,
 }
 
-impl From<MemoryAccessReason> for VmRunError {
-    fn from(value: MemoryAccessReason) -> Self {
-        match value {
-            MemoryAccessReason::Load => Self::LoadAccessEx,
-            MemoryAccessReason::Store => Self::StoreAccessEx,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlkCopyError {
+    access_reason: MemoryAccessReason,
+    addr: u64,
+}
+
+impl From<BlkCopyError> for VmRunError {
+    fn from(value: BlkCopyError) -> Self {
+        match value.access_reason {
+            MemoryAccessReason::Load => Self::LoadAccessEx(value.addr),
+            MemoryAccessReason::Store => Self::StoreAccessEx(value.addr),
         }
     }
 }
 
 impl From<LoadError> for VmRunError {
-    fn from(_: LoadError) -> Self {
-        Self::LoadAccessEx
+    fn from(value: LoadError) -> Self {
+        Self::LoadAccessEx(value.0)
     }
 }
 
 impl From<StoreError> for VmRunError {
-    fn from(_: StoreError) -> Self {
-        Self::StoreAccessEx
+    fn from(value: StoreError) -> Self {
+        Self::StoreAccessEx(value.0)
     }
 }
