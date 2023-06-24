@@ -30,6 +30,10 @@ pub enum Permission {
 pub struct PtEntry(u64);
 impl PtEntry {
     /// Create new
+    /// 
+    /// # Safety
+    /// - `ptr` has to point to valid data and shall not be deallocated
+    ///    troughout the entry lifetime
     #[inline]
     pub unsafe fn new(ptr: *mut PtPointedData, permission: Permission) -> Self {
         Self(ptr as u64 | permission as u64)
@@ -65,15 +69,43 @@ pub struct PageTable([PtEntry; 512]);
 
 impl PageTable {
     delegate!(to self.0 {
-        pub unsafe fn get<I>(&self, ix: I) -> Option<&I::Output>
+        /// Returns a reference to an element or subslice depending on the type of
+        /// index.
+        ///
+        /// - If given a position, returns a reference to the element at that
+        ///   position or `None` if out of bounds.
+        /// - If given a range, returns the subslice corresponding to that range,
+        ///   or `None` if out of bounds.
+        ///
+        pub fn get<I>(&self, ix: I) -> Option<&I::Output>
             where I: SliceIndex<[PtEntry]>;
 
-        pub unsafe fn get_mut<I>(&mut self, ix: I) -> Option<&mut I::Output>
+        /// Returns a mutable reference to an element or subslice depending on the
+        /// type of index (see [`get`]) or `None` if the index is out of bounds.
+        pub fn get_mut<I>(&mut self, ix: I) -> Option<&mut I::Output>
             where I: SliceIndex<[PtEntry]>;
 
+        /// Returns a reference to an element or subslice, without doing bounds
+        /// checking.
+        ///
+        /// For a safe alternative see [`get`].
+        ///
+        /// # Safety
+        ///
+        /// Calling this method with an out-of-bounds index is *[undefined behavior]*
+        /// even if the resulting reference is not used.
         pub unsafe fn get_unchecked<I>(&self, index: I) -> &I::Output
             where I: SliceIndex<[PtEntry]>;
 
+        /// Returns a mutable reference to an element or subslice, without doing
+        /// bounds checking.
+        ///
+        /// For a safe alternative see [`get_mut`].
+        ///
+        /// # Safety
+        ///
+        /// Calling this method with an out-of-bounds index is *[undefined behavior]*
+        /// even if the resulting reference is not used.
         pub unsafe fn get_unchecked_mut<I>(&mut self, index: I) -> &mut I::Output
             where I: SliceIndex<[PtEntry]>;
     });
