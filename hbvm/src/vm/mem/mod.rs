@@ -1,10 +1,11 @@
-mod paging;
+//! Program memory implementation
 
-use core::mem::MaybeUninit;
+pub mod paging;
 
 use self::paging::{PageTable, Permission, PtEntry};
 use super::{trap::HandleTrap, VmRunError};
 use alloc::boxed::Box;
+use core::mem::MaybeUninit;
 use derive_more::Display;
 
 /// HoleyBytes virtual memory

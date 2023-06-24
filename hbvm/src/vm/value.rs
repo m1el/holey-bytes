@@ -1,3 +1,5 @@
+//! HoleyBytes register value definition
+
 use core::fmt::Debug;
 
 /// Define [`Value`] union

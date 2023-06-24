@@ -1,3 +1,5 @@
+//! Validate if program is sound to execute
+
 /// Program validation error kind
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ErrorKind {

@@ -1,3 +1,5 @@
+//! Program trap handling interfaces
+
 use super::{
     mem::{Memory, MemoryAccessReason, PageSize},
     value::Value,

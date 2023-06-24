@@ -1,3 +1,5 @@
+//! Page table and associated structures implementation
+
 use core::{
     fmt::Debug,
     mem::MaybeUninit,
