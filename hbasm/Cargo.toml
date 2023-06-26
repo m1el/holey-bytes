@@ -5,8 +5,9 @@ edition = "2021"
 
 [dependencies]
 hbbytecode = { path = "../hbbytecode" }
-lasso      = "0.7"
-paste      = "1.0"
+lasso = "0.7"
+paste = "1.0"
+hashbrown = "0.14.0"
 
 [dependencies.logos]
 version = "0.13"

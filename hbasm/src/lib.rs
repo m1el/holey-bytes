@@ -1,8 +1,15 @@
-use std::collections::HashMap;
+#![no_std]
+#![feature(error_in_core)]
+
+// use std::collections::HashMap;
+extern crate alloc;
+use alloc::vec::Vec;
+
 use {
+    core::fmt::{Display, Formatter},
+    hashbrown::HashMap,
     lasso::{Rodeo, Spur},
     logos::{Lexer, Logos, Span},
-    std::fmt::{Display, Formatter},
 };
 
 macro_rules! tokendef {
@@ -73,12 +80,12 @@ pub struct Error {
 }
 
 impl Display for Error {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         write!(f, "Error {:?} at {:?}", self.kind, self.span)
     }
 }
 
-impl std::error::Error for Error {}
+impl core::error::Error for Error {}
 
 macro_rules! expect_matches {
     ($self:expr, $($pat:pat),* $(,)?) => {$(
