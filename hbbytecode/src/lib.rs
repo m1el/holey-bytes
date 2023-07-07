@@ -67,7 +67,7 @@ constmod!(pub opcode(u8) {
     SUBF = 41, "BBB; #0 ← #1 -. #2";
     MULF = 42, "BBB; #0 ← #1 +. #2";
     DIRF = 43, "BBBB; #0 ← #2 / #3, #1 ← #2 % #3";
-    FMA  = 44, "BBBB; #0 ← (#1 * #2) + #3";
+    FMAF = 44, "BBBB; #0 ← (#1 * #2) + #3";
     NEGF = 45, "BB; #0 ← -#1";
     ITF  = 46, "BB; #0 ← #1 as float";
     FTI  = 47, "BB; #0 ← #1 as int";

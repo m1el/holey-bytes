@@ -284,7 +284,7 @@ impl<'a, T: HandleTrap> Vm<'a, T> {
                         self.write_reg(dt, a0 / a1);
                         self.write_reg(rt, a0 % a1);
                     }
-                    FMA => {
+                    FMAF => {
                         let ParamBBBB(dt, a0, a1, a2) = param!(self, ParamBBBB);
                         self.write_reg(
                             dt,

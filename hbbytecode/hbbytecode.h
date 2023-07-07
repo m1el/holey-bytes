@@ -17,7 +17,7 @@ enum hbbc_Opcode: uint8_t {
     hbbc_Op_CMPUI , hbbc_Op_CP    , hbbc_Op_SWA  , hbbc_Op_LI    , hbbc_Op_LD   , hbbc_Op_ST   ,
     hbbc_Op_BMC   , hbbc_Op_BRC   , hbbc_Op_JMP  , hbbc_Op_JEQ   , hbbc_Op_JNE  , hbbc_Op_JLT  ,
     hbbc_Op_JGT   , hbbc_Op_JLTU  , hbbc_Op_JGTU , hbbc_Op_ECALL , hbbc_Op_ADDF , hbbc_Op_SUBF ,
-    hbbc_Op_MULF  , hbbc_Op_DIRF  , hbbc_Op_FMA  , hbbc_Op_NEGF  , hbbc_Op_ITF  , hbbc_Op_FTI  ,
+    hbbc_Op_MULF  , hbbc_Op_DIRF  , hbbc_Op_FMAF , hbbc_Op_NEGF  , hbbc_Op_ITF  , hbbc_Op_FTI  ,
     hbbc_Op_ADDFI , hbbc_Op_MULFI ,
 } typedef hbbc_Opcode;
 

@@ -62,7 +62,7 @@ tokendef![
     "nop", "add", "sub", "mul", "and", "or", "xor", "sl", "sr", "srs", "cmp", "cmpu",
     "dir", "neg", "not", "addi", "muli", "andi", "ori", "xori", "sli", "sri", "srsi",
     "cmpi", "cmpui", "cp", "swa", "li", "ld", "st", "bmc", "brc", "jmp", "jeq", "jne",
-    "jlt", "jgt", "jltu", "jgtu", "ecall", "addf", "subf", "mulf", "dirf", "fma", "negf",
+    "jlt", "jgt", "jltu", "jgtu", "ecall", "addf", "subf", "mulf", "dirf", "fmaf", "negf",
     "itf", "fti", "addfi", "mulfi",
 ];
 
