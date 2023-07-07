@@ -199,14 +199,38 @@
 | Opcode | Name |     Action     |
 |:------:|:----:|:--------------:|
 |   40   | ADDF |    Addition    |
-|   41   | MULF | Multiplication |
+|   41   | SUBF |  Subtraction   |
+|   42   | MULF | Multiplication |
 
 ### Division-remainder
 - Type BBBB
 
-| Opcode | Name |                 Action                 |
-|:------:|:----:|:--------------------------------------:|
-|   42   | DIRF | Same flow applies as for integer `DIR` |
+| Opcode | Name |          Action           |
+|:------:|:----:|:-------------------------:|
+|   43   | DIRF | Same as for integer `DIR` |
+
+### Fused Multiply-Add
+- Type BBBB
+
+| Opcode | Name |        Action         |
+|:------:|:----:|:---------------------:|
+|   44   | FMA  | `#0 ← (#1 * #2) + #3` |
+
+### Negation
+- Type BB
+| Opcode | Name |   Action   |
+|:------:|:----:|:----------:|
+|   45   | NEGF | `#0 ← -#1` |
+
+### Conversion
+- Type BB
+- Signed
+- `#0 ← #1 as _`
+
+| Opcode | Name |    Action    |
+|:------:|:----:|:------------:|
+|   46   | ITF  | Int to Float |
+|   47   | FTI  | Float to Int |
 
 ## Floating point immediate operations
 - Type BBD
@@ -214,8 +238,8 @@
 
 | Opcode | Name  |     Action     |
 |:------:|:-----:|:--------------:|
-|   43   | ADDFI |    Addition    |
-|   44   | MULFI | Multiplication |
+|   48   | ADDFI |    Addition    |
+|   49   | MULFI | Multiplication |
 
 # Registers
 - There is 255 registers + one zero register (with index 0)

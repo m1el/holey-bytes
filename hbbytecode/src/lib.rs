@@ -32,7 +32,7 @@ constmod!(pub opcode(u8) {
     CMP  = 10, "BBB; #0 ← #1 <=> #2";
     CMPU = 11, "BBB; #0 ← #1 <=> #2 (unsigned)";
     DIR  = 12, "BBBB; #0 ← #2 / #3, #1 ← #2 % #3";
-    NEG  = 13, "BB; #0 ← ~#1";
+    NEG  = 13, "BB; #0 ← -#1";
     NOT  = 14, "BB; #0 ← !#1";
 
     ADDI  = 15, "BBD; #0 ← #1 + imm #2";
@@ -63,12 +63,17 @@ constmod!(pub opcode(u8) {
     JGTU  = 38, "BBD; if #0 > #1 → jump imm #2 (unsigned)";
     ECALL = 39, "N; Issue system call";
 
-    ADDF  = 40, "BBB; #0 ← #1 +. #2";
-    MULF  = 41, "BBB; #0 ← #1 +. #2";
-    DIRF  = 42, "BBBB; #0 ← #2 / #3, #1 ← #2 % #3";
+    ADDF = 40, "BBB; #0 ← #1 +. #2";
+    SUBF = 41, "BBB; #0 ← #1 -. #2";
+    MULF = 42, "BBB; #0 ← #1 +. #2";
+    DIRF = 43, "BBBB; #0 ← #2 / #3, #1 ← #2 % #3";
+    FMA  = 44, "BBBB; #0 ← (#1 * #2) + #3";
+    NEGF = 45, "BB; #0 ← -#1";
+    ITF  = 46, "BB; #0 ← #1 as float";
+    FTI  = 47, "BB; #0 ← #1 as int";
 
-    ADDFI = 43, "BBD; #0 ← #1 +. imm #2";
-    MULFI = 44, "BBD; #0 ← #1 *. imm #2";
+    ADDFI = 48, "BBD; #0 ← #1 +. imm #2";
+    MULFI = 49, "BBD; #0 ← #1 *. imm #2";
 });
 
 #[repr(packed)]

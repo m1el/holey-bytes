@@ -62,7 +62,8 @@ tokendef![
     "nop", "add", "sub", "mul", "and", "or", "xor", "sl", "sr", "srs", "cmp", "cmpu",
     "dir", "neg", "not", "addi", "muli", "andi", "ori", "xori", "sli", "sri", "srsi",
     "cmpi", "cmpui", "cp", "swa", "li", "ld", "st", "bmc", "brc", "jmp", "jeq", "jne",
-    "jlt", "jgt", "jltu", "jgtu", "ecall", "addf", "mulf", "dirf", "addfi", "mulfi",
+    "jlt", "jgt", "jltu", "jgtu", "ecall", "addf", "subf", "mulf", "dirf", "fma", "negf",
+    "itf", "fti", "addfi", "mulfi",
 ];
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -161,7 +162,7 @@ pub fn assembly(code: &str, buf: &mut Vec<u8>) -> Result<(), Error> {
                                 ]);
                                 Ok(())
                             }
-                            NEG..=NOT | CP..=SWA => {
+                            NEG..=NOT | CP..=SWA | NEGF..=FTI => {
                                 expect_matches!(
                                     self,
                                     Token::Register(r0),

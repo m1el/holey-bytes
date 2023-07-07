@@ -50,8 +50,7 @@ macro_rules! binary_op {
             $handler(
                 Value::$ty(&$self.read_reg(a0)),
                 Value::$ty(&$self.read_reg(a1)),
-            )
-            .into(),
+            ),
         );
     }};
 }
@@ -62,7 +61,7 @@ macro_rules! binary_op_imm {
         let ParamBBD(tg, a0, imm) = param!($self, ParamBBD);
         $self.write_reg(
             tg,
-            $handler(Value::$ty(&$self.read_reg(a0)), Value::$ty(&imm.into())).into(),
+            $handler(Value::$ty(&$self.read_reg(a0)), Value::$ty(&imm.into())),
         );
     }};
 }
@@ -148,21 +147,19 @@ impl<'a, T: HandleTrap> Vm<'a, T> {
                         let ParamBBB(tg, a0, a1) = param!(self, ParamBBB);
                         self.write_reg(
                             tg,
-                            (self.read_reg(a0).as_i64().cmp(&self.read_reg(a1).as_i64()) as i64)
-                                .into(),
+                            self.read_reg(a0).as_i64().cmp(&self.read_reg(a1).as_i64()) as i64,
                         );
                     }
                     CMPU => {
                         let ParamBBB(tg, a0, a1) = param!(self, ParamBBB);
                         self.write_reg(
                             tg,
-                            (self.read_reg(a0).as_u64().cmp(&self.read_reg(a1).as_u64()) as i64)
-                                .into(),
+                            self.read_reg(a0).as_u64().cmp(&self.read_reg(a1).as_u64()) as i64,
                         );
                     }
                     NOT => {
                         let param = param!(self, ParamBB);
-                        self.write_reg(param.0, (!self.read_reg(param.1).as_u64()).into());
+                        self.write_reg(param.0, !self.read_reg(param.1).as_u64());
                     }
                     NEG => {
                         let param = param!(self, ParamBB);
@@ -171,16 +168,15 @@ impl<'a, T: HandleTrap> Vm<'a, T> {
                             match self.read_reg(param.1).as_u64() {
                                 0 => 1_u64,
                                 _ => 0,
-                            }
-                            .into(),
+                            },
                         );
                     }
                     DIR => {
                         let ParamBBBB(dt, rt, a0, a1) = param!(self, ParamBBBB);
                         let a0 = self.read_reg(a0).as_u64();
                         let a1 = self.read_reg(a1).as_u64();
-                        self.write_reg(dt, (a0.checked_div(a1).unwrap_or(u64::MAX)).into());
-                        self.write_reg(rt, (a0.checked_rem(a1).unwrap_or(u64::MAX)).into());
+                        self.write_reg(dt, a0.checked_div(a1).unwrap_or(u64::MAX));
+                        self.write_reg(rt, a0.checked_rem(a1).unwrap_or(u64::MAX));
                     }
                     ADDI => binary_op_imm!(self, as_u64, ops::Add::add),
                     MULI => binary_op_imm!(self, as_u64, ops::Mul::mul),
@@ -194,13 +190,12 @@ impl<'a, T: HandleTrap> Vm<'a, T> {
                         let ParamBBD(tg, a0, imm) = param!(self, ParamBBD);
                         self.write_reg(
                             tg,
-                            (self.read_reg(a0).as_i64().cmp(&Value::from(imm).as_i64()) as i64)
-                                .into(),
+                            self.read_reg(a0).as_i64().cmp(&Value::from(imm).as_i64()) as i64,
                         );
                     }
                     CMPUI => {
                         let ParamBBD(tg, a0, imm) = param!(self, ParamBBD);
-                        self.write_reg(tg, (self.read_reg(a0).as_u64().cmp(&imm) as i64).into());
+                        self.write_reg(tg, self.read_reg(a0).as_u64().cmp(&imm) as i64);
                     }
                     CP => {
                         let param = param!(self, ParamBB);
@@ -217,7 +212,7 @@ impl<'a, T: HandleTrap> Vm<'a, T> {
                     }
                     LI => {
                         let param = param!(self, ParamBD);
-                        self.write_reg(param.0, param.1.into());
+                        self.write_reg(param.0, param.1);
                     }
                     LD => {
                         let ParamBBDH(dst, base, off, count) = param!(self, ParamBBDH);
@@ -280,13 +275,34 @@ impl<'a, T: HandleTrap> Vm<'a, T> {
                             .ecall(&mut self.registers, &mut self.pc, &mut self.memory);
                     }
                     ADDF => binary_op!(self, as_f64, ops::Add::add),
+                    SUBF => binary_op!(self, as_f64, ops::Sub::sub),
                     MULF => binary_op!(self, as_f64, ops::Mul::mul),
                     DIRF => {
                         let ParamBBBB(dt, rt, a0, a1) = param!(self, ParamBBBB);
                         let a0 = self.read_reg(a0).as_f64();
                         let a1 = self.read_reg(a1).as_f64();
-                        self.write_reg(dt, (a0 / a1).into());
-                        self.write_reg(rt, (a0 % a1).into());
+                        self.write_reg(dt, a0 / a1);
+                        self.write_reg(rt, a0 % a1);
+                    }
+                    FMA => {
+                        let ParamBBBB(dt, a0, a1, a2) = param!(self, ParamBBBB);
+                        self.write_reg(
+                            dt,
+                            self.read_reg(a0).as_f64() * self.read_reg(a1).as_f64()
+                                + self.read_reg(a2).as_f64(),
+                        );
+                    }
+                    NEGF => {
+                        let ParamBB(dt, a0) = param!(self, ParamBB);
+                        self.write_reg(dt, -self.read_reg(a0).as_f64());
+                    }
+                    ITF => {
+                        let ParamBB(dt, a0) = param!(self, ParamBB);
+                        self.write_reg(dt, self.read_reg(a0).as_i64() as f64);
+                    }
+                    FTI => {
+                        let ParamBB(dt, a0) = param!(self, ParamBB);
+                        self.write_reg(dt, self.read_reg(a0).as_f64() as i64);
                     }
                     ADDFI => binary_op_imm!(self, as_f64, ops::Add::add),
                     MULFI => binary_op_imm!(self, as_f64, ops::Mul::mul),
@@ -314,9 +330,9 @@ impl<'a, T: HandleTrap> Vm<'a, T> {
     /// Write a register.
     /// Writing to register 0 is no-op.
     #[inline]
-    unsafe fn write_reg(&mut self, n: u8, value: Value) {
+    unsafe fn write_reg(&mut self, n: u8, value: impl Into<Value>) {
         if n != 0 {
-            *self.registers.get_unchecked_mut(n as usize) = value;
+            *self.registers.get_unchecked_mut(n as usize) = value.into();
         }
     }
 }
