@@ -81,9 +81,6 @@ pub struct ParamBBB(pub u8, pub u8, pub u8);
 pub struct ParamBBDH(pub u8, pub u8, pub u64, pub u16);
 
 #[repr(packed)]
-pub struct ParamBBDB(pub u8, pub u8, pub u64, pub u8);
-
-#[repr(packed)]
 pub struct ParamBBD(pub u8, pub u8, pub u64);
 
 #[repr(packed)]
@@ -97,7 +94,6 @@ pub struct ParamBD(pub u8, pub u64);
 pub unsafe trait OpParam {}
 unsafe impl OpParam for ParamBBBB {}
 unsafe impl OpParam for ParamBBB {}
-unsafe impl OpParam for ParamBBDB {}
 unsafe impl OpParam for ParamBBDH {}
 unsafe impl OpParam for ParamBBD {}
 unsafe impl OpParam for ParamBB {}

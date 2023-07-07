@@ -19,7 +19,6 @@
 | BBBB | 32 bits |
 | BBB  | 24 bits |
 | BBDH | 96 bits |
-| BBDB | 88 bits |
 | BBD  | 80 bits |
 |  BB  | 16 bits |
 |  BD  | 72 bits |
