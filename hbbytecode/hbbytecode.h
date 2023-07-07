@@ -4,7 +4,10 @@
 
 #pragma once
 #include <assert.h>
+#include <limits.h>
 #include <stdint.h>
+
+static_assert(CHAR_BIT == 8, "Cursed architectures are not supported");
 
 enum hbbc_Opcode: uint8_t {
     hbbc_Op_NOP, hbbc_Op_ADD, hbbc_Op_MUL, hbbc_Op_AND, hbbc_Op_OR, hbbc_Op_XOR, hbbc_Op_SL,
