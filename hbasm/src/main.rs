@@ -8,7 +8,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     stdin().read_to_string(&mut code)?;
 
     let mut buf = vec![];
-    if let Err(e) = hbasm::assembly(&code, &mut buf) {
+    if let Err(e) = hbasm::text::assembly(&code, &mut buf) {
         eprintln!(
             "Error {:?} at {:?} (`{}`)",
             e.kind,
