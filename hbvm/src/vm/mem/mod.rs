@@ -2,11 +2,13 @@
 
 pub mod paging;
 
-use self::paging::{PageTable, Permission, PtEntry};
-use super::{trap::HandleTrap, VmRunError};
-use alloc::boxed::Box;
-use core::mem::MaybeUninit;
-use derive_more::Display;
+use {
+    self::paging::{PageTable, Permission, PtEntry},
+    super::{trap::HandleTrap, VmRunError},
+    alloc::boxed::Box,
+    core::mem::MaybeUninit,
+    derive_more::Display,
+};
 
 /// HoleyBytes virtual memory
 #[derive(Clone, Debug)]

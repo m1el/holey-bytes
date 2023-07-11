@@ -97,6 +97,10 @@ pub struct Vm<'a, T> {
 
     /// Program
     program: &'a [u8],
+
+    pub last_tick_count: u32,
+    pub tick_callback: Option<fn() -> u32>,
+    pub tick_limit: u32,
 }
 
 impl<'a, T: HandleTrap> Vm<'a, T> {
@@ -111,6 +115,9 @@ impl<'a, T: HandleTrap> Vm<'a, T> {
             traph,
             pc: 0,
             program,
+            last_tick_count: 0,
+            tick_callback: None,
+            tick_limit: 32,
         }
     }
 
@@ -123,12 +130,12 @@ impl<'a, T: HandleTrap> Vm<'a, T> {
     /// Execute program
     ///
     /// Program can return [`VmRunError`] if a trap handling failed
-    pub fn run(&mut self) -> Result<(), VmRunError> {
+    pub fn run(&mut self) -> Result<u32, VmRunError> {
         use hbbytecode::opcode::*;
         loop {
             // Fetch instruction
             let Some(&opcode) = self.program.get(self.pc)
-                else { return Ok(()) };
+                else { return Ok(2) };
 
             // Big match
             unsafe {
@@ -318,7 +325,15 @@ impl<'a, T: HandleTrap> Vm<'a, T> {
                     }
                 }
             }
+            if self.tick_callback.is_some() {
+                let ret = self.tick_callback.unwrap()();
+                if (ret - self.last_tick_count) >= self.tick_limit {
+                    return Ok(0);
+                }
+            }
+            return Ok(1);
         }
+        
     }
 
     /// Read register

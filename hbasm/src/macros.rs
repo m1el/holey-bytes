@@ -66,7 +66,6 @@ macro_rules! impl_asm {
     };
 }
 
-
 pub(super) use {impl_asm, impl_asm_opcodes};
 
 #[allow(clippy::single_component_path_imports)]
