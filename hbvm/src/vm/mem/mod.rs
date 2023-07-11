@@ -2,9 +2,13 @@
 
 pub mod paging;
 
+mod pfhandler;
+
+pub use pfhandler::HandlePageFault;
+
 use {
     self::paging::{PageTable, Permission, PtEntry},
-    super::{trap::HandleTrap, VmRunError},
+    super::VmRunError,
     alloc::boxed::Box,
     core::mem::MaybeUninit,
     derive_more::Display,
@@ -69,7 +73,7 @@ impl Memory {
         addr: u64,
         target: *mut u8,
         count: usize,
-        traph: &mut impl HandleTrap,
+        traph: &mut impl HandlePageFault,
     ) -> Result<(), LoadError> {
         self.memory_access(
             MemoryAccessReason::Load,
@@ -97,7 +101,7 @@ impl Memory {
         addr: u64,
         source: *const u8,
         count: usize,
-        traph: &mut impl HandleTrap,
+        traph: &mut impl HandlePageFault,
     ) -> Result<(), StoreError> {
         self.memory_access(
             MemoryAccessReason::Store,
@@ -122,7 +126,7 @@ impl Memory {
         src: u64,
         dst: u64,
         count: usize,
-        traph: &mut impl HandleTrap,
+        traph: &mut impl HandlePageFault,
     ) -> Result<(), BlkCopyError> {
         // Yea, i know it is possible to do this more efficiently, but I am too lazy.
 
@@ -209,7 +213,7 @@ impl Memory {
         len: usize,
         permission_check: fn(Permission) -> bool,
         action: fn(*mut u8, *mut u8, usize),
-        traph: &mut impl HandleTrap,
+        traph: &mut impl HandlePageFault,
     ) -> Result<(), u64> {
         let mut pspl = AddrSplitter::new(src, len, self.root_pt);
         loop {

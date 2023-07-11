@@ -1,8 +1,4 @@
-use hbvm::vm::{
-    mem::{Memory, MemoryAccessReason, PageSize},
-    trap::HandleTrap,
-    value::Value,
-};
+use hbvm::vm::mem::{HandlePageFault, Memory, MemoryAccessReason, PageSize};
 
 use {
     hbvm::{validate::validate, vm::Vm},
@@ -32,7 +28,7 @@ pub fn time() -> u32 {
 }
 
 struct TestTrapHandler;
-impl HandleTrap for TestTrapHandler {
+impl HandlePageFault for TestTrapHandler {
     fn page_fault(
         &mut self,
         _: MemoryAccessReason,
@@ -42,18 +38,5 @@ impl HandleTrap for TestTrapHandler {
         _: *mut u8,
     ) -> bool {
         false
-    }
-
-    fn invalid_op(&mut self, _: &mut [Value; 256], _: &mut usize, _: &mut Memory, _: u8) -> bool
-    where
-        Self: Sized,
-    {
-        false
-    }
-
-    fn ecall(&mut self, _: &mut [Value; 256], _: &mut usize, _: &mut Memory)
-    where
-        Self: Sized,
-    {
     }
 }

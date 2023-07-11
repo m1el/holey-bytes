@@ -11,10 +11,9 @@
 //   program size. If you are (rightfully) worried about the UB, for now just
 //   append your program with 11 zeroes.
 
-use self::trap::HandleTrap;
+use self::mem::HandlePageFault;
 
 pub mod mem;
-pub mod trap;
 pub mod value;
 
 use {
@@ -79,7 +78,7 @@ macro_rules! cond_jump {
 }
 
 /// HoleyBytes Virtual Machine
-pub struct Vm<'a, T, const TIMER_QUOTIENT: usize> {
+pub struct Vm<'a, PfHandler, const TIMER_QUOTIENT: usize> {
     /// Holds 256 registers
     ///
     /// Writing to register 0 is considered undefined behaviour
@@ -90,7 +89,7 @@ pub struct Vm<'a, T, const TIMER_QUOTIENT: usize> {
     pub memory: Memory,
 
     /// Trap handler
-    pub traph: T,
+    pub pfhandler: PfHandler,
 
     // Program counter
     pc: usize,
@@ -102,16 +101,18 @@ pub struct Vm<'a, T, const TIMER_QUOTIENT: usize> {
     timer: usize,
 }
 
-impl<'a, T: HandleTrap, const TIMER_QUOTIENT: usize> Vm<'a, T, TIMER_QUOTIENT> {
+impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
+    Vm<'a, PfHandler, TIMER_QUOTIENT>
+{
     /// Create a new VM with program and trap handler
     ///
     /// # Safety
     /// Program code has to be validated
-    pub unsafe fn new_unchecked(program: &'a [u8], traph: T) -> Self {
+    pub unsafe fn new_unchecked(program: &'a [u8], traph: PfHandler) -> Self {
         Self {
             registers: [Value::from(0_u64); 256],
             memory: Default::default(),
-            traph,
+            pfhandler: traph,
             pc: 0,
             program,
             timer: 0,
@@ -119,7 +120,7 @@ impl<'a, T: HandleTrap, const TIMER_QUOTIENT: usize> Vm<'a, T, TIMER_QUOTIENT> {
     }
 
     /// Create a new VM with program and trap handler only if it passes validation
-    pub fn new_validated(program: &'a [u8], traph: T) -> Result<Self, validate::Error> {
+    pub fn new_validated(program: &'a [u8], traph: PfHandler) -> Result<Self, validate::Error> {
         validate::validate(program)?;
         Ok(unsafe { Self::new_unchecked(program, traph) })
     }
@@ -229,7 +230,7 @@ impl<'a, T: HandleTrap, const TIMER_QUOTIENT: usize> Vm<'a, T, TIMER_QUOTIENT> {
                             self.read_reg(base).as_u64() + off + n as u64,
                             self.registers.as_mut_ptr().add(usize::from(dst) + n).cast(),
                             usize::from(count).saturating_sub(n),
-                            &mut self.traph,
+                            &mut self.pfhandler,
                         )?;
                     }
                     ST => {
@@ -238,7 +239,7 @@ impl<'a, T: HandleTrap, const TIMER_QUOTIENT: usize> Vm<'a, T, TIMER_QUOTIENT> {
                             self.read_reg(base).as_u64() + off,
                             self.registers.as_ptr().add(usize::from(dst)).cast(),
                             count.into(),
-                            &mut self.traph,
+                            &mut self.pfhandler,
                         )?;
                     }
                     BMC => {
@@ -247,7 +248,7 @@ impl<'a, T: HandleTrap, const TIMER_QUOTIENT: usize> Vm<'a, T, TIMER_QUOTIENT> {
                             self.read_reg(src).as_u64(),
                             self.read_reg(dst).as_u64(),
                             count as _,
-                            &mut self.traph,
+                            &mut self.pfhandler,
                         )?;
                     }
                     BRC => {
@@ -275,8 +276,7 @@ impl<'a, T: HandleTrap, const TIMER_QUOTIENT: usize> Vm<'a, T, TIMER_QUOTIENT> {
                     JGTU => cond_jump!(self, sint, Greater),
                     ECALL => {
                         param!(self, ());
-                        self.traph
-                            .ecall(&mut self.registers, &mut self.pc, &mut self.memory);
+                        return Ok(VmRunOk::Ecall);
                     }
                     ADDF => binary_op!(self, as_f64, ops::Add::add),
                     SUBF => binary_op!(self, as_f64, ops::Sub::sub),
@@ -310,16 +310,7 @@ impl<'a, T: HandleTrap, const TIMER_QUOTIENT: usize> Vm<'a, T, TIMER_QUOTIENT> {
                     }
                     ADDFI => binary_op_imm!(self, as_f64, ops::Add::add),
                     MULFI => binary_op_imm!(self, as_f64, ops::Mul::mul),
-                    op => {
-                        if !self.traph.invalid_op(
-                            &mut self.registers,
-                            &mut self.pc,
-                            &mut self.memory,
-                            op,
-                        ) {
-                            return Err(VmRunError::InvalidOpcodeEx(op));
-                        }
-                    }
+                    op => return Err(VmRunError::InvalidOpcode(op)),
                 }
             }
 
@@ -352,8 +343,8 @@ impl<'a, T: HandleTrap, const TIMER_QUOTIENT: usize> Vm<'a, T, TIMER_QUOTIENT> {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum VmRunError {
-    /// Unhandled invalid opcode exceptions
-    InvalidOpcodeEx(u8),
+    /// Tried to execute invalid instruction
+    InvalidOpcode(u8),
 
     /// Unhandled load access exception
     LoadAccessEx(u64),
@@ -370,4 +361,7 @@ pub enum VmRunOk {
 
     /// Program was interrupted by a timer
     Timer,
+
+    /// Environment call
+    Ecall,
 }
