@@ -135,7 +135,7 @@ impl<'a, T: HandleTrap, const TIMER_QUOTIENT: usize> Vm<'a, T, TIMER_QUOTIENT> {
                 else { return Ok(VmRunOk::End) };
 
             if TIMER_QUOTIENT != 0 {
-                self.timer += 1;
+                self.timer = self.timer.wrapping_add(1);
                 if self.timer % TIMER_QUOTIENT == 0 {
                     return Ok(VmRunOk::Timer);
                 }
