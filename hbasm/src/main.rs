@@ -21,14 +21,20 @@ fn main() -> Result<(), Box<dyn Error>> {
             hbasm::text::ErrorKind::UnexpectedEnd => 3,
             hbasm::text::ErrorKind::InvalidSymbol => 4,
         };
+        let message = match e.kind {
+            hbasm::text::ErrorKind::UnexpectedToken => "This token is not expected!",
+            hbasm::text::ErrorKind::InvalidToken => "The token is not valid!",
+            hbasm::text::ErrorKind::UnexpectedEnd => "The assembler reached the end of input unexpectedly!",
+            hbasm::text::ErrorKind::InvalidSymbol => "This referenced symbol doesn't have a corresponding label!",
+        };
         let a = colors.next();
 
-        Report::build(ReportKind::Error, "engine_internal", 12)
+        Report::build(ReportKind::Error, "engine_internal", e.span.clone().start)
         .with_code(e_code)
         .with_message(format!("{:?}", e.kind))
         .with_label(
             Label::new(("engine_internal", e.span.clone()))
-                .with_message(format!("{:?}", e.kind))
+                .with_message(message)
                 .with_color(a),
         )
         .finish()
