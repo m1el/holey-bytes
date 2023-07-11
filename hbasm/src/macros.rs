@@ -33,7 +33,7 @@ macro_rules! gen_impl_asm_insert {
             };)*
 
             ($self:expr, $id:ident, $_:ty) => {
-                Imm::insert($id, $self)
+                Imm::insert(&$id, $self)
             };
         }
     };
