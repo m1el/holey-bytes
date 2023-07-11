@@ -365,6 +365,9 @@ pub enum VmRunError {
 /// Virtual machine halt ok
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum VmRunOk {
+    /// Program has eached its end
     End,
+
+    /// Program was interrupted by a timer
     Timer,
 }
