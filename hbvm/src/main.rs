@@ -18,7 +18,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     } else {
         unsafe {
-            let mut vm = Vm::new_unchecked(&prog, TestTrapHandler);
+            let mut vm = Vm::<_, 0>::new_unchecked(&prog, TestTrapHandler);
             vm.memory.insert_test_page();
             println!("Program interrupt: {:?}", vm.run());
             println!("{:?}", vm.registers);

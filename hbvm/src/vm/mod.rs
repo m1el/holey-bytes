@@ -79,7 +79,7 @@ macro_rules! cond_jump {
 }
 
 /// HoleyBytes Virtual Machine
-pub struct Vm<'a, T> {
+pub struct Vm<'a, T, const TIMER_QUOTIENT: usize> {
     /// Holds 256 registers
     ///
     /// Writing to register 0 is considered undefined behaviour
@@ -97,9 +97,12 @@ pub struct Vm<'a, T> {
 
     /// Program
     program: &'a [u8],
+
+    /// Program timer
+    timer: usize,
 }
 
-impl<'a, T: HandleTrap> Vm<'a, T> {
+impl<'a, T: HandleTrap, const TIMER_QUOTIENT: usize> Vm<'a, T, TIMER_QUOTIENT> {
     /// Create a new VM with program and trap handler
     ///
     /// # Safety
@@ -111,6 +114,7 @@ impl<'a, T: HandleTrap> Vm<'a, T> {
             traph,
             pc: 0,
             program,
+            timer: 0,
         }
     }
 
@@ -123,12 +127,12 @@ impl<'a, T: HandleTrap> Vm<'a, T> {
     /// Execute program
     ///
     /// Program can return [`VmRunError`] if a trap handling failed
-    pub fn run(&mut self) -> Result<(), VmRunError> {
+    pub fn run(&mut self) -> Result<VmRunOk, VmRunError> {
         use hbbytecode::opcode::*;
         loop {
             // Fetch instruction
             let Some(&opcode) = self.program.get(self.pc)
-                else { return Ok(()) };
+                else { return Ok(VmRunOk::End) };
 
             // Big match
             unsafe {
@@ -318,6 +322,13 @@ impl<'a, T: HandleTrap> Vm<'a, T> {
                     }
                 }
             }
+
+            if TIMER_QUOTIENT != 0 {
+                self.timer = self.timer.wrapping_add(1);
+                if self.timer % TIMER_QUOTIENT == 0 {
+                    return Ok(VmRunOk::Timer);
+                }
+            }
         }
     }
 
@@ -349,4 +360,14 @@ pub enum VmRunError {
 
     /// Unhandled store access exception
     StoreAccessEx(u64),
+}
+
+/// Virtual machine halt ok
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum VmRunOk {
+    /// Program has eached its end
+    End,
+
+    /// Program was interrupted by a timer
+    Timer,
 }
