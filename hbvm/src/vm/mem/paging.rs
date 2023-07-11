@@ -1,12 +1,14 @@
 //! Page table and associated structures implementation
 
-use core::{
-    fmt::Debug,
-    mem::MaybeUninit,
-    ops::{Index, IndexMut},
-    slice::SliceIndex,
+use {
+    core::{
+        fmt::Debug,
+        mem::MaybeUninit,
+        ops::{Index, IndexMut},
+        slice::SliceIndex,
+    },
+    delegate::delegate,
 };
-use delegate::delegate;
 
 /// Page entry permission
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -30,7 +32,7 @@ pub enum Permission {
 pub struct PtEntry(u64);
 impl PtEntry {
     /// Create new
-    /// 
+    ///
     /// # Safety
     /// - `ptr` has to point to valid data and shall not be deallocated
     ///    troughout the entry lifetime
@@ -60,7 +62,6 @@ impl Debug for PtEntry {
             .finish()
     }
 }
-
 
 /// Page table
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,7 +146,7 @@ impl Default for PageTable {
 #[repr(C, align(4096))]
 pub union PtPointedData {
     /// Node - next page table
-    pub pt: PageTable,
+    pub pt:   PageTable,
     /// Leaf
     pub page: u8,
 }

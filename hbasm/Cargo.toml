@@ -7,6 +7,7 @@ edition = "2021"
 hbbytecode = { path = "../hbbytecode" }
 paste = "1.0"
 hashbrown = "0.14.0"
+ariadne = "0.3.0"
 
 [dependencies.lasso]
 version = "0.7"
