@@ -134,13 +134,6 @@ impl<'a, T: HandleTrap, const TIMER_QUOTIENT: usize> Vm<'a, T, TIMER_QUOTIENT> {
             let Some(&opcode) = self.program.get(self.pc)
                 else { return Ok(VmRunOk::End) };
 
-            if TIMER_QUOTIENT != 0 {
-                self.timer = self.timer.wrapping_add(1);
-                if self.timer % TIMER_QUOTIENT == 0 {
-                    return Ok(VmRunOk::Timer);
-                }
-            }
-
             // Big match
             unsafe {
                 match opcode {
@@ -327,6 +320,13 @@ impl<'a, T: HandleTrap, const TIMER_QUOTIENT: usize> Vm<'a, T, TIMER_QUOTIENT> {
                             return Err(VmRunError::InvalidOpcodeEx(op));
                         }
                     }
+                }
+            }
+
+            if TIMER_QUOTIENT != 0 {
+                self.timer = self.timer.wrapping_add(1);
+                if self.timer % TIMER_QUOTIENT == 0 {
+                    return Ok(VmRunOk::Timer);
                 }
             }
         }
