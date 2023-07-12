@@ -21,11 +21,11 @@ macros::impl_both!(
         => [LD, ST],
     bbd(p0: R, p1: R, p2: I)
         => [ADDI, MULI, ANDI, ORI, XORI, SLI, SRI, SRSI, CMPI, CMPUI,
-            BMC, JEQ, JNE, JLT, JGT, JLTU, JGTU, ADDFI, MULFI],
+            BMC, JAL, JEQ, JNE, JLT, JGT, JLTU, JGTU, ADDFI, MULFI],
     bb(p0: R, p1: R)
         => [NEG, NOT, CP, SWA, NEGF, ITF, FTI],
     bd(p0: R, p1: I)
-        => [LI, JMP],
+        => [LI],
     n()
         => [NOP, ECALL],
 );

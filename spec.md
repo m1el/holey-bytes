@@ -153,7 +153,7 @@
 
 | Opcode | Name |              Action              |
 |:------:|:----:|:--------------------------------:|
-|   30   | BMC  | `[#0] ← [#1], copy imm #2 bytes` |
+|   30   | BMC  | `[#1] ← [#0], copy imm #2 bytes` |
 
 ### Register copy
 - Type BBB
@@ -161,16 +161,16 @@
 
 | Opcode | Name |              Action              |
 |:------:|:----:|:--------------------------------:|
-|   31   | BRC  | `#0 ← #1, copy imm #2 registers` |
+|   31   | BRC  | `#1 ← #0, copy imm #2 registers` |
 
 ## Control flow
 
 ### Unconditional jump
-- Type BD
+- Type BBD
 
-| Opcode | Name |        Action         |
-|:------:|:----:|:---------------------:|
-|   32   | JMP  | Jump at `#0 + imm #1` |
+| Opcode | Name |                      Action                       |
+|:------:|:----:|:-------------------------------------------------:|
+|   32   | JAL  | Save current PC to `#0` and jump at `#1 + imm #2` |
 
 ### Conditional jumps
 - Type BBD

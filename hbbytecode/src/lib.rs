@@ -54,7 +54,7 @@ constmod!(pub opcode(u8) {
     BMC = 30, "BBD; [#0] ← [#1], imm #2 bytes";
     BRC = 31, "BBB; #0 ← #1, imm #2 registers";
 
-    JMP   = 32, "BD;  Unconditional jump [#0 + imm #1]";
+    JAL   = 32, "BD;  Copy PC to #0 and unconditional jump [#1 + imm #2]";
     JEQ   = 33, "BBD; if #0 = #1 → jump imm #2";
     JNE   = 34, "BBD; if #0 ≠ #1 → jump imm #2";
     JLT   = 35, "BBD; if #0 < #1 → jump imm #2";
