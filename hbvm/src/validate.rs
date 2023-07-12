@@ -50,8 +50,8 @@ pub fn validate(mut program: &[u8]) -> Result<(), Error> {
             | [DIR | DIRF, _, _, _, _, rest @ ..]
             | [ADD..=CMPU | BRC | ADDF..=MULF, _, _, _, rest @ ..]
             | [NEG..=NOT | CP..=SWA | NEGF..=FTI, _, _, rest @ ..]
-            | [LI | JMP, _, _, _, _, _, _, _, _, _, rest @ ..]
-            | [ADDI..=CMPUI | BMC | JEQ..=JGTU | ADDFI..=MULFI, _, _, _, _, _, _, _, _, _, _, rest @ ..]
+            | [LI, _, _, _, _, _, _, _, _, _, rest @ ..]
+            | [ADDI..=CMPUI | BMC | JAL..=JGTU | ADDFI..=MULFI, _, _, _, _, _, _, _, _, _, _, rest @ ..]
             | [LD..=ST, _, _, _, _, _, _, _, _, _, _, _, _, rest @ ..] => rest,
             _ => {
                 return Err(Error {

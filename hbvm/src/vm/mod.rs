@@ -259,8 +259,9 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                             usize::from(count),
                         );
                     }
-                    JMP => {
-                        let ParamBD(reg, offset) = param!(self, ParamBD);
+                    JAL => {
+                        let ParamBBD(save, reg, offset) = param!(self, ParamBBD);
+                        self.write_reg(save, self.pc as u64);
                         self.pc = (self.read_reg(reg).as_u64() + offset) as usize;
                     }
                     JEQ => cond_jump!(self, int, Equal),

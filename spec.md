@@ -166,11 +166,11 @@
 ## Control flow
 
 ### Unconditional jump
-- Type BD
+- Type BBD
 
-| Opcode | Name |        Action         |
-|:------:|:----:|:---------------------:|
-|   32   | JMP  | Jump at `#0 + imm #1` |
+| Opcode | Name |                      Action                       |
+|:------:|:----:|:-------------------------------------------------:|
+|   32   | JAL  | Save current PC to `#0` and jump at `#1 + imm #2` |
 
 ### Conditional jumps
 - Type BBD
