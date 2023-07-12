@@ -153,7 +153,7 @@
 
 | Opcode | Name |              Action              |
 |:------:|:----:|:--------------------------------:|
-|   30   | BMC  | `[#0] ← [#1], copy imm #2 bytes` |
+|   30   | BMC  | `[#1] ← [#0], copy imm #2 bytes` |
 
 ### Register copy
 - Type BBB
@@ -161,7 +161,7 @@
 
 | Opcode | Name |              Action              |
 |:------:|:----:|:--------------------------------:|
-|   31   | BRC  | `#0 ← #1, copy imm #2 registers` |
+|   31   | BRC  | `#1 ← #0, copy imm #2 registers` |
 
 ## Control flow
 
