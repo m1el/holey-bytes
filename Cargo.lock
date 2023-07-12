@@ -36,6 +36,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a8241f3ebb85c056b509d4327ad0358fbbba6ffb340bf388f26350aeda225b1"
 
 [[package]]
+name = "bytemuck"
+version = "1.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17febce684fd15d89027105661fec94afb475cb995fbc59d2865198446ba2eea"
+
+[[package]]
 name = "cfg-if"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -101,9 +107,11 @@ name = "hbasm"
 version = "0.1.0"
 dependencies = [
  "ariadne",
+ "bytemuck",
  "hashbrown 0.14.0",
  "hbbytecode",
  "lasso",
+ "literify",
  "logos",
  "paste",
 ]
@@ -133,6 +141,26 @@ checksum = "4644821e1c3d7a560fe13d842d13f587c07348a1a05d3a797152d41c90c56df2"
 dependencies = [
  "ahash",
  "hashbrown 0.13.2",
+]
+
+[[package]]
+name = "literify"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54e4d365df794ed78b4ce1061886f82eae7afa8e3a98ce4c4b0bfd0c777b1175"
+dependencies = [
+ "litrs",
+ "proc-macro2",
+ "quote",
+]
+
+[[package]]
+name = "litrs"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f17c3668f3cc1132437cdadc93dab05e52d592f06948d3f64828430c36e4a70"
+dependencies = [
+ "proc-macro2",
 ]
 
 [[package]]
