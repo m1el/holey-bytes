@@ -64,6 +64,25 @@ impl Memory {
         }
     }
 
+    /// Maps host's memory into VM's memory
+    ///
+    /// # Safety
+    /// Who knows.
+    pub unsafe fn map(
+        &mut self,
+        mut host: *mut u8,
+        target: usize,
+        pagesize: PageSize,
+        count: usize,
+    ) {
+        todo!()
+    }
+
+    /// Unmaps pages from VM's memory
+    pub fn unmap(&mut self, addr: usize, count: usize) {
+        todo!()
+    }
+
     /// Load value from an address
     ///
     /// # Safety
@@ -215,11 +234,11 @@ impl Memory {
         action: fn(*mut u8, *mut u8, usize),
         traph: &mut impl HandlePageFault,
     ) -> Result<(), u64> {
-        let mut pspl = AddrSplitter::new(src, len, self.root_pt);
+        let mut pspl = AddrPageLookuper::new(src, len, self.root_pt);
         loop {
             match pspl.next() {
                 // Page found
-                Some(Ok(AddrSplitOk {
+                Some(Ok(AddrPageLookupOk {
                     vaddr,
                     ptr,
                     size,
@@ -233,7 +252,7 @@ impl Memory {
                     action(ptr, dst, size);
                     dst = unsafe { dst.add(size) };
                 }
-                Some(Err(AddrSplitError { addr, size })) => {
+                Some(Err(AddrPageLookupError { addr, size })) => {
                     // Execute page fault handler
                     if traph.page_fault(reason, self, addr, size, dst) {
                         // Shift the splitter address
@@ -252,7 +271,7 @@ impl Memory {
 }
 
 /// Result from address split
-struct AddrSplitOk {
+struct AddrPageLookupOk {
     /// Virtual address
     vaddr: u64,
 
@@ -266,7 +285,7 @@ struct AddrSplitOk {
     perm: Permission,
 }
 
-struct AddrSplitError {
+struct AddrPageLookupError {
     /// Address of failure
     addr: u64,
 
@@ -275,7 +294,7 @@ struct AddrSplitError {
 }
 
 /// Address splitter into pages
-struct AddrSplitter {
+struct AddrPageLookuper {
     /// Current address
     addr: u64,
 
@@ -286,7 +305,7 @@ struct AddrSplitter {
     pagetable: *const PageTable,
 }
 
-impl AddrSplitter {
+impl AddrPageLookuper {
     /// Create a new page splitter
     pub const fn new(addr: u64, size: usize, pagetable: *const PageTable) -> Self {
         Self {
@@ -303,8 +322,8 @@ impl AddrSplitter {
     }
 }
 
-impl Iterator for AddrSplitter {
-    type Item = Result<AddrSplitOk, AddrSplitError>;
+impl Iterator for AddrPageLookuper {
+    type Item = Result<AddrPageLookupOk, AddrPageLookupError>;
 
     fn next(&mut self) -> Option<Self::Item> {
         // The end, everything is fine
@@ -328,7 +347,7 @@ impl Iterator for AddrSplitter {
                     match entry.permission() {
                         // No page → page fault
                         Permission::Empty => {
-                            return Some(Err(AddrSplitError {
+                            return Some(Err(AddrPageLookupError {
                                 addr: self.addr,
                                 size: PageSize::from_lvl(lvl)?,
                             }))
@@ -358,7 +377,7 @@ impl Iterator for AddrSplitter {
         let avail = (size as usize - offset).clamp(0, self.size);
         self.bump(size);
 
-        Some(Ok(AddrSplitOk {
+        Some(Ok(AddrPageLookupOk {
             vaddr: self.addr,
             ptr: unsafe { base.add(offset) }, // Return pointer to the start of region
             size: avail,
