@@ -243,7 +243,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                         )?;
                     }
                     BMC => {
-                        let ParamBBD(src, dst, count) = param!(self, ParamBBD);
+                        let ParamBBD(dst, src, count) = param!(self, ParamBBD);
                         self.memory.block_copy(
                             self.read_reg(src).as_u64(),
                             self.read_reg(dst).as_u64(),
@@ -252,7 +252,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                         )?;
                     }
                     BRC => {
-                        let ParamBBB(src, dst, count) = param!(self, ParamBBB);
+                        let ParamBBB(dst, src, count) = param!(self, ParamBBB);
                         core::ptr::copy(
                             self.registers.get_unchecked(usize::from(src)),
                             self.registers.get_unchecked_mut(usize::from(dst)),
