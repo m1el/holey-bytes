@@ -40,7 +40,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .with_code(e_code)
             .with_message(format!("{:?}", e.kind))
             .with_label(
-                Label::new(("engine_internal", e.span.clone()))
+                Label::new(("engine_internal", e.span))
                     .with_message(message)
                     .with_color(a),
             )
