@@ -11,7 +11,6 @@ macro_rules! impl_asm_opcodes {
         => [$opcode:ident, $($rest:tt)*]
     ) => {
         paste::paste! {
-            #[allow(dead_code)]
             #[inline(always)]
             pub fn [<i_ $opcode:lower>](&mut self, $($param_i: $param_ty),*) {
                 self.$generic(hbbytecode::opcode::$opcode, $($param_i),*)
@@ -45,7 +44,6 @@ macro_rules! impl_asm {
     ) => {
         paste::paste! {
             $(
-                #[allow(dead_code)]
                 fn [<i_param_ $ityn>](&mut self, opcode: u8, $($param_i: macros::asm::ident_map_ty!($param_ty)),*) {
                     self.buf.push(opcode);
                     $(macros::asm::impl_asm_insert!(self, $param_i, $param_ty);)*

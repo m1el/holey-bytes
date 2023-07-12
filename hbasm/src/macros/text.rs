@@ -24,6 +24,7 @@ macro_rules! gen_text {
                 #[logos(skip r"-- .*")]
                 pub enum Token {
                     $($(#[token(~([<$opcode:lower>]), |_| hbbytecode::opcode::[<$opcode:upper>])])*)*
+                    #[token("brc", |_| hbbytecode::opcode::BRC)] // Special-cased
                     Opcode(u8),
 
                     #[regex("[0-9]+", |l| l.slice().parse().ok())]
@@ -100,6 +101,17 @@ macro_rules! gen_text {
                                                 self.asm.[<i_param_ $ityn>](op, $($param_i),*);
                                             }),
                                         )*
+                                        // Special-cased
+                                        hbbytecode::opcode::BRC => {
+                                            param_extract_itm!(
+                                                self,
+                                                p0: R,
+                                                p1: R,
+                                                p2: u8
+                                            );
+
+                                            self.asm.i_param_bbb(op, p0, p1, p2);
+                                        }
                                         _ => unreachable!(),
                                     }
                                 }
@@ -123,7 +135,7 @@ macro_rules! gen_text {
 
                 asm.run()
                     .map_err(|kind| Error { kind, span: asm.lexer.span() })?;
-                
+
                 for &loc in &asm.asm.sub {
                     let val = asm.symloc
                         .get(
@@ -166,7 +178,7 @@ macro_rules! gen_text {
 macro_rules! extract_pat {
     ($self:expr, $pat:pat) => {
         let $pat = $self.next()?
-            else { return Err(ErrorKind::UnexpectedToken) };
+                    else { return Err(ErrorKind::UnexpectedToken) };
     };
 }
 
@@ -181,6 +193,11 @@ macro_rules! extract {
             Token::Symbol(a) => InternalImm::Named(a),
             _ => return Err(ErrorKind::UnexpectedToken),
         };
+    };
+
+    ($self:expr, u8, $id:ident) => {
+        extract_pat!($self, Token::Integer($id));
+        let $id = u8::try_from($id).map_err(|_| ErrorKind::InvalidToken)?;
     };
 
     ($self:expr, u16, $id:ident) => {

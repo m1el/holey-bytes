@@ -16,7 +16,7 @@ macros::impl_both!(
     bbbb(p0: R, p1: R, p2: R, p3: R)
         => [DIR, DIRF, FMAF],
     bbb(p0: R, p1: R, p2: R)
-        => [ADD, SUB, MUL, AND, OR, XOR, SL, SR, SRS, CMP, CMPU, BRC, ADDF, SUBF, MULF],
+        => [ADD, SUB, MUL, AND, OR, XOR, SL, SR, SRS, CMP, CMPU, /*BRC,*/ ADDF, SUBF, MULF],
     bbdh(p0: R, p1: R, p2: I, p3: u16)
         => [LD, ST],
     bbd(p0: R, p1: R, p2: I)
@@ -29,6 +29,14 @@ macros::impl_both!(
     n()
         => [NOP, ECALL],
 );
+
+impl Assembler {
+    // Special-cased
+    #[inline(always)]
+    pub fn i_brc(&mut self, p0: u8, p1: u8, p2: u8) {
+        self.i_param_bbb(hbbytecode::opcode::BRC, p0, p1, p2)
+    }
+}
 
 pub trait Imm {
     fn insert(&self, asm: &mut Assembler);
