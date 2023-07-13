@@ -48,6 +48,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             .eprint(("engine_internal", Source::from(&code)))
             .unwrap();
     } else {
+        assembler.finalise();
         std::io::stdout().lock().write_all(&assembler.buf).unwrap();
     }
 

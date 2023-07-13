@@ -18,62 +18,63 @@ macro_rules! constmod {
 constmod!(pub opcode(u8) {
     //! Opcode constant module
 
-    NOP = 0, "N; Do nothing";
+    UN  = 0, "N; Raises a trap";
+    NOP = 1, "N; Do nothing";
+    
+    ADD  = 2,  "BBB; #0 ← #1 + #2";
+    SUB  = 3,  "BBB; #0 ← #1 - #2";
+    MUL  = 4,  "BBB; #0 ← #1 × #2";
+    AND  = 5,  "BBB; #0 ← #1 & #2";
+    OR   = 6,  "BBB; #0 ← #1 | #2";
+    XOR  = 7,  "BBB; #0 ← #1 ^ #2";
+    SL   = 8,  "BBB; #0 ← #1 « #2";
+    SR   = 9,  "BBB; #0 ← #1 » #2";
+    SRS  = 10,  "BBB; #0 ← #1 » #2 (signed)";
+    CMP  = 11, "BBB; #0 ← #1 <=> #2";
+    CMPU = 12, "BBB; #0 ← #1 <=> #2 (unsigned)";
+    DIR  = 13, "BBBB; #0 ← #2 / #3, #1 ← #2 % #3";
+    NEG  = 14, "BB; #0 ← -#1";
+    NOT  = 15, "BB; #0 ← !#1";
 
-    ADD  = 1,  "BBB; #0 ← #1 + #2";
-    SUB  = 2,  "BBB; #0 ← #1 - #2";
-    MUL  = 3,  "BBB; #0 ← #1 × #2";
-    AND  = 4,  "BBB; #0 ← #1 & #2";
-    OR   = 5,  "BBB; #0 ← #1 | #2";
-    XOR  = 6,  "BBB; #0 ← #1 ^ #2";
-    SL   = 7,  "BBB; #0 ← #1 « #2";
-    SR   = 8,  "BBB; #0 ← #1 » #2";
-    SRS  = 9,  "BBB; #0 ← #1 » #2 (signed)";
-    CMP  = 10, "BBB; #0 ← #1 <=> #2";
-    CMPU = 11, "BBB; #0 ← #1 <=> #2 (unsigned)";
-    DIR  = 12, "BBBB; #0 ← #2 / #3, #1 ← #2 % #3";
-    NEG  = 13, "BB; #0 ← -#1";
-    NOT  = 14, "BB; #0 ← !#1";
+    ADDI  = 16, "BBD; #0 ← #1 + imm #2";
+    MULI  = 17, "BBD; #0 ← #1 × imm #2";
+    ANDI  = 18, "BBD; #0 ← #1 & imm #2";
+    ORI   = 19, "BBD; #0 ← #1 | imm #2";
+    XORI  = 20, "BBD; #0 ← #1 ^ imm #2";
+    SLI   = 21, "BBD; #0 ← #1 « imm #2";
+    SRI   = 22, "BBD; #0 ← #1 » imm #2";
+    SRSI  = 23, "BBD; #0 ← #1 » imm #2 (signed)";
+    CMPI  = 24, "BBD; #0 ← #1 <=> imm #2";
+    CMPUI = 25, "BBD; #0 ← #1 <=> imm #2 (unsigned)";
 
-    ADDI  = 15, "BBD; #0 ← #1 + imm #2";
-    MULI  = 16, "BBD; #0 ← #1 × imm #2";
-    ANDI  = 17, "BBD; #0 ← #1 & imm #2";
-    ORI   = 18, "BBD; #0 ← #1 | imm #2";
-    XORI  = 19, "BBD; #0 ← #1 ^ imm #2";
-    SLI   = 20, "BBD; #0 ← #1 « imm #2";
-    SRI   = 21, "BBD; #0 ← #1 » imm #2";
-    SRSI  = 22, "BBD; #0 ← #1 » imm #2 (signed)";
-    CMPI  = 23, "BBD; #0 ← #1 <=> imm #2";
-    CMPUI = 24, "BBD; #0 ← #1 <=> imm #2 (unsigned)";
+    CP  = 26, "BB; Copy #0 ← #1";
+    SWA = 27, "BB; Swap #0 and #1";
+    LI  = 28, "BD; #0 ← imm #1";
+    LD  = 29, "BBDB; #0 ← [#1 + imm #3], imm #4 bytes, overflowing";
+    ST  = 30, "BBDB; [#1 + imm #3] ← #0, imm #4 bytes, overflowing";
+    BMC = 31, "BBD; [#0] ← [#1], imm #2 bytes";
+    BRC = 32, "BBB; #0 ← #1, imm #2 registers";
 
-    CP  = 25, "BB; Copy #0 ← #1";
-    SWA = 26, "BB; Swap #0 and #1";
-    LI  = 27, "BD; #0 ← imm #1";
-    LD  = 28, "BBDB; #0 ← [#1 + imm #3], imm #4 bytes, overflowing";
-    ST  = 29, "BBDB; [#1 + imm #3] ← #0, imm #4 bytes, overflowing";
-    BMC = 30, "BBD; [#0] ← [#1], imm #2 bytes";
-    BRC = 31, "BBB; #0 ← #1, imm #2 registers";
+    JAL   = 33, "BD;  Copy PC to #0 and unconditional jump [#1 + imm #2]";
+    JEQ   = 34, "BBD; if #0 = #1 → jump imm #2";
+    JNE   = 35, "BBD; if #0 ≠ #1 → jump imm #2";
+    JLT   = 36, "BBD; if #0 < #1 → jump imm #2";
+    JGT   = 37, "BBD; if #0 > #1 → jump imm #2";
+    JLTU  = 38, "BBD; if #0 < #1 → jump imm #2 (unsigned)";
+    JGTU  = 39, "BBD; if #0 > #1 → jump imm #2 (unsigned)";
+    ECALL = 40, "N; Issue system call";
 
-    JAL   = 32, "BD;  Copy PC to #0 and unconditional jump [#1 + imm #2]";
-    JEQ   = 33, "BBD; if #0 = #1 → jump imm #2";
-    JNE   = 34, "BBD; if #0 ≠ #1 → jump imm #2";
-    JLT   = 35, "BBD; if #0 < #1 → jump imm #2";
-    JGT   = 36, "BBD; if #0 > #1 → jump imm #2";
-    JLTU  = 37, "BBD; if #0 < #1 → jump imm #2 (unsigned)";
-    JGTU  = 38, "BBD; if #0 > #1 → jump imm #2 (unsigned)";
-    ECALL = 39, "N; Issue system call";
+    ADDF = 41, "BBB; #0 ← #1 +. #2";
+    SUBF = 42, "BBB; #0 ← #1 -. #2";
+    MULF = 43, "BBB; #0 ← #1 +. #2";
+    DIRF = 44, "BBBB; #0 ← #2 / #3, #1 ← #2 % #3";
+    FMAF = 45, "BBBB; #0 ← (#1 * #2) + #3";
+    NEGF = 46, "BB; #0 ← -#1";
+    ITF  = 47, "BB; #0 ← #1 as float";
+    FTI  = 48, "BB; #0 ← #1 as int";
 
-    ADDF = 40, "BBB; #0 ← #1 +. #2";
-    SUBF = 41, "BBB; #0 ← #1 -. #2";
-    MULF = 42, "BBB; #0 ← #1 +. #2";
-    DIRF = 43, "BBBB; #0 ← #2 / #3, #1 ← #2 % #3";
-    FMAF = 44, "BBBB; #0 ← (#1 * #2) + #3";
-    NEGF = 45, "BB; #0 ← -#1";
-    ITF  = 46, "BB; #0 ← #1 as float";
-    FTI  = 47, "BB; #0 ← #1 as int";
-
-    ADDFI = 48, "BBD; #0 ← #1 +. imm #2";
-    MULFI = 49, "BBD; #0 ← #1 *. imm #2";
+    ADDFI = 49, "BBD; #0 ← #1 +. imm #2";
+    MULFI = 50, "BBD; #0 ← #1 *. imm #2";
 });
 
 #[repr(packed)]
