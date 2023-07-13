@@ -256,7 +256,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                         core::ptr::copy(
                             self.registers.get_unchecked(usize::from(src)),
                             self.registers.get_unchecked_mut(usize::from(dst)),
-                            usize::from(count * 8),
+                            usize::from(count),
                         );
                     }
                     JAL => {
