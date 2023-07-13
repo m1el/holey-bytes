@@ -4,6 +4,7 @@
 - All numbers are encoded little-endian
 - There is 256 registers, they are represented by a byte
 - Immediate values are 64 bit
+- Program is by spec required to be terminated with 12 zero bytes
 
 ### Instruction encoding
 - Instruction parameters are packed (no alignment)
@@ -34,9 +35,10 @@
 ## No-op
 - N type
 
-| Opcode | Name |   Action   |
-|:------:|:----:|:----------:|
-|   0    | NOP  | Do nothing |
+| Opcode | Name |            Action             |
+|:------:|:----:|:-----------------------------:|
+|   0    |  UN  | Trigger unreachable code trap |
+|   1    | NOP  |          Do nothing           |
 
 ## Integer binary ops.
 - BBB type
@@ -44,21 +46,21 @@
 
 | Opcode | Name |         Action          |
 |:------:|:----:|:-----------------------:|
-|   1    | ADD  |    Wrapping addition    |
-|   2    | SUB  |  Wrapping subtraction   |
-|   3    | MUL  | Wrapping multiplication |
-|   4    | AND  |         Bitand          |
-|   5    |  OR  |          Bitor          |
-|   6    | XOR  |         Bitxor          |
-|   7    |  SL  | Unsigned left bitshift  |
-|   8    |  SR  | Unsigned right bitshift |
-|   9    | SRS  |  Signed right bitshift  |
+|   2    | ADD  |    Wrapping addition    |
+|   3    | SUB  |  Wrapping subtraction   |
+|   4    | MUL  | Wrapping multiplication |
+|   5    | AND  |         Bitand          |
+|   6    |  OR  |          Bitor          |
+|   7    | XOR  |         Bitxor          |
+|   8    |  SL  | Unsigned left bitshift  |
+|   9    |  SR  | Unsigned right bitshift |
+|   10   | SRS  |  Signed right bitshift  |
 
 ### Comparsion
 | Opcode | Name |       Action        |
 |:------:|:----:|:-------------------:|
-|   10   | CMP  |  Signed comparsion  |
-|   11   | CMPU | Unsigned comparsion |
+|   11   | CMP  |  Signed comparsion  |
+|   12   | CMPU | Unsigned comparsion |
 
 #### Comparsion table
 | #1 *op* #2 | Result |
@@ -75,7 +77,7 @@
 
 | Opcode | Name |             Action              |
 |:------:|:----:|:-------------------------------:|
-|   12   | DIR  | Divide and remainder combinated |
+|   13   | DIR  | Divide and remainder combinated |
 
 ### Negations
 - Type BB
@@ -83,8 +85,8 @@
 
 | Opcode | Name |      Action      |
 |:------:|:----:|:----------------:|
-|   13   | NEG  |   Bit negation   |
-|   14   | NOT  | Logical negation |
+|   14   | NEG  |   Bit negation   |
+|   15   | NOT  | Logical negation |
 
 ## Integer immediate binary ops.
 - Type BBD
@@ -92,22 +94,22 @@
 
 | Opcode | Name |         Action          |
 |:------:|:----:|:-----------------------:|
-|   15   | ADDI |    Wrapping addition    |
-|   16   | MULI |  Wrapping subtraction   |
-|   17   | ANDI |         Bitand          |
-|   18   | ORI  |          Bitor          |
-|   19   | XORI |         Bitxor          |
-|   20   | SLI  | Unsigned left bitshift  |
-|   21   | SRI  | Unsigned right bitshift |
-|   22   | SRSI |  Signed right bitshift  |
+|   16   | ADDI |    Wrapping addition    |
+|   17   | MULI |  Wrapping subtraction   |
+|   18   | ANDI |         Bitand          |
+|   19   | ORI  |          Bitor          |
+|   20   | XORI |         Bitxor          |
+|   21   | SLI  | Unsigned left bitshift  |
+|   22   | SRI  | Unsigned right bitshift |
+|   23   | SRSI |  Signed right bitshift  |
 
 ### Comparsion
 - Comparsion is the same as when RRR type
 
 | Opcode | Name  |       Action        |
 |:------:|:-----:|:-------------------:|
-|   23   | CMPI  |  Signed comparsion  |
-|   24   | CMPUI | Unsigned comparsion |
+|   24   | CMPI  |  Signed comparsion  |
+|   25   | CMPUI | Unsigned comparsion |
 
 ## Register value set / copy
 
@@ -117,7 +119,7 @@
 
 | Opcode | Name | Action |
 |:------:|:----:|:------:|
-|   25   |  CP  |  Copy  |
+|   26   |  CP  |  Copy  |
 
 ### Swap
 - Type BB
@@ -125,7 +127,7 @@
 
 | Opcode | Name | Action |
 |:------:|:----:|:------:|
-|   26   | SWA  |  Swap  |
+|   27   | SWA  |  Swap  |
 
 ### Load immediate
 - Type BD
@@ -133,7 +135,7 @@
 
 | Opcode | Name |     Action     |
 |:------:|:----:|:--------------:|
-|   27   |  LI  | Load immediate |
+|   28   |  LI  | Load immediate |
 
 ## Memory operations
 - Type BBDH
@@ -142,8 +144,8 @@
 ### Load / Store
 | Opcode | Name |                 Action                  |
 |:------:|:----:|:---------------------------------------:|
-|   28   |  LD  | `#0 ← [#1 + imm #3], copy imm #4 bytes` |
-|   29   |  ST  | `[#1 + imm #3] ← #0, copy imm #4 bytes` |
+|   29   |  LD  | `#0 ← [#1 + imm #3], copy imm #4 bytes` |
+|   30   |  ST  | `[#1 + imm #3] ← #0, copy imm #4 bytes` |
 
 ## Block copy
 - Block copy source and target can overlap
@@ -153,7 +155,7 @@
 
 | Opcode | Name |              Action              |
 |:------:|:----:|:--------------------------------:|
-|   30   | BMC  | `[#1] ← [#0], copy imm #2 bytes` |
+|   31   | BMC  | `[#1] ← [#0], copy imm #2 bytes` |
 
 ### Register copy
 - Type BBB
@@ -161,7 +163,7 @@
 
 | Opcode | Name |              Action              |
 |:------:|:----:|:--------------------------------:|
-|   31   | BRC  | `#1 ← #0, copy imm #2 registers` |
+|   32   | BRC  | `#1 ← #0, copy imm #2 registers` |
 
 ## Control flow
 
@@ -170,7 +172,7 @@
 
 | Opcode | Name |                      Action                       |
 |:------:|:----:|:-------------------------------------------------:|
-|   32   | JAL  | Save current PC to `#0` and jump at `#1 + imm #2` |
+|   33   | JAL  | Save current PC to `#0` and jump at `#1 + imm #2` |
 
 ### Conditional jumps
 - Type BBD
@@ -178,19 +180,19 @@
 
 | Opcode | Name |  Comparsion  |
 |:------:|:----:|:------------:|
-|   33   | JEQ  |      =       |
-|   34   | JNE  |      ≠       |
-|   35   | JLT  |  < (signed)  |
-|   36   | JGT  |  > (signed)  |
-|   37   | JLTU | < (unsigned) |
-|   38   | JGTU | > (unsigned) |
+|   34   | JEQ  |      =       |
+|   35   | JNE  |      ≠       |
+|   36   | JLT  |  < (signed)  |
+|   37   | JGT  |  > (signed)  |
+|   38   | JLTU | < (unsigned) |
+|   39   | JGTU | > (unsigned) |
 
 ### Environment call
 - Type N
 
 | Opcode | Name  |                Action                 |
 |:------:|:-----:|:-------------------------------------:|
-|   39   | ECALL | Cause an trap to the host environment |
+|   40   | ECALL | Cause an trap to the host environment |
 
 ## Floating point operations
 - Type BBB
@@ -198,29 +200,29 @@
 
 | Opcode | Name |     Action     |
 |:------:|:----:|:--------------:|
-|   40   | ADDF |    Addition    |
-|   41   | SUBF |  Subtraction   |
-|   42   | MULF | Multiplication |
+|   41   | ADDF |    Addition    |
+|   42   | SUBF |  Subtraction   |
+|   43   | MULF | Multiplication |
 
 ### Division-remainder
 - Type BBBB
 
 | Opcode | Name |          Action           |
 |:------:|:----:|:-------------------------:|
-|   43   | DIRF | Same as for integer `DIR` |
+|   44   | DIRF | Same as for integer `DIR` |
 
 ### Fused Multiply-Add
 - Type BBBB
 
 | Opcode | Name |        Action         |
 |:------:|:----:|:---------------------:|
-|   44   | FMAF | `#0 ← (#1 * #2) + #3` |
+|   45   | FMAF | `#0 ← (#1 * #2) + #3` |
 
 ### Negation
 - Type BB
 | Opcode | Name |   Action   |
 |:------:|:----:|:----------:|
-|   45   | NEGF | `#0 ← -#1` |
+|   46   | NEGF | `#0 ← -#1` |
 
 ### Conversion
 - Type BB
@@ -229,8 +231,8 @@
 
 | Opcode | Name |    Action    |
 |:------:|:----:|:------------:|
-|   46   | ITF  | Int to Float |
-|   47   | FTI  | Float to Int |
+|   47   | ITF  | Int to Float |
+|   48   | FTI  | Float to Int |
 
 ## Floating point immediate operations
 - Type BBD
@@ -238,8 +240,8 @@
 
 | Opcode | Name  |     Action     |
 |:------:|:-----:|:--------------:|
-|   48   | ADDFI |    Addition    |
-|   49   | MULFI | Multiplication |
+|   49   | ADDFI |    Addition    |
+|   50   | MULFI | Multiplication |
 
 # Registers
 - There is 255 registers + one zero register (with index 0)
@@ -277,6 +279,7 @@ Program should at least implement these traps:
 - Invalid instruction exception
 - Load address exception
 - Store address exception
+- Unreachable instruction
 
 and executing environment should be able to get information about them,
 like the opcode of invalid instruction or attempted address to load/store.

@@ -6,10 +6,6 @@
 // - Validation has to assure there is 256 registers (r0 - r255)
 // - Instructions have to be valid as specified (values and sizes)
 // - Mapped pages should be at least 4 KiB
-// - Yes, I am aware of the UB when jumping in-mid of instruction where
-//   the read byte corresponds to an instruction whose lenght exceets the
-//   program size. If you are (rightfully) worried about the UB, for now just
-//   append your program with 11 zeroes.
 
 use self::mem::HandlePageFault;
 
@@ -97,6 +93,9 @@ pub struct Vm<'a, PfHandler, const TIMER_QUOTIENT: usize> {
     /// Program
     program: &'a [u8],
 
+    /// Cached program length (without unreachable end)
+    program_len: usize,
+
     /// Program timer
     timer: usize,
 }
@@ -114,6 +113,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
             memory: Default::default(),
             pfhandler: traph,
             pc: 0,
+            program_len: program.len() - 12,
             program,
             timer: 0,
         }
@@ -131,13 +131,18 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
     pub fn run(&mut self) -> Result<VmRunOk, VmRunError> {
         use hbbytecode::opcode::*;
         loop {
-            // Fetch instruction
-            let Some(&opcode) = self.program.get(self.pc)
-                else { return Ok(VmRunOk::End) };
+            // Check instruction boundary
+            if self.pc >= self.program_len {
+                return Ok(VmRunOk::End);
+            }
 
             // Big match
             unsafe {
-                match opcode {
+                match *self.program.get_unchecked(self.pc) {
+                    UN => {
+                        param!(self, ());
+                        return Err(VmRunError::Unreachable);
+                    }
                     NOP => param!(self, ()),
                     ADD => binary_op!(self, as_u64, u64::wrapping_add),
                     SUB => binary_op!(self, as_u64, u64::wrapping_sub),
@@ -256,7 +261,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                         core::ptr::copy(
                             self.registers.get_unchecked(usize::from(src)),
                             self.registers.get_unchecked_mut(usize::from(dst)),
-                            usize::from(count * 8),
+                            usize::from(count),
                         );
                     }
                     JAL => {
@@ -352,6 +357,9 @@ pub enum VmRunError {
 
     /// Unhandled store access exception
     StoreAccessEx(u64),
+
+    /// Reached unreachable code
+    Unreachable,
 }
 
 /// Virtual machine halt ok
