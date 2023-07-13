@@ -279,6 +279,7 @@ Program should at least implement these traps:
 - Invalid instruction exception
 - Load address exception
 - Store address exception
+- Unreachable instruction
 
 and executing environment should be able to get information about them,
 like the opcode of invalid instruction or attempted address to load/store.
