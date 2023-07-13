@@ -9,6 +9,8 @@ pub enum ErrorKind {
     Unimplemented,
     /// Attempted to copy over register boundary
     RegisterArrayOverflow,
+    /// Program is not validly terminated
+    InvalidEnd,
 }
 
 /// Error
@@ -24,6 +26,22 @@ pub struct Error {
 /// sound to execute.
 pub fn validate(mut program: &[u8]) -> Result<(), Error> {
     use hbbytecode::opcode::*;
+
+    if program.len() < 12 {
+        return Err(Error {
+            kind:  ErrorKind::InvalidEnd,
+            index: 0,
+        });
+    }
+
+    for (index, item) in program.iter().enumerate().skip(program.len() - 12) {
+        if *item != 0 {
+            return Err(Error {
+                kind: ErrorKind::InvalidEnd,
+                index,
+            });
+        }
+    }
 
     let start = program;
     loop {
@@ -46,7 +64,7 @@ pub fn validate(mut program: &[u8]) -> Result<(), Error> {
                     index: (program.as_ptr() as usize) - (start.as_ptr() as usize),
                 })
             }
-            [NOP | ECALL, rest @ ..]
+            [UN | NOP | ECALL, rest @ ..]
             | [DIR | DIRF, _, _, _, _, rest @ ..]
             | [ADD..=CMPU | BRC | ADDF..=MULF, _, _, _, rest @ ..]
             | [NEG..=NOT | CP..=SWA | NEGF..=FTI, _, _, rest @ ..]

@@ -27,7 +27,7 @@ macros::impl_both!(
     bd(p0: R, p1: I)
         => [LI],
     n()
-        => [NOP, ECALL],
+        => [UN, NOP, ECALL],
 );
 
 impl Assembler {
@@ -35,6 +35,11 @@ impl Assembler {
     #[inline(always)]
     pub fn i_brc(&mut self, p0: u8, p1: u8, p2: u8) {
         self.i_param_bbb(hbbytecode::opcode::BRC, p0, p1, p2)
+    }
+
+    /// Append 12 zeroes (UN) at the end
+    pub fn finalise(&mut self) {
+        self.buf.extend([0; 12]);
     }
 }
 
