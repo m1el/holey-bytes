@@ -15,9 +15,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         unsafe {
             let mut vm = Vm::<_, 0>::new_unchecked(&prog, TestTrapHandler);
-            vm.memory.insert_test_page();
+            let data = {
+                let ptr = std::alloc::alloc_zeroed(std::alloc::Layout::from_size_align_unchecked(
+                    4096, 4096,
+                ));
+                if ptr.is_null() {
+                    panic!("Alloc error tbhl");
+                }
+                ptr
+            };
+
+            vm.memory
+                .map(
+                    data,
+                    0,
+                    hbvm::vm::mem::paging::Permission::Write,
+                    PageSize::Size4K,
+                )
+                .unwrap();
+
             println!("Program interrupt: {:?}", vm.run());
             println!("{:?}", vm.registers);
+            std::alloc::dealloc(data, std::alloc::Layout::from_size_align_unchecked(4096, 4096));
+            vm.memory.unmap(0).unwrap();
         }
     }
     Ok(())

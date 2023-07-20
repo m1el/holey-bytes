@@ -1,14 +1,6 @@
 //! Page table and associated structures implementation
 
-use {
-    core::{
-        fmt::Debug,
-        mem::MaybeUninit,
-        ops::{Index, IndexMut},
-        slice::SliceIndex,
-    },
-    delegate::delegate,
-};
+use core::{fmt::Debug, mem::MaybeUninit};
 
 /// Page entry permission
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -66,78 +58,18 @@ impl Debug for PtEntry {
 /// Page table
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(align(4096))]
-pub struct PageTable([PtEntry; 512]);
-
-impl PageTable {
-    delegate!(to self.0 {
-        /// Returns a reference to an element or subslice depending on the type of
-        /// index.
-        ///
-        /// - If given a position, returns a reference to the element at that
-        ///   position or `None` if out of bounds.
-        /// - If given a range, returns the subslice corresponding to that range,
-        ///   or `None` if out of bounds.
-        ///
-        pub fn get<I>(&self, ix: I) -> Option<&I::Output>
-            where I: SliceIndex<[PtEntry]>;
-
-        /// Returns a mutable reference to an element or subslice depending on the
-        /// type of index (see [`get`]) or `None` if the index is out of bounds.
-        pub fn get_mut<I>(&mut self, ix: I) -> Option<&mut I::Output>
-            where I: SliceIndex<[PtEntry]>;
-
-        /// Returns a reference to an element or subslice, without doing bounds
-        /// checking.
-        ///
-        /// For a safe alternative see [`get`].
-        ///
-        /// # Safety
-        ///
-        /// Calling this method with an out-of-bounds index is *[undefined behavior]*
-        /// even if the resulting reference is not used.
-        pub unsafe fn get_unchecked<I>(&self, index: I) -> &I::Output
-            where I: SliceIndex<[PtEntry]>;
-
-        /// Returns a mutable reference to an element or subslice, without doing
-        /// bounds checking.
-        ///
-        /// For a safe alternative see [`get_mut`].
-        ///
-        /// # Safety
-        ///
-        /// Calling this method with an out-of-bounds index is *[undefined behavior]*
-        /// even if the resulting reference is not used.
-        pub unsafe fn get_unchecked_mut<I>(&mut self, index: I) -> &mut I::Output
-            where I: SliceIndex<[PtEntry]>;
-    });
-}
-
-impl<Idx> Index<Idx> for PageTable
-where
-    Idx: SliceIndex<[PtEntry]>,
-{
-    type Output = Idx::Output;
-
-    #[inline(always)]
-    fn index(&self, index: Idx) -> &Self::Output {
-        &self.0[index]
-    }
-}
-
-impl<Idx> IndexMut<Idx> for PageTable
-where
-    Idx: SliceIndex<[PtEntry]>,
-{
-    #[inline(always)]
-    fn index_mut(&mut self, index: Idx) -> &mut Self::Output {
-        &mut self.0[index]
-    }
+pub struct PageTable {
+    pub childen: u8,
+    pub table:   [PtEntry; 256],
 }
 
 impl Default for PageTable {
     fn default() -> Self {
         // SAFETY: It's fine, zeroed page table entry is valid (= empty)
-        Self(unsafe { MaybeUninit::zeroed().assume_init() })
+        Self {
+            childen: 0,
+            table:   unsafe { MaybeUninit::zeroed().assume_init() },
+        }
     }
 }
 

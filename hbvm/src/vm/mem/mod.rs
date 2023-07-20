@@ -56,11 +56,11 @@ impl Memory {
 
             for _ in 0..4 {
                 let mut pt = Box::<PageTable>::default();
-                pt[0] = entry;
+                pt.table[0] = entry;
                 entry = PtEntry::new(Box::into_raw(pt) as _, Permission::Node);
             }
 
-            (*self.root_pt)[0] = entry;
+            (*self.root_pt).table[0] = entry;
         }
     }
 
@@ -70,17 +70,95 @@ impl Memory {
     /// Who knows.
     pub unsafe fn map(
         &mut self,
-        mut host: *mut u8,
-        target: usize,
+        host: *mut u8,
+        target: u64,
+        perm: Permission,
         pagesize: PageSize,
-        count: usize,
-    ) {
-        todo!()
+    ) -> Result<(), MapError> {
+        let mut current_pt = self.root_pt;
+        
+        let lookup_depth = match pagesize {
+            PageSize::Size4K => 4,
+            PageSize::Size2M => 3,
+            PageSize::Size1G => 2,
+        };
+
+        // Lookup pagetable above
+        for lvl in (0..lookup_depth).rev() {
+            let entry = (*current_pt)
+                .table
+                .get_unchecked_mut(addr_extract_index(target, lvl));
+
+            let ptr = entry.ptr();
+            match entry.permission() {
+                Permission::Empty => {
+                    (*current_pt).childen += 1;
+                    let table = Box::into_raw(Box::new(paging::PtPointedData {
+                        pt: PageTable::default(),
+                    }));
+
+                    core::ptr::write(entry, PtEntry::new(table, Permission::Node));
+                    current_pt = table as _;
+                }
+                Permission::Node => current_pt = ptr as _,
+                _ => return Err(MapError::AlreadyMapped),
+            }
+        }
+
+        // Write entry
+        (*current_pt).childen += 1;
+        core::ptr::write(
+            (*current_pt)
+                .table
+                .get_unchecked_mut(addr_extract_index(target, 4 - lookup_depth)),
+            PtEntry::new(host.cast(), perm),
+        );
+
+        Ok(())
     }
 
     /// Unmaps pages from VM's memory
-    pub fn unmap(&mut self, addr: usize, count: usize) {
-        todo!()
+    pub fn unmap(&mut self, addr: u64) -> Result<(), NothingToUnmap> {
+        let mut current_pt = self.root_pt;
+        let mut page_tables = [core::ptr::null_mut(); 5];
+
+        for lvl in (0..5).rev() {
+            let entry = unsafe {
+                (*current_pt)
+                    .table
+                    .get_unchecked_mut(addr_extract_index(addr, lvl))
+            };
+
+            let ptr = entry.ptr();
+            match entry.permission() {
+                Permission::Empty => return Err(NothingToUnmap),
+                Permission::Node => {
+                    page_tables[lvl as usize] = entry;
+                    current_pt = ptr as _
+                }
+                _ => unsafe {
+                    core::ptr::write(entry, Default::default());
+                },
+            }
+        }
+
+        for entry in page_tables.into_iter() {
+            if entry.is_null() {
+                continue;
+            }
+
+            unsafe {
+                let children = &mut (*(*entry).ptr()).pt.childen;
+                *children -= 1;
+                if *children == 0 {
+                    core::mem::drop(Box::from_raw((*entry).ptr() as *mut PageTable));
+                }
+
+                core::ptr::write(entry, Default::default());
+            }
+        }
+
+        Ok(())
     }
 
     /// Load value from an address
@@ -338,10 +416,9 @@ impl Iterator for AddrPageLookuper {
             for lvl in (0..5).rev() {
                 // Get an entry
                 unsafe {
-                    let entry = (*current_pt).get_unchecked(
-                        usize::try_from((self.addr >> (lvl * 9 + 12)) & ((1 << 9) - 1))
-                            .expect("?conradluget a better CPU"),
-                    );
+                    let entry = (*current_pt)
+                        .table
+                        .get_unchecked(addr_extract_index(self.addr, lvl));
 
                     let ptr = entry.ptr();
                     match entry.permission() {
@@ -356,7 +433,7 @@ impl Iterator for AddrPageLookuper {
                         // Node → proceed waking
                         Permission::Node => current_pt = ptr as _,
 
-                        // Leaft → return relevant data
+                        // Leaf → return relevant data
                         perm => {
                             break 'a (
                                 // Pointer in host memory
@@ -386,6 +463,11 @@ impl Iterator for AddrPageLookuper {
     }
 }
 
+fn addr_extract_index(addr: u64, lvl: u8) -> usize {
+    debug_assert!(lvl <= 4);
+    usize::try_from((addr >> (lvl * 9 + 12)) & ((1 << 9) - 1)).expect("?conradluget a better CPU")
+}
+
 /// Page size
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PageSize {
@@ -401,7 +483,7 @@ pub enum PageSize {
 
 impl PageSize {
     /// Convert page table level to size of page
-    fn from_lvl(lvl: u8) -> Option<Self> {
+    const fn from_lvl(lvl: u8) -> Option<Self> {
         match lvl {
             0 => Some(PageSize::Size4K),
             1 => Some(PageSize::Size2M),
@@ -418,6 +500,9 @@ pub struct LoadError(u64);
 /// Unhandled store access trap
 #[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
 pub struct StoreError(u64);
+
+#[derive(Clone, Copy, Display, Debug)]
+pub struct NothingToUnmap;
 
 #[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
 pub enum MemoryAccessReason {
@@ -450,4 +535,9 @@ impl From<StoreError> for VmRunError {
     fn from(value: StoreError) -> Self {
         Self::StoreAccessEx(value.0)
     }
+}
+
+#[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
+pub enum MapError {
+    AlreadyMapped,
 }
