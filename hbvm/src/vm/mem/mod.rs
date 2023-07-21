@@ -36,34 +36,6 @@ impl Drop for Memory {
 }
 
 impl Memory {
-    // HACK: Just for allocation testing, will be removed when proper memory interfaces
-    // implemented.
-    pub fn insert_test_page(&mut self) {
-        unsafe {
-            let mut entry = PtEntry::new(
-                {
-                    let layout = alloc::alloc::Layout::from_size_align_unchecked(4096, 4096);
-                    let ptr = alloc::alloc::alloc_zeroed(layout);
-                    if ptr.is_null() {
-                        alloc::alloc::handle_alloc_error(layout);
-                    }
-
-                    core::ptr::write_bytes(ptr, 69, 10);
-                    ptr.cast()
-                },
-                Permission::Write,
-            );
-
-            for _ in 0..4 {
-                let mut pt = Box::<PageTable>::default();
-                pt.table[0] = entry;
-                entry = PtEntry::new(Box::into_raw(pt) as _, Permission::Node);
-            }
-
-            (*self.root_pt).table[0] = entry;
-        }
-    }
-
     /// Maps host's memory into VM's memory
     ///
     /// # Safety
