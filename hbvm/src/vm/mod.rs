@@ -154,6 +154,11 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                     SR => binary_op!(self, as_u64, ops::Shr::shr),
                     SRS => binary_op!(self, as_i64, ops::Shr::shr),
                     CMP => {
+                        // Compare a0 <=> a1
+                        // < → -1
+                        // > →  1
+                        // = →  0
+
                         let ParamBBB(tg, a0, a1) = param!(self, ParamBBB);
                         self.write_reg(
                             tg,
@@ -161,6 +166,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                         );
                     }
                     CMPU => {
+                        // Unsigned comparsion
                         let ParamBBB(tg, a0, a1) = param!(self, ParamBBB);
                         self.write_reg(
                             tg,
@@ -168,10 +174,12 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                         );
                     }
                     NOT => {
+                        // Logical negation
                         let param = param!(self, ParamBB);
                         self.write_reg(param.0, !self.read_reg(param.1).as_u64());
                     }
                     NEG => {
+                        // Bitwise negation
                         let param = param!(self, ParamBB);
                         self.write_reg(
                             param.0,
@@ -182,6 +190,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                         );
                     }
                     DIR => {
+                        // Fused Division-Remainder
                         let ParamBBBB(dt, rt, a0, a1) = param!(self, ParamBBBB);
                         let a0 = self.read_reg(a0).as_u64();
                         let a1 = self.read_reg(a1).as_u64();
@@ -212,12 +221,17 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                         self.write_reg(param.0, self.read_reg(param.1));
                     }
                     SWA => {
-                        let ParamBB(src, dst) = param!(self, ParamBB);
-                        if src + dst != 0 {
-                            core::ptr::swap(
-                                self.registers.get_unchecked_mut(usize::from(src)),
-                                self.registers.get_unchecked_mut(usize::from(dst)),
-                            );
+                        // Swap registers
+                        let ParamBB(r0, r1) = param!(self, ParamBB);
+                        match (r0, r1) {
+                            (0, 0) => (),
+                            (dst, 0) | (0, dst) => self.write_reg(dst, 0_u64),
+                            (r0, r1) => {
+                                core::ptr::swap(
+                                    self.registers.get_unchecked_mut(usize::from(r0)),
+                                    self.registers.get_unchecked_mut(usize::from(r1)),
+                                );
+                            }
                         }
                     }
                     LI => {
@@ -225,6 +239,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                         self.write_reg(param.0, param.1);
                     }
                     LD => {
+                        // Load. If loading more than register size, continue on adjecent registers
                         let ParamBBDH(dst, base, off, count) = param!(self, ParamBBDH);
                         let n: usize = match dst {
                             0 => 1,
@@ -239,6 +254,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                         )?;
                     }
                     ST => {
+                        // Store. Same rules apply as to LD
                         let ParamBBDH(dst, base, off, count) = param!(self, ParamBBDH);
                         self.memory.store(
                             self.read_reg(base).as_u64() + off,
@@ -248,6 +264,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                         )?;
                     }
                     BMC => {
+                        // Block memory copy
                         let ParamBBD(src, dst, count) = param!(self, ParamBBD);
                         self.memory.block_copy(
                             self.read_reg(src).as_u64(),
@@ -257,6 +274,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                         )?;
                     }
                     BRC => {
+                        // Block register copy
                         let ParamBBB(src, dst, count) = param!(self, ParamBBB);
                         core::ptr::copy(
                             self.registers.get_unchecked(usize::from(src)),
@@ -265,10 +283,13 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                         );
                     }
                     JAL => {
+                        // Jump and link. Save PC after this instruction to
+                        // specified register and jump to reg + offset.
                         let ParamBBD(save, reg, offset) = param!(self, ParamBBD);
                         self.write_reg(save, self.pc as u64);
                         self.pc = (self.read_reg(reg).as_u64() + offset) as usize;
                     }
+                    // Conditional jumps, jump only to immediates
                     JEQ => cond_jump!(self, int, Equal),
                     JNE => {
                         let ParamBBD(a0, a1, jt) = param!(self, ParamBBD);
@@ -282,6 +303,11 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                     JGTU => cond_jump!(self, sint, Greater),
                     ECALL => {
                         param!(self, ());
+
+                        // So we don't get timer interrupt after ECALL
+                        if TIMER_QUOTIENT != 0 {
+                            self.timer = self.timer.wrapping_add(1);
+                        }
                         return Ok(VmRunOk::Ecall);
                     }
                     ADDF => binary_op!(self, as_f64, ops::Add::add),

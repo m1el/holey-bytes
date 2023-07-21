@@ -124,6 +124,9 @@
 ### Swap
 - Type BB
 - Swap #0 and #1
+- Zero register rules:
+    - Both: no-op
+    - One: Copy zero to the non-zero register
 
 | Opcode | Name | Action |
 |:------:|:----:|:------:|
@@ -263,8 +266,8 @@
 
 # Program execution
 - The way of program execution is implementation defined
-- The order of instruction is arbitrary, as long all observable
-    effects are applied in the program's order
+- The execution is arbitrary, as long all effects are obervable
+    in the way as program was executed literally, in order.
 
 # Program validation
 - Invalid program should cause runtime error:
