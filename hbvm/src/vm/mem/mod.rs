@@ -76,7 +76,7 @@ impl Memory {
         pagesize: PageSize,
     ) -> Result<(), MapError> {
         let mut current_pt = self.root_pt;
-        
+
         let lookup_depth = match pagesize {
             PageSize::Size4K => 4,
             PageSize::Size2M => 3,
@@ -220,81 +220,76 @@ impl Memory {
     ///     - Addr-san claims it's fine but who knows is she isn't lying :ferrisSus:
     pub unsafe fn block_copy(
         &mut self,
-        src: u64,
-        dst: u64,
+        mut src: u64,
+        mut dst: u64,
         count: usize,
         traph: &mut impl HandlePageFault,
     ) -> Result<(), BlkCopyError> {
         // Yea, i know it is possible to do this more efficiently, but I am too lazy.
 
-        const STACK_BUFFER_SIZE: usize = 512;
+        impl Memory {
+            #[inline]
+            unsafe fn act(
+                &mut self,
+                src: u64,
+                dst: u64,
+                buf: *mut u8,
+                count: usize,
+                traph: &mut impl HandlePageFault,
+            ) -> Result<(), BlkCopyError> {
+                self.memory_access(
+                    MemoryAccessReason::Load,
+                    src,
+                    buf,
+                    STACK_BUFFER_SIZE,
+                    |perm| {
+                        matches!(
+                            perm,
+                            Permission::Readonly | Permission::Write | Permission::Exec
+                        )
+                    },
+                    |src, dst, count| core::ptr::copy(src, dst, count),
+                    traph,
+                )
+                .map_err(|addr| BlkCopyError {
+                    access_reason: MemoryAccessReason::Load,
+                    addr,
+                })?;
+
+                self.memory_access(
+                    MemoryAccessReason::Store,
+                    dst,
+                    buf,
+                    count,
+                    |perm| perm == Permission::Write,
+                    |dst, src, count| core::ptr::copy(src, dst, count),
+                    traph,
+                )
+                .map_err(|addr| BlkCopyError {
+                    access_reason: MemoryAccessReason::Store,
+                    addr,
+                })?;
+
+                Ok(())
+            }
+        }
+
+        const STACK_BUFFER_SIZE: usize = 4096;
 
         // Decide if to use stack-allocated buffer or to heap allocate
         // Deallocation is again decided on size at the end of the function
         let mut buf = MaybeUninit::<[u8; STACK_BUFFER_SIZE]>::uninit();
-        let buf = if count <= STACK_BUFFER_SIZE {
-            buf.as_mut_ptr().cast()
-        } else {
-            unsafe {
-                let layout = core::alloc::Layout::from_size_align_unchecked(count, 1);
-                let ptr = alloc::alloc::alloc(layout);
-                if ptr.is_null() {
-                    alloc::alloc::handle_alloc_error(layout);
-                }
 
-                ptr
-            }
-        };
+        let n_buffers = count / STACK_BUFFER_SIZE;
+        let rem = count % STACK_BUFFER_SIZE;
 
-        // Perform memory block transfer
-        let status = (|| {
-            // Load to buffer
-            self.memory_access(
-                MemoryAccessReason::Load,
-                src,
-                buf,
-                count,
-                |perm| {
-                    matches!(
-                        perm,
-                        Permission::Readonly | Permission::Write | Permission::Exec
-                    )
-                },
-                |src, dst, count| core::ptr::copy(src, dst, count),
-                traph,
-            )
-            .map_err(|addr| BlkCopyError {
-                access_reason: MemoryAccessReason::Load,
-                addr,
-            })?;
-
-            // Store from buffer
-            self.memory_access(
-                MemoryAccessReason::Store,
-                dst,
-                buf,
-                count,
-                |perm| perm == Permission::Write,
-                |dst, src, count| core::ptr::copy(src, dst, count),
-                traph,
-            )
-            .map_err(|addr| BlkCopyError {
-                access_reason: MemoryAccessReason::Store,
-                addr,
-            })?;
-
-            Ok::<_, BlkCopyError>(())
-        })();
-
-        // Deallocate if used heap-allocated array
-        if count > STACK_BUFFER_SIZE {
-            alloc::alloc::dealloc(
-                buf,
-                core::alloc::Layout::from_size_align_unchecked(count, 1),
-            );
+        for _ in 0..n_buffers {
+            self.act(src, dst, buf.as_mut_ptr().cast(), STACK_BUFFER_SIZE, traph)?;
+            src += STACK_BUFFER_SIZE as u64;
+            dst += STACK_BUFFER_SIZE as u64;
         }
 
-        status
+        self.act(src, dst, buf.as_mut_ptr().cast(), rem, traph)
     }
 
     /// Split address to pages, check their permissions and feed pointers with offset
