@@ -67,8 +67,9 @@ impl Assembler {
         //
         // Newly created `UN` (as UNreachable) was chosen as
         // - It was a good idea to add some equivalent to `ud2` anyways
-        // - Its zeroes
+        // - It was chosen to be zero
         // - What if you somehow reached that code, it will appropriately bail :)
+        // - (yes, originally NOP was considered)
         //
         // Why 12 bytes? That's the size of largest instruction parameter part.
         self.buf.extend([0; 12]);
