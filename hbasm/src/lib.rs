@@ -48,7 +48,7 @@ impl Assembler {
 
     /// Append 12 zeroes (UN) at the end
     /// 
-    /// # HBVM lore
+    /// # HoleyBytes lore
     ///
     /// In reference HBVM implementation checks are done in
     /// a separate phase before execution.
