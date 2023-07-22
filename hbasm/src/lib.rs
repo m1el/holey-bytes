@@ -47,31 +47,32 @@ impl Assembler {
     }
 
     /// Append 12 zeroes (UN) at the end
+    /// 
+    /// # HBVM lore
+    ///
+    /// In reference HBVM implementation checks are done in
+    /// a separate phase before execution.
+    ///
+    /// This way execution will be much faster as they have to
+    /// be done only once.
+    ///
+    /// There was an issue. You cannot statically check register values and
+    /// `JAL` instruction could hop at the end of program to some byte, which
+    /// will be interpreted as opcode and VM in attempt to decode the instruction
+    /// performed out-of-bounds read which leads to undefined behaviour.
+    ///
+    /// Several options were considered to overcome this, but inserting some data at
+    /// program's end which when executed would lead to undesired behaviour, though
+    /// not undefined behaviour.
+    ///
+    /// Newly created `UN` (as UNreachable) was chosen as
+    /// - It was a good idea to add some equivalent to `ud2` anyways
+    /// - It was chosen to be zero
+    /// - What if you somehow reached that code, it will appropriately bail :)
+    /// - (yes, originally `NOP` was considered)
+    ///
+    /// Why 12 bytes? That's the size of largest instruction parameter part.
     pub fn finalise(&mut self) {
-        // HBVM lore:
-        //
-        // In reference HBVM implementation checks are done in
-        // a separate phase before execution.
-        //
-        // This way execution will be much faster as they have to
-        // be done only once.
-        //
-        // There was an issue. You cannot statically check register values and
-        // `JAL` instruction could hop at the end of program to some byte, which
-        // will be interpreted as opcode and VM in attempt to decode the instruction
-        // performed out-of-bounds read which leads to undefined behaviour.
-        //
-        // Several options were considered to overcome this, but inserting some data at
-        // program's end which when executed would lead to undesired behaviour, though
-        // not undefined behaviour.
-        //
-        // Newly created `UN` (as UNreachable) was chosen as
-        // - It was a good idea to add some equivalent to `ud2` anyways
-        // - It was chosen to be zero
-        // - What if you somehow reached that code, it will appropriately bail :)
-        // - (yes, originally NOP was considered)
-        //
-        // Why 12 bytes? That's the size of largest instruction parameter part.
         self.buf.extend([0; 12]);
     }
 }
