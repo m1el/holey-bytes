@@ -173,9 +173,9 @@
 ### Unconditional jump
 - Type BBD
 
-| Opcode | Name |                      Action                       |
-|:------:|:----:|:-------------------------------------------------:|
-|   33   | JAL  | Save current PC to `#0` and jump at `#1 + imm #2` |
+| Opcode | Name |                       Action                       |
+|:------:|:----:|:--------------------------------------------------:|
+|   33   | JAL  | Save PC past JAL to `#0` and jump at `#1 + imm #2` |
 
 ### Conditional jumps
 - Type BBD

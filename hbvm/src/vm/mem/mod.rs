@@ -39,7 +39,9 @@ impl Memory {
     /// Maps host's memory into VM's memory
     ///
     /// # Safety
-    /// Who knows.
+    /// - Your faith in the gods of UB
+    ///     - Addr-san claims it's fine but who knows is she isn't lying :ferrisSus:
+    ///     - Alright, Miri-sama is also fine with this, who knows why
     pub unsafe fn map(
         &mut self,
         host: *mut u8,
@@ -49,13 +51,14 @@ impl Memory {
     ) -> Result<(), MapError> {
         let mut current_pt = self.root_pt;
 
+        // Decide on what level depth are we going
         let lookup_depth = match pagesize {
             PageSize::Size4K => 4,
             PageSize::Size2M => 3,
             PageSize::Size1G => 2,
         };
 
-        // Lookup pagetable above
+        // Walk pagetable levels
         for lvl in (0..lookup_depth).rev() {
             let entry = (*current_pt)
                 .table
@@ -63,8 +66,12 @@ impl Memory {
 
             let ptr = entry.ptr();
             match entry.permission() {
+                // Still not on target and already seeing empty entry?
+                // No worries! Let's create one (allocates).
                 Permission::Empty => {
+                    // Increase children count
                     (*current_pt).childen += 1;
+
                     let table = Box::into_raw(Box::new(paging::PtPointedData {
                         pt: PageTable::default(),
                     }));
@@ -72,28 +79,39 @@ impl Memory {
                     core::ptr::write(entry, PtEntry::new(table, Permission::Node));
                     current_pt = table as _;
                 }
+                // Continue walking
                 Permission::Node => current_pt = ptr as _,
-                _ => return Err(MapError::AlreadyMapped),
+
+                // There is some entry on place of node
+                _ => return Err(MapError::PageOnNode),
             }
+        }
+
+        let node = (*current_pt)
+            .table
+            .get_unchecked_mut(addr_extract_index(target, 4 - lookup_depth));
+
+        // Check if node is not mapped
+        if node.permission() != Permission::Empty {
+            return Err(MapError::AlreadyMapped);
         }
 
         // Write entry
         (*current_pt).childen += 1;
-        core::ptr::write(
-            (*current_pt)
-                .table
-                .get_unchecked_mut(addr_extract_index(target, 4 - lookup_depth)),
-            PtEntry::new(host.cast(), perm),
-        );
+        core::ptr::write(node, PtEntry::new(host.cast(), perm));
 
         Ok(())
     }
 
     /// Unmaps pages from VM's memory
+    ///
+    /// If errors, it only means there is no entry to unmap and in most cases
+    /// just should be ignored.
     pub fn unmap(&mut self, addr: u64) -> Result<(), NothingToUnmap> {
         let mut current_pt = self.root_pt;
         let mut page_tables = [core::ptr::null_mut(); 5];
 
+        // Walk page table in reverse
         for lvl in (0..5).rev() {
             let entry = unsafe {
                 (*current_pt)
@@ -103,30 +121,42 @@ impl Memory {
 
             let ptr = entry.ptr();
             match entry.permission() {
+                // Nothing is there, throw an error, not critical!
                 Permission::Empty => return Err(NothingToUnmap),
+                // Node – Save to visited pagetables and continue walking
                 Permission::Node => {
                     page_tables[lvl as usize] = entry;
                     current_pt = ptr as _
                 }
+                // Page entry – zero it out!
+                // Zero page entry is completely valid entry with
+                // empty permission - no UB here!
                 _ => unsafe {
-                    core::ptr::write(entry, Default::default());
+                    core::ptr::write_bytes(entry, 0, 1);
                 },
             }
         }
 
+        // Now walk in order visited page tables
         for entry in page_tables.into_iter() {
+            // Level not visited, skip.
             if entry.is_null() {
                 continue;
             }
 
             unsafe {
                 let children = &mut (*(*entry).ptr()).pt.childen;
-                *children -= 1;
-                if *children == 0 {
-                    core::mem::drop(Box::from_raw((*entry).ptr() as *mut PageTable));
-                }
 
-                core::ptr::write(entry, Default::default());
+                // Decrease children count
+                *children -= 1;
+
+                // If there are no children, deallocate.
+                if *children == 0 {
+                    let _ = Box::from_raw((*entry).ptr() as *mut PageTable);
+
+                    // Zero visited entry
+                    core::ptr::write_bytes(entry, 0, 1);
+                }
             }
         }
 
@@ -149,12 +179,7 @@ impl Memory {
             addr,
             target,
             count,
-            |perm| {
-                matches!(
-                    perm,
-                    Permission::Readonly | Permission::Write | Permission::Exec
-                )
-            },
+            perm_check::readable,
             |src, dst, count| core::ptr::copy_nonoverlapping(src, dst, count),
             traph,
         )
@@ -177,7 +202,7 @@ impl Memory {
             addr,
             source.cast_mut(),
             count,
-            |perm| perm == Permission::Write,
+            perm_check::writable,
             |dst, src, count| core::ptr::copy_nonoverlapping(src, dst, count),
             traph,
         )
@@ -188,8 +213,7 @@ impl Memory {
     ///
     /// # Safety
     /// - Same as for [`Self::load`] and [`Self::store`]
-    /// - Your faith in the gods of UB
-    ///     - Addr-san claims it's fine but who knows is she isn't lying :ferrisSus:
+    /// - This function has been rewritten and is now pretty much boring
     pub unsafe fn block_copy(
         &mut self,
         mut src: u64,
@@ -209,17 +233,13 @@ impl Memory {
                 count: usize,
                 traph: &mut impl HandlePageFault,
             ) -> Result<(), BlkCopyError> {
+                // Load to buffer
                 self.memory_access(
                     MemoryAccessReason::Load,
                     src,
                     buf,
-                    STACK_BUFFER_SIZE,
-                    |perm| {
-                        matches!(
-                            perm,
-                            Permission::Readonly | Permission::Write | Permission::Exec
-                        )
-                    },
+                    count,
+                    perm_check::readable,
                     |src, dst, count| core::ptr::copy(src, dst, count),
                     traph,
                 )
@@ -228,12 +248,13 @@ impl Memory {
                     addr,
                 })?;
 
+                // Store from buffer
                 self.memory_access(
                     MemoryAccessReason::Store,
                     dst,
                     buf,
                     count,
-                    |perm| perm == Permission::Write,
+                    perm_check::writable,
                     |dst, src, count| core::ptr::copy(src, dst, count),
                     traph,
                 )
@@ -246,23 +267,36 @@ impl Memory {
             }
         }
 
-        const STACK_BUFFER_SIZE: usize = 4096;
+        // Buffer size (defaults to 4 KiB, a smallest page size on most platforms)
+        const BUF_SIZE: usize = 4096;
 
-        // Decide if to use stack-allocated buffer or to heap allocate
-        // Deallocation is again decided on size at the end of the function
-        let mut buf = MaybeUninit::<[u8; STACK_BUFFER_SIZE]>::uninit();
+        // This should be equal to `BUF_SIZE`
+        #[repr(align(4096))]
+        struct AlignedBuf([MaybeUninit<u8>; BUF_SIZE]);
 
-        let n_buffers = count / STACK_BUFFER_SIZE;
-        let rem = count % STACK_BUFFER_SIZE;
+        // Safety: Assuming uninit of array of MaybeUninit is sound
+        let mut buf = AlignedBuf(MaybeUninit::uninit().assume_init());
 
+        // Calculate how many times we need to copy buffer-sized blocks if any and the rest.
+        let n_buffers = count / BUF_SIZE;
+        let rem = count % BUF_SIZE;
+
+        // Copy buffer-sized blocks
         for _ in 0..n_buffers {
-            self.act(src, dst, buf.as_mut_ptr().cast(), STACK_BUFFER_SIZE, traph)?;
-            src += STACK_BUFFER_SIZE as u64;
-            dst += STACK_BUFFER_SIZE as u64;
+            self.act(src, dst, buf.0.as_mut_ptr().cast(), BUF_SIZE, traph)?;
+            src += BUF_SIZE as u64;
+            dst += BUF_SIZE as u64;
         }
 
-        self.act(src, dst, buf.as_mut_ptr().cast(), rem, traph)
+        // Copy the rest (if any)
+        if rem != 0 {
+            self.act(src, dst, buf.0.as_mut_ptr().cast(), rem, traph)?;
+        }
+
+        Ok(())
     }
+
+    // Everyone behold, the holy function, the god of HBVM memory accesses!
 
     /// Split address to pages, check their permissions and feed pointers with offset
     /// to a specified function.
@@ -279,10 +313,11 @@ impl Memory {
         action: fn(*mut u8, *mut u8, usize),
         traph: &mut impl HandlePageFault,
     ) -> Result<(), u64> {
+        // Create new splitter
         let mut pspl = AddrPageLookuper::new(src, len, self.root_pt);
         loop {
             match pspl.next() {
-                // Page found
+                // Page is found
                 Some(Ok(AddrPageLookupOk {
                     vaddr,
                     ptr,
@@ -293,12 +328,13 @@ impl Memory {
                         return Err(vaddr);
                     }
 
-                    // Perform memory action and bump dst pointer
+                    // Perform specified memory action and bump destination pointer
                     action(ptr, dst, size);
                     dst = unsafe { dst.add(size) };
                 }
+                // No page found
                 Some(Err(AddrPageLookupError { addr, size })) => {
-                    // Execute page fault handler
+                    // Attempt to execute page fault handler
                     if traph.page_fault(reason, self, addr, size, dst) {
                         // Shift the splitter address
                         pspl.bump(size);
@@ -306,16 +342,17 @@ impl Memory {
                         // Bump dst pointer
                         dst = unsafe { dst.add(size as _) };
                     } else {
-                        return Err(addr); // Unhandleable
+                        return Err(addr); // Unhandleable, VM will yield.
                     }
                 }
+                // No remaining pages, we are done!
                 None => return Ok(()),
             }
         }
     }
 }
 
-/// Result from address split
+/// Good result from address split
 struct AddrPageLookupOk {
     /// Virtual address
     vaddr: u64,
@@ -330,6 +367,7 @@ struct AddrPageLookupOk {
     perm: Permission,
 }
 
+/// Errornous address split result
 struct AddrPageLookupError {
     /// Address of failure
     addr: u64,
@@ -351,7 +389,7 @@ struct AddrPageLookuper {
 }
 
 impl AddrPageLookuper {
-    /// Create a new page splitter
+    /// Create a new page lookuper
     pub const fn new(addr: u64, size: usize, pagetable: *const PageTable) -> Self {
         Self {
             addr,
@@ -430,7 +468,11 @@ impl Iterator for AddrPageLookuper {
     }
 }
 
-fn addr_extract_index(addr: u64, lvl: u8) -> usize {
+/// Extract index in page table on specified level
+///
+/// The level shall not be larger than 4, otherwise
+/// the output of the function is unspecified (yes, it can also panic :)
+pub fn addr_extract_index(addr: u64, lvl: u8) -> usize {
     debug_assert!(lvl <= 4);
     usize::try_from((addr >> (lvl * 9 + 12)) & ((1 << 9) - 1)).expect("?conradluget a better CPU")
 }
@@ -462,24 +504,36 @@ impl PageSize {
 
 /// Unhandled load access trap
 #[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
+#[display(fmt = "Load access error at address {_0:#x}")]
 pub struct LoadError(u64);
 
 /// Unhandled store access trap
 #[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
+#[display(fmt = "Store access error at address {_0:#x}")]
 pub struct StoreError(u64);
 
+/// There was no entry in page table to unmap
+///
+/// No worry, don't panic, nothing bad has happened,
+/// but if you are 120% sure there should be something,
+/// double-check your addresses.
 #[derive(Clone, Copy, Display, Debug)]
+#[display(fmt = "There was no entry to unmap")]
 pub struct NothingToUnmap;
 
+/// Reason to access memory
 #[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
 pub enum MemoryAccessReason {
     Load,
     Store,
 }
 
+/// Error occured when copying a block of memory
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlkCopyError {
+    /// Kind of access
     access_reason: MemoryAccessReason,
+    /// VM Address
     addr: u64,
 }
 
@@ -504,7 +558,34 @@ impl From<StoreError> for VmRunError {
     }
 }
 
+/// Error mapping
 #[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
 pub enum MapError {
+    /// Entry was already mapped
+    #[display(fmt = "There is already a page mapped on specified address")]
     AlreadyMapped,
+    /// When walking a page entry was
+    /// encounterd.
+    #[display(fmt = "There was a page mapped on the way instead of node")]
+    PageOnNode,
+}
+
+/// Permisison checks
+pub mod perm_check {
+    use super::paging::Permission;
+
+    /// Page is readable
+    #[inline(always)]
+    pub fn readable(perm: Permission) -> bool {
+        matches!(
+            perm,
+            Permission::Readonly | Permission::Write | Permission::Exec
+        )
+    }
+
+    /// Page is writable
+    #[inline(always)]
+    pub fn writable(perm: Permission) -> bool {
+        perm == Permission::Write
+    }
 }

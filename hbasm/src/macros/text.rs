@@ -1,3 +1,7 @@
+//! Macros to generate text-code assembler at [`crate::text`]
+// Refering in module which generates a module to that module — is that even legal? :D
+
+/// Generate text code based assembler
 macro_rules! gen_text {
     (
         $(
@@ -6,6 +10,7 @@ macro_rules! gen_text {
             => [$($opcode:ident),* $(,)?],
         )*
     ) => {
+        /// Text code based assembler
         pub mod text {
             use {
                 crate::{
@@ -18,6 +23,7 @@ macro_rules! gen_text {
             };
 
             paste::paste!(literify::literify! {
+                /// Assembly token
                 #[derive(Clone, Copy, Debug, PartialEq, Eq, Logos)]
                 #[logos(extras = Rodeo)]
                 #[logos(skip r"[ \t\t]+")]
@@ -59,6 +65,7 @@ macro_rules! gen_text {
                 }
             });
 
+            /// Type of error
             #[derive(Copy, Clone, Debug, PartialEq, Eq)]
             pub enum ErrorKind {
                 UnexpectedToken,
@@ -67,12 +74,14 @@ macro_rules! gen_text {
                 InvalidSymbol,
             }
 
+            /// Text assembly error
             #[derive(Clone, Debug, PartialEq, Eq)]
             pub struct Error {
                 pub kind: ErrorKind,
                 pub span: Span,
             }
 
+            /// Parse code and insert instructions
             pub fn assemble(asm: &mut Assembler, code: &str) -> Result<(), Error> {
                 pub struct TextAsm<'a> {
                     asm: &'a mut Assembler,
@@ -93,8 +102,10 @@ macro_rules! gen_text {
                     fn run(&mut self) -> Result<(), ErrorKind> {
                         loop {
                             match self.lexer.next() {
+                                // Got an opcode
                                 Some(Ok(Token::Opcode(op))) => {
                                     match op {
+                                        // Take all the opcodes and match them to their corresponding functions
                                         $(
                                             $(hbbytecode::opcode::$opcode)|* => paste::paste!({
                                                 param_extract_itm!(self, $($param_i: $param_ty),*);
@@ -112,12 +123,16 @@ macro_rules! gen_text {
 
                                             self.asm.i_param_bbb(op, p0, p1, p2);
                                         }
+                                        // Already matched in Logos, should not be able to obtain
+                                        // invalid opcode.
                                         _ => unreachable!(),
                                     }
                                 }
+                                // Insert label to table
                                 Some(Ok(Token::Label(lbl))) => {
                                     self.symloc.insert(lbl, self.asm.buf.len());
                                 }
+                                // Instruction separator (LF, ;)
                                 Some(Ok(Token::ISep)) => (),
                                 Some(Ok(_))           => return Err(ErrorKind::UnexpectedToken),
                                 Some(Err(()))         => return Err(ErrorKind::InvalidToken),
@@ -136,15 +151,20 @@ macro_rules! gen_text {
                 asm.run()
                     .map_err(|kind| Error { kind, span: asm.lexer.span() })?;
 
+                // Walk table and substitute labels
+                // for their addresses
                 for &loc in &asm.asm.sub {
+                    // Extract indices from the code and get addresses from table
                     let val = asm.symloc
                         .get(
-                            &Spur::try_from_usize(bytemuck::pod_read_unaligned::<u64>(&asm.asm.buf[loc..loc+core::mem::size_of::<u64>()]) as _)
-                                .unwrap()
+                            &Spur::try_from_usize(bytemuck::pod_read_unaligned::<u64>(
+                                &asm.asm.buf[loc..loc + core::mem::size_of::<u64>()]) as _
+                            ).unwrap()
                         )
                         .ok_or(Error { kind: ErrorKind::InvalidSymbol, span: 0..0 })?
                         .to_le_bytes();
 
+                    // New address
                     asm.asm.buf[loc..]
                         .iter_mut()
                         .zip(val)
@@ -154,6 +174,13 @@ macro_rules! gen_text {
                 Ok(())
             }
 
+            // Fun fact: this is a little hack
+            // It may slow the things a little bit down, but
+            // it made the macro to be made pretty nice.
+            // 
+            // If you have any idea how to get rid of this,
+            // contributions are welcome :)
+            // I *likely* won't try anymore.
             enum InternalImm {
                 Const(u64),
                 Named(Spur),
@@ -163,9 +190,14 @@ macro_rules! gen_text {
                 #[inline]
                 fn insert(&self, asm: &mut Assembler) {
                     match self {
+                        // Constant immediate, just put it in
                         Self::Const(a) => a.insert(asm),
+                        // Label
                         Self::Named(a) => {
+                            // Insert to the sub table that substitution will be
+                            // requested
                             asm.sub.insert(asm.buf.len());
+                            // Insert value from interner in place
                             asm.buf.extend((a.into_usize() as u64).to_le_bytes());
                         },
                     }
@@ -175,42 +207,57 @@ macro_rules! gen_text {
     };
 }
 
+/// Extract item by pattern, otherwise return [`ErrorKind::UnexpectedToken`]
 macro_rules! extract_pat {
     ($self:expr, $pat:pat) => {
         let $pat = $self.next()?
-                    else { return Err(ErrorKind::UnexpectedToken) };
+            else { return Err(ErrorKind::UnexpectedToken) };
     };
 }
 
+/// Extract operand from code
 macro_rules! extract {
+    // Register (require prefixing with r)
     ($self:expr, R, $id:ident) => {
         extract_pat!($self, Token::Register($id));
     };
 
+    // Immediate
     ($self:expr, I, $id:ident) => {
         let $id = match $self.next()? {
+            // Either straight up integer
             Token::Integer(a) => InternalImm::Const(a),
+            // …or a label
             Token::Symbol(a) => InternalImm::Named(a),
             _ => return Err(ErrorKind::UnexpectedToken),
         };
     };
 
+    // Get u8, if not fitting, the token is claimed invalid
     ($self:expr, u8, $id:ident) => {
         extract_pat!($self, Token::Integer($id));
         let $id = u8::try_from($id).map_err(|_| ErrorKind::InvalidToken)?;
     };
 
+    // Get u16, if not fitting, the token is claimed invalid
     ($self:expr, u16, $id:ident) => {
         extract_pat!($self, Token::Integer($id));
         let $id = u16::try_from($id).map_err(|_| ErrorKind::InvalidToken)?;
     };
 }
 
+/// Parameter extract incremental token-tree muncher
+/// 
+/// What else would it mean?
 macro_rules! param_extract_itm {
     ($self:expr, $($id:ident: $ty:ident)? $(, $($tt:tt)*)?) => {
+        // Extract pattern
         $(extract!($self, $ty, $id);)?
         $(
+            // Require operand separator
             extract_pat!($self, Token::PSep);
+            // And go to the next (recursive)
+            // …munch munch… yummy token trees.
             param_extract_itm!($self, $($tt)*);
         )?
     };

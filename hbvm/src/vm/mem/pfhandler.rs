@@ -5,6 +5,10 @@ use super::{Memory, MemoryAccessReason, PageSize};
 /// Handle VM traps
 pub trait HandlePageFault {
     /// Handle page fault
+    /// 
+    /// Return true if handling was sucessful,
+    /// otherwise the program will be interrupted and will
+    /// yield an error.
     fn page_fault(
         &mut self,
         reason: MemoryAccessReason,
