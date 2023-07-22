@@ -87,7 +87,7 @@ pub struct Vm<'a, PfHandler, const TIMER_QUOTIENT: usize> {
     /// Trap handler
     pub pfhandler: PfHandler,
 
-    // Program counter
+    /// Program counter
     pc: usize,
 
     /// Program
