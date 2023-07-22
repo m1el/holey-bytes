@@ -58,8 +58,8 @@ impl Assembler {
     ///
     /// There was an issue. You cannot statically check register values and
     /// `JAL` instruction could hop at the end of program to some byte, which
-    /// will be interpreted as opcode and VM in attempt to decode the instruction
-    /// performed out-of-bounds read which leads to undefined behaviour.
+    /// will be interpreted as some valid opcode and VM in attempt to decode
+    /// the instruction performed out-of-bounds read which leads to undefined behaviour.
     ///
     /// Several options were considered to overcome this, but inserting some data at
     /// program's end which when executed would lead to undesired behaviour, though
