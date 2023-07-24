@@ -50,6 +50,20 @@ macro_rules! binary_op {
     }};
 }
 
+/// Parform bitshift operations
+macro_rules! binary_op_sh {
+    ($self:expr, $ty:ident, $handler:expr) => {{
+        let ParamBBB(tg, a0, a1) = param!($self, ParamBBB);
+        $self.write_reg(
+            tg,
+            $handler(
+                Value::$ty(&$self.read_reg(a0)),
+                $self.read_reg(a1).as_u64() as u32,
+            )
+        )
+    }};
+}
+
 /// Perform binary operation with immediate `#0 ← #1 OP imm #2`
 macro_rules! binary_op_imm {
     ($self:expr, $ty:ident, $handler:expr) => {{
@@ -168,9 +182,9 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                     AND => binary_op!(self, as_u64, ops::BitAnd::bitand),
                     OR => binary_op!(self, as_u64, ops::BitOr::bitor),
                     XOR => binary_op!(self, as_u64, ops::BitXor::bitxor),
-                    SL => binary_op!(self, as_u64, ops::Shl::shl),
-                    SR => binary_op!(self, as_u64, ops::Shr::shr),
-                    SRS => binary_op!(self, as_i64, ops::Shr::shr),
+                    SL => binary_op_sh!(self, as_u64, u64::wrapping_shl),
+                    SR => binary_op_sh!(self, as_u64, u64::wrapping_shr),
+                    SRS => binary_op_sh!(self, as_i64, i64::wrapping_shr),
                     CMP => {
                         // Compare a0 <=> a1
                         // < → -1
