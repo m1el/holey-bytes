@@ -44,6 +44,11 @@ struct hbbc_ParamBBD
     typedef hbbc_ParamBBD;
     static_assert(sizeof(hbbc_ParamBBD) == 80 / 8);
 
+struct hbbc_ParamBBW
+    { uint8_t _0; uint8_t _1; uint32_t _2; }
+    typedef hbbc_ParamBBW;
+    static_assert(sizeof(hbbc_ParamBBW) == 48 / 8);
+
 struct hbbc_ParamBB
     { uint8_t _0; uint8_t _1; }
     typedef hbbc_ParamBB;

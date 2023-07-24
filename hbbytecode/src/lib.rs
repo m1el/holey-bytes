@@ -20,7 +20,7 @@ constmod!(pub opcode(u8) {
 
     UN  = 0, "N; Raises a trap";
     NOP = 1, "N; Do nothing";
-    
+
     ADD  = 2,  "BBB; #0 ← #1 + #2";
     SUB  = 3,  "BBB; #0 ← #1 - #2";
     MUL  = 4,  "BBB; #0 ← #1 × #2";
@@ -41,9 +41,9 @@ constmod!(pub opcode(u8) {
     ANDI  = 18, "BBD; #0 ← #1 & imm #2";
     ORI   = 19, "BBD; #0 ← #1 | imm #2";
     XORI  = 20, "BBD; #0 ← #1 ^ imm #2";
-    SLI   = 21, "BBD; #0 ← #1 « imm #2";
-    SRI   = 22, "BBD; #0 ← #1 » imm #2";
-    SRSI  = 23, "BBD; #0 ← #1 » imm #2 (signed)";
+    SLI   = 21, "BBW; #0 ← #1 « imm #2";
+    SRI   = 22, "BBW; #0 ← #1 » imm #2";
+    SRSI  = 23, "BBW; #0 ← #1 » imm #2 (signed)";
     CMPI  = 24, "BBD; #0 ← #1 <=> imm #2";
     CMPUI = 25, "BBD; #0 ← #1 <=> imm #2 (unsigned)";
 
@@ -90,6 +90,9 @@ pub struct ParamBBDH(pub u8, pub u8, pub u64, pub u16);
 pub struct ParamBBD(pub u8, pub u8, pub u64);
 
 #[repr(packed)]
+pub struct ParamBBW(pub u8, pub u8, pub u32);
+
+#[repr(packed)]
 pub struct ParamBB(pub u8, pub u8);
 
 #[repr(packed)]
@@ -102,6 +105,7 @@ unsafe impl OpParam for ParamBBBB {}
 unsafe impl OpParam for ParamBBB {}
 unsafe impl OpParam for ParamBBDH {}
 unsafe impl OpParam for ParamBBD {}
+unsafe impl OpParam for ParamBBW {}
 unsafe impl OpParam for ParamBB {}
 unsafe impl OpParam for ParamBD {}
 unsafe impl OpParam for u64 {}

@@ -7,90 +7,17 @@
 // - Instructions have to be valid as specified (values and sizes)
 // - Mapped pages should be at least 4 KiB
 
-use self::mem::HandlePageFault;
-
 pub mod mem;
 pub mod value;
 
 use {
+    self::{mem::HandlePageFault, value::ValueVariant},
     crate::validate,
-    core::ops,
-    hbbytecode::{OpParam, ParamBB, ParamBBB, ParamBBBB, ParamBBD, ParamBBDH, ParamBD},
+    core::{cmp::Ordering, ops},
+    hbbytecode::{OpParam, ParamBB, ParamBBB, ParamBBBB, ParamBBD, ParamBBDH, ParamBBW, ParamBD},
     mem::Memory,
-    static_assertions::assert_impl_one,
     value::Value,
 };
-
-/// Extract a parameter from program
-macro_rules! param {
-    ($self:expr, $ty:ty) => {{
-        assert_impl_one!($ty: OpParam);
-        let data = $self
-            .program
-            .as_ptr()
-            .add($self.pc + 1)
-            .cast::<$ty>()
-            .read();
-        $self.pc += 1 + core::mem::size_of::<$ty>();
-        data
-    }};
-}
-
-/// Perform binary operation `#0 ← #1 OP #2`
-macro_rules! binary_op {
-    ($self:expr, $ty:ident, $handler:expr) => {{
-        let ParamBBB(tg, a0, a1) = param!($self, ParamBBB);
-        $self.write_reg(
-            tg,
-            $handler(
-                Value::$ty(&$self.read_reg(a0)),
-                Value::$ty(&$self.read_reg(a1)),
-            ),
-        );
-    }};
-
-    ($self:expr, $ty:ident, $handler:expr, $con:ty) => {{
-        let ParamBBB(tg, a0, a1) = param!($self, ParamBBB);
-        $self.write_reg(
-            tg,
-            $handler(
-                Value::$ty(&$self.read_reg(a0)),
-                Value::$ty(&$self.read_reg(a1)) as $con,
-            ),
-        );
-    }};
-}
-
-/// Perform binary operation with immediate `#0 ← #1 OP imm #2`
-macro_rules! binary_op_imm {
-    ($self:expr, $ty:ident, $handler:expr) => {{
-        let ParamBBD(tg, a0, imm) = param!($self, ParamBBD);
-        $self.write_reg(
-            tg,
-            $handler(Value::$ty(&$self.read_reg(a0)), Value::$ty(&imm.into())),
-        );
-    }};
-
-    ($self:expr, $ty:ident, $handler:expr, $con:ty) => {{
-        let ParamBBD(tg, a0, imm) = param!($self, ParamBBD);
-        $self.write_reg(
-            tg,
-            $handler(Value::$ty(&$self.read_reg(a0)), Value::$ty(&imm.into()) as $con),
-        );
-    }};
-}
-
-/// Jump at `#3` if ordering on `#0 <=> #1` is equal to expected
-macro_rules! cond_jump {
-    ($self:expr, $ty:ident, $expected:ident) => {{
-        let ParamBBD(a0, a1, jt) = param!($self, ParamBBD);
-        if core::cmp::Ord::cmp(&$self.read_reg(a0).as_u64(), &$self.read_reg(a1).as_u64())
-            == core::cmp::Ordering::$expected
-        {
-            $self.pc = jt as usize;
-        }
-    }};
-}
 
 /// HoleyBytes Virtual Machine
 pub struct Vm<'a, PfHandler, const TIMER_QUOTIENT: usize> {
@@ -107,7 +34,7 @@ pub struct Vm<'a, PfHandler, const TIMER_QUOTIENT: usize> {
     pub pfhandler: PfHandler,
 
     /// Program counter
-    pc: usize,
+    pub pc: usize,
 
     /// Program
     program: &'a [u8],
@@ -177,50 +104,56 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
             unsafe {
                 match *self.program.get_unchecked(self.pc) {
                     UN => {
-                        param!(self, ());
+                        self.decode::<()>();
                         return Err(VmRunError::Unreachable);
                     }
-                    NOP => param!(self, ()),
-                    ADD => binary_op!(self, as_u64, u64::wrapping_add),
-                    SUB => binary_op!(self, as_u64, u64::wrapping_sub),
-                    MUL => binary_op!(self, as_u64, u64::wrapping_mul),
-                    AND => binary_op!(self, as_u64, ops::BitAnd::bitand),
-                    OR => binary_op!(self, as_u64, ops::BitOr::bitor),
-                    XOR => binary_op!(self, as_u64, ops::BitXor::bitxor),
-                    SL => binary_op!(self, as_u64, u64::wrapping_shl, u32),
-                    SR => binary_op!(self, as_u64, u64::wrapping_shr, u32),
-                    SRS => binary_op!(self, as_i64, i64::wrapping_shr, u32),
+                    NOP => self.decode::<()>(),
+                    ADD => self.binary_op(u64::wrapping_add),
+                    SUB => self.binary_op(u64::wrapping_sub),
+                    MUL => self.binary_op(u64::wrapping_mul),
+                    AND => self.binary_op::<u64>(ops::BitAnd::bitand),
+                    OR => self.binary_op::<u64>(ops::BitOr::bitor),
+                    XOR => self.binary_op::<u64>(ops::BitXor::bitxor),
+                    SL => self.binary_op(|l, r| u64::wrapping_shl(l, r as u32)),
+                    SR => self.binary_op(|l, r| u64::wrapping_shr(l, r as u32)),
+                    SRS => self.binary_op(|l, r| i64::wrapping_shl(l, r as u32)),
                     CMP => {
                         // Compare a0 <=> a1
                         // < → -1
                         // > →  1
                         // = →  0
 
-                        let ParamBBB(tg, a0, a1) = param!(self, ParamBBB);
+                        let ParamBBB(tg, a0, a1) = self.decode();
                         self.write_reg(
                             tg,
-                            self.read_reg(a0).as_i64().cmp(&self.read_reg(a1).as_i64()) as i64,
+                            self.read_reg(a0)
+                                .cast::<i64>()
+                                .cmp(&self.read_reg(a1).cast::<i64>())
+                                as i64,
                         );
                     }
                     CMPU => {
                         // Unsigned comparsion
-                        let ParamBBB(tg, a0, a1) = param!(self, ParamBBB);
+                        let ParamBBB(tg, a0, a1) = self.decode();
                         self.write_reg(
                             tg,
-                            self.read_reg(a0).as_u64().cmp(&self.read_reg(a1).as_u64()) as i64,
+                            self.read_reg(a0)
+                                .cast::<u64>()
+                                .cmp(&self.read_reg(a1).cast::<u64>())
+                                as i64,
                         );
                     }
                     NOT => {
                         // Logical negation
-                        let param = param!(self, ParamBB);
-                        self.write_reg(param.0, !self.read_reg(param.1).as_u64());
+                        let ParamBB(tg, a0) = self.decode();
+                        self.write_reg(tg, !self.read_reg(a0).cast::<u64>());
                     }
                     NEG => {
                         // Bitwise negation
-                        let param = param!(self, ParamBB);
+                        let ParamBB(tg, a0) = self.decode();
                         self.write_reg(
-                            param.0,
-                            match self.read_reg(param.1).as_u64() {
+                            tg,
+                            match self.read_reg(a0).cast::<u64>() {
                                 0 => 1_u64,
                                 _ => 0,
                             },
@@ -228,38 +161,41 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                     }
                     DIR => {
                         // Fused Division-Remainder
-                        let ParamBBBB(dt, rt, a0, a1) = param!(self, ParamBBBB);
-                        let a0 = self.read_reg(a0).as_u64();
-                        let a1 = self.read_reg(a1).as_u64();
+                        let ParamBBBB(dt, rt, a0, a1) = self.decode();
+                        let a0 = self.read_reg(a0).cast::<u64>();
+                        let a1 = self.read_reg(a1).cast::<u64>();
                         self.write_reg(dt, a0.checked_div(a1).unwrap_or(u64::MAX));
                         self.write_reg(rt, a0.checked_rem(a1).unwrap_or(u64::MAX));
                     }
-                    ADDI => binary_op_imm!(self, as_u64, ops::Add::add),
-                    MULI => binary_op_imm!(self, as_u64, ops::Mul::mul),
-                    ANDI => binary_op_imm!(self, as_u64, ops::BitAnd::bitand),
-                    ORI => binary_op_imm!(self, as_u64, ops::BitOr::bitor),
-                    XORI => binary_op_imm!(self, as_u64, ops::BitXor::bitxor),
-                    SLI => binary_op_imm!(self, as_u64, u64::wrapping_shl, u32),
-                    SRI => binary_op_imm!(self, as_u64, u64::wrapping_shr, u32),
-                    SRSI => binary_op_imm!(self, as_i64, i64::wrapping_shr, u32),
+                    ADDI => self.binary_op_imm(u64::wrapping_add),
+                    MULI => self.binary_op_imm(u64::wrapping_sub),
+                    ANDI => self.binary_op_imm::<u64>(ops::BitAnd::bitand),
+                    ORI => self.binary_op_imm::<u64>(ops::BitOr::bitor),
+                    XORI => self.binary_op_imm::<u64>(ops::BitXor::bitxor),
+                    SLI => self.binary_op_ims(u64::wrapping_shl),
+                    SRI => self.binary_op_ims(u64::wrapping_shr),
+                    SRSI => self.binary_op_ims(i64::wrapping_shr),
                     CMPI => {
-                        let ParamBBD(tg, a0, imm) = param!(self, ParamBBD);
+                        let ParamBBD(tg, a0, imm) = self.decode();
                         self.write_reg(
                             tg,
-                            self.read_reg(a0).as_i64().cmp(&Value::from(imm).as_i64()) as i64,
+                            self.read_reg(a0)
+                                .cast::<i64>()
+                                .cmp(&Value::from(imm).cast::<i64>())
+                                as i64,
                         );
                     }
                     CMPUI => {
-                        let ParamBBD(tg, a0, imm) = param!(self, ParamBBD);
-                        self.write_reg(tg, self.read_reg(a0).as_u64().cmp(&imm) as i64);
+                        let ParamBBD(tg, a0, imm) = self.decode();
+                        self.write_reg(tg, self.read_reg(a0).cast::<u64>().cmp(&imm) as i64);
                     }
                     CP => {
-                        let param = param!(self, ParamBB);
-                        self.write_reg(param.0, self.read_reg(param.1));
+                        let ParamBB(tg, a0) = self.decode();
+                        self.write_reg(tg, self.read_reg(a0));
                     }
                     SWA => {
                         // Swap registers
-                        let ParamBB(r0, r1) = param!(self, ParamBB);
+                        let ParamBB(r0, r1) = self.decode();
                         match (r0, r1) {
                             (0, 0) => (),
                             (dst, 0) | (0, dst) => self.write_reg(dst, 0_u64),
@@ -272,19 +208,19 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                         }
                     }
                     LI => {
-                        let param = param!(self, ParamBD);
-                        self.write_reg(param.0, param.1);
+                        let ParamBD(tg, imm) = self.decode();
+                        self.write_reg(tg, imm);
                     }
                     LD => {
                         // Load. If loading more than register size, continue on adjecent registers
-                        let ParamBBDH(dst, base, off, count) = param!(self, ParamBBDH);
+                        let ParamBBDH(dst, base, off, count) = self.decode();
                         let n: usize = match dst {
                             0 => 1,
                             _ => 0,
                         };
 
                         self.memory.load(
-                            self.read_reg(base).as_u64() + off + n as u64,
+                            self.read_reg(base).cast::<u64>() + off + n as u64,
                             self.registers.as_mut_ptr().add(usize::from(dst) + n).cast(),
                             usize::from(count).saturating_sub(n),
                             &mut self.pfhandler,
@@ -292,9 +228,9 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                     }
                     ST => {
                         // Store. Same rules apply as to LD
-                        let ParamBBDH(dst, base, off, count) = param!(self, ParamBBDH);
+                        let ParamBBDH(dst, base, off, count) = self.decode();
                         self.memory.store(
-                            self.read_reg(base).as_u64() + off,
+                            self.read_reg(base).cast::<u64>() + off,
                             self.registers.as_ptr().add(usize::from(dst)).cast(),
                             count.into(),
                             &mut self.pfhandler,
@@ -302,17 +238,17 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                     }
                     BMC => {
                         // Block memory copy
-                        let ParamBBD(src, dst, count) = param!(self, ParamBBD);
+                        let ParamBBD(src, dst, count) = self.decode();
                         self.memory.block_copy(
-                            self.read_reg(src).as_u64(),
-                            self.read_reg(dst).as_u64(),
+                            self.read_reg(src).cast::<u64>(),
+                            self.read_reg(dst).cast::<u64>(),
                             count as _,
                             &mut self.pfhandler,
                         )?;
                     }
                     BRC => {
                         // Block register copy
-                        let ParamBBB(src, dst, count) = param!(self, ParamBBB);
+                        let ParamBBB(src, dst, count) = self.decode();
                         core::ptr::copy(
                             self.registers.get_unchecked(usize::from(src)),
                             self.registers.get_unchecked_mut(usize::from(dst)),
@@ -322,24 +258,24 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                     JAL => {
                         // Jump and link. Save PC after this instruction to
                         // specified register and jump to reg + offset.
-                        let ParamBBD(save, reg, offset) = param!(self, ParamBBD);
+                        let ParamBBD(save, reg, offset) = self.decode();
                         self.write_reg(save, self.pc as u64);
-                        self.pc = (self.read_reg(reg).as_u64() + offset) as usize;
+                        self.pc = (self.read_reg(reg).cast::<u64>() + offset) as usize;
                     }
                     // Conditional jumps, jump only to immediates
-                    JEQ => cond_jump!(self, int, Equal),
+                    JEQ => self.cond_jmp::<u64>(Ordering::Equal),
                     JNE => {
-                        let ParamBBD(a0, a1, jt) = param!(self, ParamBBD);
-                        if self.read_reg(a0).as_u64() != self.read_reg(a1).as_u64() {
+                        let ParamBBD(a0, a1, jt) = self.decode();
+                        if self.read_reg(a0).cast::<u64>() != self.read_reg(a1).cast::<u64>() {
                             self.pc = jt as usize;
                         }
                     }
-                    JLT => cond_jump!(self, int, Less),
-                    JGT => cond_jump!(self, int, Greater),
-                    JLTU => cond_jump!(self, sint, Less),
-                    JGTU => cond_jump!(self, sint, Greater),
+                    JLT => self.cond_jmp::<u64>(Ordering::Less),
+                    JGT => self.cond_jmp::<u64>(Ordering::Greater),
+                    JLTU => self.cond_jmp::<i64>(Ordering::Less),
+                    JGTU => self.cond_jmp::<i64>(Ordering::Greater),
                     ECALL => {
-                        param!(self, ());
+                        self.decode::<()>();
 
                         // So we don't get timer interrupt after ECALL
                         if TIMER_QUOTIENT != 0 {
@@ -347,38 +283,38 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                         }
                         return Ok(VmRunOk::Ecall);
                     }
-                    ADDF => binary_op!(self, as_f64, ops::Add::add),
-                    SUBF => binary_op!(self, as_f64, ops::Sub::sub),
-                    MULF => binary_op!(self, as_f64, ops::Mul::mul),
+                    ADDF => self.binary_op::<f64>(ops::Add::add),
+                    SUBF => self.binary_op::<f64>(ops::Sub::sub),
+                    MULF => self.binary_op::<f64>(ops::Mul::mul),
                     DIRF => {
-                        let ParamBBBB(dt, rt, a0, a1) = param!(self, ParamBBBB);
-                        let a0 = self.read_reg(a0).as_f64();
-                        let a1 = self.read_reg(a1).as_f64();
+                        let ParamBBBB(dt, rt, a0, a1) = self.decode();
+                        let a0 = self.read_reg(a0).cast::<f64>();
+                        let a1 = self.read_reg(a1).cast::<f64>();
                         self.write_reg(dt, a0 / a1);
                         self.write_reg(rt, a0 % a1);
                     }
                     FMAF => {
-                        let ParamBBBB(dt, a0, a1, a2) = param!(self, ParamBBBB);
+                        let ParamBBBB(dt, a0, a1, a2) = self.decode();
                         self.write_reg(
                             dt,
-                            self.read_reg(a0).as_f64() * self.read_reg(a1).as_f64()
-                                + self.read_reg(a2).as_f64(),
+                            self.read_reg(a0).cast::<f64>() * self.read_reg(a1).cast::<f64>()
+                                + self.read_reg(a2).cast::<f64>(),
                         );
                     }
                     NEGF => {
-                        let ParamBB(dt, a0) = param!(self, ParamBB);
-                        self.write_reg(dt, -self.read_reg(a0).as_f64());
+                        let ParamBB(dt, a0) = self.decode();
+                        self.write_reg(dt, -self.read_reg(a0).cast::<f64>());
                     }
                     ITF => {
-                        let ParamBB(dt, a0) = param!(self, ParamBB);
-                        self.write_reg(dt, self.read_reg(a0).as_i64() as f64);
+                        let ParamBB(dt, a0) = self.decode();
+                        self.write_reg(dt, self.read_reg(a0).cast::<i64>() as f64);
                     }
                     FTI => {
-                        let ParamBB(dt, a0) = param!(self, ParamBB);
-                        self.write_reg(dt, self.read_reg(a0).as_f64() as i64);
+                        let ParamBB(dt, a0) = self.decode();
+                        self.write_reg(dt, self.read_reg(a0).cast::<f64>() as i64);
                     }
-                    ADDFI => binary_op_imm!(self, as_f64, ops::Add::add),
-                    MULFI => binary_op_imm!(self, as_f64, ops::Mul::mul),
+                    ADDFI => self.binary_op_imm::<f64>(ops::Add::add),
+                    MULFI => self.binary_op_imm::<f64>(ops::Mul::mul),
                     op => return Err(VmRunError::InvalidOpcode(op)),
                 }
             }
@@ -389,6 +325,55 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                     return Ok(VmRunOk::Timer);
                 }
             }
+        }
+    }
+
+    /// Decode instruction operands
+    #[inline]
+    unsafe fn decode<T: OpParam>(&mut self) -> T {
+        let data = self.program.as_ptr().add(self.pc + 1).cast::<T>().read();
+        self.pc += 1 + core::mem::size_of::<T>();
+        data
+    }
+
+    /// Perform binary operating over two registers
+    #[inline]
+    unsafe fn binary_op<T: ValueVariant>(&mut self, op: impl Fn(T, T) -> T) {
+        let ParamBBB(tg, a0, a1) = self.decode();
+        self.write_reg(
+            tg,
+            op(self.read_reg(a0).cast::<T>(), self.read_reg(a1).cast::<T>()),
+        );
+    }
+
+    /// Perform binary operation over register and immediate
+    #[inline]
+    unsafe fn binary_op_imm<T: ValueVariant>(&mut self, op: impl Fn(T, T) -> T) {
+        let ParamBBD(tg, reg, imm) = self.decode();
+        self.write_reg(
+            tg,
+            op(self.read_reg(reg).cast::<T>(), Value::from(imm).cast::<T>()),
+        );
+    }
+
+    /// Perform binary operation over register and shift immediate
+    #[inline]
+    unsafe fn binary_op_ims<T: ValueVariant>(&mut self, op: impl Fn(T, u32) -> T) {
+        let ParamBBW(tg, reg, imm) = self.decode();
+        self.write_reg(tg, op(self.read_reg(reg).cast::<T>(), imm));
+    }
+
+    /// Jump at `#3` if ordering on `#0 <=> #1` is equal to expected
+    #[inline]
+    unsafe fn cond_jmp<T: ValueVariant + Ord>(&mut self, expected: Ordering) {
+        let ParamBBD(a0, a1, ja) = self.decode();
+        if self
+            .read_reg(a0)
+            .cast::<T>()
+            .cmp(&self.read_reg(a1).cast::<T>())
+            == expected
+        {
+            self.pc = ja as usize;
         }
     }
 

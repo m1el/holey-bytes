@@ -215,36 +215,38 @@ macro_rules! extract_pat {
     };
 }
 
-/// Extract operand from code
-macro_rules! extract {
-    // Register (require prefixing with r)
-    ($self:expr, R, $id:ident) => {
-        extract_pat!($self, Token::Register($id));
-    };
+/// Generate extract macro
+macro_rules! gen_extract {
+    // Integer types have same body
+    ($($int:ident),* $(,)?) => {
+        /// Extract operand from code
+        macro_rules! extract {
+            // Register (require prefixing with r)
+            ($self:expr, R, $id:ident) => {
+                extract_pat!($self, Token::Register($id));
+            };
 
-    // Immediate
-    ($self:expr, I, $id:ident) => {
-        let $id = match $self.next()? {
-            // Either straight up integer
-            Token::Integer(a) => InternalImm::Const(a),
-            // …or a label
-            Token::Symbol(a) => InternalImm::Named(a),
-            _ => return Err(ErrorKind::UnexpectedToken),
-        };
-    };
+            // Immediate
+            ($self:expr, I, $id:ident) => {
+                let $id = match $self.next()? {
+                    // Either straight up integer
+                    Token::Integer(a) => InternalImm::Const(a),
+                    // …or a label
+                    Token::Symbol(a) => InternalImm::Named(a),
+                    _ => return Err(ErrorKind::UnexpectedToken),
+                };
+            };
 
-    // Get u8, if not fitting, the token is claimed invalid
-    ($self:expr, u8, $id:ident) => {
-        extract_pat!($self, Token::Integer($id));
-        let $id = u8::try_from($id).map_err(|_| ErrorKind::InvalidToken)?;
-    };
-
-    // Get u16, if not fitting, the token is claimed invalid
-    ($self:expr, u16, $id:ident) => {
-        extract_pat!($self, Token::Integer($id));
-        let $id = u16::try_from($id).map_err(|_| ErrorKind::InvalidToken)?;
+            // Get $int, if not fitting, the token is claimed invalid
+            $(($self:expr, $int, $id:ident) => {
+                extract_pat!($self, Token::Integer($id));
+                let $id = $int::try_from($id).map_err(|_| ErrorKind::InvalidToken)?;
+            });*;
+        }
     };
 }
+
+gen_extract!(u8, u16, u32);
 
 /// Parameter extract incremental token-tree muncher
 /// 

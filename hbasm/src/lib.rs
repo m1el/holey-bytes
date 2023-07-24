@@ -27,8 +27,10 @@ macros::impl_both!(
     bbdh(p0: R, p1: R, p2: I, p3: u16)
         => [LD, ST],
     bbd(p0: R, p1: R, p2: I)
-        => [ADDI, MULI, ANDI, ORI, XORI, SLI, SRI, SRSI, CMPI, CMPUI,
-            BMC, JAL, JEQ, JNE, JLT, JGT, JLTU, JGTU, ADDFI, MULFI],
+        => [ADDI, MULI, ANDI, ORI, XORI, CMPI, CMPUI, BMC, JAL, JEQ, JNE, JLT, JGT, JLTU,
+            JGTU, ADDFI, MULFI],
+    bbw(p0: R, p1: R, p2: u32)
+        => [SLI, SRI, SRSI],
     bb(p0: R, p1: R)
         => [NEG, NOT, CP, SWA, NEGF, ITF, FTI],
     bd(p0: R, p1: I)

@@ -21,6 +21,7 @@
 | BBB  | 24 bits |
 | BBDH | 96 bits |
 | BBD  | 80 bits |
+| BBW  | 48 bits |
 |  BB  | 16 bits |
 |  BD  | 72 bits |
 |  D   | 64 bits |
@@ -99,6 +100,11 @@
 |   18   | ANDI |         Bitand          |
 |   19   | ORI  |          Bitor          |
 |   20   | XORI |         Bitxor          |
+
+### Bitshifts
+- Type BBW
+| Opcode | Name |         Action          |
+|:------:|:----:|:-----------------------:|
 |   21   | SLI  | Unsigned left bitshift  |
 |   22   | SRI  | Unsigned right bitshift |
 |   23   | SRSI |  Signed right bitshift  |
