@@ -48,19 +48,16 @@ macro_rules! binary_op {
             ),
         );
     }};
-}
 
-/// Parform bitshift operations
-macro_rules! binary_op_sh {
-    ($self:expr, $ty:ident, $handler:expr) => {{
+    ($self:expr, $ty:ident, $handler:expr, $con:ty) => {{
         let ParamBBB(tg, a0, a1) = param!($self, ParamBBB);
         $self.write_reg(
             tg,
             $handler(
                 Value::$ty(&$self.read_reg(a0)),
-                $self.read_reg(a1).as_u64() as u32,
-            )
-        )
+                Value::$ty(&$self.read_reg(a1)) as $con,
+            ),
+        );
     }};
 }
 
@@ -71,6 +68,14 @@ macro_rules! binary_op_imm {
         $self.write_reg(
             tg,
             $handler(Value::$ty(&$self.read_reg(a0)), Value::$ty(&imm.into())),
+        );
+    }};
+
+    ($self:expr, $ty:ident, $handler:expr, $con:ty) => {{
+        let ParamBBD(tg, a0, imm) = param!($self, ParamBBD);
+        $self.write_reg(
+            tg,
+            $handler(Value::$ty(&$self.read_reg(a0)), Value::$ty(&imm.into()) as $con),
         );
     }};
 }
@@ -182,9 +187,9 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                     AND => binary_op!(self, as_u64, ops::BitAnd::bitand),
                     OR => binary_op!(self, as_u64, ops::BitOr::bitor),
                     XOR => binary_op!(self, as_u64, ops::BitXor::bitxor),
-                    SL => binary_op_sh!(self, as_u64, u64::wrapping_shl),
-                    SR => binary_op_sh!(self, as_u64, u64::wrapping_shr),
-                    SRS => binary_op_sh!(self, as_i64, i64::wrapping_shr),
+                    SL => binary_op!(self, as_u64, u64::wrapping_shl, u32),
+                    SR => binary_op!(self, as_u64, u64::wrapping_shr, u32),
+                    SRS => binary_op!(self, as_i64, i64::wrapping_shr, u32),
                     CMP => {
                         // Compare a0 <=> a1
                         // < → -1
@@ -234,9 +239,9 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                     ANDI => binary_op_imm!(self, as_u64, ops::BitAnd::bitand),
                     ORI => binary_op_imm!(self, as_u64, ops::BitOr::bitor),
                     XORI => binary_op_imm!(self, as_u64, ops::BitXor::bitxor),
-                    SLI => binary_op_imm!(self, as_u64, ops::Shl::shl),
-                    SRI => binary_op_imm!(self, as_u64, ops::Shr::shr),
-                    SRSI => binary_op_imm!(self, as_i64, ops::Shr::shr),
+                    SLI => binary_op_imm!(self, as_u64, u64::wrapping_shl, u32),
+                    SRI => binary_op_imm!(self, as_u64, u64::wrapping_shr, u32),
+                    SRSI => binary_op_imm!(self, as_i64, i64::wrapping_shr, u32),
                     CMPI => {
                         let ParamBBD(tg, a0, imm) = param!(self, ParamBBD);
                         self.write_reg(
