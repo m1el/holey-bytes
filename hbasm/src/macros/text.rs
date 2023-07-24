@@ -226,6 +226,15 @@ macro_rules! gen_extract {
                 extract_pat!($self, Token::Register($id));
             };
 
+            ($self:expr, L, $id:ident) => {
+                extract_pat!($self, Token::Integer($id));
+                if $id > 2048 {
+                    return Err(ErrorKind::InvalidToken);
+                }
+
+                let $id = u16::try_from($id).unwrap();
+            };
+
             // Immediate
             ($self:expr, I, $id:ident) => {
                 let $id = match $self.next()? {

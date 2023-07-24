@@ -48,8 +48,10 @@ pub fn validate(mut program: &[u8]) -> Result<(), Error> {
         // Match on instruction types and perform necessary checks
         program = match program {
             [] => return Ok(()),
-            [LD..=ST, reg, _, _, _, _, _, _, _, _, _, count, ..]
-                if usize::from(*reg) * 8 + usize::from(*count) > 2048 =>
+            [LD..=ST, reg, _, _, _, _, _, _, _, _, count_0, count_1, ..]
+                if usize::from(*reg) * 8
+                    + usize::from(u16::from_le_bytes([*count_0, *count_1]))
+                    > 2048 =>
             {
                 return Err(Error {
                     kind:  ErrorKind::RegisterArrayOverflow,

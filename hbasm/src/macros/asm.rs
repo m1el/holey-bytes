@@ -38,6 +38,12 @@ macro_rules! impl_asm_insert {
         Imm::insert(&$id, $self)
     };
 
+    // Length - cannot be more than 2048
+    ($self:expr, $id:ident, L) => {{
+        assert!($id <= 2048);
+        $self.buf.extend($id.to_le_bytes())
+    }};
+
     // Other numbers, just insert their bytes, little endian
     ($self:expr, $id:ident, $_:ident) => {
         $self.buf.extend($id.to_le_bytes())
@@ -76,6 +82,7 @@ macro_rules! impl_asm {
 macro_rules! ident_map_ty {
     (R)         => { u8 };       // Register is just u8
     (I)         => { impl Imm }; // Immediate is anything implementing the trait
+    (L)         => { u16 };      // Copy count
     ($id:ident) => { $id };      // Anything else → identity map
 }
 

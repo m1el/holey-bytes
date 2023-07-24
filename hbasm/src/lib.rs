@@ -24,7 +24,7 @@ macros::impl_both!(
         => [DIR, DIRF, FMAF],
     bbb(p0: R, p1: R, p2: R)
         => [ADD, SUB, MUL, AND, OR, XOR, SL, SR, SRS, CMP, CMPU, /*BRC,*/ ADDF, SUBF, MULF],
-    bbdh(p0: R, p1: R, p2: I, p3: u16)
+    bbdh(p0: R, p1: R, p2: I, p3: L)
         => [LD, ST],
     bbd(p0: R, p1: R, p2: I)
         => [ADDI, MULI, ANDI, ORI, XORI, CMPI, CMPUI, BMC, JAL, JEQ, JNE, JLT, JGT, JLTU,
