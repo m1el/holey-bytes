@@ -1,5 +1,8 @@
 /* HoleyBytes Bytecode representation in C
  * Requires C23 compiler or better
+ *
+ * Uses MSVC pack pragma extension,
+ * proved to work with Clang and GNU® GCC™.
  */
 
 #pragma once
