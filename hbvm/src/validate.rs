@@ -50,7 +50,7 @@ pub fn validate(mut program: &[u8]) -> Result<(), Error> {
             [] => return Ok(()),
             [LD..=ST, reg, _, _, _, _, _, _, _, _, count_0, count_1, ..]
                 if usize::from(*reg) * 8
-                    + usize::from(u16::from_le_bytes([*count_0, *count_1]))
+                    + usize::from(u16::from_le_bytes([*count_1, *count_0]))
                     > 2048 =>
             {
                 return Err(Error {
