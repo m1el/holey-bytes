@@ -25,8 +25,8 @@ pub struct Error {
 /// Perform bytecode validation. If it passes, the program should be
 /// sound to execute.
 pub fn validate(mut program: &[u8]) -> Result<(), Error> {
-    use hbbytecode::opcode::*;
-
+    // Program has to end with 12 zeroes, if there is less than
+    // 12 bytes, program is invalid.
     if program.len() < 12 {
         return Err(Error {
             kind:  ErrorKind::InvalidEnd,
@@ -34,6 +34,7 @@ pub fn validate(mut program: &[u8]) -> Result<(), Error> {
         });
     }
 
+    // Verify that program ends with 12 zeroes
     for (index, item) in program.iter().enumerate().skip(program.len() - 12) {
         if *item != 0 {
             return Err(Error {
@@ -45,9 +46,14 @@ pub fn validate(mut program: &[u8]) -> Result<(), Error> {
 
     let start = program;
     loop {
+        use hbbytecode::opcode::*;
+
         // Match on instruction types and perform necessary checks
         program = match program {
+            // End of program
             [] => return Ok(()),
+
+            // Memory load/store cannot go out-of-bounds register array
             [LD..=ST, reg, _, _, _, _, _, _, _, _, count_0, count_1, ..]
                 if usize::from(*reg) * 8
                     + usize::from(u16::from_le_bytes([*count_1, *count_0]))
@@ -58,6 +64,8 @@ pub fn validate(mut program: &[u8]) -> Result<(), Error> {
                     index: (program.as_ptr() as usize) - (start.as_ptr() as usize),
                 })
             }
+
+            // Block register copy cannot go out-of-bounds register array
             [BRC, src, dst, count, ..]
                 if src.checked_add(*count).is_none() || dst.checked_add(*count).is_none() =>
             {
@@ -66,6 +74,8 @@ pub fn validate(mut program: &[u8]) -> Result<(), Error> {
                     index: (program.as_ptr() as usize) - (start.as_ptr() as usize),
                 })
             }
+
+            // Valid instructions
             [UN | NOP | ECALL, rest @ ..]
             | [DIR | DIRF, _, _, _, _, rest @ ..]
             | [ADD..=CMPU | BRC | ADDF..=MULF, _, _, _, rest @ ..]
@@ -74,6 +84,8 @@ pub fn validate(mut program: &[u8]) -> Result<(), Error> {
             | [ADDI..=XORI | CMPI..=CMPUI | BMC | JAL..=JGTU | ADDFI..=MULFI, _, _, _, _, _, _, _, _, _, _, rest @ ..]
             | [SLI..=SRSI, _, _, _, _, rest @ ..]
             | [LD..=ST, _, _, _, _, _, _, _, _, _, _, _, _, rest @ ..] => rest,
+
+            // The rest
             _ => {
                 return Err(Error {
                     kind:  ErrorKind::InvalidInstruction,
