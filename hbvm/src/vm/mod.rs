@@ -12,9 +12,10 @@ pub mod value;
 
 use {
     self::{mem::HandlePageFault, value::ValueVariant},
-    crate::validate,
     core::{cmp::Ordering, ops},
-    hbbytecode::{OpParam, ParamBB, ParamBBB, ParamBBBB, ParamBBD, ParamBBDH, ParamBBW, ParamBD},
+    hbbytecode::{
+        valider, OpParam, ParamBB, ParamBBB, ParamBBBB, ParamBBD, ParamBBDH, ParamBBW, ParamBD,
+    },
     mem::Memory,
     value::Value,
 };
@@ -66,8 +67,8 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
     }
 
     /// Create a new VM with program and trap handler only if it passes validation
-    pub fn new_validated(program: &'a [u8], traph: PfHandler) -> Result<Self, validate::Error> {
-        validate::validate(program)?;
+    pub fn new_validated(program: &'a [u8], traph: PfHandler) -> Result<Self, valider::Error> {
+        valider::validate(program)?;
         Ok(unsafe { Self::new_unchecked(program, traph) })
     }
 
@@ -249,6 +250,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                     BRC => {
                         // Block register copy
                         let ParamBBB(src, dst, count) = self.decode();
+                        extern crate std;
                         core::ptr::copy(
                             self.registers.get_unchecked(usize::from(src)),
                             self.registers.get_unchecked_mut(usize::from(dst)),

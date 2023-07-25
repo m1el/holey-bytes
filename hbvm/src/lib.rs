@@ -3,5 +3,4 @@
 
 extern crate alloc;
 
-pub mod validate;
 pub mod vm;

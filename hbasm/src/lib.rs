@@ -19,25 +19,7 @@ pub struct Assembler {
 
 
 // Implement both assembler and generate module for text-code-based one
-macros::impl_both!(
-    bbbb(p0: R, p1: R, p2: R, p3: R)
-        => [DIR, DIRF, FMAF],
-    bbb(p0: R, p1: R, p2: R)
-        => [ADD, SUB, MUL, AND, OR, XOR, SL, SR, SRS, CMP, CMPU, /*BRC,*/ ADDF, SUBF, MULF],
-    bbdh(p0: R, p1: R, p2: I, p3: L)
-        => [LD, ST],
-    bbd(p0: R, p1: R, p2: I)
-        => [ADDI, MULI, ANDI, ORI, XORI, CMPI, CMPUI, BMC, JAL, JEQ, JNE, JLT, JGT, JLTU,
-            JGTU, ADDFI, MULFI],
-    bbw(p0: R, p1: R, p2: u32)
-        => [SLI, SRI, SRSI],
-    bb(p0: R, p1: R)
-        => [NEG, NOT, CP, SWA, NEGF, ITF, FTI],
-    bd(p0: R, p1: I)
-        => [LI],
-    n()
-        => [UN, NOP, ECALL],
-);
+hbbytecode::invoke_with_def!(macros::impl_all);
 
 impl Assembler {
     // Special-cased for text-assembler

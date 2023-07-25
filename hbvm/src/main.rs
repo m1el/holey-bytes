@@ -1,7 +1,8 @@
 use hbvm::vm::mem::{HandlePageFault, Memory, MemoryAccessReason, PageSize};
 
 use {
-    hbvm::{validate::validate, vm::Vm},
+    hbbytecode::valider::validate,
+    hbvm::vm::Vm,
     std::io::{stdin, Read},
 };
 
