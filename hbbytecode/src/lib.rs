@@ -17,7 +17,7 @@ macro_rules! constmod {
     };
 }
 
-/// Invoke macro with bytecode definition format
+/// Invoke macro with bytecode definition
 /// # Input syntax
 /// ```no_run
 /// macro!(
