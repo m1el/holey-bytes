@@ -34,6 +34,13 @@ macro_rules! constmod {
 ///     - I: Immediate (implements [`crate::Imm`] trait)
 ///     - L: Memory load / store size (u16)
 ///     - Other types are identity-mapped
+/// 
+/// # BRC special-case
+/// BRC's 3rd operand is plain byte, not a register. Encoding is the same, but for some cases it may matter.
+/// 
+/// Please, if you distinguish in your API between byte and register, special case this one.
+/// 
+/// Sorry for that :(
 #[macro_export]
 macro_rules! invoke_with_def {
     ($macro:path) => {
