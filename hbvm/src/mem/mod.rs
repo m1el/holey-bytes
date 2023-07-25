@@ -7,28 +7,32 @@ mod pfhandler;
 pub use pfhandler::HandlePageFault;
 
 use {
-    self::paging::{PageTable, Permission, PtEntry},
     super::VmRunError,
-    alloc::boxed::Box,
     core::mem::MaybeUninit,
     derive_more::Display,
+    paging::{PageTable, Permission},
 };
+
+#[cfg(feature = "alloc")]
+use {alloc::boxed::Box, paging::PtEntry};
 
 /// HoleyBytes virtual memory
 #[derive(Clone, Debug)]
 pub struct Memory {
     /// Root page table
-    root_pt: *mut PageTable,
+    pub root_pt: *mut PageTable,
 }
 
+#[cfg(feature = "alloc")]
 impl Default for Memory {
     fn default() -> Self {
         Self {
-            root_pt: Box::into_raw(Box::default()),
+            root_pt: Box::into_raw(Default::default()),
         }
     }
 }
 
+#[cfg(feature = "alloc")]
 impl Drop for Memory {
     fn drop(&mut self) {
         let _ = unsafe { Box::from_raw(self.root_pt) };
@@ -42,6 +46,7 @@ impl Memory {
     /// - Your faith in the gods of UB
     ///     - Addr-san claims it's fine but who knows is she isn't lying :ferrisSus:
     ///     - Alright, Miri-sama is also fine with this, who knows why
+    #[cfg(feature = "alloc")]
     pub unsafe fn map(
         &mut self,
         host: *mut u8,
@@ -107,6 +112,7 @@ impl Memory {
     ///
     /// If errors, it only means there is no entry to unmap and in most cases
     /// just should be ignored.
+    #[cfg(feature = "alloc")]
     pub fn unmap(&mut self, addr: u64) -> Result<(), NothingToUnmap> {
         let mut current_pt = self.root_pt;
         let mut page_tables = [core::ptr::null_mut(); 5];

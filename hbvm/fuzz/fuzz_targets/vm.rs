@@ -1,7 +1,7 @@
 #![no_main]
 
 use {
-    hbvm::vm::{
+    hbvm::{
         mem::{HandlePageFault, Memory, MemoryAccessReason, PageSize},
         Vm,
     },
@@ -9,7 +9,7 @@ use {
 };
 
 fuzz_target!(|data: &[u8]| {
-    if let Ok(mut vm) = Vm::<_, 0>::new_validated(data, TestTrapHandler) {
+    if let Ok(mut vm) = Vm::<_, 0>::new_validated(data, TestTrapHandler, Default::default()) {
         let _ = vm.run();
     }
 });

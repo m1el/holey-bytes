@@ -126,7 +126,6 @@ version = "0.1.0"
 dependencies = [
  "delegate",
  "derive_more",
- "hashbrown 0.13.2",
  "hbbytecode",
  "log",
  "paste",

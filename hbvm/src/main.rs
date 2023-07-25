@@ -1,8 +1,9 @@
-use hbvm::vm::mem::{HandlePageFault, Memory, MemoryAccessReason, PageSize};
-
 use {
     hbbytecode::valider::validate,
-    hbvm::vm::Vm,
+    hbvm::{
+        mem::{HandlePageFault, Memory, MemoryAccessReason, PageSize},
+        Vm,
+    },
     std::io::{stdin, Read},
 };
 
@@ -15,7 +16,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     } else {
         unsafe {
-            let mut vm = Vm::<_, 0>::new_unchecked(&prog, TestTrapHandler);
+            let mut vm = Vm::<_, 0>::new_unchecked(&prog, TestTrapHandler, Default::default());
             let data = {
                 let ptr = std::alloc::alloc_zeroed(std::alloc::Layout::from_size_align_unchecked(
                     4096, 4096,
@@ -30,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(
                     data,
                     0,
-                    hbvm::vm::mem::paging::Permission::Write,
+                    hbvm::mem::paging::Permission::Write,
                     PageSize::Size4K,
                 )
                 .unwrap();
