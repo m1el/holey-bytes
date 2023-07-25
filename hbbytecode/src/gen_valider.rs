@@ -92,9 +92,7 @@ macro_rules! gen_valider {
                             $crate::gen_valider::inst_chk!(
                                 rest, $ityn, $($opcode),*
                             )
-                        )|*| $crate::gen_valider::inst_chk!(
-                            rest, bbb, BRC
-                        ) => rest,
+                        )|* => rest,
 
                         // The plebs
                         _ => {

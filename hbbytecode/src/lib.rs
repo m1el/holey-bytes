@@ -18,9 +18,22 @@ macro_rules! constmod {
 }
 
 /// Invoke macro with bytecode definition format
-/// 
-/// Keep in mind BRC instruction is special-cased and you have to implement
-/// it manually.
+/// # Input syntax
+/// ```no_run
+/// macro!(
+///     INSTRUCTION_TYPE(p0: TYPE, p1: TYPE, …)
+///         => [INSTRUCTION_A, INSTRUCTION_B, …],
+///     …
+/// );
+/// ```
+/// - Instruction type determines opcode-generic, instruction-type-specific
+///   function. Name: `i_param_INSTRUCTION_TYPE`
+/// - Per-instructions there will be generated opcode-specific functions calling the generic ones
+/// - Operand types
+///     - R: Register (u8)
+///     - I: Immediate (implements [`crate::Imm`] trait)
+///     - L: Memory load / store size (u16)
+///     - Other types are identity-mapped
 #[macro_export]
 macro_rules! invoke_with_def {
     ($macro:path) => {
@@ -28,7 +41,7 @@ macro_rules! invoke_with_def {
             bbbb(p0: R, p1: R, p2: R, p3: R)
                 => [DIR, DIRF, FMAF],
             bbb(p0: R, p1: R, p2: R)
-                => [ADD, SUB, MUL, AND, OR, XOR, SL, SR, SRS, CMP, CMPU, /*BRC,*/ ADDF, SUBF, MULF],
+                => [ADD, SUB, MUL, AND, OR, XOR, SL, SR, SRS, CMP, CMPU, BRC, ADDF, SUBF, MULF],
             bbdh(p0: R, p1: R, p2: I, p3: L)
                 => [LD, ST],
             bbd(p0: R, p1: R, p2: I)

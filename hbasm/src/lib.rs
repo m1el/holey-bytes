@@ -1,3 +1,14 @@
+//! Holey Bytes Assembler
+//! 
+//! Some people claim:
+//! > Write programs to handle text streams, because that is a universal interface.
+//!
+//! We at AbleCorp believe that nice programatic API is nicer than piping some text
+//! into a program. It's less error-prone and faster.
+//! 
+//! So this crate contains both assembleer with API for programs and a text assembler
+//! for humans to write
+
 #![no_std]
 
 extern crate alloc;
@@ -17,18 +28,10 @@ pub struct Assembler {
     pub sub: HashSet<usize>,
 }
 
-
-// Implement both assembler and generate module for text-code-based one
-hbbytecode::invoke_with_def!(macros::impl_all);
+hbbytecode::invoke_with_def!(macros::text::gen_text);
 
 impl Assembler {
-    // Special-cased for text-assembler
-    //
-    // `p2` is not a register, but the instruction is still BBB
-    #[inline(always)]
-    pub fn i_brc(&mut self, p0: u8, p1: u8, p2: u8) {
-        self.i_param_bbb(hbbytecode::opcode::BRC, p0, p1, p2)
-    }
+    hbbytecode::invoke_with_def!(macros::asm::impl_asm);
 
     /// Append 12 zeroes (UN) at the end
     /// 

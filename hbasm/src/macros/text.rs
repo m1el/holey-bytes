@@ -10,7 +10,21 @@ macro_rules! gen_text {
             => [$($opcode:ident),* $(,)?],
         )*
     ) => {
-        /// Text code based assembler
+        /// # Text assembler
+        /// Text assembler generated simply calls methods in the [`crate::Assembler`] type.
+        /// 
+        /// # Syntax
+        /// ```text
+        /// instruction op1, op2, …
+        /// …
+        /// ```
+        /// - Opcode names are lowercase
+        /// - Registers are prefixed with `r` followed by number
+        /// - Operands are separated by `,`
+        /// - Instructions are separated by either line feed or `;` (αυτό δεν είναι ερωτηματικό!)
+        /// - Labels are defined by their names followed by colon `label:`
+        /// - Labels are referenced simply by their names
+        /// - Immediates are numbers, can be negative, floats are not yet supported
         pub mod text {
             use {
                 crate::{
@@ -30,7 +44,6 @@ macro_rules! gen_text {
                 #[logos(skip r"-- .*")]
                 pub enum Token {
                     $($(#[token(~([<$opcode:lower>]), |_| hbbytecode::opcode::[<$opcode:upper>])])*)*
-                    #[token("brc", |_| hbbytecode::opcode::BRC)] // Special-cased
                     Opcode(u8),
 
                     #[regex("[0-9]+", |l| l.slice().parse().ok())]
@@ -105,13 +118,6 @@ macro_rules! gen_text {
                                 // Got an opcode
                                 Some(Ok(Token::Opcode(op))) => {
                                     match op {
-                                        // Take all the opcodes and match them to their corresponding functions
-                                        $(
-                                            $(hbbytecode::opcode::$opcode)|* => paste::paste!({
-                                                param_extract_itm!(self, $($param_i: $param_ty),*);
-                                                self.asm.[<i_param_ $ityn>](op, $($param_i),*);
-                                            }),
-                                        )*
                                         // Special-cased
                                         hbbytecode::opcode::BRC => {
                                             param_extract_itm!(
@@ -122,7 +128,17 @@ macro_rules! gen_text {
                                             );
 
                                             self.asm.i_param_bbb(op, p0, p1, p2);
-                                        }
+                                        },
+
+                                        // Take all the opcodes and match them to their corresponding functions
+                                        $(
+                                            #[allow(unreachable_patterns)]
+                                            $(hbbytecode::opcode::$opcode)|* => paste::paste!({
+                                                param_extract_itm!(self, $($param_i: $param_ty),*);
+                                                self.asm.[<i_param_ $ityn>](op, $($param_i),*);
+                                            }),
+                                        )*
+
                                         // Already matched in Logos, should not be able to obtain
                                         // invalid opcode.
                                         _ => unreachable!(),
