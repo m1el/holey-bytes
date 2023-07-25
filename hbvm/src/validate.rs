@@ -47,7 +47,6 @@ pub fn validate(mut program: &[u8]) -> Result<(), Error> {
     let start = program;
     loop {
         use hbbytecode::opcode::*;
-
         // Match on instruction types and perform necessary checks
         program = match program {
             // End of program
@@ -76,14 +75,16 @@ pub fn validate(mut program: &[u8]) -> Result<(), Error> {
             }
 
             // Valid instructions
-            [UN | NOP | ECALL, rest @ ..]
-            | [DIR | DIRF, _, _, _, _, rest @ ..]
-            | [ADD..=CMPU | BRC | ADDF..=MULF, _, _, _, rest @ ..]
-            | [NEG..=NOT | CP..=SWA | NEGF..=FTI, _, _, rest @ ..]
-            | [LI, _, _, _, _, _, _, _, _, _, rest @ ..]
-            | [ADDI..=XORI | CMPI..=CMPUI | BMC | JAL..=JGTU | ADDFI..=MULFI, _, _, _, _, _, _, _, _, _, _, rest @ ..]
-            | [SLI..=SRSI, _, _, _, _, rest @ ..]
-            | [LD..=ST, _, _, _, _, _, _, _, _, _, _, _, _, rest @ ..] => rest,
+            [DIR | DIRF | FMAF, _, _, _, _, rest @ ..] // BBBB
+            | [ADD | SUB | MUL | AND | OR | XOR | SL | SR | SRS | CMP | CMPU | BRC | ADDF | SUBF | MULF, _, _, _, rest @ ..]
+            | [LD | ST, _, _, _, _, _, _, _, _, _, _, _, rest @ ..] // BBDH
+            | [
+                ADDI | MULI | ANDI | ORI | XORI | CMPI | CMPUI | BMC | JAL | JEQ | JNE | JLT | JGT | JLTU | JGTU | ADDFI | MULFI, _, _, _, _, _, _, _, _, _, _, rest @ ..] // BBD
+            | [SLI | SRI | SRSI, _, _, _, _, _, _, rest @ ..] // BBW
+            | [NEG | NOT | CP | SWA | NEGF | ITF | FTI, _, _, rest @ ..] // BB
+            | [LI, _, _, _, _, _, _, _, _, _, rest @ ..] // BD
+            | [UN | NOP | ECALL, rest @ ..] // N
+            => rest,
 
             // The rest
             _ => {
