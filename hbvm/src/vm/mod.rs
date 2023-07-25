@@ -250,7 +250,6 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                     BRC => {
                         // Block register copy
                         let ParamBBB(src, dst, count) = self.decode();
-                        extern crate std;
                         core::ptr::copy(
                             self.registers.get_unchecked(usize::from(src)),
                             self.registers.get_unchecked_mut(usize::from(dst)),
