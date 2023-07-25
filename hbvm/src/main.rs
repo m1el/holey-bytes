@@ -36,7 +36,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             println!("Program interrupt: {:?}", vm.run());
             println!("{:?}", vm.registers);
-            std::alloc::dealloc(data, std::alloc::Layout::from_size_align_unchecked(4096, 4096));
+
+            println!("{:?}", core::slice::from_raw_parts(data, 4096));
+            std::alloc::dealloc(
+                data,
+                std::alloc::Layout::from_size_align_unchecked(4096, 4096),
+            );
             vm.memory.unmap(0).unwrap();
         }
     }
