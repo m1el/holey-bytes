@@ -18,6 +18,9 @@ macro_rules! constmod {
 }
 
 /// Invoke macro with bytecode definition format
+/// 
+/// Keep in mind BRC instruction is special-cased and you have to implement
+/// it manually.
 #[macro_export]
 macro_rules! invoke_with_def {
     ($macro:path) => {
