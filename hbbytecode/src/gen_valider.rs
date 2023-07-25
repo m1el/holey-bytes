@@ -59,14 +59,16 @@ macro_rules! gen_valider {
                 let start = program;
                 loop {
                     use crate::opcode::*;
+                    extern crate std;
                     program = match program {
                         // End of program
                         [] => return Ok(()),
 
                         // Memory load/store cannot go out-of-bounds register array
-                        [LD..=ST, reg, _, _, _, _, _, _, _, _, count_0, count_1, ..]
+                        //         B   B  D1 D2 D3 D4 D5 D6 D7 D8    H1      H2
+                        [LD..=ST, reg, _, _, _, _, _, _, _, _, _, count_0, count_1, ..]
                             if usize::from(*reg) * 8
-                                + usize::from(u16::from_le_bytes([*count_1, *count_0]))
+                                + usize::from(u16::from_le_bytes([*count_0, *count_1]))
                                 > 2048 =>
                         {
                             return Err(Error {

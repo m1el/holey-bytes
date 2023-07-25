@@ -215,6 +215,8 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                     LD => {
                         // Load. If loading more than register size, continue on adjecent registers
                         let ParamBBDH(dst, base, off, count) = self.decode();
+                        ldst_bound_check(dst, count)?;
+                        
                         let n: usize = match dst {
                             0 => 1,
                             _ => 0,
@@ -230,6 +232,8 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                     ST => {
                         // Store. Same rules apply as to LD
                         let ParamBBDH(dst, base, off, count) = self.decode();
+                        ldst_bound_check(dst, count)?;
+
                         self.memory.store(
                             self.read_reg(base).cast::<u64>() + off,
                             self.registers.as_ptr().add(usize::from(dst)).cast(),
@@ -250,6 +254,10 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                     BRC => {
                         // Block register copy
                         let ParamBBB(src, dst, count) = self.decode();
+                        if src.checked_add(count).is_none() || dst.checked_add(count).is_none() {
+                            return Err(VmRunError::RegOutOfBounds);
+                        }
+
                         core::ptr::copy(
                             self.registers.get_unchecked(usize::from(src)),
                             self.registers.get_unchecked_mut(usize::from(dst)),
@@ -394,6 +402,16 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
     }
 }
 
+/// Load/Store target/source register range bound checking
+#[inline]
+fn ldst_bound_check(reg: u8, size: u16) -> Result<(), VmRunError> {
+    if usize::from(reg) * 8 + usize::from(size) > 2048 {
+        Err(VmRunError::RegOutOfBounds)
+    } else {
+        Ok(())
+    }
+}
+
 /// Virtual machine halt error
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -406,6 +424,9 @@ pub enum VmRunError {
 
     /// Unhandled store access exception
     StoreAccessEx(u64),
+
+    /// Register out-of-bounds access
+    RegOutOfBounds,
 
     /// Reached unreachable code
     Unreachable,
