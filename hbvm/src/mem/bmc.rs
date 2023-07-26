@@ -36,7 +36,7 @@ impl BlockCopier {
     }
 
     /// Copy one block
-    /// 
+    ///
     /// # Safety
     /// - Same as for [`Memory::load`] and [`Memory::store`]
     pub unsafe fn poll(
@@ -59,8 +59,16 @@ impl BlockCopier {
                 return Poll::Ready(Err(e));
             }
 
-            self.src += BUF_SIZE as u64;
-            self.dst += BUF_SIZE as u64;
+            match self.src.checked_add(BUF_SIZE as u64) {
+                Some(n) => self.src = n,
+                None => return Poll::Ready(Err(BlkCopyError::OutOfBounds)),
+            };
+            
+            match self.dst.checked_add(BUF_SIZE as u64) {
+                Some(n) => self.dst = n,
+                None => return Poll::Ready(Err(BlkCopyError::OutOfBounds)),
+            };
+
             self.n_buffers -= 1;
 
             return if self.n_buffers + self.rem == 0 {
@@ -109,7 +117,7 @@ unsafe fn act(
             |src, dst, count| core::ptr::copy(src, dst, count),
             traph,
         )
-        .map_err(|addr| BlkCopyError {
+        .map_err(|addr| BlkCopyError::Access {
             access_reason: MemoryAccessReason::Load,
             addr,
         })?;
@@ -125,7 +133,7 @@ unsafe fn act(
             |dst, src, count| core::ptr::copy(src, dst, count),
             traph,
         )
-        .map_err(|addr| BlkCopyError {
+        .map_err(|addr| BlkCopyError::Access {
             access_reason: MemoryAccessReason::Store,
             addr,
         })?;
@@ -135,18 +143,30 @@ unsafe fn act(
 
 /// Error occured when copying a block of memory
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BlkCopyError {
-    /// Kind of access
-    access_reason: MemoryAccessReason,
-    /// VM Address
-    addr: u64,
+pub enum BlkCopyError {
+    /// Memory access error
+    Access {
+        /// Kind of access
+        access_reason: MemoryAccessReason,
+        /// VM Address
+        addr: u64,
+    },
+    /// Address out of bounds
+    OutOfBounds,
 }
 
 impl From<BlkCopyError> for VmRunError {
     fn from(value: BlkCopyError) -> Self {
-        match value.access_reason {
-            MemoryAccessReason::Load => Self::LoadAccessEx(value.addr),
-            MemoryAccessReason::Store => Self::StoreAccessEx(value.addr),
+        match value {
+            BlkCopyError::Access {
+                access_reason: MemoryAccessReason::Load,
+                addr,
+            } => Self::LoadAccessEx(addr),
+            BlkCopyError::Access {
+                access_reason: MemoryAccessReason::Store,
+                addr,
+            } => Self::StoreAccessEx(addr),
+            BlkCopyError::OutOfBounds => Self::AddrOutOfBounds,
         }
     }
 }

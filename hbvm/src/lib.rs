@@ -230,27 +230,26 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                     LD => {
                         // Load. If loading more than register size, continue on adjecent registers
                         let ParamBBDH(dst, base, off, count) = self.decode();
-                        ldst_bound_check(dst, count)?;
-
-                        let n: usize = match dst {
+                        let n: u8 = match dst {
                             0 => 1,
                             _ => 0,
                         };
 
                         self.memory.load(
-                            self.read_reg(base).cast::<u64>() + off + n as u64,
-                            self.registers.as_mut_ptr().add(usize::from(dst) + n).cast(),
-                            usize::from(count).saturating_sub(n),
+                            self.ldst_addr_uber(dst, base, off, count, n)?,
+                            self.registers
+                                .as_mut_ptr()
+                                .add(usize::from(dst) + usize::from(n))
+                                .cast(),
+                            usize::from(count).saturating_sub(n.into()),
                             &mut self.pfhandler,
                         )?;
                     }
                     ST => {
                         // Store. Same rules apply as to LD
                         let ParamBBDH(dst, base, off, count) = self.decode();
-                        ldst_bound_check(dst, count)?;
-
                         self.memory.store(
-                            self.read_reg(base).cast::<u64>() + off,
+                            self.ldst_addr_uber(dst, base, off, count, 0)?,
                             self.registers.as_ptr().add(usize::from(dst)).cast(),
                             count.into(),
                             &mut self.pfhandler,
@@ -312,7 +311,8 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                         // specified register and jump to reg + offset.
                         let ParamBBD(save, reg, offset) = self.decode();
                         self.write_reg(save, self.pc as u64);
-                        self.pc = (self.read_reg(reg).cast::<u64>() + offset) as usize;
+                        self.pc =
+                            (self.read_reg(reg).cast::<u64>().saturating_add(offset)) as usize;
                     }
                     // Conditional jumps, jump only to immediates
                     JEQ => self.cond_jmp::<u64>(Ordering::Equal),
@@ -443,15 +443,28 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
             *self.registers.get_unchecked_mut(n as usize) = value.into();
         }
     }
-}
 
-/// Load/Store target/source register range bound checking
-#[inline]
-fn ldst_bound_check(reg: u8, size: u16) -> Result<(), VmRunError> {
-    if usize::from(reg) * 8 + usize::from(size) > 2048 {
-        Err(VmRunError::RegOutOfBounds)
-    } else {
-        Ok(())
+    /// Load / Store Address check-computation überfunction
+    #[inline]
+    unsafe fn ldst_addr_uber(
+        &self,
+        dst: u8,
+        base: u8,
+        offset: u64,
+        size: u16,
+        adder: u8,
+    ) -> Result<u64, VmRunError> {
+        let reg = dst.checked_add(adder).ok_or(VmRunError::RegOutOfBounds)?;
+
+        if usize::from(reg) * 8 + usize::from(size) > 2048 {
+            Err(VmRunError::RegOutOfBounds)
+        } else {
+            self.read_reg(base)
+                .cast::<u64>()
+                .checked_add(offset)
+                .and_then(|x| x.checked_add(adder.into()))
+                .ok_or(VmRunError::AddrOutOfBounds)
+        }
     }
 }
 
@@ -470,6 +483,9 @@ pub enum VmRunError {
 
     /// Register out-of-bounds access
     RegOutOfBounds,
+
+    /// Address out-of-bounds
+    AddrOutOfBounds,
 
     /// Reached unreachable code
     Unreachable,
