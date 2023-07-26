@@ -64,7 +64,7 @@ impl Memory {
         };
 
         // Walk pagetable levels
-        for lvl in (lookup_depth..4).rev() {
+        for lvl in (lookup_depth + 1..5).rev() {
             let entry = (*current_pt)
                 .table
                 .get_unchecked_mut(addr_extract_index(target, lvl));
@@ -114,7 +114,6 @@ impl Memory {
     /// just should be ignored.
     #[cfg(feature = "alloc")]
     pub fn unmap(&mut self, addr: u64) -> Result<(), NothingToUnmap> {
-        extern crate std;
         let mut current_pt = self.root_pt;
         let mut page_tables = [core::ptr::null_mut(); 5];
 
@@ -140,6 +139,7 @@ impl Memory {
                 // empty permission - no UB here!
                 _ => unsafe {
                     core::ptr::write_bytes(entry, 0, 1);
+                    break;
                 },
             }
         }
