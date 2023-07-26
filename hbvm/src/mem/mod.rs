@@ -365,7 +365,7 @@ impl Iterator for AddrPageLookuper {
                                 perm,
                                 PageSize::from_lvl(lvl)?,
                                 // In-page offset
-                                self.addr as usize & ((1 << (lvl * 9 + 12)) - 1),
+                                addr_extract_index(self.addr, lvl),
                             );
                         }
                     }
@@ -393,7 +393,7 @@ impl Iterator for AddrPageLookuper {
 /// the output of the function is unspecified (yes, it can also panic :)
 pub fn addr_extract_index(addr: u64, lvl: u8) -> usize {
     debug_assert!(lvl <= 4);
-    usize::try_from((addr >> (lvl * 9 + 12)) & ((1 << 9) - 1)).expect("?conradluget a better CPU")
+    usize::try_from((addr >> (lvl * 8 + 12)) & ((1 << 8) - 1)).expect("?conradluget a better CPU")
 }
 
 /// Page size
