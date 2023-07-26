@@ -47,6 +47,7 @@ impl BlockCopier {
         // Safety: Assuming uninit of array of MaybeUninit is sound
         let mut buf = AlignedBuf(MaybeUninit::uninit().assume_init());
 
+        // We have at least one buffer size to copy
         if self.n_buffers != 0 {
             if let Err(e) = act(
                 memory,
@@ -59,6 +60,9 @@ impl BlockCopier {
                 return Poll::Ready(Err(e));
             }
 
+            // Bump source and destination address
+            //
+            // If we are over the address space, bail.
             match self.src.checked_add(BUF_SIZE as u64) {
                 Some(n) => self.src = n,
                 None => return Poll::Ready(Err(BlkCopyError::OutOfBounds)),
