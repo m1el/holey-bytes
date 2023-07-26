@@ -64,7 +64,7 @@ impl Memory {
         };
 
         // Walk pagetable levels
-        for lvl in (lookup_depth..5).rev() {
+        for lvl in (lookup_depth..4).rev() {
             let entry = (*current_pt)
                 .table
                 .get_unchecked_mut(addr_extract_index(target, lvl));
