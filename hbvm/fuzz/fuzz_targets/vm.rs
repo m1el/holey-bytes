@@ -9,7 +9,7 @@ use {
 };
 
 fuzz_target!(|data: &[u8]| {
-    if let Ok(mut vm) = Vm::<_, 0>::new_validated(data, TestTrapHandler, Default::default()) {
+    if let Ok(mut vm) = Vm::<_, 100>::new_validated(data, TestTrapHandler, Default::default()) {
         let _ = vm.run();
     }
 });

@@ -19,13 +19,12 @@ pub mod mem;
 pub mod value;
 
 use {
-    self::{mem::HandlePageFault, value::ValueVariant},
-    core::{cmp::Ordering, ops},
+    core::{cmp::Ordering, mem::size_of, ops},
     hbbytecode::{
         valider, OpParam, ParamBB, ParamBBB, ParamBBBB, ParamBBD, ParamBBDH, ParamBBW, ParamBD,
     },
-    mem::Memory,
-    value::Value,
+    mem::{bmc::BlockCopier, HandlePageFault, Memory},
+    value::{Value, ValueVariant},
 };
 
 /// HoleyBytes Virtual Machine
@@ -53,6 +52,9 @@ pub struct Vm<'a, PfHandler, const TIMER_QUOTIENT: usize> {
 
     /// Program timer
     timer: usize,
+
+    /// Saved block copier
+    copier: Option<BlockCopier>,
 }
 
 impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
@@ -71,6 +73,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
             program_len: program.len() - 12,
             program,
             timer: 0,
+            copier: None,
         }
     }
 
@@ -255,13 +258,41 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                     }
                     BMC => {
                         // Block memory copy
-                        let ParamBBD(src, dst, count) = self.decode();
-                        self.memory.block_copy(
-                            self.read_reg(src).cast::<u64>(),
-                            self.read_reg(dst).cast::<u64>(),
-                            count as _,
-                            &mut self.pfhandler,
-                        )?;
+                        match if let Some(copier) = &mut self.copier {
+                            // There is some copier, poll.
+                            copier.poll(&mut self.memory, &mut self.pfhandler)
+                        } else {
+                            // There is none, make one!
+                            let ParamBBD(src, dst, count) = self.decode();
+
+                            // So we are still on BMC on next cycle
+                            self.pc -= size_of::<ParamBBD>() + 1;
+
+                            self.copier = Some(BlockCopier::new(
+                                self.read_reg(src).cast(),
+                                self.read_reg(dst).cast(),
+                                count as _,
+                            ));
+
+                            self.copier
+                                .as_mut()
+                                .unwrap_unchecked() // SAFETY: We just assigned there
+                                .poll(&mut self.memory, &mut self.pfhandler)
+                        } {
+                            // We are done, shift program counter
+                            core::task::Poll::Ready(Ok(())) => {
+                                self.copier = None;
+                                self.pc += size_of::<ParamBBD>() + 1;
+                            }
+                            // Error, shift program counter (for consistency)
+                            // and yield error
+                            core::task::Poll::Ready(Err(e)) => {
+                                self.pc += size_of::<ParamBBD>() + 1;
+                                return Err(e.into());
+                            }
+                            // Not done yet, proceed to next cycle
+                            core::task::Poll::Pending => (),
+                        }
                     }
                     BRC => {
                         // Block register copy
@@ -353,7 +384,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
     #[inline]
     unsafe fn decode<T: OpParam>(&mut self) -> T {
         let data = self.program.as_ptr().add(self.pc + 1).cast::<T>().read();
-        self.pc += 1 + core::mem::size_of::<T>();
+        self.pc += 1 + size_of::<T>();
         data
     }
 

@@ -1,6 +1,7 @@
 //! Program memory implementation
 
 pub mod paging;
+pub mod bmc;
 
 mod pfhandler;
 
@@ -8,7 +9,6 @@ pub use pfhandler::HandlePageFault;
 
 use {
     super::VmRunError,
-    core::mem::MaybeUninit,
     derive_more::Display,
     paging::{PageTable, Permission},
 };
@@ -213,93 +213,6 @@ impl Memory {
             traph,
         )
         .map_err(StoreError)
-    }
-
-    /// Copy a block of memory
-    ///
-    /// # Safety
-    /// - Same as for [`Self::load`] and [`Self::store`]
-    /// - This function has been rewritten and is now pretty much boring
-    pub unsafe fn block_copy(
-        &mut self,
-        mut src: u64,
-        mut dst: u64,
-        count: usize,
-        traph: &mut impl HandlePageFault,
-    ) -> Result<(), BlkCopyError> {
-        // Yea, i know it is possible to do this more efficiently, but I am too lazy.
-
-        impl Memory {
-            #[inline]
-            unsafe fn act(
-                &mut self,
-                src: u64,
-                dst: u64,
-                buf: *mut u8,
-                count: usize,
-                traph: &mut impl HandlePageFault,
-            ) -> Result<(), BlkCopyError> {
-                // Load to buffer
-                self.memory_access(
-                    MemoryAccessReason::Load,
-                    src,
-                    buf,
-                    count,
-                    perm_check::readable,
-                    |src, dst, count| core::ptr::copy(src, dst, count),
-                    traph,
-                )
-                .map_err(|addr| BlkCopyError {
-                    access_reason: MemoryAccessReason::Load,
-                    addr,
-                })?;
-
-                // Store from buffer
-                self.memory_access(
-                    MemoryAccessReason::Store,
-                    dst,
-                    buf,
-                    count,
-                    perm_check::writable,
-                    |dst, src, count| core::ptr::copy(src, dst, count),
-                    traph,
-                )
-                .map_err(|addr| BlkCopyError {
-                    access_reason: MemoryAccessReason::Store,
-                    addr,
-                })?;
-
-                Ok(())
-            }
-        }
-
-        // Buffer size (defaults to 4 KiB, a smallest page size on most platforms)
-        const BUF_SIZE: usize = 4096;
-
-        // This should be equal to `BUF_SIZE`
-        #[repr(align(4096))]
-        struct AlignedBuf([MaybeUninit<u8>; BUF_SIZE]);
-
-        // Safety: Assuming uninit of array of MaybeUninit is sound
-        let mut buf = AlignedBuf(MaybeUninit::uninit().assume_init());
-
-        // Calculate how many times we need to copy buffer-sized blocks if any and the rest.
-        let n_buffers = count / BUF_SIZE;
-        let rem = count % BUF_SIZE;
-
-        // Copy buffer-sized blocks
-        for _ in 0..n_buffers {
-            self.act(src, dst, buf.0.as_mut_ptr().cast(), BUF_SIZE, traph)?;
-            src += BUF_SIZE as u64;
-            dst += BUF_SIZE as u64;
-        }
-
-        // Copy the rest (if any)
-        if rem != 0 {
-            self.act(src, dst, buf.0.as_mut_ptr().cast(), rem, traph)?;
-        }
-
-        Ok(())
     }
 
     // Everyone behold, the holy function, the god of HBVM memory accesses!
@@ -532,24 +445,6 @@ pub struct NothingToUnmap;
 pub enum MemoryAccessReason {
     Load,
     Store,
-}
-
-/// Error occured when copying a block of memory
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct BlkCopyError {
-    /// Kind of access
-    access_reason: MemoryAccessReason,
-    /// VM Address
-    addr: u64,
-}
-
-impl From<BlkCopyError> for VmRunError {
-    fn from(value: BlkCopyError) -> Self {
-        match value.access_reason {
-            MemoryAccessReason::Load => Self::LoadAccessEx(value.addr),
-            MemoryAccessReason::Store => Self::StoreAccessEx(value.addr),
-        }
-    }
 }
 
 impl From<LoadError> for VmRunError {
