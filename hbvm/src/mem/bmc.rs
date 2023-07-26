@@ -26,6 +26,7 @@ pub struct BlockCopier {
 }
 
 impl BlockCopier {
+    #[inline]
     pub fn new(src: u64, dst: u64, count: usize) -> Self {
         Self {
             src,

@@ -12,6 +12,8 @@
 
 #![no_std]
 
+#![cfg_attr(feature = "nightly", feature(fn_align))]
+
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
@@ -90,6 +92,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
     /// Execute program
     ///
     /// Program can return [`VmRunError`] if a trap handling failed
+    #[cfg_attr(feature = "nightly", repr(align(4096)))]
     pub fn run(&mut self) -> Result<VmRunOk, VmRunError> {
         use hbbytecode::opcode::*;
         loop {

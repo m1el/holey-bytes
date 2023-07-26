@@ -9,6 +9,7 @@ lto = true
 [features]
 default = ["alloc"]
 alloc   = []
+nightly = []
 
 [dependencies]
 delegate          = "0.9"

@@ -310,6 +310,7 @@ struct AddrPageLookuper {
 
 impl AddrPageLookuper {
     /// Create a new page lookuper
+    #[inline]
     pub const fn new(addr: u64, size: usize, pagetable: *const PageTable) -> Self {
         Self {
             addr,
