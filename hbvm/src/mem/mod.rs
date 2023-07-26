@@ -1,7 +1,7 @@
 //! Program memory implementation
 
-pub mod paging;
 pub mod bmc;
+pub mod paging;
 
 mod pfhandler;
 
@@ -58,13 +58,13 @@ impl Memory {
 
         // Decide on what level depth are we going
         let lookup_depth = match pagesize {
-            PageSize::Size4K => 4,
-            PageSize::Size2M => 3,
+            PageSize::Size4K => 0,
+            PageSize::Size2M => 1,
             PageSize::Size1G => 2,
         };
 
         // Walk pagetable levels
-        for lvl in (0..lookup_depth).rev() {
+        for lvl in (lookup_depth..5).rev() {
             let entry = (*current_pt)
                 .table
                 .get_unchecked_mut(addr_extract_index(target, lvl));
@@ -94,7 +94,7 @@ impl Memory {
 
         let node = (*current_pt)
             .table
-            .get_unchecked_mut(addr_extract_index(target, 4 - lookup_depth));
+            .get_unchecked_mut(addr_extract_index(target, lookup_depth));
 
         // Check if node is not mapped
         if node.permission() != Permission::Empty {
@@ -114,6 +114,7 @@ impl Memory {
     /// just should be ignored.
     #[cfg(feature = "alloc")]
     pub fn unmap(&mut self, addr: u64) -> Result<(), NothingToUnmap> {
+        extern crate std;
         let mut current_pt = self.root_pt;
         let mut page_tables = [core::ptr::null_mut(); 5];
 
@@ -152,9 +153,7 @@ impl Memory {
 
             unsafe {
                 let children = &mut (*(*entry).ptr()).pt.childen;
-
-                // Decrease children count
-                *children -= 1;
+                *children -= 1; // Decrease children count
 
                 // If there are no children, deallocate.
                 if *children == 0 {
@@ -162,6 +161,8 @@ impl Memory {
 
                     // Zero visited entry
                     core::ptr::write_bytes(entry, 0, 1);
+                } else {
+                    break;
                 }
             }
         }
