@@ -59,7 +59,6 @@ macro_rules! gen_valider {
                 let start = program;
                 loop {
                     use crate::opcode::*;
-                    extern crate std;
                     program = match program {
                         // End of program
                         [] => return Ok(()),
