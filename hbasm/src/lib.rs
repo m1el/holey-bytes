@@ -72,7 +72,7 @@ impl Assembler {
     /// Why 12 bytes? That's the size of largest instruction parameter part.
     pub fn finalise(&mut self) {
         self.buf.extend([0; 12]);
-        self.buf[0..3].copy_from_slice(&[0xAB, 0x1E, 0x0B]);
+        self.buf[0..4].copy_from_slice(&0xAB1E0B_u32.to_le_bytes());
     }
 }
 

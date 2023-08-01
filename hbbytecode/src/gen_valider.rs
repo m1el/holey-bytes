@@ -40,7 +40,7 @@ macro_rules! gen_valider {
             /// sound to execute.
             pub fn validate(mut program: &[u8]) -> Result<(), Error> {
                 // Validate magic
-                if program.get(0..3) != Some(&[0xAB, 0x1E, 0x0B]) {
+                if program.get(0..4) != Some(&0xAB1E0B_u32.to_le_bytes()) {
                     return Err(Error {
                         kind: ErrorKind::MissingMagic,
                         index: 0,
@@ -67,7 +67,7 @@ macro_rules! gen_valider {
                 }
 
                 let start = program;
-                program = &program[3..];
+                program = &program[4..];
                 loop {
                     use crate::opcode::*;
                     program = match program {
