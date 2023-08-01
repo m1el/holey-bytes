@@ -73,7 +73,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
             pfhandler: traph,
             pc: 0,
             program_len: program.len() - 12,
-            program,
+            program: &program[3..],
             timer: 0,
             copier: None,
         }

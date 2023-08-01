@@ -1,6 +1,7 @@
 # HoleyBytes ISA Specification
 
 # Bytecode format
+- Holey Bytes program should start with following magic: `0xAB1E0B`
 - All numbers are encoded little-endian
 - There is 256 registers, they are represented by a byte
 - Immediate values are 64 bit

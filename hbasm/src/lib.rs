@@ -1,11 +1,11 @@
 //! Holey Bytes Assembler
-//! 
+//!
 //! Some people claim:
 //! > Write programs to handle text streams, because that is a universal interface.
 //!
 //! We at AbleCorp believe that nice programatic API is nicer than piping some text
 //! into a program. It's less error-prone and faster.
-//! 
+//!
 //! So this crate contains both assembleer with API for programs and a text assembler
 //! for humans to write
 
@@ -15,17 +15,28 @@ extern crate alloc;
 
 mod macros;
 
-use {alloc::vec::Vec, hashbrown::HashSet};
+use {
+    alloc::{vec, vec::Vec},
+    hashbrown::HashSet,
+};
 
 /// Assembler
-/// 
+///
 /// - Opcode-generic, instruction-type-specific methods are named `i_param_<type>`
 ///     - You likely won't need to use them, but they are here, just in case :)
 /// - Instruction-specific methods are named `i_<instruction>`
-#[derive(Default)]
 pub struct Assembler {
     pub buf: Vec<u8>,
     pub sub: HashSet<usize>,
+}
+
+impl Default for Assembler {
+    fn default() -> Self {
+        Self {
+            buf: vec![0; 3],
+            sub: Default::default(),
+        }
+    }
 }
 
 hbbytecode::invoke_with_def!(macros::text::gen_text);
@@ -33,8 +44,8 @@ hbbytecode::invoke_with_def!(macros::text::gen_text);
 impl Assembler {
     hbbytecode::invoke_with_def!(macros::asm::impl_asm);
 
-    /// Append 12 zeroes (UN) at the end
-    /// 
+    /// Append 12 zeroes (UN) at the end and add magic to the begining
+    ///
     /// # HoleyBytes lore
     ///
     /// In reference HBVM implementation checks are done in
@@ -61,11 +72,12 @@ impl Assembler {
     /// Why 12 bytes? That's the size of largest instruction parameter part.
     pub fn finalise(&mut self) {
         self.buf.extend([0; 12]);
+        self.buf[0..3].copy_from_slice(&[0xAB, 0x1E, 0x0B]);
     }
 }
 
 /// Immediate value
-/// 
+///
 /// # Implementor notice
 /// It should insert exactly 8 bytes, otherwise output will be malformed.
 /// This is not checked in any way

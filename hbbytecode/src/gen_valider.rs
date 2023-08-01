@@ -23,6 +23,8 @@ macro_rules! gen_valider {
                 RegisterArrayOverflow,
                 /// Program is not validly terminated
                 InvalidEnd,
+                /// Program misses magic
+                MissingMagic
             }
 
             /// Error
@@ -37,6 +39,14 @@ macro_rules! gen_valider {
             /// Perform bytecode validation. If it passes, the program should be
             /// sound to execute.
             pub fn validate(mut program: &[u8]) -> Result<(), Error> {
+                // Validate magic
+                if program.get(0..3) != Some(&[0xAB, 0x1E, 0x0B]) {
+                    return Err(Error {
+                        kind: ErrorKind::MissingMagic,
+                        index: 0,
+                    });
+                }
+
                 // Program has to end with 12 zeroes, if there is less than
                 // 12 bytes, program is invalid.
                 if program.len() < 12 {
@@ -57,6 +67,7 @@ macro_rules! gen_valider {
                 }
 
                 let start = program;
+                program = &program[3..];
                 loop {
                     use crate::opcode::*;
                     program = match program {
