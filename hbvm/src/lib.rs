@@ -11,8 +11,9 @@
 // - Mapped pages should be at least 4 KiB
 
 #![no_std]
-
 #![cfg_attr(feature = "nightly", feature(fn_align))]
+
+use core::marker::PhantomData;
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -47,10 +48,13 @@ pub struct Vm<'a, PfHandler, const TIMER_QUOTIENT: usize> {
     pub pc: usize,
 
     /// Program
-    program: &'a [u8],
+    program: *const u8,
 
     /// Cached program length (without unreachable end)
     program_len: usize,
+
+    /// Program lifetime
+    _program_lt: PhantomData<&'a [u8]>,
 
     /// Program timer
     timer: usize,
@@ -73,7 +77,8 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
             pfhandler: traph,
             pc: 0,
             program_len: program.len() - 12,
-            program: &program[4..],
+            program: program[4..].as_ptr(),
+            _program_lt: Default::default(),
             timer: 0,
             copier: None,
         }
@@ -121,7 +126,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
             // - Yes, we assume you run 64 bit CPU. Else ?conradluget a better CPU
             //   sorry 8 bit fans, HBVM won't run on your Speccy :(
             unsafe {
-                match *self.program.get_unchecked(self.pc) {
+                match *self.program.add(self.pc) {
                     UN => {
                         self.decode::<()>();
                         return Err(VmRunError::Unreachable);
@@ -386,7 +391,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
     /// Decode instruction operands
     #[inline]
     unsafe fn decode<T: OpParam>(&mut self) -> T {
-        let data = self.program.as_ptr().add(self.pc + 1).cast::<T>().read();
+        let data = self.program.add(self.pc + 1).cast::<T>().read();
         self.pc += 1 + size_of::<T>();
         data
     }
