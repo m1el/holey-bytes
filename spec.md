@@ -260,6 +260,7 @@
 
 # Memory
 - Addresses are 64 bit
+- Program should be in the same address space as all other data
 - Memory implementation is arbitrary
 - In case of accessing invalid address:
     - Program shall trap (LoadAccessEx, StoreAccessEx) with parameter of accessed address
