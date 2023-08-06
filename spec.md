@@ -261,13 +261,13 @@
 # Memory
 - Addresses are 64 bit
 - Program should be in the same address space as all other data
+- Address `0x0` is invalid and acessing it traps
 - Memory implementation is arbitrary
 - In case of accessing invalid address:
     - Program shall trap (LoadAccessEx, StoreAccessEx) with parameter of accessed address
     - Value of register when trapped is undefined
 
 ## Recommendations
-- Leave address `0x0` as invalid
 - If paging used:
     - Leave first page invalid
     - Pages should be at least 4 KiB
