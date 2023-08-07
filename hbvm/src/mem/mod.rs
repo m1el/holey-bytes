@@ -479,7 +479,7 @@ pub mod perm_check {
 
     /// Page is readable
     #[inline(always)]
-    pub fn readable(perm: Permission) -> bool {
+    pub const fn readable(perm: Permission) -> bool {
         matches!(
             perm,
             Permission::Readonly | Permission::Write | Permission::Exec
@@ -488,7 +488,7 @@ pub mod perm_check {
 
     /// Page is writable
     #[inline(always)]
-    pub fn writable(perm: Permission) -> bool {
-        perm == Permission::Write
+    pub const fn writable(perm: Permission) -> bool {
+        matches!(perm, Permission::Write)
     }
 }
