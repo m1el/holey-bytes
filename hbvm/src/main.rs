@@ -1,9 +1,7 @@
-use hbvm::softpaging::paging::PageTable;
-
 use {
     hbbytecode::valider::validate,
     hbvm::{
-        softpaging::{HandlePageFault, PageSize, SoftPagedMem},
+        softpaging::{paging::PageTable, HandlePageFault, PageSize, SoftPagedMem},
         MemoryAccessReason, Vm,
     },
     std::io::{stdin, Read},
