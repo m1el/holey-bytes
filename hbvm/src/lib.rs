@@ -100,7 +100,7 @@ where
         loop {
             // Check instruction boundary
             if self.pc >= self.program_len {
-                return Ok(VmRunOk::End);
+                return Err(VmRunError::AddrOutOfBounds);
             }
 
             // Big match
@@ -127,6 +127,10 @@ where
                     UN => {
                         self.decode::<()>();
                         return Err(VmRunError::Unreachable);
+                    }
+                    TX => {
+                        self.decode::<()>();
+                        return Ok(VmRunOk::End);
                     }
                     NOP => self.decode::<()>(),
                     ADD => self.binary_op(u64::wrapping_add),

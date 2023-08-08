@@ -33,7 +33,7 @@ pub struct Assembler {
 impl Default for Assembler {
     fn default() -> Self {
         Self {
-            buf: vec![0; 3],
+            buf: vec![0; 4],
             sub: Default::default(),
         }
     }
