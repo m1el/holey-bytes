@@ -98,7 +98,13 @@ impl<PfHandler: HandlePageFault> SoftPagedMem<PfHandler> {
                 // No page found
                 Some(Err(AddrPageLookupError { addr, size })) => {
                     // Attempt to execute page fault handler
-                    if self.pf_handler.page_fault(reason, addr, size, dst) {
+                    if self.pf_handler.page_fault(
+                        reason,
+                        unsafe { &mut *self.root_pt },
+                        addr,
+                        size,
+                        dst,
+                    ) {
                         // Shift the splitter address
                         pspl.bump(size);
 
@@ -465,7 +471,7 @@ pub trait HandlePageFault {
     fn page_fault(
         &mut self,
         reason: MemoryAccessReason,
-        // memory: &mut SoftPagedMem<Self>, TODO: Make work
+        pagetable: &mut PageTable,
         vaddr: u64,
         size: PageSize,
         dataptr: *mut u8,

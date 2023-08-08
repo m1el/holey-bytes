@@ -1,3 +1,5 @@
+use hbvm::softpaging::paging::PageTable;
+
 use {
     hbbytecode::valider::validate,
     hbvm::{
@@ -61,7 +63,7 @@ impl HandlePageFault for TestTrapHandler {
     fn page_fault(
         &mut self,
         _: MemoryAccessReason,
-        //_: &mut Memory,
+        _: &mut PageTable,
         _: u64,
         _: PageSize,
         _: *mut u8,
