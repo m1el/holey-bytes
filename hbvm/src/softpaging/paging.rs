@@ -59,7 +59,9 @@ impl Debug for PtEntry {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(align(4096))]
 pub struct PageTable {
+    /// How much entries are in use
     pub childen: u8,
+    /// Entries
     pub table:   [PtEntry; 256],
 }
 

@@ -2,8 +2,8 @@
 //!
 //! # Alloc feature
 //! - Enabled by default
-//! - Provides [`mem::Memory`] mapping / unmapping, as well as
-//!   [`Default`] and [`Drop`] implementation
+//! - Provides mapping / unmapping, as well as [`Default`] and [`Drop`]
+//!   implementations for soft-paged memory implementation
 
 // # General safety notice:
 // - Validation has to assure there is 256 registers (r0 - r255)
@@ -12,26 +12,30 @@
 
 #![no_std]
 #![cfg_attr(feature = "nightly", feature(fn_align))]
+#![warn(missing_docs, clippy::missing_docs_in_private_items)]
 
 use core::marker::PhantomData;
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-pub mod mem;
+pub mod softpaging;
 pub mod value;
 
+mod bmc;
+
 use {
+    bmc::BlockCopier,
     core::{cmp::Ordering, mem::size_of, ops},
+    derive_more::Display,
     hbbytecode::{
         valider, OpParam, ParamBB, ParamBBB, ParamBBBB, ParamBBD, ParamBBDH, ParamBBW, ParamBD,
     },
-    mem::bmc::BlockCopier,
     value::{Value, ValueVariant},
 };
 
 /// HoleyBytes Virtual Machine
-pub struct Vm<'a, Memory, const TIMER_QUOTIENT: usize> {
+pub struct Vm<'a, Mem, const TIMER_QUOTIENT: usize> {
     /// Holds 256 registers
     ///
     /// Writing to register 0 is considered undefined behaviour
@@ -39,7 +43,7 @@ pub struct Vm<'a, Memory, const TIMER_QUOTIENT: usize> {
     pub registers: [Value; 256],
 
     /// Memory implementation
-    pub memory: Memory,
+    pub memory: Mem,
 
     /// Program counter
     pub pc: usize,
@@ -60,15 +64,15 @@ pub struct Vm<'a, Memory, const TIMER_QUOTIENT: usize> {
     copier: Option<BlockCopier>,
 }
 
-impl<'a, Memory, const TIMER_QUOTIENT: usize> Vm<'a, Memory, TIMER_QUOTIENT>
+impl<'a, Mem, const TIMER_QUOTIENT: usize> Vm<'a, Mem, TIMER_QUOTIENT>
 where
-    Memory: mem::Memory,
+    Mem: Memory,
 {
     /// Create a new VM with program and trap handler
     ///
     /// # Safety
     /// Program code has to be validated
-    pub unsafe fn new_unchecked(program: &'a [u8], memory: Memory) -> Self {
+    pub unsafe fn new_unchecked(program: &'a [u8], memory: Mem) -> Self {
         Self {
             registers: [Value::from(0_u64); 256],
             memory,
@@ -82,7 +86,7 @@ where
     }
 
     /// Create a new VM with program and trap handler only if it passes validation
-    pub fn new_validated(program: &'a [u8], memory: Memory) -> Result<Self, valider::Error> {
+    pub fn new_validated(program: &'a [u8], memory: Mem) -> Result<Self, valider::Error> {
         valider::validate(program)?;
         Ok(unsafe { Self::new_unchecked(program, memory) })
     }
@@ -501,4 +505,55 @@ pub enum VmRunOk {
 
     /// Environment call
     Ecall,
+}
+
+/// Load-store memory access
+pub trait Memory {
+    /// Load data from memory on address
+    ///
+    /// # Safety
+    /// - Shall not overrun the buffer
+    unsafe fn load(&mut self, addr: u64, target: *mut u8, count: usize) -> Result<(), LoadError>;
+
+    /// Store data to memory on address
+    ///
+    /// # Safety
+    /// - Shall not overrun the buffer
+    unsafe fn store(
+        &mut self,
+        addr: u64,
+        source: *const u8,
+        count: usize,
+    ) -> Result<(), StoreError>;
+}
+
+/// Unhandled load access trap
+#[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
+#[display(fmt = "Load access error at address {_0:#x}")]
+pub struct LoadError(pub u64);
+
+/// Unhandled store access trap
+#[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
+#[display(fmt = "Store access error at address {_0:#x}")]
+pub struct StoreError(pub u64);
+
+/// Reason to access memory
+#[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
+pub enum MemoryAccessReason {
+    /// Memory was accessed for load (read)
+    Load,
+    /// Memory was accessed for store (write)
+    Store,
+}
+
+impl From<LoadError> for VmRunError {
+    fn from(value: LoadError) -> Self {
+        Self::LoadAccessEx(value.0)
+    }
+}
+
+impl From<StoreError> for VmRunError {
+    fn from(value: StoreError) -> Self {
+        Self::StoreAccessEx(value.0)
+    }
 }

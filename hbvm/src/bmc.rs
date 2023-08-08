@@ -1,16 +1,18 @@
+//! Block memory copier state machine
+
 use {
-    super::MemoryAccessReason,
-    crate::{mem::Memory, VmRunError},
+    super::{Memory, MemoryAccessReason, VmRunError},
     core::{mem::MaybeUninit, task::Poll},
 };
 
-// Buffer size (defaults to 4 KiB, a smallest page size on most platforms)
+/// Buffer size (defaults to 4 KiB, a smallest page size on most platforms)
 const BUF_SIZE: usize = 4096;
 
-// This should be equal to `BUF_SIZE`
+/// Buffer of possibly uninitialised bytes, aligned to [`BUF_SIZE`]
 #[repr(align(4096))]
 struct AlignedBuf([MaybeUninit<u8>; BUF_SIZE]);
 
+/// State for block memory copy
 pub struct BlockCopier {
     /// Source address
     src:       u64,
@@ -23,6 +25,7 @@ pub struct BlockCopier {
 }
 
 impl BlockCopier {
+    /// Construct a new one
     #[inline]
     pub fn new(src: u64, dst: u64, count: usize) -> Self {
         Self {
@@ -93,6 +96,7 @@ impl BlockCopier {
     }
 }
 
+/// Load to buffer and store from buffer
 #[inline]
 unsafe fn act(
     memory: &mut impl Memory,

@@ -1,8 +1,9 @@
-use hbvm::mem::softpaged::{HandlePageFault, PageSize, SoftPagedMem};
-
 use {
     hbbytecode::valider::validate,
-    hbvm::{mem::MemoryAccessReason, Vm},
+    hbvm::{
+        softpaging::{HandlePageFault, PageSize, SoftPagedMem},
+        MemoryAccessReason, Vm,
+    },
     std::io::{stdin, Read},
 };
 
@@ -31,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(
                     data,
                     0,
-                    hbvm::mem::softpaged::paging::Permission::Write,
+                    hbvm::softpaging::paging::Permission::Write,
                     PageSize::Size4K,
                 )
                 .unwrap();

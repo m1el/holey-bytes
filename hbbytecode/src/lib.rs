@@ -17,6 +17,7 @@ macro_rules! constmod {
     };
 }
 
+#[allow(rustdoc::invalid_rust_codeblocks)]
 /// Invoke macro with bytecode definition
 /// # Input syntax
 /// ```no_run
@@ -31,7 +32,7 @@ macro_rules! constmod {
 /// - Per-instructions there will be generated opcode-specific functions calling the generic ones
 /// - Operand types
 ///     - R: Register (u8)
-///     - I: Immediate (implements [`crate::Imm`] trait)
+///     - I: Immediate
 ///     - L: Memory load / store size (u16)
 ///     - Other types are identity-mapped
 /// 
