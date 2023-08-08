@@ -426,12 +426,12 @@ impl PageSize {
 /// Unhandled load access trap
 #[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
 #[display(fmt = "Load access error at address {_0:#x}")]
-pub struct LoadError(u64);
+pub struct LoadError(pub u64);
 
 /// Unhandled store access trap
 #[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
 #[display(fmt = "Store access error at address {_0:#x}")]
-pub struct StoreError(u64);
+pub struct StoreError(pub u64);
 
 /// There was no entry in page table to unmap
 ///

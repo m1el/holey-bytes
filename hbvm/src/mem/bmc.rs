@@ -1,7 +1,7 @@
 use {
     super::MemoryAccessReason,
     crate::{
-        mem::{perm_check, HandlePageFault, Memory},
+        mem::{HandlePageFault, Memory},
         VmRunError,
     },
     core::{mem::MaybeUninit, task::Poll},
@@ -68,7 +68,7 @@ impl BlockCopier {
                 Some(n) => self.src = n,
                 None => return Poll::Ready(Err(BlkCopyError::OutOfBounds)),
             };
-            
+
             match self.dst.checked_add(BUF_SIZE as u64) {
                 Some(n) => self.dst = n,
                 None => return Poll::Ready(Err(BlkCopyError::OutOfBounds)),
@@ -113,32 +113,16 @@ unsafe fn act(
 ) -> Result<(), BlkCopyError> {
     // Load to buffer
     memory
-        .memory_access(
-            MemoryAccessReason::Load,
-            src,
-            buf,
-            count,
-            perm_check::readable,
-            |src, dst, count| core::ptr::copy(src, dst, count),
-            traph,
-        )
-        .map_err(|addr| BlkCopyError::Access {
+        .load(src, buf, count, traph)
+        .map_err(|super::LoadError(addr)| BlkCopyError::Access {
             access_reason: MemoryAccessReason::Load,
             addr,
         })?;
 
     // Store from buffer
     memory
-        .memory_access(
-            MemoryAccessReason::Store,
-            dst,
-            buf,
-            count,
-            perm_check::writable,
-            |dst, src, count| core::ptr::copy(src, dst, count),
-            traph,
-        )
-        .map_err(|addr| BlkCopyError::Access {
+        .store(dst, buf, count, traph)
+        .map_err(|super::StoreError(addr)| BlkCopyError::Access {
             access_reason: MemoryAccessReason::Store,
             addr,
         })?;
