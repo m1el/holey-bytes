@@ -1,9 +1,6 @@
 use {
     super::MemoryAccessReason,
-    crate::{
-        mem::{HandlePageFault, Memory},
-        VmRunError,
-    },
+    crate::{mem::Memory, VmRunError},
     core::{mem::MaybeUninit, task::Poll},
 };
 
@@ -40,11 +37,7 @@ impl BlockCopier {
     ///
     /// # Safety
     /// - Same as for [`Memory::load`] and [`Memory::store`]
-    pub unsafe fn poll(
-        &mut self,
-        memory: &mut Memory,
-        traph: &mut impl HandlePageFault,
-    ) -> Poll<Result<(), BlkCopyError>> {
+    pub unsafe fn poll(&mut self, memory: &mut impl Memory) -> Poll<Result<(), BlkCopyError>> {
         // Safety: Assuming uninit of array of MaybeUninit is sound
         let mut buf = AlignedBuf(MaybeUninit::uninit().assume_init());
 
@@ -56,7 +49,6 @@ impl BlockCopier {
                 self.dst,
                 buf.0.as_mut_ptr().cast(),
                 BUF_SIZE,
-                traph,
             ) {
                 return Poll::Ready(Err(e));
             }
@@ -92,7 +84,6 @@ impl BlockCopier {
                 self.dst,
                 buf.0.as_mut_ptr().cast(),
                 self.rem,
-                traph,
             ) {
                 return Poll::Ready(Err(e));
             }
@@ -104,16 +95,15 @@ impl BlockCopier {
 
 #[inline]
 unsafe fn act(
-    memory: &mut Memory,
+    memory: &mut impl Memory,
     src: u64,
     dst: u64,
     buf: *mut u8,
     count: usize,
-    traph: &mut impl HandlePageFault,
 ) -> Result<(), BlkCopyError> {
     // Load to buffer
     memory
-        .load(src, buf, count, traph)
+        .load(src, buf, count)
         .map_err(|super::LoadError(addr)| BlkCopyError::Access {
             access_reason: MemoryAccessReason::Load,
             addr,
@@ -121,7 +111,7 @@ unsafe fn act(
 
     // Store from buffer
     memory
-        .store(dst, buf, count, traph)
+        .store(dst, buf, count)
         .map_err(|super::StoreError(addr)| BlkCopyError::Access {
             access_reason: MemoryAccessReason::Store,
             addr,

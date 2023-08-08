@@ -1,9 +1,8 @@
+use hbvm::mem::softpaged::{HandlePageFault, PageSize, SoftPagedMem};
+
 use {
     hbbytecode::valider::validate,
-    hbvm::{
-        mem::{HandlePageFault, Memory, MemoryAccessReason, PageSize},
-        Vm,
-    },
+    hbvm::{mem::MemoryAccessReason, Vm},
     std::io::{stdin, Read},
 };
 
@@ -16,7 +15,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     } else {
         unsafe {
-            let mut vm = Vm::<_, 0>::new_unchecked(&prog, TestTrapHandler, Default::default());
+            let mut vm =
+                Vm::<_, 0>::new_unchecked(&prog, SoftPagedMem::<TestTrapHandler>::default());
             let data = {
                 let ptr = std::alloc::alloc_zeroed(std::alloc::Layout::from_size_align_unchecked(
                     4096, 4096,
@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(
                     data,
                     0,
-                    hbvm::mem::paging::Permission::Write,
+                    hbvm::mem::softpaged::paging::Permission::Write,
                     PageSize::Size4K,
                 )
                 .unwrap();
@@ -54,12 +54,13 @@ pub fn time() -> u32 {
     9
 }
 
+#[derive(Default)]
 struct TestTrapHandler;
 impl HandlePageFault for TestTrapHandler {
     fn page_fault(
         &mut self,
         _: MemoryAccessReason,
-        _: &mut Memory,
+        //_: &mut Memory,
         _: u64,
         _: PageSize,
         _: *mut u8,

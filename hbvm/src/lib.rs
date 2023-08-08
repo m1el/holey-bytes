@@ -26,12 +26,12 @@ use {
     hbbytecode::{
         valider, OpParam, ParamBB, ParamBBB, ParamBBBB, ParamBBD, ParamBBDH, ParamBBW, ParamBD,
     },
-    mem::{bmc::BlockCopier, HandlePageFault, Memory},
+    mem::bmc::BlockCopier,
     value::{Value, ValueVariant},
 };
 
 /// HoleyBytes Virtual Machine
-pub struct Vm<'a, PfHandler, const TIMER_QUOTIENT: usize> {
+pub struct Vm<'a, Memory, const TIMER_QUOTIENT: usize> {
     /// Holds 256 registers
     ///
     /// Writing to register 0 is considered undefined behaviour
@@ -40,9 +40,6 @@ pub struct Vm<'a, PfHandler, const TIMER_QUOTIENT: usize> {
 
     /// Memory implementation
     pub memory: Memory,
-
-    /// Trap handler
-    pub pfhandler: PfHandler,
 
     /// Program counter
     pub pc: usize,
@@ -63,18 +60,18 @@ pub struct Vm<'a, PfHandler, const TIMER_QUOTIENT: usize> {
     copier: Option<BlockCopier>,
 }
 
-impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
-    Vm<'a, PfHandler, TIMER_QUOTIENT>
+impl<'a, Memory, const TIMER_QUOTIENT: usize> Vm<'a, Memory, TIMER_QUOTIENT>
+where
+    Memory: mem::Memory,
 {
     /// Create a new VM with program and trap handler
     ///
     /// # Safety
     /// Program code has to be validated
-    pub unsafe fn new_unchecked(program: &'a [u8], traph: PfHandler, memory: Memory) -> Self {
+    pub unsafe fn new_unchecked(program: &'a [u8], memory: Memory) -> Self {
         Self {
             registers: [Value::from(0_u64); 256],
             memory,
-            pfhandler: traph,
             pc: 0,
             program_len: program.len() - 12,
             program: program[4..].as_ptr(),
@@ -85,13 +82,9 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
     }
 
     /// Create a new VM with program and trap handler only if it passes validation
-    pub fn new_validated(
-        program: &'a [u8],
-        traph: PfHandler,
-        memory: Memory,
-    ) -> Result<Self, valider::Error> {
+    pub fn new_validated(program: &'a [u8], memory: Memory) -> Result<Self, valider::Error> {
         valider::validate(program)?;
-        Ok(unsafe { Self::new_unchecked(program, traph, memory) })
+        Ok(unsafe { Self::new_unchecked(program, memory) })
     }
 
     /// Execute program
@@ -250,7 +243,6 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                                 .add(usize::from(dst) + usize::from(n))
                                 .cast(),
                             usize::from(count).saturating_sub(n.into()),
-                            &mut self.pfhandler,
                         )?;
                     }
                     ST => {
@@ -260,14 +252,13 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                             self.ldst_addr_uber(dst, base, off, count, 0)?,
                             self.registers.as_ptr().add(usize::from(dst)).cast(),
                             count.into(),
-                            &mut self.pfhandler,
                         )?;
                     }
                     BMC => {
                         // Block memory copy
                         match if let Some(copier) = &mut self.copier {
                             // There is some copier, poll.
-                            copier.poll(&mut self.memory, &mut self.pfhandler)
+                            copier.poll(&mut self.memory)
                         } else {
                             // There is none, make one!
                             let ParamBBD(src, dst, count) = self.decode();
@@ -284,7 +275,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                             self.copier
                                 .as_mut()
                                 .unwrap_unchecked() // SAFETY: We just assigned there
-                                .poll(&mut self.memory, &mut self.pfhandler)
+                                .poll(&mut self.memory)
                         } {
                             // We are done, shift program counter
                             core::task::Poll::Ready(Ok(())) => {
