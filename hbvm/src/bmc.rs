@@ -1,19 +1,18 @@
+//! Block memory copier state machine
+
 use {
-    super::MemoryAccessReason,
-    crate::{
-        mem::{perm_check, HandlePageFault, Memory},
-        VmRunError,
-    },
+    super::{Memory, MemoryAccessReason, VmRunError},
     core::{mem::MaybeUninit, task::Poll},
 };
 
-// Buffer size (defaults to 4 KiB, a smallest page size on most platforms)
+/// Buffer size (defaults to 4 KiB, a smallest page size on most platforms)
 const BUF_SIZE: usize = 4096;
 
-// This should be equal to `BUF_SIZE`
+/// Buffer of possibly uninitialised bytes, aligned to [`BUF_SIZE`]
 #[repr(align(4096))]
 struct AlignedBuf([MaybeUninit<u8>; BUF_SIZE]);
 
+/// State for block memory copy
 pub struct BlockCopier {
     /// Source address
     src:       u64,
@@ -26,6 +25,7 @@ pub struct BlockCopier {
 }
 
 impl BlockCopier {
+    /// Construct a new one
     #[inline]
     pub fn new(src: u64, dst: u64, count: usize) -> Self {
         Self {
@@ -40,11 +40,7 @@ impl BlockCopier {
     ///
     /// # Safety
     /// - Same as for [`Memory::load`] and [`Memory::store`]
-    pub unsafe fn poll(
-        &mut self,
-        memory: &mut Memory,
-        traph: &mut impl HandlePageFault,
-    ) -> Poll<Result<(), BlkCopyError>> {
+    pub unsafe fn poll(&mut self, memory: &mut impl Memory) -> Poll<Result<(), BlkCopyError>> {
         // Safety: Assuming uninit of array of MaybeUninit is sound
         let mut buf = AlignedBuf(MaybeUninit::uninit().assume_init());
 
@@ -56,7 +52,6 @@ impl BlockCopier {
                 self.dst,
                 buf.0.as_mut_ptr().cast(),
                 BUF_SIZE,
-                traph,
             ) {
                 return Poll::Ready(Err(e));
             }
@@ -68,7 +63,7 @@ impl BlockCopier {
                 Some(n) => self.src = n,
                 None => return Poll::Ready(Err(BlkCopyError::OutOfBounds)),
             };
-            
+
             match self.dst.checked_add(BUF_SIZE as u64) {
                 Some(n) => self.dst = n,
                 None => return Poll::Ready(Err(BlkCopyError::OutOfBounds)),
@@ -92,7 +87,6 @@ impl BlockCopier {
                 self.dst,
                 buf.0.as_mut_ptr().cast(),
                 self.rem,
-                traph,
             ) {
                 return Poll::Ready(Err(e));
             }
@@ -102,43 +96,27 @@ impl BlockCopier {
     }
 }
 
+/// Load to buffer and store from buffer
 #[inline]
 unsafe fn act(
-    memory: &mut Memory,
+    memory: &mut impl Memory,
     src: u64,
     dst: u64,
     buf: *mut u8,
     count: usize,
-    traph: &mut impl HandlePageFault,
 ) -> Result<(), BlkCopyError> {
     // Load to buffer
     memory
-        .memory_access(
-            MemoryAccessReason::Load,
-            src,
-            buf,
-            count,
-            perm_check::readable,
-            |src, dst, count| core::ptr::copy(src, dst, count),
-            traph,
-        )
-        .map_err(|addr| BlkCopyError::Access {
+        .load(src, buf, count)
+        .map_err(|super::LoadError(addr)| BlkCopyError::Access {
             access_reason: MemoryAccessReason::Load,
             addr,
         })?;
 
     // Store from buffer
     memory
-        .memory_access(
-            MemoryAccessReason::Store,
-            dst,
-            buf,
-            count,
-            perm_check::writable,
-            |dst, src, count| core::ptr::copy(src, dst, count),
-            traph,
-        )
-        .map_err(|addr| BlkCopyError::Access {
+        .store(dst, buf, count)
+        .map_err(|super::StoreError(addr)| BlkCopyError::Access {
             access_reason: MemoryAccessReason::Store,
             addr,
         })?;

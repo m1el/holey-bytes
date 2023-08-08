@@ -2,8 +2,8 @@
 //!
 //! # Alloc feature
 //! - Enabled by default
-//! - Provides [`mem::Memory`] mapping / unmapping, as well as
-//!   [`Default`] and [`Drop`] implementation
+//! - Provides mapping / unmapping, as well as [`Default`] and [`Drop`]
+//!   implementations for soft-paged memory implementation
 
 // # General safety notice:
 // - Validation has to assure there is 256 registers (r0 - r255)
@@ -11,26 +11,31 @@
 // - Mapped pages should be at least 4 KiB
 
 #![no_std]
-
 #![cfg_attr(feature = "nightly", feature(fn_align))]
+#![warn(missing_docs, clippy::missing_docs_in_private_items)]
+
+use core::marker::PhantomData;
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-pub mod mem;
+pub mod softpaging;
 pub mod value;
 
+mod bmc;
+
 use {
+    bmc::BlockCopier,
     core::{cmp::Ordering, mem::size_of, ops},
+    derive_more::Display,
     hbbytecode::{
         valider, OpParam, ParamBB, ParamBBB, ParamBBBB, ParamBBD, ParamBBDH, ParamBBW, ParamBD,
     },
-    mem::{bmc::BlockCopier, HandlePageFault, Memory},
     value::{Value, ValueVariant},
 };
 
 /// HoleyBytes Virtual Machine
-pub struct Vm<'a, PfHandler, const TIMER_QUOTIENT: usize> {
+pub struct Vm<'a, Mem, const TIMER_QUOTIENT: usize> {
     /// Holds 256 registers
     ///
     /// Writing to register 0 is considered undefined behaviour
@@ -38,19 +43,19 @@ pub struct Vm<'a, PfHandler, const TIMER_QUOTIENT: usize> {
     pub registers: [Value; 256],
 
     /// Memory implementation
-    pub memory: Memory,
-
-    /// Trap handler
-    pub pfhandler: PfHandler,
+    pub memory: Mem,
 
     /// Program counter
     pub pc: usize,
 
     /// Program
-    program: &'a [u8],
+    program: *const u8,
 
     /// Cached program length (without unreachable end)
     program_len: usize,
+
+    /// Program lifetime
+    _program_lt: PhantomData<&'a [u8]>,
 
     /// Program timer
     timer: usize,
@@ -59,34 +64,31 @@ pub struct Vm<'a, PfHandler, const TIMER_QUOTIENT: usize> {
     copier: Option<BlockCopier>,
 }
 
-impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
-    Vm<'a, PfHandler, TIMER_QUOTIENT>
+impl<'a, Mem, const TIMER_QUOTIENT: usize> Vm<'a, Mem, TIMER_QUOTIENT>
+where
+    Mem: Memory,
 {
     /// Create a new VM with program and trap handler
     ///
     /// # Safety
     /// Program code has to be validated
-    pub unsafe fn new_unchecked(program: &'a [u8], traph: PfHandler, memory: Memory) -> Self {
+    pub unsafe fn new_unchecked(program: &'a [u8], memory: Mem) -> Self {
         Self {
             registers: [Value::from(0_u64); 256],
             memory,
-            pfhandler: traph,
             pc: 0,
             program_len: program.len() - 12,
-            program: &program[4..],
+            program: program[4..].as_ptr(),
+            _program_lt: Default::default(),
             timer: 0,
             copier: None,
         }
     }
 
     /// Create a new VM with program and trap handler only if it passes validation
-    pub fn new_validated(
-        program: &'a [u8],
-        traph: PfHandler,
-        memory: Memory,
-    ) -> Result<Self, valider::Error> {
+    pub fn new_validated(program: &'a [u8], memory: Mem) -> Result<Self, valider::Error> {
         valider::validate(program)?;
-        Ok(unsafe { Self::new_unchecked(program, traph, memory) })
+        Ok(unsafe { Self::new_unchecked(program, memory) })
     }
 
     /// Execute program
@@ -121,7 +123,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
             // - Yes, we assume you run 64 bit CPU. Else ?conradluget a better CPU
             //   sorry 8 bit fans, HBVM won't run on your Speccy :(
             unsafe {
-                match *self.program.get_unchecked(self.pc) {
+                match *self.program.add(self.pc) {
                     UN => {
                         self.decode::<()>();
                         return Err(VmRunError::Unreachable);
@@ -245,7 +247,6 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                                 .add(usize::from(dst) + usize::from(n))
                                 .cast(),
                             usize::from(count).saturating_sub(n.into()),
-                            &mut self.pfhandler,
                         )?;
                     }
                     ST => {
@@ -255,14 +256,13 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                             self.ldst_addr_uber(dst, base, off, count, 0)?,
                             self.registers.as_ptr().add(usize::from(dst)).cast(),
                             count.into(),
-                            &mut self.pfhandler,
                         )?;
                     }
                     BMC => {
                         // Block memory copy
                         match if let Some(copier) = &mut self.copier {
                             // There is some copier, poll.
-                            copier.poll(&mut self.memory, &mut self.pfhandler)
+                            copier.poll(&mut self.memory)
                         } else {
                             // There is none, make one!
                             let ParamBBD(src, dst, count) = self.decode();
@@ -279,7 +279,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
                             self.copier
                                 .as_mut()
                                 .unwrap_unchecked() // SAFETY: We just assigned there
-                                .poll(&mut self.memory, &mut self.pfhandler)
+                                .poll(&mut self.memory)
                         } {
                             // We are done, shift program counter
                             core::task::Poll::Ready(Ok(())) => {
@@ -386,7 +386,7 @@ impl<'a, PfHandler: HandlePageFault, const TIMER_QUOTIENT: usize>
     /// Decode instruction operands
     #[inline]
     unsafe fn decode<T: OpParam>(&mut self) -> T {
-        let data = self.program.as_ptr().add(self.pc + 1).cast::<T>().read();
+        let data = self.program.add(self.pc + 1).cast::<T>().read();
         self.pc += 1 + size_of::<T>();
         data
     }
@@ -505,4 +505,55 @@ pub enum VmRunOk {
 
     /// Environment call
     Ecall,
+}
+
+/// Load-store memory access
+pub trait Memory {
+    /// Load data from memory on address
+    ///
+    /// # Safety
+    /// - Shall not overrun the buffer
+    unsafe fn load(&mut self, addr: u64, target: *mut u8, count: usize) -> Result<(), LoadError>;
+
+    /// Store data to memory on address
+    ///
+    /// # Safety
+    /// - Shall not overrun the buffer
+    unsafe fn store(
+        &mut self,
+        addr: u64,
+        source: *const u8,
+        count: usize,
+    ) -> Result<(), StoreError>;
+}
+
+/// Unhandled load access trap
+#[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
+#[display(fmt = "Load access error at address {_0:#x}")]
+pub struct LoadError(pub u64);
+
+/// Unhandled store access trap
+#[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
+#[display(fmt = "Store access error at address {_0:#x}")]
+pub struct StoreError(pub u64);
+
+/// Reason to access memory
+#[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
+pub enum MemoryAccessReason {
+    /// Memory was accessed for load (read)
+    Load,
+    /// Memory was accessed for store (write)
+    Store,
+}
+
+impl From<LoadError> for VmRunError {
+    fn from(value: LoadError) -> Self {
+        Self::LoadAccessEx(value.0)
+    }
+}
+
+impl From<StoreError> for VmRunError {
+    fn from(value: StoreError) -> Self {
+        Self::StoreAccessEx(value.0)
+    }
 }

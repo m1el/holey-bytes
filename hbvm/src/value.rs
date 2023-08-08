@@ -13,7 +13,10 @@ macro_rules! value_def {
         #[derive(Copy, Clone)]
         #[repr(packed)]
         pub union Value {
-            $(pub $ty: $ty),*
+            $(
+                #[doc = concat!(stringify!($ty), " type")]
+                pub $ty: $ty
+            ),*
         }
 
 
@@ -37,10 +40,22 @@ macro_rules! value_def {
 }
 
 impl Value {
+    /// Byte reinterpret value to target variant
     #[inline]
-    pub fn cast<Variant: ValueVariant>(self) -> Variant {
+    pub fn cast<V: ValueVariant>(self) -> V {
+        /// Evil.
+        /// 
+        /// Transmute cannot be performed with generic type
+        /// as size is unknown, so union is used.
+        /// 
+        /// # Safety
+        /// If [`ValueVariant`] implemented correctly, it's fine :)
+        /// 
+        /// :ferrisClueless:
         union Transmute<Variant: ValueVariant> {
+            /// Self
             src:     Value,
+            /// Target variant
             variant: Variant,
         }
 
