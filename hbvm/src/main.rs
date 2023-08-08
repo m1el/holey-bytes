@@ -10,6 +10,7 @@ use {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut prog = vec![];
     stdin().read_to_end(&mut prog)?;
+    println!("{prog:?}");
 
     if let Err(e) = validate(&prog) {
         eprintln!("Program validation error: {e:?}");
