@@ -1,15 +1,30 @@
 #![no_main]
 
 use {
+    hbbytecode::valider::validate,
     hbvm::{
-        mem::{HandlePageFault, Memory, MemoryAccessReason, PageSize},
-        Vm,
+        softpaging::{
+            paging::{PageTable, Permission},
+            HandlePageFault, PageSize, SoftPagedMem,
+        },
+        MemoryAccessReason, Vm,
     },
     libfuzzer_sys::fuzz_target,
 };
 
 fuzz_target!(|data: &[u8]| {
-    if let Ok(mut vm) = Vm::<_, 16384>::new_validated(data, TestTrapHandler, Default::default()) {
+    if validate(data).is_ok() {
+        let mut vm = unsafe {
+            Vm::<_, 16384>::new(
+                SoftPagedMem {
+                    pf_handler: TestTrapHandler,
+                    program:    data,
+                    root_pt:    Box::into_raw(Default::default()),
+                },
+                0,
+            )
+        };
+
         // Alloc and map some memory
         let pages = [
             alloc_and_map(&mut vm.memory, 0),
@@ -26,22 +41,17 @@ fuzz_target!(|data: &[u8]| {
     }
 });
 
-fn alloc_and_map(memory: &mut Memory, at: u64) -> *mut u8 {
+fn alloc_and_map(memory: &mut SoftPagedMem<TestTrapHandler>, at: u64) -> *mut u8 {
     let ptr = Box::into_raw(Box::<Page>::default()).cast();
     unsafe {
         memory
-            .map(
-                ptr,
-                at,
-                hbvm::mem::paging::Permission::Write,
-                PageSize::Size4K,
-            )
+            .map(ptr, at, Permission::Write, PageSize::Size4K)
             .unwrap()
     };
     ptr
 }
 
-fn unmap_and_dealloc(memory: &mut Memory, ptr: *mut u8, from: u64) {
+fn unmap_and_dealloc(memory: &mut SoftPagedMem<TestTrapHandler>, ptr: *mut u8, from: u64) {
     memory.unmap(from).unwrap();
     let _ = unsafe { Box::from_raw(ptr.cast::<Page>()) };
 }
@@ -59,7 +69,7 @@ impl HandlePageFault for TestTrapHandler {
     fn page_fault(
         &mut self,
         _: MemoryAccessReason,
-        _: &mut Memory,
+        _: &mut PageTable,
         _: u64,
         _: PageSize,
         _: *mut u8,

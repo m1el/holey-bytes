@@ -14,8 +14,6 @@
 #![cfg_attr(feature = "nightly", feature(fn_align))]
 #![warn(missing_docs, clippy::missing_docs_in_private_items)]
 
-use core::marker::PhantomData;
-
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
@@ -26,16 +24,14 @@ mod bmc;
 
 use {
     bmc::BlockCopier,
-    core::{cmp::Ordering, mem::size_of, ops},
+    core::{cmp::Ordering, mem::size_of, ops, slice::SliceIndex},
     derive_more::Display,
-    hbbytecode::{
-        valider, OpParam, ParamBB, ParamBBB, ParamBBBB, ParamBBD, ParamBBDH, ParamBBW, ParamBD,
-    },
+    hbbytecode::{OpParam, ParamBB, ParamBBB, ParamBBBB, ParamBBD, ParamBBDH, ParamBBW, ParamBD},
     value::{Value, ValueVariant},
 };
 
 /// HoleyBytes Virtual Machine
-pub struct Vm<'a, Mem, const TIMER_QUOTIENT: usize> {
+pub struct Vm<Mem, const TIMER_QUOTIENT: usize> {
     /// Holds 256 registers
     ///
     /// Writing to register 0 is considered undefined behaviour
@@ -48,15 +44,6 @@ pub struct Vm<'a, Mem, const TIMER_QUOTIENT: usize> {
     /// Program counter
     pub pc: usize,
 
-    /// Program
-    program: *const u8,
-
-    /// Cached program length (without unreachable end)
-    program_len: usize,
-
-    /// Program lifetime
-    _program_lt: PhantomData<&'a [u8]>,
-
     /// Program timer
     timer: usize,
 
@@ -64,7 +51,7 @@ pub struct Vm<'a, Mem, const TIMER_QUOTIENT: usize> {
     copier: Option<BlockCopier>,
 }
 
-impl<'a, Mem, const TIMER_QUOTIENT: usize> Vm<'a, Mem, TIMER_QUOTIENT>
+impl<Mem, const TIMER_QUOTIENT: usize> Vm<Mem, TIMER_QUOTIENT>
 where
     Mem: Memory,
 {
@@ -72,23 +59,14 @@ where
     ///
     /// # Safety
     /// Program code has to be validated
-    pub unsafe fn new_unchecked(program: &'a [u8], memory: Mem) -> Self {
+    pub unsafe fn new(memory: Mem, entry: u64) -> Self {
         Self {
             registers: [Value::from(0_u64); 256],
             memory,
-            pc: 0,
-            program_len: program.len() - 12,
-            program: program[4..].as_ptr(),
-            _program_lt: Default::default(),
+            pc: entry as _,
             timer: 0,
             copier: None,
         }
-    }
-
-    /// Create a new VM with program and trap handler only if it passes validation
-    pub fn new_validated(program: &'a [u8], memory: Mem) -> Result<Self, valider::Error> {
-        valider::validate(program)?;
-        Ok(unsafe { Self::new_unchecked(program, memory) })
     }
 
     /// Execute program
@@ -98,11 +76,6 @@ where
     pub fn run(&mut self) -> Result<VmRunOk, VmRunError> {
         use hbbytecode::opcode::*;
         loop {
-            // Check instruction boundary
-            if self.pc >= self.program_len {
-                return Err(VmRunError::AddrOutOfBounds);
-            }
-
             // Big match
             //
             // Contribution guide:
@@ -123,7 +96,11 @@ where
             // - Yes, we assume you run 64 bit CPU. Else ?conradluget a better CPU
             //   sorry 8 bit fans, HBVM won't run on your Speccy :(
             unsafe {
-                match *self.program.add(self.pc) {
+                match *self
+                    .memory
+                    .load_prog(self.pc)
+                    .ok_or(VmRunError::ProgramFetchLoadEx(self.pc as _))?
+                {
                     UN => {
                         self.decode::<()>();
                         return Err(VmRunError::Unreachable);
@@ -388,15 +365,22 @@ where
     }
 
     /// Decode instruction operands
-    #[inline]
+    #[inline(always)]
     unsafe fn decode<T: OpParam>(&mut self) -> T {
-        let data = self.program.add(self.pc + 1).cast::<T>().read();
+        let pc1 = self.pc + 1;
+        let data = self
+            .memory
+            .load_prog_unchecked(pc1..pc1 + size_of::<T>())
+            .as_ptr()
+            .cast::<T>()
+            .read();
+
         self.pc += 1 + size_of::<T>();
         data
     }
 
     /// Perform binary operating over two registers
-    #[inline]
+    #[inline(always)]
     unsafe fn binary_op<T: ValueVariant>(&mut self, op: impl Fn(T, T) -> T) {
         let ParamBBB(tg, a0, a1) = self.decode();
         self.write_reg(
@@ -406,7 +390,7 @@ where
     }
 
     /// Perform binary operation over register and immediate
-    #[inline]
+    #[inline(always)]
     unsafe fn binary_op_imm<T: ValueVariant>(&mut self, op: impl Fn(T, T) -> T) {
         let ParamBBD(tg, reg, imm) = self.decode();
         self.write_reg(
@@ -416,14 +400,14 @@ where
     }
 
     /// Perform binary operation over register and shift immediate
-    #[inline]
+    #[inline(always)]
     unsafe fn binary_op_ims<T: ValueVariant>(&mut self, op: impl Fn(T, u32) -> T) {
         let ParamBBW(tg, reg, imm) = self.decode();
         self.write_reg(tg, op(self.read_reg(reg).cast::<T>(), imm));
     }
 
     /// Jump at `#3` if ordering on `#0 <=> #1` is equal to expected
-    #[inline]
+    #[inline(always)]
     unsafe fn cond_jmp<T: ValueVariant + Ord>(&mut self, expected: Ordering) {
         let ParamBBD(a0, a1, ja) = self.decode();
         if self
@@ -437,14 +421,14 @@ where
     }
 
     /// Read register
-    #[inline]
+    #[inline(always)]
     unsafe fn read_reg(&self, n: u8) -> Value {
         *self.registers.get_unchecked(n as usize)
     }
 
     /// Write a register.
     /// Writing to register 0 is no-op.
-    #[inline]
+    #[inline(always)]
     unsafe fn write_reg(&mut self, n: u8, value: impl Into<Value>) {
         if n != 0 {
             *self.registers.get_unchecked_mut(n as usize) = value.into();
@@ -452,7 +436,7 @@ where
     }
 
     /// Load / Store Address check-computation überfunction
-    #[inline]
+    #[inline(always)]
     unsafe fn ldst_addr_uber(
         &self,
         dst: u8,
@@ -484,6 +468,9 @@ pub enum VmRunError {
 
     /// Unhandled load access exception
     LoadAccessEx(u64),
+
+    /// Unhandled instruction load access exception
+    ProgramFetchLoadEx(u64),
 
     /// Unhandled store access exception
     StoreAccessEx(u64),
@@ -529,6 +516,40 @@ pub trait Memory {
         source: *const u8,
         count: usize,
     ) -> Result<(), StoreError>;
+
+    /// Fetch bytes from program section
+    ///
+    /// # Why?
+    /// Even Holey Bytes programs operate with
+    /// single address space, the actual implementation
+    /// may be different, so for these reasons there is a
+    /// separate function.
+    ///
+    /// Also if your memory implementation differentiates between
+    /// readable and executable memory, this is the way to distinguish
+    /// the loads.
+    ///
+    /// # Notice for implementors
+    /// This is a hot function. This is called on each opcode fetch
+    /// and instruction decode. Inlining the implementation is highly
+    /// recommended!
+    ///
+    /// If you utilise some more heavy memory implementation, consider
+    /// performing caching as HBVM does not do that for you.
+    ///
+    /// Has to return all the requested data. If cannot fetch data of requested
+    /// length, return [`None`].
+    fn load_prog<I>(&mut self, index: I) -> Option<&I::Output>
+    where
+        I: SliceIndex<[u8]>;
+
+    /// Fetch bytes from program section, unchecked.
+    ///
+    /// # Safety
+    /// You really have to be sure you get the bytes, got me?
+    unsafe fn load_prog_unchecked<I>(&mut self, index: I) -> &I::Output
+    where
+        I: SliceIndex<[u8]>;
 }
 
 /// Unhandled load access trap

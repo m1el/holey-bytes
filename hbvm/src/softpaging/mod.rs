@@ -4,6 +4,7 @@ pub mod paging;
 
 use {
     super::{LoadError, Memory, MemoryAccessReason, StoreError},
+    core::slice::SliceIndex,
     derive_more::Display,
     paging::{PageTable, Permission},
 };
@@ -13,14 +14,16 @@ use {alloc::boxed::Box, paging::PtEntry};
 
 /// HoleyBytes software paged memory
 #[derive(Clone, Debug)]
-pub struct SoftPagedMem<PfHandler> {
+pub struct SoftPagedMem<'p, PfH> {
     /// Root page table
     pub root_pt:    *mut PageTable,
     /// Page fault handler
-    pub pf_handler: PfHandler,
+    pub pf_handler: PfH,
+    /// Program memory segment
+    pub program:    &'p [u8],
 }
 
-impl<PfHandler: HandlePageFault> Memory for SoftPagedMem<PfHandler> {
+impl<'p, PfH: HandlePageFault> Memory for SoftPagedMem<'p, PfH> {
     /// Load value from an address
     ///
     /// # Safety
@@ -57,9 +60,27 @@ impl<PfHandler: HandlePageFault> Memory for SoftPagedMem<PfHandler> {
         )
         .map_err(StoreError)
     }
+
+    /// Fetch slice from program memory section
+    #[inline(always)]
+    fn load_prog<I>(&mut self, index: I) -> Option<&I::Output>
+    where
+        I: SliceIndex<[u8]>,
+    {
+        self.program.get(index)
+    }
+
+    /// Fetch slice from program memory section, unchecked!
+    #[inline(always)]
+    unsafe fn load_prog_unchecked<I>(&mut self, index: I) -> &I::Output
+    where
+        I: SliceIndex<[u8]>,
+    {
+        self.program.get_unchecked(index)
+    }
 }
 
-impl<PfHandler: HandlePageFault> SoftPagedMem<PfHandler> {
+impl<'p, PfH: HandlePageFault> SoftPagedMem<'p, PfH> {
     // Everyone behold, the holy function, the god of HBVM memory accesses!
 
     /// Split address to pages, check their permissions and feed pointers with offset
@@ -239,24 +260,14 @@ impl Iterator for AddrPageLookuper {
 }
 
 #[cfg(feature = "alloc")]
-impl<PfHandler: Default> Default for SoftPagedMem<PfHandler> {
-    fn default() -> Self {
-        Self {
-            root_pt:    Box::into_raw(Default::default()),
-            pf_handler: Default::default(),
-        }
-    }
-}
-
-#[cfg(feature = "alloc")]
-impl<A> Drop for SoftPagedMem<A> {
+impl<'p, A> Drop for SoftPagedMem<'p, A> {
     fn drop(&mut self) {
         let _ = unsafe { Box::from_raw(self.root_pt) };
     }
 }
 
 #[cfg(feature = "alloc")]
-impl<A> SoftPagedMem<A> {
+impl<'p, A> SoftPagedMem<'p, A> {
     /// Maps host's memory into VM's memory
     ///
     /// # Safety

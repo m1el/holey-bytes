@@ -13,6 +13,9 @@ libfuzzer-sys = "0.4"
 [dependencies.hbvm]
 path = ".."
 
+[dependencies.hbbytecode]
+path = "../../hbbytecode"
+
 # Prevent this from interfering with workspaces
 [workspace]
 members = ["."]
