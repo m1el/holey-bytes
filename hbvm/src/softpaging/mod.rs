@@ -97,26 +97,33 @@ impl<'p, PfH: HandlePageFault> SoftPagedMem<'p, PfH> {
         permission_check: fn(Permission) -> bool,
         action: fn(*mut u8, *mut u8, usize),
     ) -> Result<(), u64> {
+        // Memory load from program section
         let (src, len) = if src < self.program.len() as _ {
+            // Allow only loads
             if reason != MemoryAccessReason::Load {
                 return Err(src);
             }
 
+            // Determine how much data to copy from here
             let to_copy = len.clamp(0, self.program.len().saturating_sub(src as _));
+
+            // Perform action
             action(
                 unsafe { self.program.as_ptr().add(src as _).cast_mut() },
                 dst,
                 to_copy,
             );
 
+            // Return shifted from what we've already copied
             (
                 src.saturating_add(to_copy as _),
                 len.saturating_sub(to_copy),
             )
         } else {
-            (src, len)
+            (src, len) // Nothing weird!
         };
 
+        // Nothing to copy? Don't bother doing anything, bail.
         if len == 0 {
             return Ok(());
         }
