@@ -98,6 +98,10 @@ impl<'p, PfH: HandlePageFault> SoftPagedMem<'p, PfH> {
         action: fn(*mut u8, *mut u8, usize),
     ) -> Result<(), u64> {
         let (src, len) = if src < self.program.len() as _ {
+            if reason != MemoryAccessReason::Load {
+                return Err(src);
+            }
+
             let to_copy = len.clamp(0, self.program.len().saturating_sub(src as _));
             action(
                 unsafe { self.program.as_ptr().add(src as _).cast_mut() },
