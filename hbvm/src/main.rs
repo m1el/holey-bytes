@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     program:    &prog,
                     root_pt:    Box::into_raw(Default::default()),
                 },
-                0,
+                4,
             );
             let data = {
                 let ptr = std::alloc::alloc_zeroed(std::alloc::Layout::from_size_align_unchecked(

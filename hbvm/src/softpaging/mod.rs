@@ -97,6 +97,26 @@ impl<'p, PfH: HandlePageFault> SoftPagedMem<'p, PfH> {
         permission_check: fn(Permission) -> bool,
         action: fn(*mut u8, *mut u8, usize),
     ) -> Result<(), u64> {
+        let (src, len) = if src < self.program.len() as _ {
+            let to_copy = len.clamp(0, self.program.len().saturating_sub(src as _));
+            action(
+                unsafe { self.program.as_ptr().add(src as _).cast_mut() },
+                dst,
+                to_copy,
+            );
+
+            (
+                src.saturating_add(to_copy as _),
+                len.saturating_sub(to_copy),
+            )
+        } else {
+            (src, len)
+        };
+
+        if len == 0 {
+            return Ok(());
+        }
+
         // Create new splitter
         let mut pspl = AddrPageLookuper::new(src, len, self.root_pt);
         loop {
