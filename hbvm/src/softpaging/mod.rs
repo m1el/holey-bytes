@@ -501,6 +501,12 @@ pub mod perm_check {
     pub const fn writable(perm: Permission) -> bool {
         matches!(perm, Permission::Write)
     }
+
+    /// Page is executable
+    #[inline(always)]
+    pub const fn executable(perm: Permission) -> bool {
+        matches!(perm, Permission::Exec)
+    }
 }
 
 /// Handle VM traps
