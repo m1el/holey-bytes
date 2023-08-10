@@ -10,7 +10,6 @@ use {
     derive_more::Display,
 };
 
-#[cfg(feature = "alloc")]
 impl<'p, A> SoftPagedMem<'p, A> {
     /// Maps host's memory into VM's memory
     ///
