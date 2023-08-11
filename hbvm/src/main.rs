@@ -10,15 +10,20 @@ use {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut prog = vec![];
     stdin().read_to_end(&mut prog)?;
-    println!("{prog:?}");
 
     if let Err(e) = validate(&prog) {
         eprintln!("Program validation error: {e:?}");
         return Ok(());
     } else {
         unsafe {
-            let mut vm =
-                Vm::<_, 0>::new_unchecked(&prog, SoftPagedMem::<TestTrapHandler>::default());
+            let mut vm = Vm::<_, 0>::new(
+                SoftPagedMem {
+                    pf_handler: TestTrapHandler,
+                    program:    &prog,
+                    root_pt:    Box::into_raw(Default::default()),
+                },
+                4,
+            );
             let data = {
                 let ptr = std::alloc::alloc_zeroed(std::alloc::Layout::from_size_align_unchecked(
                     4096, 4096,
@@ -32,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             vm.memory
                 .map(
                     data,
-                    0,
+                    8192,
                     hbvm::softpaging::paging::Permission::Write,
                     PageSize::Size4K,
                 )
@@ -46,7 +51,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 data,
                 std::alloc::Layout::from_size_align_unchecked(4096, 4096),
             );
-            vm.memory.unmap(0).unwrap();
+            vm.memory.unmap(8192).unwrap();
         }
     }
     Ok(())

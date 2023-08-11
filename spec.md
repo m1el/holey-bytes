@@ -261,8 +261,10 @@
 
 # Memory
 - Addresses are 64 bit
-- Address `0x0` is invalid and acessing it traps
+- Program should be in the same address space as all other data
 - Memory implementation is arbitrary
+    - Address `0x0` may or may not be valid. Count with compilers
+      considering it invalid!
 - In case of accessing invalid address:
     - Program shall trap (LoadAccessEx, StoreAccessEx) with parameter of accessed address
     - Value of register when trapped is undefined
