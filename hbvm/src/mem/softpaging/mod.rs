@@ -14,7 +14,7 @@ use {
 };
 
 /// HoleyBytes software paged memory
-#[deprecated]
+#[deprecated = "Use platform-specific memory implementation"]
 #[derive(Clone, Debug)]
 pub struct SoftPagedMem<'p, PfH> {
     /// Root page table
