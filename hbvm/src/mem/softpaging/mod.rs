@@ -1,7 +1,5 @@
 //! Platform independent, software paged memory implementation
 
-use self::lookup::{AddrPageLookupError, AddrPageLookupOk, AddrPageLookuper};
-
 pub mod lookup;
 pub mod paging;
 
@@ -9,12 +7,14 @@ pub mod paging;
 pub mod mapping;
 
 use {
-    super::{LoadError, Memory, MemoryAccessReason, StoreError},
+    crate::{LoadError, Memory, MemoryAccessReason, StoreError},
     core::slice::SliceIndex,
+    lookup::{AddrPageLookupError, AddrPageLookupOk, AddrPageLookuper},
     paging::{PageTable, Permission},
 };
 
 /// HoleyBytes software paged memory
+#[deprecated]
 #[derive(Clone, Debug)]
 pub struct SoftPagedMem<'p, PfH> {
     /// Root page table

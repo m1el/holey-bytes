@@ -17,7 +17,7 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-pub mod softpaging;
+pub mod mem;
 pub mod value;
 
 mod bmc;

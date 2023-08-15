@@ -3,7 +3,7 @@
 use {
     hbbytecode::valider::validate,
     hbvm::{
-        softpaging::{
+        mem::softpaging::{
             paging::{PageTable, Permission},
             HandlePageFault, PageSize, SoftPagedMem,
         },
