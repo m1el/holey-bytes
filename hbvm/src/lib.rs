@@ -24,7 +24,7 @@ mod bmc;
 
 use {
     bmc::BlockCopier,
-    core::{cmp::Ordering, mem::size_of, ops, slice::SliceIndex},
+    core::{cmp::Ordering, mem::size_of, ops},
     derive_more::Display,
     hbbytecode::{OpParam, ParamBB, ParamBBB, ParamBBBB, ParamBBD, ParamBBDH, ParamBBW, ParamBD},
     value::{Value, ValueVariant},
@@ -96,9 +96,9 @@ where
             // - Yes, we assume you run 64 bit CPU. Else ?conradluget a better CPU
             //   sorry 8 bit fans, HBVM won't run on your Speccy :(
             unsafe {
-                match *self
+                match self
                     .memory
-                    .load_prog(self.pc)
+                    .prog_read::<u8>(self.pc as _)
                     .ok_or(VmRunError::ProgramFetchLoadEx(self.pc as _))?
                 {
                     UN => {
@@ -368,13 +368,7 @@ where
     #[inline(always)]
     unsafe fn decode<T: OpParam>(&mut self) -> T {
         let pc1 = self.pc + 1;
-        let data = self
-            .memory
-            .load_prog_unchecked(pc1..pc1 + size_of::<T>())
-            .as_ptr()
-            .cast::<T>()
-            .read();
-
+        let data = self.memory.prog_read_unchecked::<T>(pc1 as _);
         self.pc += 1 + size_of::<T>();
         data
     }
@@ -517,39 +511,17 @@ pub trait Memory {
         count: usize,
     ) -> Result<(), StoreError>;
 
-    /// Fetch bytes from program section
-    ///
-    /// # Why?
-    /// Even Holey Bytes programs operate with
-    /// single address space, the actual implementation
-    /// may be different, so for these reasons there is a
-    /// separate function.
-    ///
-    /// Also if your memory implementation differentiates between
-    /// readable and executable memory, this is the way to distinguish
-    /// the loads.
-    ///
-    /// # Notice for implementors
-    /// This is a hot function. This is called on each opcode fetch
-    /// and instruction decode. Inlining the implementation is highly
-    /// recommended!
-    ///
-    /// If you utilise some more heavy memory implementation, consider
-    /// performing caching as HBVM does not do that for you.
-    ///
-    /// Has to return all the requested data. If cannot fetch data of requested
-    /// length, return [`None`].
-    fn load_prog<I>(&mut self, index: I) -> Option<&I::Output>
-    where
-        I: SliceIndex<[u8]>;
-
-    /// Fetch bytes from program section, unchecked.
+    /// Read from program memory to execute
     ///
     /// # Safety
-    /// You really have to be sure you get the bytes, got me?
-    unsafe fn load_prog_unchecked<I>(&mut self, index: I) -> &I::Output
-    where
-        I: SliceIndex<[u8]>;
+    /// - Data read have to be valid
+    unsafe fn prog_read<T>(&mut self, addr: u64) -> Option<T>;
+
+    /// Read from program memory to exectue
+    ///
+    /// # Safety
+    /// - You have to be really sure that these bytes are there, understand?
+    unsafe fn prog_read_unchecked<T>(&mut self, addr: u64) -> T;
 }
 
 /// Unhandled load access trap

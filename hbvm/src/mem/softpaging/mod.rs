@@ -1,5 +1,7 @@
 //! Platform independent, software paged memory implementation
 
+use core::mem::size_of;
+
 pub mod lookup;
 pub mod paging;
 
@@ -63,22 +65,15 @@ impl<'p, PfH: HandlePageFault> Memory for SoftPagedMem<'p, PfH> {
         .map_err(StoreError)
     }
 
-    /// Fetch slice from program memory section
-    #[inline(always)]
-    fn load_prog<I>(&mut self, index: I) -> Option<&I::Output>
-    where
-        I: SliceIndex<[u8]>,
-    {
-        self.program.get(index)
+    unsafe fn prog_read<T>(&mut self, addr: u64) -> Option<T> {
+        let addr = addr as usize;
+        self.program
+            .get(addr..addr + size_of::<T>())
+            .map(|x| x.as_ptr().cast::<T>().read())
     }
 
-    /// Fetch slice from program memory section, unchecked!
-    #[inline(always)]
-    unsafe fn load_prog_unchecked<I>(&mut self, index: I) -> &I::Output
-    where
-        I: SliceIndex<[u8]>,
-    {
-        self.program.get_unchecked(index)
+    unsafe fn prog_read_unchecked<T>(&mut self, addr: u64) -> T {
+        self.program.as_ptr().add(addr as _).cast::<T>().read()
     }
 }
 
