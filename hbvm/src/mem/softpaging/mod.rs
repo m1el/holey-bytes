@@ -65,6 +65,7 @@ impl<'p, PfH: HandlePageFault> Memory for SoftPagedMem<'p, PfH> {
         .map_err(StoreError)
     }
 
+    #[inline(always)]
     unsafe fn prog_read<T>(&mut self, addr: u64) -> Option<T> {
         let addr = addr as usize;
         self.program
@@ -72,6 +73,7 @@ impl<'p, PfH: HandlePageFault> Memory for SoftPagedMem<'p, PfH> {
             .map(|x| x.as_ptr().cast::<T>().read())
     }
 
+    #[inline(always)]
     unsafe fn prog_read_unchecked<T>(&mut self, addr: u64) -> T {
         self.program.as_ptr().add(addr as _).cast::<T>().read()
     }
