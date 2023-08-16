@@ -10,13 +10,11 @@ pub mod mapping;
 
 use {
     crate::{LoadError, Memory, MemoryAccessReason, StoreError},
-    core::slice::SliceIndex,
     lookup::{AddrPageLookupError, AddrPageLookupOk, AddrPageLookuper},
     paging::{PageTable, Permission},
 };
 
 /// HoleyBytes software paged memory
-#[deprecated = "Use platform-specific memory implementation"]
 #[derive(Clone, Debug)]
 pub struct SoftPagedMem<'p, PfH> {
     /// Root page table
