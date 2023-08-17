@@ -1,7 +1,7 @@
 //! Block memory copier state machine
 
 use {
-    super::{Memory, MemoryAccessReason, VmRunError},
+    super::{Memory, mem::MemoryAccessReason, VmRunError},
     core::{mem::MaybeUninit, task::Poll},
 };
 
@@ -108,7 +108,7 @@ unsafe fn act(
     // Load to buffer
     memory
         .load(src, buf, count)
-        .map_err(|super::LoadError(addr)| BlkCopyError::Access {
+        .map_err(|super::mem::LoadError(addr)| BlkCopyError::Access {
             access_reason: MemoryAccessReason::Load,
             addr,
         })?;
@@ -116,7 +116,7 @@ unsafe fn act(
     // Store from buffer
     memory
         .store(dst, buf, count)
-        .map_err(|super::StoreError(addr)| BlkCopyError::Access {
+        .map_err(|super::mem::StoreError(addr)| BlkCopyError::Access {
             access_reason: MemoryAccessReason::Store,
             addr,
         })?;

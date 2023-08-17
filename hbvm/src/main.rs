@@ -1,8 +1,11 @@
 use {
     hbbytecode::valider::validate,
     hbvm::{
-        mem::softpaging::{paging::PageTable, HandlePageFault, PageSize, SoftPagedMem},
-        MemoryAccessReason, Vm,
+        mem::{
+            softpaging::{paging::PageTable, HandlePageFault, PageSize, SoftPagedMem},
+            MemoryAccessReason,
+        },
+        Vm,
     },
     std::io::{stdin, Read},
 };

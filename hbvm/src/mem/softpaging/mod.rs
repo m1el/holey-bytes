@@ -12,13 +12,13 @@ pub mod paging;
 pub mod mapping;
 
 use {
-    crate::{LoadError, Memory, MemoryAccessReason, StoreError},
+    super::{LoadError, Memory, MemoryAccessReason, StoreError},
     lookup::{AddrPageLookupError, AddrPageLookupOk, AddrPageLookuper},
     paging::{PageTable, Permission},
 };
 
 /// HoleyBytes software paged memory
-/// 
+///
 /// - `OUT_PROG_EXEC`: set to `false` to disable executing program
 ///   not contained in initially provided program, even the pages
 ///   are executable
