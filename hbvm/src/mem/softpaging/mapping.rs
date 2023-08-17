@@ -10,7 +10,7 @@ use {
     derive_more::Display,
 };
 
-impl<'p, A> SoftPagedMem<'p, A> {
+impl<'p, A,  const OUT_PROG_EXEC: bool> SoftPagedMem<'p, A, OUT_PROG_EXEC> {
     /// Maps host's memory into VM's memory
     ///
     /// # Safety

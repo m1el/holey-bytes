@@ -1,2 +1,3 @@
 [workspace]
-members = ["hbasm", "hbbytecode", "hbvm"]
+resolver = "2"
+members  = ["hbasm", "hbbytecode", "hbvm"]

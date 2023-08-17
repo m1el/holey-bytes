@@ -17,10 +17,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         unsafe {
             let mut vm = Vm::<_, 0>::new(
-                SoftPagedMem {
+                SoftPagedMem::<_, true> {
                     pf_handler: TestTrapHandler,
                     program:    &prog,
                     root_pt:    Box::into_raw(Default::default()),
+                    icache:     Default::default(),
                 },
                 4,
             );
@@ -46,12 +47,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Program interrupt: {:?}", vm.run());
             println!("{:?}", vm.registers);
 
-            println!("{:?}", core::slice::from_raw_parts(data, 4096));
             std::alloc::dealloc(
                 data,
                 std::alloc::Layout::from_size_align_unchecked(4096, 4096),
             );
             vm.memory.unmap(8192).unwrap();
+            let _ = Box::from_raw(vm.memory.root_pt);
         }
     }
     Ok(())

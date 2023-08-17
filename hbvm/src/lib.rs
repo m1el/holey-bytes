@@ -26,7 +26,9 @@ use {
     bmc::BlockCopier,
     core::{cmp::Ordering, mem::size_of, ops},
     derive_more::Display,
-    hbbytecode::{OpParam, ParamBB, ParamBBB, ParamBBBB, ParamBBD, ParamBBDH, ParamBBW, ParamBD},
+    hbbytecode::{
+        ParamBB, ParamBBB, ParamBBBB, ParamBBD, ParamBBDH, ParamBBW, ParamBD, ProgramVal,
+    },
     value::{Value, ValueVariant},
 };
 
@@ -366,7 +368,7 @@ where
 
     /// Decode instruction operands
     #[inline(always)]
-    unsafe fn decode<T: OpParam>(&mut self) -> T {
+    unsafe fn decode<T: ProgramVal>(&mut self) -> T {
         let pc1 = self.pc + 1;
         let data = self.memory.prog_read_unchecked::<T>(pc1 as _);
         self.pc += 1 + size_of::<T>();
@@ -515,13 +517,13 @@ pub trait Memory {
     ///
     /// # Safety
     /// - Data read have to be valid
-    unsafe fn prog_read<T>(&mut self, addr: u64) -> Option<T>;
+    unsafe fn prog_read<T: ProgramVal>(&mut self, addr: u64) -> Option<T>;
 
     /// Read from program memory to exectue
     ///
     /// # Safety
     /// - You have to be really sure that these bytes are there, understand?
-    unsafe fn prog_read_unchecked<T>(&mut self, addr: u64) -> T;
+    unsafe fn prog_read_unchecked<T: ProgramVal>(&mut self, addr: u64) -> T;
 }
 
 /// Unhandled load access trap

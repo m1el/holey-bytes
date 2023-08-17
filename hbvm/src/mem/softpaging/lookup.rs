@@ -111,7 +111,7 @@ impl Iterator for AddrPageLookuper {
         };
 
         // Get available byte count in the selected page with offset
-        let avail = (size as usize - offset).clamp(0, self.size);
+        let avail = (size as usize).saturating_sub(offset).clamp(0, self.size);
         self.bump(size);
 
         Some(Ok(AddrPageLookupOk {

@@ -2,6 +2,9 @@
 
 use core::mem::size_of;
 
+use self::icache::ICache;
+
+pub mod icache;
 pub mod lookup;
 pub mod paging;
 
@@ -15,17 +18,25 @@ use {
 };
 
 /// HoleyBytes software paged memory
+/// 
+/// - `OUT_PROG_EXEC`: set to `false` to disable executing program
+///   not contained in initially provided program, even the pages
+///   are executable
 #[derive(Clone, Debug)]
-pub struct SoftPagedMem<'p, PfH> {
+pub struct SoftPagedMem<'p, PfH, const OUT_PROG_EXEC: bool = true> {
     /// Root page table
     pub root_pt:    *mut PageTable,
     /// Page fault handler
     pub pf_handler: PfH,
     /// Program memory segment
     pub program:    &'p [u8],
+    /// Program instruction cache
+    pub icache:     ICache,
 }
 
-impl<'p, PfH: HandlePageFault> Memory for SoftPagedMem<'p, PfH> {
+impl<'p, PfH: HandlePageFault, const OUT_PROG_EXEC: bool> Memory
+    for SoftPagedMem<'p, PfH, OUT_PROG_EXEC>
+{
     /// Load value from an address
     ///
     /// # Safety
@@ -65,6 +76,10 @@ impl<'p, PfH: HandlePageFault> Memory for SoftPagedMem<'p, PfH> {
 
     #[inline(always)]
     unsafe fn prog_read<T>(&mut self, addr: u64) -> Option<T> {
+        if OUT_PROG_EXEC && addr as usize > self.program.len() {
+            return self.icache.fetch::<T>(addr, self.root_pt);
+        }
+
         let addr = addr as usize;
         self.program
             .get(addr..addr + size_of::<T>())
@@ -73,11 +88,18 @@ impl<'p, PfH: HandlePageFault> Memory for SoftPagedMem<'p, PfH> {
 
     #[inline(always)]
     unsafe fn prog_read_unchecked<T>(&mut self, addr: u64) -> T {
+        if OUT_PROG_EXEC && addr as usize > self.program.len() {
+            return self
+                .icache
+                .fetch::<T>(addr as _, self.root_pt)
+                .unwrap_or_else(|| core::mem::zeroed());
+        }
+
         self.program.as_ptr().add(addr as _).cast::<T>().read()
     }
 }
 
-impl<'p, PfH: HandlePageFault> SoftPagedMem<'p, PfH> {
+impl<'p, PfH: HandlePageFault, const OUT_PROG_EXEC: bool> SoftPagedMem<'p, PfH, OUT_PROG_EXEC> {
     // Everyone behold, the holy function, the god of HBVM memory accesses!
 
     /// Split address to pages, check their permissions and feed pointers with offset

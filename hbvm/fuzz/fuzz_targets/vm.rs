@@ -16,10 +16,11 @@ fuzz_target!(|data: &[u8]| {
     if validate(data).is_ok() {
         let mut vm = unsafe {
             Vm::<_, 16384>::new(
-                SoftPagedMem {
+                SoftPagedMem::<_, true> {
                     pf_handler: TestTrapHandler,
                     program:    data,
                     root_pt:    Box::into_raw(Default::default()),
+                    icache:     Default::default(),
                 },
                 0,
             )
@@ -31,6 +32,8 @@ fuzz_target!(|data: &[u8]| {
             alloc_and_map(&mut vm.memory, 4096),
         ];
 
+        unsafe { vm.memory.write() };
+
         // Run VM
         let _ = vm.run();
 
@@ -38,6 +41,8 @@ fuzz_target!(|data: &[u8]| {
         for (i, page) in pages.into_iter().enumerate() {
             unmap_and_dealloc(&mut vm.memory, page, i as u64 * 4096);
         }
+
+        let _ = unsafe { Box::from_raw(vm.memory.root_pt) };
     }
 });
 

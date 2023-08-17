@@ -35,12 +35,12 @@ macro_rules! constmod {
 ///     - I: Immediate
 ///     - L: Memory load / store size (u16)
 ///     - Other types are identity-mapped
-/// 
+///
 /// # BRC special-case
 /// BRC's 3rd operand is plain byte, not a register. Encoding is the same, but for some cases it may matter.
-/// 
+///
 /// Please, if you distinguish in your API between byte and register, special case this one.
-/// 
+///
 /// Sorry for that :(
 #[macro_export]
 macro_rules! invoke_with_def {
@@ -134,34 +134,29 @@ constmod!(pub opcode(u8) {
 
 #[repr(packed)]
 pub struct ParamBBBB(pub u8, pub u8, pub u8, pub u8);
-
 #[repr(packed)]
 pub struct ParamBBB(pub u8, pub u8, pub u8);
-
 #[repr(packed)]
 pub struct ParamBBDH(pub u8, pub u8, pub u64, pub u16);
-
 #[repr(packed)]
 pub struct ParamBBD(pub u8, pub u8, pub u64);
-
 #[repr(packed)]
 pub struct ParamBBW(pub u8, pub u8, pub u32);
-
 #[repr(packed)]
 pub struct ParamBB(pub u8, pub u8);
-
 #[repr(packed)]
 pub struct ParamBD(pub u8, pub u64);
 
 /// # Safety
 /// Has to be valid to be decoded from bytecode.
-pub unsafe trait OpParam {}
-unsafe impl OpParam for ParamBBBB {}
-unsafe impl OpParam for ParamBBB {}
-unsafe impl OpParam for ParamBBDH {}
-unsafe impl OpParam for ParamBBD {}
-unsafe impl OpParam for ParamBBW {}
-unsafe impl OpParam for ParamBB {}
-unsafe impl OpParam for ParamBD {}
-unsafe impl OpParam for u64 {}
-unsafe impl OpParam for () {}
+pub unsafe trait ProgramVal {}
+unsafe impl ProgramVal for ParamBBBB {}
+unsafe impl ProgramVal for ParamBBB {}
+unsafe impl ProgramVal for ParamBBDH {}
+unsafe impl ProgramVal for ParamBBD {}
+unsafe impl ProgramVal for ParamBBW {}
+unsafe impl ProgramVal for ParamBB {}
+unsafe impl ProgramVal for ParamBD {}
+unsafe impl ProgramVal for u64 {}
+unsafe impl ProgramVal for u8 {} // Opcode
+unsafe impl ProgramVal for () {}
