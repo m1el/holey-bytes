@@ -12,9 +12,9 @@
 
 #![no_std]
 #![cfg_attr(feature = "nightly", feature(fn_align))]
-#![warn(missing_docs, clippy::missing_docs_in_private_items)]
+#![warn(missing_docs)]
 
-use mem::Memory;
+use mem::{Memory, Address};
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -39,7 +39,7 @@ pub struct Vm<Mem, const TIMER_QUOTIENT: usize> {
     pub memory: Mem,
 
     /// Program counter
-    pub pc: usize,
+    pub pc: Address,
 
     /// Program timer
     timer: usize,
@@ -56,11 +56,11 @@ where
     ///
     /// # Safety
     /// Program code has to be validated
-    pub unsafe fn new(memory: Mem, entry: u64) -> Self {
+    pub unsafe fn new(memory: Mem, entry: Address) -> Self {
         Self {
             registers: [Value::from(0_u64); 256],
             memory,
-            pc: entry as _,
+            pc: entry,
             timer: 0,
             copier: None,
         }
@@ -75,13 +75,13 @@ pub enum VmRunError {
     InvalidOpcode(u8),
 
     /// Unhandled load access exception
-    LoadAccessEx(u64),
+    LoadAccessEx(Address),
 
     /// Unhandled instruction load access exception
-    ProgramFetchLoadEx(u64),
+    ProgramFetchLoadEx(Address),
 
     /// Unhandled store access exception
-    StoreAccessEx(u64),
+    StoreAccessEx(Address),
 
     /// Register out-of-bounds access
     RegOutOfBounds,

@@ -1,5 +1,7 @@
 //! Automatic memory mapping
 
+use crate::mem::addr::Address;
+
 use {
     super::{
         addr_extract_index,
@@ -10,7 +12,7 @@ use {
     derive_more::Display,
 };
 
-impl<'p, A,  const OUT_PROG_EXEC: bool> SoftPagedMem<'p, A, OUT_PROG_EXEC> {
+impl<'p, A, const OUT_PROG_EXEC: bool> SoftPagedMem<'p, A, OUT_PROG_EXEC> {
     /// Maps host's memory into VM's memory
     ///
     /// # Safety
@@ -20,7 +22,7 @@ impl<'p, A,  const OUT_PROG_EXEC: bool> SoftPagedMem<'p, A, OUT_PROG_EXEC> {
     pub unsafe fn map(
         &mut self,
         host: *mut u8,
-        target: u64,
+        target: Address,
         perm: Permission,
         pagesize: PageSize,
     ) -> Result<(), MapError> {
@@ -82,7 +84,7 @@ impl<'p, A,  const OUT_PROG_EXEC: bool> SoftPagedMem<'p, A, OUT_PROG_EXEC> {
     ///
     /// If errors, it only means there is no entry to unmap and in most cases
     /// just should be ignored.
-    pub fn unmap(&mut self, addr: u64) -> Result<(), NothingToUnmap> {
+    pub fn unmap(&mut self, addr: Address) -> Result<(), NothingToUnmap> {
         let mut current_pt = self.root_pt;
         let mut page_tables = [core::ptr::null_mut(); 5];
 

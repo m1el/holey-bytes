@@ -1,3 +1,5 @@
+use hbvm::mem::Address;
+
 use {
     hbbytecode::valider::validate,
     hbvm::{
@@ -26,7 +28,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     root_pt:    Box::into_raw(Default::default()),
                     icache:     Default::default(),
                 },
-                4,
+                Address::new(4),
             );
             let data = {
                 let ptr = std::alloc::alloc_zeroed(std::alloc::Layout::from_size_align_unchecked(
@@ -41,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             vm.memory
                 .map(
                     data,
-                    8192,
+                    Address::new(8192),
                     hbvm::mem::softpaging::paging::Permission::Write,
                     PageSize::Size4K,
                 )
@@ -54,7 +56,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 data,
                 std::alloc::Layout::from_size_align_unchecked(4096, 4096),
             );
-            vm.memory.unmap(8192).unwrap();
+            vm.memory.unmap(Address::new(8192)).unwrap();
             let _ = Box::from_raw(vm.memory.root_pt);
         }
     }
@@ -72,7 +74,7 @@ impl HandlePageFault for TestTrapHandler {
         &mut self,
         _: MemoryAccessReason,
         _: &mut PageTable,
-        _: u64,
+        _: Address,
         _: PageSize,
         _: *mut u8,
     ) -> bool {

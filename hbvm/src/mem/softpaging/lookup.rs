@@ -1,5 +1,7 @@
 //! Address lookup
 
+use crate::mem::addr::Address;
+
 use super::{
     addr_extract_index,
     paging::{PageTable, Permission},
@@ -9,7 +11,7 @@ use super::{
 /// Good result from address split
 pub struct AddrPageLookupOk {
     /// Virtual address
-    pub vaddr: u64,
+    pub vaddr: Address,
 
     /// Pointer to the start for perform operation
     pub ptr: *mut u8,
@@ -24,7 +26,7 @@ pub struct AddrPageLookupOk {
 /// Errornous address split result
 pub struct AddrPageLookupError {
     /// Address of failure
-    pub addr: u64,
+    pub addr: Address,
 
     /// Requested page size
     pub size: PageSize,
@@ -33,7 +35,7 @@ pub struct AddrPageLookupError {
 /// Address splitter into pages
 pub struct AddrPageLookuper {
     /// Current address
-    addr: u64,
+    addr: Address,
 
     /// Size left
     size: usize,
@@ -45,7 +47,7 @@ pub struct AddrPageLookuper {
 impl AddrPageLookuper {
     /// Create a new page lookuper
     #[inline]
-    pub const fn new(addr: u64, size: usize, pagetable: *const PageTable) -> Self {
+    pub const fn new(addr: Address, size: usize, pagetable: *const PageTable) -> Self {
         Self {
             addr,
             size,
@@ -55,7 +57,7 @@ impl AddrPageLookuper {
 
     /// Bump address by size X
     pub fn bump(&mut self, page_size: PageSize) {
-        self.addr += page_size as u64;
+        self.addr += page_size;
         self.size = self.size.saturating_sub(page_size as _);
     }
 }

@@ -1,5 +1,7 @@
 //! Program instruction cache
 
+use crate::mem::Address;
+
 use {
     super::{lookup::AddrPageLookuper, paging::PageTable, PageSize},
     core::{
@@ -12,7 +14,7 @@ use {
 #[derive(Clone, Debug)]
 pub struct ICache {
     /// Current page address base
-    base: u64,
+    base: Address,
     /// Curent page pointer
     data: Option<NonNull<u8>>,
     /// Current page size
@@ -24,7 +26,7 @@ pub struct ICache {
 impl Default for ICache {
     fn default() -> Self {
         Self {
-            base: Default::default(),
+            base: Address::NULL,
             data: Default::default(),
             size: PageSize::Size4K,
             mask: Default::default(),
@@ -37,22 +39,26 @@ impl ICache {
     ///
     /// # Safety
     /// `T` should be valid to read from instruction memory
-    pub(super) unsafe fn fetch<T>(&mut self, addr: u64, root_pt: *const PageTable) -> Option<T> {
+    pub(super) unsafe fn fetch<T>(
+        &mut self,
+        addr: Address,
+        root_pt: *const PageTable,
+    ) -> Option<T> {
         let mut ret = MaybeUninit::<T>::uninit();
 
         let pbase = self
             .data
-            .or_else(|| self.fetch_page(self.base.checked_add(self.size as _)?, root_pt))?;
+            .or_else(|| self.fetch_page(self.base + self.size, root_pt))?;
 
         // Get address base
-        let base = addr & self.mask;
+        let base = addr.map(|x| x & self.mask);
 
         // Base not matching, fetch anew
         if base != self.base {
             self.fetch_page(base, root_pt)?;
         };
 
-        let offset = addr & !self.mask;
+        let offset = addr.get() & !self.mask;
         let requ_size = size_of::<T>();
 
         // Page overflow
@@ -66,7 +72,7 @@ impl ICache {
 
         // Copy overflow
         if rem != 0 {
-            let pbase = self.fetch_page(self.base.checked_add(self.size as _)?, root_pt)?;
+            let pbase = self.fetch_page(self.base + self.size, root_pt)?;
 
             // Unlikely, unsupported scenario
             if rem > self.size as _ {
@@ -84,7 +90,7 @@ impl ICache {
     }
 
     /// Fetch a page
-    unsafe fn fetch_page(&mut self, addr: u64, pt: *const PageTable) -> Option<NonNull<u8>> {
+    unsafe fn fetch_page(&mut self, addr: Address, pt: *const PageTable) -> Option<NonNull<u8>> {
         let res = AddrPageLookuper::new(addr, 0, pt).next()?.ok()?;
         if !super::perm_check::executable(res.perm) {
             return None;
@@ -97,7 +103,7 @@ impl ICache {
             _ => return None,
         };
         self.data = Some(NonNull::new(res.ptr)?);
-        self.base = addr & self.mask;
+        self.base = addr.map(|x| x & self.mask);
         self.data
     }
 }

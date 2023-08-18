@@ -1,8 +1,11 @@
 //! Memory implementations
 
-use {derive_more::Display, hbbytecode::ProgramVal};
-
 pub mod softpaging;
+
+mod addr;
+
+pub use addr::Address;
+use {derive_more::Display, hbbytecode::ProgramVal};
 
 /// Load-store memory access
 pub trait Memory {
@@ -10,7 +13,12 @@ pub trait Memory {
     ///
     /// # Safety
     /// - Shall not overrun the buffer
-    unsafe fn load(&mut self, addr: u64, target: *mut u8, count: usize) -> Result<(), LoadError>;
+    unsafe fn load(
+        &mut self,
+        addr: Address,
+        target: *mut u8,
+        count: usize,
+    ) -> Result<(), LoadError>;
 
     /// Store data to memory on address
     ///
@@ -18,7 +26,7 @@ pub trait Memory {
     /// - Shall not overrun the buffer
     unsafe fn store(
         &mut self,
-        addr: u64,
+        addr: Address,
         source: *const u8,
         count: usize,
     ) -> Result<(), StoreError>;
@@ -27,24 +35,24 @@ pub trait Memory {
     ///
     /// # Safety
     /// - Data read have to be valid
-    unsafe fn prog_read<T: ProgramVal>(&mut self, addr: u64) -> Option<T>;
+    unsafe fn prog_read<T: ProgramVal>(&mut self, addr: Address) -> Option<T>;
 
     /// Read from program memory to exectue
     ///
     /// # Safety
     /// - You have to be really sure that these bytes are there, understand?
-    unsafe fn prog_read_unchecked<T: ProgramVal>(&mut self, addr: u64) -> T;
+    unsafe fn prog_read_unchecked<T: ProgramVal>(&mut self, addr: Address) -> T;
 }
 
 /// Unhandled load access trap
 #[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
-#[display(fmt = "Load access error at address {_0:#x}")]
-pub struct LoadError(pub u64);
+#[display(fmt = "Load access error at address {_0}")]
+pub struct LoadError(pub Address);
 
 /// Unhandled store access trap
 #[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
-#[display(fmt = "Store access error at address {_0:#x}")]
-pub struct StoreError(pub u64);
+#[display(fmt = "Store access error at address {_0}")]
+pub struct StoreError(pub Address);
 
 /// Reason to access memory
 #[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]

@@ -3,11 +3,14 @@
 use {
     hbbytecode::valider::validate,
     hbvm::{
-        mem::softpaging::{
-            paging::{PageTable, Permission},
-            HandlePageFault, PageSize, SoftPagedMem,
+        mem::{
+            softpaging::{
+                paging::{PageTable, Permission},
+                HandlePageFault, PageSize, SoftPagedMem,
+            },
+            Address, MemoryAccessReason,
         },
-        MemoryAccessReason, Vm,
+        Vm,
     },
     libfuzzer_sys::fuzz_target,
 };
@@ -22,7 +25,7 @@ fuzz_target!(|data: &[u8]| {
                     root_pt:    Box::into_raw(Default::default()),
                     icache:     Default::default(),
                 },
-                0,
+                Address::new(4),
             )
         };
 
@@ -31,8 +34,6 @@ fuzz_target!(|data: &[u8]| {
             alloc_and_map(&mut vm.memory, 0),
             alloc_and_map(&mut vm.memory, 4096),
         ];
-
-        unsafe { vm.memory.write() };
 
         // Run VM
         let _ = vm.run();
@@ -50,14 +51,14 @@ fn alloc_and_map(memory: &mut SoftPagedMem<TestTrapHandler>, at: u64) -> *mut u8
     let ptr = Box::into_raw(Box::<Page>::default()).cast();
     unsafe {
         memory
-            .map(ptr, at, Permission::Write, PageSize::Size4K)
+            .map(ptr, Address::new(at), Permission::Write, PageSize::Size4K)
             .unwrap()
     };
     ptr
 }
 
 fn unmap_and_dealloc(memory: &mut SoftPagedMem<TestTrapHandler>, ptr: *mut u8, from: u64) {
-    memory.unmap(from).unwrap();
+    memory.unmap(Address::new(from)).unwrap();
     let _ = unsafe { Box::from_raw(ptr.cast::<Page>()) };
 }
 
@@ -75,7 +76,7 @@ impl HandlePageFault for TestTrapHandler {
         &mut self,
         _: MemoryAccessReason,
         _: &mut PageTable,
-        _: u64,
+        _: Address,
         _: PageSize,
         _: *mut u8,
     ) -> bool {

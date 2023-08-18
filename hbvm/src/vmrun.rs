@@ -2,6 +2,8 @@
 //!
 //! Have fun
 
+use crate::mem::Address;
+
 use {
     super::{
         bmc::BlockCopier,
@@ -202,8 +204,8 @@ where
                             self.pc -= size_of::<ParamBBD>() + 1;
 
                             self.copier = Some(BlockCopier::new(
-                                self.read_reg(src).cast(),
-                                self.read_reg(dst).cast(),
+                                Address::new(self.read_reg(src).cast()),
+                                Address::new(self.read_reg(dst).cast()),
                                 count as _,
                             ));
 
@@ -244,16 +246,16 @@ where
                         // Jump and link. Save PC after this instruction to
                         // specified register and jump to reg + offset.
                         let ParamBBD(save, reg, offset) = self.decode();
-                        self.write_reg(save, self.pc as u64);
+                        self.write_reg(save, self.pc.get());
                         self.pc =
-                            (self.read_reg(reg).cast::<u64>().saturating_add(offset)) as usize;
+                            Address::new(self.read_reg(reg).cast::<u64>().saturating_add(offset));
                     }
                     // Conditional jumps, jump only to immediates
                     JEQ => self.cond_jmp::<u64>(Ordering::Equal),
                     JNE => {
                         let ParamBBD(a0, a1, jt) = self.decode();
                         if self.read_reg(a0).cast::<u64>() != self.read_reg(a1).cast::<u64>() {
-                            self.pc = jt as usize;
+                            self.pc = Address::new(jt);
                         }
                     }
                     JLT => self.cond_jmp::<u64>(Ordering::Less),
@@ -317,7 +319,7 @@ where
     /// Decode instruction operands
     #[inline(always)]
     unsafe fn decode<T: ProgramVal>(&mut self) -> T {
-        let pc1 = self.pc + 1;
+        let pc1 = self.pc + 1_u64;
         let data = self.memory.prog_read_unchecked::<T>(pc1 as _);
         self.pc += 1 + size_of::<T>();
         data
@@ -360,7 +362,7 @@ where
             .cmp(&self.read_reg(a1).cast::<T>())
             == expected
         {
-            self.pc = ja as usize;
+            self.pc = Address::new(ja);
         }
     }
 
@@ -388,7 +390,7 @@ where
         offset: u64,
         size: u16,
         adder: u8,
-    ) -> Result<u64, VmRunError> {
+    ) -> Result<Address, VmRunError> {
         let reg = dst.checked_add(adder).ok_or(VmRunError::RegOutOfBounds)?;
 
         if usize::from(reg) * 8 + usize::from(size) > 2048 {
@@ -399,6 +401,7 @@ where
                 .checked_add(offset)
                 .and_then(|x| x.checked_add(adder.into()))
                 .ok_or(VmRunError::AddrOutOfBounds)
+                .map(Address::new)
         }
     }
 }

@@ -1,9 +1,5 @@
 //! Platform independent, software paged memory implementation
 
-use core::mem::size_of;
-
-use self::icache::ICache;
-
 pub mod icache;
 pub mod lookup;
 pub mod paging;
@@ -12,7 +8,9 @@ pub mod paging;
 pub mod mapping;
 
 use {
-    super::{LoadError, Memory, MemoryAccessReason, StoreError},
+    super::{addr::Address, LoadError, Memory, MemoryAccessReason, StoreError},
+    core::mem::size_of,
+    icache::ICache,
     lookup::{AddrPageLookupError, AddrPageLookupOk, AddrPageLookuper},
     paging::{PageTable, Permission},
 };
@@ -41,7 +39,12 @@ impl<'p, PfH: HandlePageFault, const OUT_PROG_EXEC: bool> Memory
     ///
     /// # Safety
     /// Applies same conditions as for [`core::ptr::copy_nonoverlapping`]
-    unsafe fn load(&mut self, addr: u64, target: *mut u8, count: usize) -> Result<(), LoadError> {
+    unsafe fn load(
+        &mut self,
+        addr: Address,
+        target: *mut u8,
+        count: usize,
+    ) -> Result<(), LoadError> {
         self.memory_access(
             MemoryAccessReason::Load,
             addr,
@@ -59,7 +62,7 @@ impl<'p, PfH: HandlePageFault, const OUT_PROG_EXEC: bool> Memory
     /// Applies same conditions as for [`core::ptr::copy_nonoverlapping`]
     unsafe fn store(
         &mut self,
-        addr: u64,
+        addr: Address,
         source: *const u8,
         count: usize,
     ) -> Result<(), StoreError> {
@@ -75,27 +78,31 @@ impl<'p, PfH: HandlePageFault, const OUT_PROG_EXEC: bool> Memory
     }
 
     #[inline(always)]
-    unsafe fn prog_read<T>(&mut self, addr: u64) -> Option<T> {
-        if OUT_PROG_EXEC && addr as usize > self.program.len() {
+    unsafe fn prog_read<T>(&mut self, addr: Address) -> Option<T> {
+        if OUT_PROG_EXEC && addr.truncate_usize() > self.program.len() {
             return self.icache.fetch::<T>(addr, self.root_pt);
         }
 
-        let addr = addr as usize;
+        let addr = addr.truncate_usize();
         self.program
             .get(addr..addr + size_of::<T>())
             .map(|x| x.as_ptr().cast::<T>().read())
     }
 
     #[inline(always)]
-    unsafe fn prog_read_unchecked<T>(&mut self, addr: u64) -> T {
-        if OUT_PROG_EXEC && addr as usize > self.program.len() {
+    unsafe fn prog_read_unchecked<T>(&mut self, addr: Address) -> T {
+        if OUT_PROG_EXEC && addr.truncate_usize() > self.program.len() {
             return self
                 .icache
-                .fetch::<T>(addr as _, self.root_pt)
+                .fetch::<T>(addr, self.root_pt)
                 .unwrap_or_else(|| core::mem::zeroed());
         }
 
-        self.program.as_ptr().add(addr as _).cast::<T>().read()
+        self.program
+            .as_ptr()
+            .add(addr.truncate_usize())
+            .cast::<T>()
+            .read()
     }
 }
 
@@ -110,32 +117,32 @@ impl<'p, PfH: HandlePageFault, const OUT_PROG_EXEC: bool> SoftPagedMem<'p, PfH, 
     fn memory_access(
         &mut self,
         reason: MemoryAccessReason,
-        src: u64,
+        src: Address,
         mut dst: *mut u8,
         len: usize,
         permission_check: fn(Permission) -> bool,
         action: fn(*mut u8, *mut u8, usize),
-    ) -> Result<(), u64> {
+    ) -> Result<(), Address> {
         // Memory load from program section
-        let (src, len) = if src < self.program.len() as _ {
+        let (src, len) = if src.truncate_usize() < self.program.len() as _ {
             // Allow only loads
             if reason != MemoryAccessReason::Load {
                 return Err(src);
             }
 
             // Determine how much data to copy from here
-            let to_copy = len.clamp(0, self.program.len().saturating_sub(src as _));
+            let to_copy = len.clamp(0, self.program.len().saturating_sub(src.truncate_usize()));
 
             // Perform action
             action(
-                unsafe { self.program.as_ptr().add(src as _).cast_mut() },
+                unsafe { self.program.as_ptr().add(src.truncate_usize()).cast_mut() },
                 dst,
                 to_copy,
             );
 
             // Return shifted from what we've already copied
             (
-                src.saturating_add(to_copy as _),
+                src.saturating_add(to_copy as u64),
                 len.saturating_sub(to_copy),
             )
         } else {
@@ -196,8 +203,9 @@ impl<'p, PfH: HandlePageFault, const OUT_PROG_EXEC: bool> SoftPagedMem<'p, PfH, 
 ///
 /// The level shall not be larger than 4, otherwise
 /// the output of the function is unspecified (yes, it can also panic :)
-pub fn addr_extract_index(addr: u64, lvl: u8) -> usize {
+pub fn addr_extract_index(addr: Address, lvl: u8) -> usize {
     debug_assert!(lvl <= 4);
+    let addr = addr.get();
     usize::try_from((addr >> (lvl * 8 + 12)) & ((1 << 8) - 1)).expect("?conradluget a better CPU")
 }
 
@@ -223,6 +231,22 @@ impl PageSize {
             2 => Some(PageSize::Size1G),
             _ => None,
         }
+    }
+}
+
+impl core::ops::Add<PageSize> for Address {
+    type Output = Self;
+
+    #[inline(always)]
+    fn add(self, rhs: PageSize) -> Self::Output {
+        self + (rhs as u64)
+    }
+}
+
+impl core::ops::AddAssign<PageSize> for Address {
+    #[inline(always)]
+    fn add_assign(&mut self, rhs: PageSize) {
+        *self = Self::new(self.get().wrapping_add(rhs as u64));
     }
 }
 
@@ -263,7 +287,7 @@ pub trait HandlePageFault {
         &mut self,
         reason: MemoryAccessReason,
         pagetable: &mut PageTable,
-        vaddr: u64,
+        vaddr: Address,
         size: PageSize,
         dataptr: *mut u8,
     ) -> bool

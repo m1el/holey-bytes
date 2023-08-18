@@ -1,7 +1,8 @@
 //! Block memory copier state machine
 
 use {
-    super::{Memory, mem::MemoryAccessReason, VmRunError},
+    super::{mem::MemoryAccessReason, Memory, VmRunError},
+    crate::mem::Address,
     core::{mem::MaybeUninit, task::Poll},
 };
 
@@ -15,9 +16,9 @@ struct AlignedBuf([MaybeUninit<u8>; BUF_SIZE]);
 /// State for block memory copy
 pub struct BlockCopier {
     /// Source address
-    src:       u64,
+    src:       Address,
     /// Destination address
-    dst:       u64,
+    dst:       Address,
     /// How many buffer sizes to copy?
     n_buffers: usize,
     /// …and what remainds after?
@@ -27,7 +28,7 @@ pub struct BlockCopier {
 impl BlockCopier {
     /// Construct a new one
     #[inline]
-    pub fn new(src: u64, dst: u64, count: usize) -> Self {
+    pub fn new(src: Address, dst: Address, count: usize) -> Self {
         Self {
             src,
             dst,
@@ -57,17 +58,8 @@ impl BlockCopier {
             }
 
             // Bump source and destination address
-            //
-            // If we are over the address space, bail.
-            match self.src.checked_add(BUF_SIZE as u64) {
-                Some(n) => self.src = n,
-                None => return Poll::Ready(Err(BlkCopyError::OutOfBounds)),
-            };
-
-            match self.dst.checked_add(BUF_SIZE as u64) {
-                Some(n) => self.dst = n,
-                None => return Poll::Ready(Err(BlkCopyError::OutOfBounds)),
-            };
+            self.src += BUF_SIZE;
+            self.dst += BUF_SIZE;
 
             self.n_buffers -= 1;
 
@@ -100,15 +92,15 @@ impl BlockCopier {
 #[inline]
 unsafe fn act(
     memory: &mut impl Memory,
-    src: u64,
-    dst: u64,
+    src: Address,
+    dst: Address,
     buf: *mut u8,
     count: usize,
 ) -> Result<(), BlkCopyError> {
     // Load to buffer
     memory
         .load(src, buf, count)
-        .map_err(|super::mem::LoadError(addr)| BlkCopyError::Access {
+        .map_err(|super::mem::LoadError(addr)| BlkCopyError {
             access_reason: MemoryAccessReason::Load,
             addr,
         })?;
@@ -116,7 +108,7 @@ unsafe fn act(
     // Store from buffer
     memory
         .store(dst, buf, count)
-        .map_err(|super::mem::StoreError(addr)| BlkCopyError::Access {
+        .map_err(|super::mem::StoreError(addr)| BlkCopyError {
             access_reason: MemoryAccessReason::Store,
             addr,
         })?;
@@ -126,30 +118,18 @@ unsafe fn act(
 
 /// Error occured when copying a block of memory
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BlkCopyError {
-    /// Memory access error
-    Access {
-        /// Kind of access
-        access_reason: MemoryAccessReason,
-        /// VM Address
-        addr: u64,
-    },
-    /// Address out of bounds
-    OutOfBounds,
+pub struct BlkCopyError {
+    /// Kind of access
+    access_reason: MemoryAccessReason,
+    /// VM Address
+    addr: Address,
 }
 
 impl From<BlkCopyError> for VmRunError {
     fn from(value: BlkCopyError) -> Self {
-        match value {
-            BlkCopyError::Access {
-                access_reason: MemoryAccessReason::Load,
-                addr,
-            } => Self::LoadAccessEx(addr),
-            BlkCopyError::Access {
-                access_reason: MemoryAccessReason::Store,
-                addr,
-            } => Self::StoreAccessEx(addr),
-            BlkCopyError::OutOfBounds => Self::AddrOutOfBounds,
+        match value.access_reason {
+            MemoryAccessReason::Load => Self::LoadAccessEx(value.addr),
+            MemoryAccessReason::Store => Self::StoreAccessEx(value.addr),
         }
     }
 }
