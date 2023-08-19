@@ -5,7 +5,8 @@ pub mod softpaging;
 mod addr;
 
 pub use addr::Address;
-use {derive_more::Display, hbbytecode::ProgramVal};
+
+use {crate::utils::impl_display, hbbytecode::ProgramVal};
 
 /// Load-store memory access
 pub trait Memory {
@@ -45,23 +46,32 @@ pub trait Memory {
 }
 
 /// Unhandled load access trap
-#[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
-#[display(fmt = "Load access error at address {_0}")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LoadError(pub Address);
+impl_display!(for LoadError =>
+    |LoadError(a)| "Load access error at address {a}",
+);
 
 /// Unhandled store access trap
-#[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
-#[display(fmt = "Store access error at address {_0}")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StoreError(pub Address);
+impl_display!(for StoreError =>
+    |StoreError(a)| "Load access error at address {a}",
+);
 
 /// Reason to access memory
-#[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemoryAccessReason {
     /// Memory was accessed for load (read)
     Load,
     /// Memory was accessed for store (write)
     Store,
 }
+
+impl_display!(for MemoryAccessReason => match {
+    Self::Load  => "Load";
+    Self::Store => "Store";
+});
 
 impl From<LoadError> for crate::VmRunError {
     fn from(value: LoadError) -> Self {

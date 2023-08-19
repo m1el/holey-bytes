@@ -26,7 +26,7 @@ macro_rules! value_def {
                 }
             }
 
-            static_assertions::const_assert_eq!(
+            crate::utils::static_assert_eq!(
                 core::mem::size_of::<$ty>(),
                 core::mem::size_of::<Value>(),
             );
@@ -70,7 +70,7 @@ mod private {
 }
 
 value_def!(u64, i64, f64);
-static_assertions::const_assert_eq!(core::mem::size_of::<Value>(), 8);
+crate::utils::static_assert_eq!(core::mem::size_of::<Value>(), 8);
 
 impl core::fmt::Debug for Value {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {

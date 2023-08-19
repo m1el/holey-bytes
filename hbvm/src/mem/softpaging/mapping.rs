@@ -1,6 +1,6 @@
 //! Automatic memory mapping
 
-use crate::mem::addr::Address;
+use crate::{mem::addr::Address, utils::impl_display};
 
 use {
     super::{
@@ -9,7 +9,6 @@ use {
         PageSize, SoftPagedMem,
     },
     alloc::boxed::Box,
-    derive_more::Display,
 };
 
 impl<'p, A, const OUT_PROG_EXEC: bool> SoftPagedMem<'p, A, OUT_PROG_EXEC> {
@@ -143,22 +142,25 @@ impl<'p, A, const OUT_PROG_EXEC: bool> SoftPagedMem<'p, A, OUT_PROG_EXEC> {
 }
 
 /// Error mapping
-#[derive(Clone, Copy, Display, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MapError {
     /// Entry was already mapped
-    #[display(fmt = "There is already a page mapped on specified address")]
     AlreadyMapped,
     /// When walking a page entry was
     /// encounterd.
-    #[display(fmt = "There was a page mapped on the way instead of node")]
     PageOnNode,
 }
+
+impl_display!(for MapError => match {
+    Self::AlreadyMapped => "There is already a page mapped on specified address";
+    Self::PageOnNode    => "There was a page mapped on the way instead of node";
+});
 
 /// There was no entry in page table to unmap
 ///
 /// No worry, don't panic, nothing bad has happened,
 /// but if you are 120% sure there should be something,
 /// double-check your addresses.
-#[derive(Clone, Copy, Display, Debug)]
-#[display(fmt = "There was no entry to unmap")]
+#[derive(Clone, Copy, Debug)]
 pub struct NothingToUnmap;
+impl_display!(for NothingToUnmap => "There is no entry to unmap");

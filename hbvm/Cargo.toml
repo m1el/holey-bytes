@@ -12,6 +12,4 @@ alloc   = []
 nightly = []
 
 [dependencies]
-derive_more       = "0.99"
-hbbytecode.path   = "../hbbytecode"
-static_assertions = "1.0"
+hbbytecode.path = "../hbbytecode"

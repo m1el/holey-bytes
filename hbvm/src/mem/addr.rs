@@ -1,13 +1,11 @@
 //! Virtual(?) memory address
 
-use {
-    core::{fmt::Debug, ops},
-    derive_more::Display,
-};
+use core::{fmt::Debug, ops};
+
+use crate::utils::impl_display;
 
 /// Memory address
-#[derive(Clone, Copy, Display, PartialEq, Eq, PartialOrd, Ord)]
-#[display(fmt = "{_0:x}")]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Address(u64);
 impl Address {
     /// A null address
@@ -48,6 +46,10 @@ impl Address {
         Self(f(self.0))
     }
 }
+
+impl_display!(for Address =>
+    |Address(a)| "{a:0x}"
+);
 
 impl<T: AddressOp> ops::Add<T> for Address {
     type Output = Self;

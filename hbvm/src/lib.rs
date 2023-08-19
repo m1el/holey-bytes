@@ -24,6 +24,7 @@ pub mod value;
 
 mod bmc;
 mod vmrun;
+mod utils;
 
 use {bmc::BlockCopier, value::Value};
 
