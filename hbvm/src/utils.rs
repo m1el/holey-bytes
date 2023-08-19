@@ -23,7 +23,7 @@ macro_rules! impl_display {
             fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
                 match self {
                     $(
-                        $bind => $crate::utils::private::impl_display_match_fragment!($($const,)? f, $fmt $(, $($params)*)?)
+                        $bind => $crate::utils::internal::impl_display_match_fragment!($($const,)? f, $fmt $(, $($params)*)?)
                     ),*
                 }
             }
@@ -32,7 +32,7 @@ macro_rules! impl_display {
 }
 
 #[doc(hidden)]
-pub(crate) mod private {
+pub(crate) mod internal {
     macro_rules! impl_display_match_fragment {
         (const, $f:expr, $lit:literal) => {
             $f.write_str($lit)
