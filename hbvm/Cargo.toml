@@ -12,9 +12,6 @@ alloc   = []
 nightly = []
 
 [dependencies]
-delegate          = "0.9"
 derive_more       = "0.99"
 hbbytecode.path   = "../hbbytecode"
-paste             = "1.0"
-sealed            = "0.5"
 static_assertions = "1.0"

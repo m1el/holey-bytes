@@ -1,7 +1,5 @@
 //! HoleyBytes register value definition
 
-use sealed::sealed;
-
 /// Define [`Value`] union
 ///
 /// # Safety
@@ -33,7 +31,7 @@ macro_rules! value_def {
                 core::mem::size_of::<Value>(),
             );
 
-            #[sealed]
+            impl private::Sealed for $ty {}
             unsafe impl ValueVariant for $ty {}
         )*
     };
@@ -44,13 +42,13 @@ impl Value {
     #[inline]
     pub fn cast<V: ValueVariant>(self) -> V {
         /// Evil.
-        /// 
+        ///
         /// Transmute cannot be performed with generic type
         /// as size is unknown, so union is used.
-        /// 
+        ///
         /// # Safety
         /// If [`ValueVariant`] implemented correctly, it's fine :)
-        /// 
+        ///
         /// :ferrisClueless:
         union Transmute<Variant: ValueVariant> {
             /// Self
@@ -65,8 +63,11 @@ impl Value {
 
 /// # Safety
 /// - N/A, not to be implemented manually
-#[sealed]
-pub unsafe trait ValueVariant: Copy + Into<Value> {}
+pub unsafe trait ValueVariant: private::Sealed + Copy + Into<Value> {}
+
+mod private {
+    pub trait Sealed {}
+}
 
 value_def!(u64, i64, f64);
 static_assertions::const_assert_eq!(core::mem::size_of::<Value>(), 8);
