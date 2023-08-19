@@ -17,18 +17,33 @@ macro_rules! impl_display {
     };
 
     (for $ty:ty => match {$(
-        $bind:pat => $fmt:literal $(,$($param:expr),* $(,)?)?;
+        $bind:pat => $($const:ident)? $fmt:literal $(,$($params:tt)*)?;
     )*}) => {
         impl ::core::fmt::Display for $ty {
             fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
                 match self {
                     $(
-                        $bind => write!(f, $fmt, $($($param),*)?)
+                        $bind => $crate::utils::private::impl_display_match_fragment!($($const,)? f, $fmt $(, $($params)*)?)
                     ),*
                 }
             }
         }
     }
+}
+
+#[doc(hidden)]
+pub(crate) mod private {
+    macro_rules! impl_display_match_fragment {
+        (const, $f:expr, $lit:literal) => {
+            $f.write_str($lit)
+        };
+
+        ($f:expr, $fmt:literal $(, $($params:tt)*)?) => {
+            write!($f, $fmt, $($($params)*)?)
+        };
+    }
+
+    pub(crate) use impl_display_match_fragment;
 }
 
 macro_rules! static_assert_eq(($l:expr, $r:expr $(,)?) => {

@@ -69,8 +69,8 @@ pub enum MemoryAccessReason {
 }
 
 impl_display!(for MemoryAccessReason => match {
-    Self::Load  => "Load";
-    Self::Store => "Store";
+    Self::Load  => const "Load";
+    Self::Store => const "Store";
 });
 
 impl From<LoadError> for crate::VmRunError {
