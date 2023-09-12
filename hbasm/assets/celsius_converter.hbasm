@@ -1,0 +1,16 @@
+-- r1 will be the temp in fahrenheit
+-- r2 temp in celsius 
+-- r3/r4/r5 will be used by constants
+
+-- (f - 32) * 5 / 9
+
+li r1, 100
+
+li r3, 32
+li r4, 5
+li r5, 9
+
+sub r2, r1, r3
+mul r2, r2, r4
+dir r2, r0, r2, r5
+tx
