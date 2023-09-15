@@ -244,6 +244,7 @@ where
                             usize::from(count),
                         );
                     }
+                    JMP => self.pc = Address::new(self.decode::<u64>()),
                     JAL => {
                         // Jump and link. Save PC after this instruction to
                         // specified register and jump to reg + offset.
