@@ -110,26 +110,27 @@ constmod!(pub opcode(u8) {
     BMC = 32, "BBD; [#0] ← [#1], imm #2 bytes";
     BRC = 33, "BBB; #0 ← #1, imm #2 registers";
 
-    JAL   = 34, "BD;  Copy PC to #0 and unconditional jump [#1 + imm #2]";
-    JEQ   = 35, "BBD; if #0 = #1 → jump imm #2";
-    JNE   = 36, "BBD; if #0 ≠ #1 → jump imm #2";
-    JLT   = 37, "BBD; if #0 < #1 → jump imm #2";
-    JGT   = 38, "BBD; if #0 > #1 → jump imm #2";
-    JLTU  = 39, "BBD; if #0 < #1 → jump imm #2 (unsigned)";
-    JGTU  = 40, "BBD; if #0 > #1 → jump imm #2 (unsigned)";
-    ECALL = 41, "N; Issue system call";
+    JMP   = 34, "D; Unconditional, non-linking absolute jump";
+    JAL   = 35, "BD;  Copy PC to #0 and unconditional jump [#1 + imm #2]";
+    JEQ   = 36, "BBD; if #0 = #1 → jump imm #2";
+    JNE   = 37, "BBD; if #0 ≠ #1 → jump imm #2";
+    JLT   = 38, "BBD; if #0 < #1 → jump imm #2";
+    JGT   = 39, "BBD; if #0 > #1 → jump imm #2";
+    JLTU  = 40, "BBD; if #0 < #1 → jump imm #2 (unsigned)";
+    JGTU  = 41, "BBD; if #0 > #1 → jump imm #2 (unsigned)";
+    ECALL = 42, "N; Issue system call";
 
-    ADDF = 42, "BBB; #0 ← #1 +. #2";
-    SUBF = 43, "BBB; #0 ← #1 -. #2";
-    MULF = 44, "BBB; #0 ← #1 +. #2";
-    DIRF = 45, "BBBB; #0 ← #2 / #3, #1 ← #2 % #3";
-    FMAF = 46, "BBBB; #0 ← (#1 * #2) + #3";
-    NEGF = 47, "BB; #0 ← -#1";
-    ITF  = 48, "BB; #0 ← #1 as float";
-    FTI  = 49, "BB; #0 ← #1 as int";
+    ADDF = 43, "BBB; #0 ← #1 +. #2";
+    SUBF = 44, "BBB; #0 ← #1 -. #2";
+    MULF = 45, "BBB; #0 ← #1 +. #2";
+    DIRF = 46, "BBBB; #0 ← #2 / #3, #1 ← #2 % #3";
+    FMAF = 47, "BBBB; #0 ← (#1 * #2) + #3";
+    NEGF = 48, "BB; #0 ← -#1";
+    ITF  = 49, "BB; #0 ← #1 as float";
+    FTI  = 50, "BB; #0 ← #1 as int";
 
-    ADDFI = 50, "BBD; #0 ← #1 +. imm #2";
-    MULFI = 51, "BBD; #0 ← #1 *. imm #2";
+    ADDFI = 51, "BBD; #0 ← #1 +. imm #2";
+    MULFI = 52, "BBD; #0 ← #1 *. imm #2";
 });
 
 #[repr(packed)]

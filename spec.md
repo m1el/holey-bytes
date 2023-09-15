@@ -56,7 +56,7 @@
 |   7    |  OR  |          Bitor          |
 |   8    | XOR  |         Bitxor          |
 |   9    |  SL  | Unsigned left bitshift  |
-|   10    |  SR  | Unsigned right bitshift |
+|   10   |  SR  | Unsigned right bitshift |
 |   11   | SRS  |  Signed right bitshift  |
 
 ### Comparsion
@@ -68,9 +68,9 @@
 #### Comparsion table
 | #1 *op* #2 | Result |
 |:----------:|:------:|
-|     <      |   -1   |
-|     =      |   0    |
-|     >      |   1    |
+|     <      |   0    |
+|     =      |   1    |
+|     >      |   2    |
 
 ### Division-remainder
 - Type BBBB
@@ -179,11 +179,17 @@
 ## Control flow
 
 ### Unconditional jump
+- Type D
+| Opcode | Name |             Action              |
+|:------:|:----:|:-------------------------------:|
+|   34   | JMP  | Unconditional, non-linking jump |
+
+### Unconditional linking jump
 - Type BBD
 
 | Opcode | Name |                       Action                       |
 |:------:|:----:|:--------------------------------------------------:|
-|   34   | JAL  | Save PC past JAL to `#0` and jump at `#1 + imm #2` |
+|   35   | JAL  | Save PC past JAL to `#0` and jump at `#1 + imm #2` |
 
 ### Conditional jumps
 - Type BBD
@@ -191,19 +197,19 @@
 
 | Opcode | Name |  Comparsion  |
 |:------:|:----:|:------------:|
-|   35   | JEQ  |      =       |
-|   36   | JNE  |      ≠       |
-|   37   | JLT  |  < (signed)  |
-|   38   | JGT  |  > (signed)  |
-|   39   | JLTU | < (unsigned) |
-|   40   | JGTU | > (unsigned) |
+|   36   | JEQ  |      =       |
+|   37   | JNE  |      ≠       |
+|   38   | JLT  |  < (signed)  |
+|   39   | JGT  |  > (signed)  |
+|   40   | JLTU | < (unsigned) |
+|   41   | JGTU | > (unsigned) |
 
 ### Environment call
 - Type N
 
 | Opcode | Name  |                Action                 |
 |:------:|:-----:|:-------------------------------------:|
-|   41   | ECALL | Cause an trap to the host environment |
+|   42   | ECALL | Cause an trap to the host environment |
 
 ## Floating point operations
 - Type BBB
@@ -211,29 +217,29 @@
 
 | Opcode | Name |     Action     |
 |:------:|:----:|:--------------:|
-|   42   | ADDF |    Addition    |
-|   43   | SUBF |  Subtraction   |
-|   44   | MULF | Multiplication |
+|   43   | ADDF |    Addition    |
+|   44   | SUBF |  Subtraction   |
+|   45   | MULF | Multiplication |
 
 ### Division-remainder
 - Type BBBB
 
 | Opcode | Name |          Action           |
 |:------:|:----:|:-------------------------:|
-|   45   | DIRF | Same as for integer `DIR` |
+|   46   | DIRF | Same as for integer `DIR` |
 
 ### Fused Multiply-Add
 - Type BBBB
 
 | Opcode | Name |        Action         |
 |:------:|:----:|:---------------------:|
-|   46   | FMAF | `#0 ← (#1 * #2) + #3` |
+|   47   | FMAF | `#0 ← (#1 * #2) + #3` |
 
 ### Negation
 - Type BB
 | Opcode | Name |   Action   |
 |:------:|:----:|:----------:|
-|   47   | NEGF | `#0 ← -#1` |
+|   48   | NEGF | `#0 ← -#1` |
 
 ### Conversion
 - Type BB
@@ -242,8 +248,8 @@
 
 | Opcode | Name |    Action    |
 |:------:|:----:|:------------:|
-|   48   | ITF  | Int to Float |
-|   49   | FTI  | Float to Int |
+|   49   | ITF  | Int to Float |
+|   50   | FTI  | Float to Int |
 
 ## Floating point immediate operations
 - Type BBD
@@ -251,8 +257,8 @@
 
 | Opcode | Name  |     Action     |
 |:------:|:-----:|:--------------:|
-|   50   | ADDFI |    Addition    |
-|   51   | MULFI | Multiplication |
+|   51   | ADDFI |    Addition    |
+|   52   | MULFI | Multiplication |
 
 # Registers
 - There is 255 registers + one zero register (with index 0)

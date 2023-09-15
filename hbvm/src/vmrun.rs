@@ -73,9 +73,9 @@ where
                     SRS => self.binary_op(|l, r| i64::wrapping_shl(l, r as u32)),
                     CMP => {
                         // Compare a0 <=> a1
-                        // < → -1
+                        // < →  0
                         // > →  1
-                        // = →  0
+                        // = →  2
 
                         let ParamBBB(tg, a0, a1) = self.decode();
                         self.write_reg(
@@ -83,7 +83,8 @@ where
                             self.read_reg(a0)
                                 .cast::<i64>()
                                 .cmp(&self.read_reg(a1).cast::<i64>())
-                                as i64,
+                                as i64
+                                + 1,
                         );
                     }
                     CMPU => {
@@ -94,7 +95,8 @@ where
                             self.read_reg(a0)
                                 .cast::<u64>()
                                 .cmp(&self.read_reg(a1).cast::<u64>())
-                                as i64,
+                                as i64
+                                + 1,
                         );
                     }
                     NOT => {
