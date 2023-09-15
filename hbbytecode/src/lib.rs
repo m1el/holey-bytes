@@ -61,6 +61,8 @@ macro_rules! invoke_with_def {
                 => [NEG, NOT, CP, SWA, NEGF, ITF, FTI],
             bd(p0: R, p1: I)
                 => [LI],
+            d(p0: I)
+                => [JMP],
             n()
                 => [UN, TX, NOP, ECALL],
         );

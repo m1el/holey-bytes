@@ -158,6 +158,11 @@ macro_rules! inst_chk {
         [$($opcode)|*, _, _, _, _, _, _, _, _, _, $rest @ ..]
     };
 
+    ($rest:ident, d, $($opcode:ident),*) => {
+        //            D1 D2 D3 D4 D5 D6 D7 D8
+        [$($opcode)|*, _, _, _, _, _, _, _, _, $rest @ ..]
+    };
+
     ($rest:ident, n, $($opcode:ident),*) => {
         [$($opcode)|*, $rest @ ..]
     };
