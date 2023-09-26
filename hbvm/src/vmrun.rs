@@ -2,8 +2,6 @@
 //!
 //! Have fun
 
-use crate::mem::Address;
-
 use {
     super::{
         bmc::BlockCopier,
@@ -11,9 +9,11 @@ use {
         value::{Value, ValueVariant},
         Vm, VmRunError, VmRunOk,
     },
+    crate::mem::{addr::AddressOp, Address},
     core::{cmp::Ordering, mem::size_of, ops},
     hbbytecode::{
-        ParamBB, ParamBBB, ParamBBBB, ParamBBD, ParamBBDH, ParamBBW, ParamBD, ProgramVal,
+        BytecodeItem, OpA, OpO, OpsRD, OpsRR, OpsRRAH, OpsRRB, OpsRRD, OpsRRH, OpsRRO, OpsRROH,
+        OpsRRP, OpsRRR, OpsRRRR, OpsRRW,
     },
 };
 
@@ -70,14 +70,14 @@ where
                     XOR => self.binary_op::<u64>(ops::BitXor::bitxor),
                     SL => self.binary_op(|l, r| u64::wrapping_shl(l, r as u32)),
                     SR => self.binary_op(|l, r| u64::wrapping_shr(l, r as u32)),
-                    SRS => self.binary_op(|l, r| i64::wrapping_shl(l, r as u32)),
+                    SRS => self.binary_op(|l: u64, r| i64::wrapping_shl(l as i64, r as u32) as u64),
                     CMP => {
                         // Compare a0 <=> a1
                         // < →  0
                         // > →  1
                         // = →  2
 
-                        let ParamBBB(tg, a0, a1) = self.decode();
+                        let OpsRRR(tg, a0, a1) = self.decode();
                         self.write_reg(
                             tg,
                             self.read_reg(a0)
@@ -89,7 +89,7 @@ where
                     }
                     CMPU => {
                         // Unsigned comparsion
-                        let ParamBBB(tg, a0, a1) = self.decode();
+                        let OpsRRR(tg, a0, a1) = self.decode();
                         self.write_reg(
                             tg,
                             self.read_reg(a0)
@@ -101,23 +101,12 @@ where
                     }
                     NOT => {
                         // Logical negation
-                        let ParamBB(tg, a0) = self.decode();
+                        let OpsRR(tg, a0) = self.decode();
                         self.write_reg(tg, !self.read_reg(a0).cast::<u64>());
-                    }
-                    NEG => {
-                        // Bitwise negation
-                        let ParamBB(tg, a0) = self.decode();
-                        self.write_reg(
-                            tg,
-                            match self.read_reg(a0).cast::<u64>() {
-                                0 => 1_u64,
-                                _ => 0,
-                            },
-                        );
                     }
                     DIR => {
                         // Fused Division-Remainder
-                        let ParamBBBB(dt, rt, a0, a1) = self.decode();
+                        let OpsRRRR(dt, rt, a0, a1) = self.decode();
                         let a0 = self.read_reg(a0).cast::<u64>();
                         let a1 = self.read_reg(a1).cast::<u64>();
                         self.write_reg(dt, a0.checked_div(a1).unwrap_or(u64::MAX));
@@ -132,7 +121,7 @@ where
                     SRI => self.binary_op_ims(u64::wrapping_shr),
                     SRSI => self.binary_op_ims(i64::wrapping_shr),
                     CMPI => {
-                        let ParamBBD(tg, a0, imm) = self.decode();
+                        let OpsRRD(tg, a0, imm) = self.decode();
                         self.write_reg(
                             tg,
                             self.read_reg(a0)
@@ -142,16 +131,16 @@ where
                         );
                     }
                     CMPUI => {
-                        let ParamBBD(tg, a0, imm) = self.decode();
+                        let OpsRRD(tg, a0, imm) = self.decode();
                         self.write_reg(tg, self.read_reg(a0).cast::<u64>().cmp(&imm) as i64);
                     }
                     CP => {
-                        let ParamBB(tg, a0) = self.decode();
+                        let OpsRR(tg, a0) = self.decode();
                         self.write_reg(tg, self.read_reg(a0));
                     }
                     SWA => {
                         // Swap registers
-                        let ParamBB(r0, r1) = self.decode();
+                        let OpsRR(r0, r1) = self.decode();
                         match (r0, r1) {
                             (0, 0) => (),
                             (dst, 0) | (0, dst) => self.write_reg(dst, 0_u64),
@@ -164,12 +153,16 @@ where
                         }
                     }
                     LI => {
-                        let ParamBD(tg, imm) = self.decode();
+                        let OpsRD(tg, imm) = self.decode();
                         self.write_reg(tg, imm);
+                    }
+                    LRA => {
+                        let OpsRRO(tg, reg, imm) = self.decode();
+                        self.write_reg(tg, self.rel_addr(reg, imm).get());
                     }
                     LD => {
                         // Load. If loading more than register size, continue on adjecent registers
-                        let ParamBBDH(dst, base, off, count) = self.decode();
+                        let OpsRRAH(dst, base, off, count) = self.decode();
                         let n: u8 = match dst {
                             0 => 1,
                             _ => 0,
@@ -181,29 +174,67 @@ where
                                 .as_mut_ptr()
                                 .add(usize::from(dst) + usize::from(n))
                                 .cast(),
-                            usize::from(count).saturating_sub(n.into()),
+                            usize::from(count).wrapping_sub(n.into()),
                         )?;
                     }
                     ST => {
                         // Store. Same rules apply as to LD
-                        let ParamBBDH(dst, base, off, count) = self.decode();
+                        let OpsRRAH(dst, base, off, count) = self.decode();
                         self.memory.store(
                             self.ldst_addr_uber(dst, base, off, count, 0)?,
                             self.registers.as_ptr().add(usize::from(dst)).cast(),
                             count.into(),
                         )?;
                     }
+                    LDR => {
+                        let OpsRROH(dst, base, off, count) = self.decode();
+                        let n: u8 = match dst {
+                            0 => 1,
+                            _ => 0,
+                        };
+
+                        self.memory.load(
+                            self.ldst_addr_uber(
+                                dst,
+                                base,
+                                u64::from(off).wrapping_add(self.pc.get()),
+                                count,
+                                n,
+                            )?,
+                            self.registers
+                                .as_mut_ptr()
+                                .add(usize::from(dst) + usize::from(n))
+                                .cast(),
+                            usize::from(count).wrapping_sub(n.into()),
+                        )?;
+                    }
+                    STR => {
+                        let OpsRROH(dst, base, off, count) = self.decode();
+                        self.memory.store(
+                            self.ldst_addr_uber(
+                                dst,
+                                base,
+                                u64::from(off).wrapping_add(self.pc.get()),
+                                count,
+                                0,
+                            )?,
+                            self.registers.as_ptr().add(usize::from(dst)).cast(),
+                            count.into(),
+                        )?;
+                    }
                     BMC => {
+                        const INS_SIZE: usize = size_of::<OpsRRH>() + 1;
+
                         // Block memory copy
                         match if let Some(copier) = &mut self.copier {
                             // There is some copier, poll.
                             copier.poll(&mut self.memory)
                         } else {
                             // There is none, make one!
-                            let ParamBBD(src, dst, count) = self.decode();
+                            let OpsRRH(src, dst, count) = self.decode();
 
                             // So we are still on BMC on next cycle
-                            self.pc -= size_of::<ParamBBD>() + 1;
+                            self.pc -= INS_SIZE;
 
                             self.copier = Some(BlockCopier::new(
                                 Address::new(self.read_reg(src).cast()),
@@ -219,12 +250,12 @@ where
                             // We are done, shift program counter
                             core::task::Poll::Ready(Ok(())) => {
                                 self.copier = None;
-                                self.pc += size_of::<ParamBBD>() + 1;
+                                self.pc += INS_SIZE;
                             }
                             // Error, shift program counter (for consistency)
                             // and yield error
                             core::task::Poll::Ready(Err(e)) => {
-                                self.pc += size_of::<ParamBBD>() + 1;
+                                self.pc += INS_SIZE;
                                 return Err(e.into());
                             }
                             // Not done yet, proceed to next cycle
@@ -233,7 +264,7 @@ where
                     }
                     BRC => {
                         // Block register copy
-                        let ParamBBB(src, dst, count) = self.decode();
+                        let OpsRRB(src, dst, count) = self.decode();
                         if src.checked_add(count).is_none() || dst.checked_add(count).is_none() {
                             return Err(VmRunError::RegOutOfBounds);
                         }
@@ -244,21 +275,25 @@ where
                             usize::from(count),
                         );
                     }
-                    JMP => self.pc = Address::new(self.decode::<u64>()),
+                    JMP => self.pc = Address::new(self.decode::<OpA>()),
+                    JMPR => self.pc = self.pc.wrapping_add(self.decode::<OpO>()),
                     JAL => {
                         // Jump and link. Save PC after this instruction to
                         // specified register and jump to reg + offset.
-                        let ParamBBD(save, reg, offset) = self.decode();
+                        let OpsRRW(save, reg, offset) = self.decode();
                         self.write_reg(save, self.pc.get());
-                        self.pc =
-                            Address::new(self.read_reg(reg).cast::<u64>().saturating_add(offset));
+                        self.pc = Address::new(
+                            self.read_reg(reg).cast::<u64>().wrapping_add(offset.into()),
+                        );
                     }
                     // Conditional jumps, jump only to immediates
                     JEQ => self.cond_jmp::<u64>(Ordering::Equal),
                     JNE => {
-                        let ParamBBD(a0, a1, jt) = self.decode();
+                        let OpsRRP(a0, a1, ja) = self.decode();
                         if self.read_reg(a0).cast::<u64>() != self.read_reg(a1).cast::<u64>() {
-                            self.pc = Address::new(jt);
+                            self.pc = Address::new(
+                                ((self.pc.get() as i64).wrapping_add(ja as i64)) as u64,
+                            )
                         }
                     }
                     JLT => self.cond_jmp::<u64>(Ordering::Less),
@@ -278,14 +313,14 @@ where
                     SUBF => self.binary_op::<f64>(ops::Sub::sub),
                     MULF => self.binary_op::<f64>(ops::Mul::mul),
                     DIRF => {
-                        let ParamBBBB(dt, rt, a0, a1) = self.decode();
+                        let OpsRRRR(dt, rt, a0, a1) = self.decode();
                         let a0 = self.read_reg(a0).cast::<f64>();
                         let a1 = self.read_reg(a1).cast::<f64>();
                         self.write_reg(dt, a0 / a1);
                         self.write_reg(rt, a0 % a1);
                     }
                     FMAF => {
-                        let ParamBBBB(dt, a0, a1, a2) = self.decode();
+                        let OpsRRRR(dt, a0, a1, a2) = self.decode();
                         self.write_reg(
                             dt,
                             self.read_reg(a0).cast::<f64>() * self.read_reg(a1).cast::<f64>()
@@ -293,15 +328,15 @@ where
                         );
                     }
                     NEGF => {
-                        let ParamBB(dt, a0) = self.decode();
+                        let OpsRR(dt, a0) = self.decode();
                         self.write_reg(dt, -self.read_reg(a0).cast::<f64>());
                     }
                     ITF => {
-                        let ParamBB(dt, a0) = self.decode();
+                        let OpsRR(dt, a0) = self.decode();
                         self.write_reg(dt, self.read_reg(a0).cast::<i64>() as f64);
                     }
                     FTI => {
-                        let ParamBB(dt, a0) = self.decode();
+                        let OpsRR(dt, a0) = self.decode();
                         self.write_reg(dt, self.read_reg(a0).cast::<f64>() as i64);
                     }
                     ADDFI => self.binary_op_imm::<f64>(ops::Add::add),
@@ -321,7 +356,7 @@ where
 
     /// Decode instruction operands
     #[inline(always)]
-    unsafe fn decode<T: ProgramVal>(&mut self) -> T {
+    unsafe fn decode<T: BytecodeItem>(&mut self) -> T {
         let pc1 = self.pc + 1_u64;
         let data = self.memory.prog_read_unchecked::<T>(pc1 as _);
         self.pc += 1 + size_of::<T>();
@@ -331,7 +366,7 @@ where
     /// Perform binary operating over two registers
     #[inline(always)]
     unsafe fn binary_op<T: ValueVariant>(&mut self, op: impl Fn(T, T) -> T) {
-        let ParamBBB(tg, a0, a1) = self.decode();
+        let OpsRRR(tg, a0, a1) = self.decode();
         self.write_reg(
             tg,
             op(self.read_reg(a0).cast::<T>(), self.read_reg(a1).cast::<T>()),
@@ -341,7 +376,7 @@ where
     /// Perform binary operation over register and immediate
     #[inline(always)]
     unsafe fn binary_op_imm<T: ValueVariant>(&mut self, op: impl Fn(T, T) -> T) {
-        let ParamBBD(tg, reg, imm) = self.decode();
+        let OpsRRD(tg, reg, imm) = self.decode();
         self.write_reg(
             tg,
             op(self.read_reg(reg).cast::<T>(), Value::from(imm).cast::<T>()),
@@ -351,36 +386,44 @@ where
     /// Perform binary operation over register and shift immediate
     #[inline(always)]
     unsafe fn binary_op_ims<T: ValueVariant>(&mut self, op: impl Fn(T, u32) -> T) {
-        let ParamBBW(tg, reg, imm) = self.decode();
+        let OpsRRW(tg, reg, imm) = self.decode();
         self.write_reg(tg, op(self.read_reg(reg).cast::<T>(), imm));
     }
 
-    /// Jump at `#3` if ordering on `#0 <=> #1` is equal to expected
+    /// Compute address relative to program counter an register value
+    #[inline(always)]
+    fn rel_addr(&self, reg: u8, imm: impl AddressOp) -> Address {
+        self.pc
+            .wrapping_add(self.read_reg(reg).cast::<u64>())
+            .wrapping_add(imm)
+    }
+
+    /// Jump at `PC + #3` if ordering on `#0 <=> #1` is equal to expected
     #[inline(always)]
     unsafe fn cond_jmp<T: ValueVariant + Ord>(&mut self, expected: Ordering) {
-        let ParamBBD(a0, a1, ja) = self.decode();
+        let OpsRRP(a0, a1, ja) = self.decode();
         if self
             .read_reg(a0)
             .cast::<T>()
             .cmp(&self.read_reg(a1).cast::<T>())
             == expected
         {
-            self.pc = Address::new(ja);
+            self.pc = Address::new(((self.pc.get() as i64).wrapping_add(ja as i64)) as u64);
         }
     }
 
     /// Read register
     #[inline(always)]
-    unsafe fn read_reg(&self, n: u8) -> Value {
-        *self.registers.get_unchecked(n as usize)
+    fn read_reg(&self, n: u8) -> Value {
+        unsafe { *self.registers.get_unchecked(n as usize) }
     }
 
     /// Write a register.
     /// Writing to register 0 is no-op.
     #[inline(always)]
-    unsafe fn write_reg(&mut self, n: u8, value: impl Into<Value>) {
+    fn write_reg(&mut self, n: u8, value: impl Into<Value>) {
         if n != 0 {
-            *self.registers.get_unchecked_mut(n as usize) = value.into();
+            unsafe { *self.registers.get_unchecked_mut(n as usize) = value.into() };
         }
     }
 

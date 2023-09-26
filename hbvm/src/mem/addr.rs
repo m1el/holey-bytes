@@ -23,6 +23,18 @@ impl Address {
         Self(self.0.saturating_sub(rhs.cast_u64()))
     }
 
+    /// Wrapping integer addition. Computes self + rhs, wrapping the numeric bounds.
+    #[inline]
+    pub fn wrapping_add<T: AddressOp>(self, rhs: T) -> Self {
+        Self(self.0.wrapping_add(rhs.cast_u64()))
+    }
+
+    /// Wrapping integer subtraction. Computes self + rhs, wrapping the numeric bounds.
+    #[inline]
+    pub fn wrapping_sub<T: AddressOp>(self, rhs: T) -> Self {
+        Self(self.0.wrapping_sub(rhs.cast_u64()))
+    }
+
     /// Cast or if smaller, truncate to [`usize`]
     pub fn truncate_usize(self) -> usize {
         self.0 as _

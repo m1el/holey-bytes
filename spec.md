@@ -148,6 +148,12 @@
 |:------:|:----:|:--------------:|
 |   29   |  LI  | Load immediate |
 
+### Load relative address
+- Type BBW
+| Opcode | Name |         Action          |
+|:------:|:----:|:-----------------------:|
+|   30   | LRA  | `#0 ← #1 + imm #2 + PC` |
+
 ## Memory operations
 - Type BBDH
 - If loaded/store value exceeds one register size, continue accessing following registers
@@ -155,8 +161,15 @@
 ### Load / Store
 | Opcode | Name |                 Action                  |
 |:------:|:----:|:---------------------------------------:|
-|   30   |  LD  | `#0 ← [#1 + imm #3], copy imm #4 bytes` |
-|   31   |  ST  | `[#1 + imm #3] ← #0, copy imm #4 bytes` |
+|   31   |  LD  | `#0 ← [#1 + imm #2], copy imm #3 bytes` |
+|   32   |  ST  | `[#1 + imm #2] ← #0, copy imm #3 bytes` |
+
+### PC relative Load / Store
+- Type BBDW
+| Opcode | Name |                    Action                    |
+|:------:|:----:|:--------------------------------------------:|
+|   33   | LDR  | `#0 ← [#1 + imm #2 + PC], copy imm #3 bytes` |
+|   34   | STR  | `[#1 + imm #2 + PC] ← #0, copy imm #3 bytes` |
 
 ## Block copy
 - Block copy source and target can overlap
@@ -166,7 +179,7 @@
 
 | Opcode | Name |              Action              |
 |:------:|:----:|:--------------------------------:|
-|   32   | BMC  | `[#1] ← [#0], copy imm #2 bytes` |
+|   35   | BMC  | `[#1] ← [#0], copy imm #2 bytes` |
 
 ### Register copy
 - Type BBB
@@ -174,42 +187,44 @@
 
 | Opcode | Name |              Action              |
 |:------:|:----:|:--------------------------------:|
-|   33   | BRC  | `#1 ← #0, copy imm #2 registers` |
+|   36   | BRC  | `#1 ← #0, copy imm #2 registers` |
 
 ## Control flow
 
 ### Unconditional jump
 - Type D
-| Opcode | Name |             Action              |
-|:------:|:----:|:-------------------------------:|
-|   34   | JMP  | Unconditional, non-linking jump |
+| Opcode | Name |                   Action                    |
+|:------:|:----:|:-------------------------------------------:|
+|   37   | JMP  |       Unconditional, non-linking jump       |
+|   38   | JMPR | Jump at address relative to program counter |
 
 ### Unconditional linking jump
 - Type BBD
 
-| Opcode | Name |                       Action                       |
-|:------:|:----:|:--------------------------------------------------:|
-|   35   | JAL  | Save PC past JAL to `#0` and jump at `#1 + imm #2` |
+| Opcode | Name |                         Action                          |
+|:------:|:----:|:-------------------------------------------------------:|
+|   39   | JAL  |   Save PC past JAL to `#0` and jump at `#1 + imm #2`    |
+|   40   | JALR | Save PC past JAL to `#0` and jump at `#1 + imm #2 + PC` |
 
 ### Conditional jumps
-- Type BBD
-- Jump at `imm #2` if `#0 <op> #1`
+- Type BBH
+- Jump at `PC + imm #2` if `#0 <op> #1`
 
 | Opcode | Name |  Comparsion  |
 |:------:|:----:|:------------:|
-|   36   | JEQ  |      =       |
-|   37   | JNE  |      ≠       |
-|   38   | JLT  |  < (signed)  |
-|   39   | JGT  |  > (signed)  |
-|   40   | JLTU | < (unsigned) |
-|   41   | JGTU | > (unsigned) |
+|   41   | JEQ  |      =       |
+|   42   | JNE  |      ≠       |
+|   43   | JLT  |  < (signed)  |
+|   44   | JGT  |  > (signed)  |
+|   45   | JLTU | < (unsigned) |
+|   46   | JGTU | > (unsigned) |
 
 ### Environment call
 - Type N
 
 | Opcode | Name  |                Action                 |
 |:------:|:-----:|:-------------------------------------:|
-|   42   | ECALL | Cause an trap to the host environment |
+|   47   | ECALL | Cause an trap to the host environment |
 
 ## Floating point operations
 - Type BBB
@@ -217,29 +232,29 @@
 
 | Opcode | Name |     Action     |
 |:------:|:----:|:--------------:|
-|   43   | ADDF |    Addition    |
-|   44   | SUBF |  Subtraction   |
-|   45   | MULF | Multiplication |
+|   48   | ADDF |    Addition    |
+|   49   | SUBF |  Subtraction   |
+|   50   | MULF | Multiplication |
 
 ### Division-remainder
 - Type BBBB
 
 | Opcode | Name |          Action           |
 |:------:|:----:|:-------------------------:|
-|   46   | DIRF | Same as for integer `DIR` |
+|   51   | DIRF | Same as for integer `DIR` |
 
 ### Fused Multiply-Add
 - Type BBBB
 
 | Opcode | Name |        Action         |
 |:------:|:----:|:---------------------:|
-|   47   | FMAF | `#0 ← (#1 * #2) + #3` |
+|   52   | FMAF | `#0 ← (#1 * #2) + #3` |
 
 ### Negation
 - Type BB
 | Opcode | Name |   Action   |
 |:------:|:----:|:----------:|
-|   48   | NEGF | `#0 ← -#1` |
+|   53   | NEGF | `#0 ← -#1` |
 
 ### Conversion
 - Type BB
@@ -248,8 +263,8 @@
 
 | Opcode | Name |    Action    |
 |:------:|:----:|:------------:|
-|   49   | ITF  | Int to Float |
-|   50   | FTI  | Float to Int |
+|   54   | ITF  | Int to Float |
+|   55   | FTI  | Float to Int |
 
 ## Floating point immediate operations
 - Type BBD
@@ -257,8 +272,8 @@
 
 | Opcode | Name  |     Action     |
 |:------:|:-----:|:--------------:|
-|   51   | ADDFI |    Addition    |
-|   52   | MULFI | Multiplication |
+|   56   | ADDFI |    Addition    |
+|   57   | MULFI | Multiplication |
 
 # Registers
 - There is 255 registers + one zero register (with index 0)

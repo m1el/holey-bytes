@@ -14,7 +14,7 @@
 #![cfg_attr(feature = "nightly", feature(fn_align))]
 #![warn(missing_docs)]
 
-use mem::{Memory, Address};
+use mem::{Address, Memory};
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -23,8 +23,8 @@ pub mod mem;
 pub mod value;
 
 mod bmc;
-mod vmrun;
 mod utils;
+mod vmrun;
 
 use {bmc::BlockCopier, value::Value};
 
