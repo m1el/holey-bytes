@@ -12,8 +12,8 @@ use {
     crate::mem::{addr::AddressOp, Address},
     core::{cmp::Ordering, mem::size_of, ops},
     hbbytecode::{
-        BytecodeItem, OpA, OpO, OpsRD, OpsRR, OpsRRAH, OpsRRB, OpsRRD, OpsRRH, OpsRRO, OpsRROH,
-        OpsRRP, OpsRRR, OpsRRRR, OpsRRW,
+        BytecodeItem, OpA, OpO, OpP, OpsRD, OpsRR, OpsRRAH, OpsRRB, OpsRRD, OpsRRH, OpsRRO,
+        OpsRROH, OpsRRP, OpsRRPH, OpsRRR, OpsRRRR, OpsRRW,
     },
 };
 
@@ -163,64 +163,20 @@ where
                     LD => {
                         // Load. If loading more than register size, continue on adjecent registers
                         let OpsRRAH(dst, base, off, count) = self.decode();
-                        let n: u8 = match dst {
-                            0 => 1,
-                            _ => 0,
-                        };
-
-                        self.memory.load(
-                            self.ldst_addr_uber(dst, base, off, count, n)?,
-                            self.registers
-                                .as_mut_ptr()
-                                .add(usize::from(dst) + usize::from(n))
-                                .cast(),
-                            usize::from(count).wrapping_sub(n.into()),
-                        )?;
+                        self.load(dst, base, off, count)?;
                     }
                     ST => {
                         // Store. Same rules apply as to LD
                         let OpsRRAH(dst, base, off, count) = self.decode();
-                        self.memory.store(
-                            self.ldst_addr_uber(dst, base, off, count, 0)?,
-                            self.registers.as_ptr().add(usize::from(dst)).cast(),
-                            count.into(),
-                        )?;
+                        self.store(dst, base, off, count)?;
                     }
                     LDR => {
                         let OpsRROH(dst, base, off, count) = self.decode();
-                        let n: u8 = match dst {
-                            0 => 1,
-                            _ => 0,
-                        };
-
-                        self.memory.load(
-                            self.ldst_addr_uber(
-                                dst,
-                                base,
-                                u64::from(off).wrapping_add(self.pc.get()),
-                                count,
-                                n,
-                            )?,
-                            self.registers
-                                .as_mut_ptr()
-                                .add(usize::from(dst) + usize::from(n))
-                                .cast(),
-                            usize::from(count).wrapping_sub(n.into()),
-                        )?;
+                        self.load(dst, base, u64::from(off).wrapping_add(self.pc.get()), count)?;
                     }
                     STR => {
                         let OpsRROH(dst, base, off, count) = self.decode();
-                        self.memory.store(
-                            self.ldst_addr_uber(
-                                dst,
-                                base,
-                                u64::from(off).wrapping_add(self.pc.get()),
-                                count,
-                                0,
-                            )?,
-                            self.registers.as_ptr().add(usize::from(dst)).cast(),
-                            count.into(),
-                        )?;
+                        self.store(dst, base, u64::from(off).wrapping_add(self.pc.get()), count)?;
                     }
                     BMC => {
                         const INS_SIZE: usize = size_of::<OpsRRH>() + 1;
@@ -341,6 +297,19 @@ where
                     }
                     ADDFI => self.binary_op_imm::<f64>(ops::Add::add),
                     MULFI => self.binary_op_imm::<f64>(ops::Mul::mul),
+                    LRA16 => {
+                        let OpsRRP(tg, reg, imm) = self.decode();
+                        self.write_reg(tg, self.rel_addr(reg, imm).get());
+                    }
+                    LDR16 => {
+                        let OpsRRPH(dst, base, off, count) = self.decode();
+                        self.load(dst, base, u64::from(off).wrapping_add(self.pc.get()), count)?;
+                    }
+                    STR16 => {
+                        let OpsRRPH(dst, base, off, count) = self.decode();
+                        self.store(dst, base, u64::from(off).wrapping_add(self.pc.get()), count)?;
+                    }
+                    JMPR16 => self.pc = self.pc.wrapping_add(self.decode::<OpP>()),
                     op => return Err(VmRunError::InvalidOpcode(op)),
                 }
             }
@@ -361,6 +330,49 @@ where
         let data = self.memory.prog_read_unchecked::<T>(pc1 as _);
         self.pc += 1 + size_of::<T>();
         data
+    }
+
+    /// Load
+    #[inline(always)]
+    unsafe fn load(
+        &mut self,
+        dst: u8,
+        base: u8,
+        offset: u64,
+        count: u16,
+    ) -> Result<(), VmRunError> {
+        let n: u8 = match dst {
+            0 => 1,
+            _ => 0,
+        };
+
+        self.memory.load(
+            self.ldst_addr_uber(dst, base, offset, count, n)?,
+            self.registers
+                .as_mut_ptr()
+                .add(usize::from(dst) + usize::from(n))
+                .cast(),
+            usize::from(count).wrapping_sub(n.into()),
+        )?;
+
+        Ok(())
+    }
+
+    /// Store
+    #[inline(always)]
+    unsafe fn store(
+        &mut self,
+        dst: u8,
+        base: u8,
+        offset: u64,
+        count: u16,
+    ) -> Result<(), VmRunError> {
+        self.memory.store(
+            self.ldst_addr_uber(dst, base, offset, count, 0)?,
+            self.registers.as_ptr().add(usize::from(dst)).cast(),
+            count.into(),
+        )?;
+        Ok(())
     }
 
     /// Perform binary operating over two registers

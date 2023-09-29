@@ -35,6 +35,7 @@ define_items! {
     OpsRRD  (OpR, OpR, OpD     ),
     OpsRRAH (OpR, OpR, OpA, OpH),
     OpsRROH (OpR, OpR, OpO, OpH),
+    OpsRRPH (OpR, OpR, OpP, OpH),
     OpsRRO  (OpR, OpR, OpO     ),
     OpsRRP  (OpR, OpR, OpP     ),
 }
@@ -42,6 +43,7 @@ define_items! {
 unsafe impl BytecodeItem for OpA {}
 unsafe impl BytecodeItem for OpB {}
 unsafe impl BytecodeItem for OpO {}
+unsafe impl BytecodeItem for OpP {}
 unsafe impl BytecodeItem for () {}
 
 ::with_builtin_macros::with_builtin! {
