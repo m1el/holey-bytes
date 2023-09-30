@@ -105,4 +105,7 @@ pub enum VmRunOk {
 
     /// Environment call
     Ecall,
+
+    /// Breakpoint
+    Breakpoint,
 }

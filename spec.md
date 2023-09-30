@@ -195,16 +195,15 @@
 - Type D
 | Opcode | Name |                   Action                    |
 |:------:|:----:|:-------------------------------------------:|
-|   37   | JMP  |       Unconditional, non-linking jump       |
-|   38   | JMPR | Jump at address relative to program counter |
+|   37   | JMPR | Jump at address relative to program counter |
 
 ### Unconditional linking jump
 - Type BBD
 
 | Opcode | Name |                         Action                          |
 |:------:|:----:|:-------------------------------------------------------:|
-|   39   | JAL  |   Save PC past JAL to `#0` and jump at `#1 + imm #2`    |
-|   40   | JALR | Save PC past JAL to `#0` and jump at `#1 + imm #2 + PC` |
+|   38   | JAL  |   Save PC past JAL to `#0` and jump at `#1 + imm #2`    |
+|   39   | JALR | Save PC past JAL to `#0` and jump at `#1 + imm #2 + PC` |
 
 ### Conditional jumps
 - Type BBH
@@ -212,19 +211,20 @@
 
 | Opcode | Name |  Comparsion  |
 |:------:|:----:|:------------:|
-|   41   | JEQ  |      =       |
-|   42   | JNE  |      ≠       |
-|   43   | JLT  |  < (signed)  |
-|   44   | JGT  |  > (signed)  |
-|   45   | JLTU | < (unsigned) |
-|   46   | JGTU | > (unsigned) |
+|   40   | JEQ  |      =       |
+|   41   | JNE  |      ≠       |
+|   42   | JLT  |  < (signed)  |
+|   43   | JGT  |  > (signed)  |
+|   44   | JLTU | < (unsigned) |
+|   45   | JGTU | > (unsigned) |
 
 ### Environment call
 - Type N
 
-| Opcode | Name  |                Action                 |
-|:------:|:-----:|:-------------------------------------:|
-|   47   | ECALL | Cause an trap to the host environment |
+| Opcode | Name |                Action                 |
+|:------:|:----:|:-------------------------------------:|
+|   46   | ECA  | Cause an trap to the host environment |
+|   47   | EBP  | Cause breakproint trap to environment |
 
 ## Floating point operations
 - Type BBB

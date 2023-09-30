@@ -99,10 +99,15 @@ where
                                 + 1,
                         );
                     }
+                    NEG => {
+                        // Bit negation
+                        let OpsRR(tg, a0) = self.decode();
+                        self.write_reg(tg, !self.read_reg(a0).cast::<u64>())
+                    }
                     NOT => {
                         // Logical negation
                         let OpsRR(tg, a0) = self.decode();
-                        self.write_reg(tg, !self.read_reg(a0).cast::<u64>());
+                        self.write_reg(tg, u64::from(self.read_reg(a0).cast::<u64>() == 0));
                     }
                     DIR => {
                         // Fused Division-Remainder
@@ -231,8 +236,7 @@ where
                             usize::from(count),
                         );
                     }
-                    JMP => self.pc = Address::new(self.decode::<OpA>()),
-                    JMPR => self.pc = self.pc.wrapping_add(self.decode::<OpO>()),
+                    JMP => self.pc = self.pc.wrapping_add(self.decode::<OpO>()),
                     JAL => {
                         // Jump and link. Save PC after this instruction to
                         // specified register and jump to reg + offset.
@@ -256,7 +260,7 @@ where
                     JGT => self.cond_jmp::<u64>(Ordering::Greater),
                     JLTU => self.cond_jmp::<i64>(Ordering::Less),
                     JGTU => self.cond_jmp::<i64>(Ordering::Greater),
-                    ECALL => {
+                    ECA => {
                         self.decode::<()>();
 
                         // So we don't get timer interrupt after ECALL
@@ -264,6 +268,10 @@ where
                             self.timer = self.timer.wrapping_add(1);
                         }
                         return Ok(VmRunOk::Ecall);
+                    }
+                    EBP => {
+                        self.decode::<()>();
+                        return Ok(VmRunOk::Breakpoint);
                     }
                     ADDF => self.binary_op::<f64>(ops::Add::add),
                     SUBF => self.binary_op::<f64>(ops::Sub::sub),
