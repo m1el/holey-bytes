@@ -1,15 +1,15 @@
 #![no_std]
 
-pub type OpR = u8;
+type OpR = u8;
 
-pub type OpA = u64;
-pub type OpO = u32;
-pub type OpP = u16;
+type OpA = u64;
+type OpO = u32;
+type OpP = u16;
 
-pub type OpB = u8;
-pub type OpH = u16;
-pub type OpW = u32;
-pub type OpD = u64;
+type OpB = u8;
+type OpH = u16;
+type OpW = u32;
+type OpD = u64;
 
 /// # Safety
 /// Has to be valid to be decoded from bytecode.
@@ -38,13 +38,12 @@ define_items! {
     OpsRRPH (OpR, OpR, OpP, OpH),
     OpsRRO  (OpR, OpR, OpO     ),
     OpsRRP  (OpR, OpR, OpP     ),
+    OpsO    (OpO,              ),
+    OpsP    (OpP,              ),
+    OpsN    (                  ),
 }
 
-unsafe impl BytecodeItem for OpA {}
-unsafe impl BytecodeItem for OpB {}
-unsafe impl BytecodeItem for OpO {}
-unsafe impl BytecodeItem for OpP {}
-unsafe impl BytecodeItem for () {}
+unsafe impl BytecodeItem for u8 {}
 
 ::with_builtin_macros::with_builtin! {
     let $spec = include_from_root!("instructions.in") in {
