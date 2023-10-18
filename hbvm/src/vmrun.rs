@@ -2,7 +2,7 @@
 //!
 //! Have fun
 
-use hbbytecode::OpsN;
+use hbbytecode::RoundingMode;
 
 use {
     super::{
@@ -11,19 +11,20 @@ use {
         value::{Value, ValueVariant},
         Vm, VmRunError, VmRunOk,
     },
-    crate::mem::Address,
+    crate::{mem::Address, value::CheckedDivRem},
     core::{cmp::Ordering, ops},
     hbbytecode::{
-        BytecodeItem, OpsO, OpsP, OpsRD, OpsRR, OpsRRAH, OpsRRB, OpsRRD, OpsRRH, OpsRRO, OpsRROH,
-        OpsRRP, OpsRRPH, OpsRRR, OpsRRRR, OpsRRW,
+        OpsN, OpsO, OpsP, OpsRB, OpsRD, OpsRH, OpsRR, OpsRRAH, OpsRRB, OpsRRD, OpsRRH, OpsRRO,
+        OpsRROH, OpsRRP, OpsRRPH, OpsRRR, OpsRRRR, OpsRRW, OpsRW,
     },
 };
 
 macro_rules! handler {
     ($self:expr, |$ty:ident ($($ident:pat),* $(,)?)| $expr:expr) => {{
         let $ty($($ident),*) = $self.decode::<$ty>();
-        #[allow(clippy::no_effect)] $expr;
+        #[allow(clippy::no_effect)] let e = $expr;
         $self.bump_pc::<$ty>();
+        e
     }};
 }
 
@@ -58,11 +59,7 @@ where
             // - Yes, we assume you run 64 bit CPU. Else ?conradluget a better CPU
             //   sorry 8 bit fans, HBVM won't run on your Speccy :(
             unsafe {
-                match self
-                    .memory
-                    .prog_read::<u8>(self.pc as _)
-                    .ok_or(VmRunError::ProgramFetchLoadEx(self.pc as _))?
-                {
+                match self.memory.prog_read::<u8>(self.pc as _) {
                     UN => {
                         self.bump_pc::<OpsN>();
                         return Err(VmRunError::Unreachable);
@@ -72,15 +69,32 @@ where
                         return Ok(VmRunOk::End);
                     }
                     NOP => handler!(self, |OpsN()| ()),
-                    ADD => self.binary_op(u64::wrapping_add),
-                    SUB => self.binary_op(u64::wrapping_sub),
-                    MUL => self.binary_op(u64::wrapping_mul),
+                    ADD8 => self.binary_op(u8::wrapping_add),
+                    ADD16 => self.binary_op(u16::wrapping_add),
+                    ADD32 => self.binary_op(u32::wrapping_add),
+                    ADD64 => self.binary_op(u64::wrapping_add),
+                    SUB8 => self.binary_op(u8::wrapping_sub),
+                    SUB16 => self.binary_op(u16::wrapping_sub),
+                    SUB32 => self.binary_op(u32::wrapping_sub),
+                    SUB64 => self.binary_op(u64::wrapping_sub),
+                    MUL8 => self.binary_op(u8::wrapping_mul),
+                    MUL16 => self.binary_op(u16::wrapping_mul),
+                    MUL32 => self.binary_op(u32::wrapping_mul),
+                    MUL64 => self.binary_op(u64::wrapping_mul),
                     AND => self.binary_op::<u64>(ops::BitAnd::bitand),
                     OR => self.binary_op::<u64>(ops::BitOr::bitor),
                     XOR => self.binary_op::<u64>(ops::BitXor::bitxor),
-                    SL => self.binary_op(|l, r| u64::wrapping_shl(l, r as u32)),
-                    SR => self.binary_op(|l, r| u64::wrapping_shr(l, r as u32)),
-                    SRS => self.binary_op(|l: u64, r| i64::wrapping_shl(l as i64, r as u32) as u64),
+                    SLU8 => self.binary_op(|l, r| u8::wrapping_shl(l, r as u32)),
+                    SLU16 => self.binary_op(|l, r| u16::wrapping_shl(l, r as u32)),
+                    SLU32 => self.binary_op(u32::wrapping_shl),
+                    SLU64 => self.binary_op(|l, r| u64::wrapping_shl(l, r as u32)),
+                    SRU8 => self.binary_op(|l, r| u8::wrapping_shr(l, r as u32)),
+                    SRU16 => self.binary_op(|l, r| u16::wrapping_shr(l, r as u32)),
+                    SRU32 => self.binary_op(u32::wrapping_shr),
+                    SRS8 => self.binary_op(|l: i8, r| i8::wrapping_shl(l, r as u32)),
+                    SRS16 => self.binary_op(|l: i16, r| i16::wrapping_shl(l, r as u32)),
+                    SRS32 => self.binary_op(|l: i32, r| i32::wrapping_shl(l, r as u32)),
+                    SRS64 => self.binary_op(|l: i64, r| i64::wrapping_shl(l, r as u32)),
                     CMP => handler!(self, |OpsRRR(tg, a0, a1)| {
                         // Compare a0 <=> a1
                         // < →  0
@@ -107,6 +121,14 @@ where
                                 + 1,
                         );
                     }),
+                    DIRU8 => self.dir::<u8>(),
+                    DIRU16 => self.dir::<u16>(),
+                    DIRU32 => self.dir::<u32>(),
+                    DIRU64 => self.dir::<u64>(),
+                    DIRS8 => self.dir::<i8>(),
+                    DIRS16 => self.dir::<i16>(),
+                    DIRS32 => self.dir::<i32>(),
+                    DIRS64 => self.dir::<i64>(),
                     NEG => handler!(self, |OpsRR(tg, a0)| {
                         // Bit negation
                         self.write_reg(tg, !self.read_reg(a0).cast::<u64>())
@@ -115,21 +137,38 @@ where
                         // Logical negation
                         self.write_reg(tg, u64::from(self.read_reg(a0).cast::<u64>() == 0));
                     }),
-                    DIR => handler!(self, |OpsRRRR(dt, rt, a0, a1)| {
-                        // Fused Division-Remainder
-                        let a0 = self.read_reg(a0).cast::<u64>();
-                        let a1 = self.read_reg(a1).cast::<u64>();
-                        self.write_reg(dt, a0.checked_div(a1).unwrap_or(u64::MAX));
-                        self.write_reg(rt, a0.checked_rem(a1).unwrap_or(u64::MAX));
+                    SXT8 => handler!(self, |OpsRR(tg, a0)| {
+                        self.write_reg(tg, self.read_reg(a0).cast::<i8>() as i64)
                     }),
-                    ADDI => self.binary_op_imm(u64::wrapping_add),
-                    MULI => self.binary_op_imm(u64::wrapping_sub),
+                    SXT16 => handler!(self, |OpsRR(tg, a0)| {
+                        self.write_reg(tg, self.read_reg(a0).cast::<i16>() as i64)
+                    }),
+                    SXT32 => handler!(self, |OpsRR(tg, a0)| {
+                        self.write_reg(tg, self.read_reg(a0).cast::<i32>() as i64)
+                    }),
+                    ADDI8 => self.binary_op_imm(u8::wrapping_add),
+                    ADDI16 => self.binary_op_imm(u16::wrapping_add),
+                    ADDI32 => self.binary_op_imm(u32::wrapping_add),
+                    ADDI64 => self.binary_op_imm(u64::wrapping_add),
+                    MULI8 => self.binary_op_imm(u8::wrapping_sub),
+                    MULI16 => self.binary_op_imm(u16::wrapping_sub),
+                    MULI32 => self.binary_op_imm(u32::wrapping_sub),
+                    MULI64 => self.binary_op_imm(u64::wrapping_sub),
                     ANDI => self.binary_op_imm::<u64>(ops::BitAnd::bitand),
                     ORI => self.binary_op_imm::<u64>(ops::BitOr::bitor),
                     XORI => self.binary_op_imm::<u64>(ops::BitXor::bitxor),
-                    SLI => self.binary_op_ims(u64::wrapping_shl),
-                    SRI => self.binary_op_ims(u64::wrapping_shr),
-                    SRSI => self.binary_op_ims(i64::wrapping_shr),
+                    SLUI8 => self.binary_op_ims::<u8>(ops::Shl::shl),
+                    SLUI16 => self.binary_op_ims::<u16>(ops::Shl::shl),
+                    SLUI32 => self.binary_op_ims::<u32>(ops::Shl::shl),
+                    SLUI64 => self.binary_op_ims::<u64>(ops::Shl::shl),
+                    SRUI8 => self.binary_op_ims::<u8>(ops::Shr::shr),
+                    SRUI16 => self.binary_op_ims::<u16>(ops::Shr::shr),
+                    SRUI32 => self.binary_op_ims::<u32>(ops::Shr::shr),
+                    SRUI64 => self.binary_op_ims::<u64>(ops::Shr::shr),
+                    SRSI8 => self.binary_op_ims::<i8>(ops::Shr::shr),
+                    SRSI16 => self.binary_op_ims::<i16>(ops::Shr::shr),
+                    SRSI32 => self.binary_op_ims::<i32>(ops::Shr::shr),
+                    SRSI64 => self.binary_op_ims::<i64>(ops::Shr::shr),
                     CMPI => handler!(self, |OpsRRD(tg, a0, imm)| {
                         self.write_reg(
                             tg,
@@ -158,9 +197,10 @@ where
                             }
                         }
                     }),
-                    LI => handler!(self, |OpsRD(tg, imm)| {
-                        self.write_reg(tg, imm);
-                    }),
+                    LI8 => handler!(self, |OpsRB(tg, imm)| self.write_reg(tg, imm)),
+                    LI16 => handler!(self, |OpsRH(tg, imm)| self.write_reg(tg, imm)),
+                    LI32 => handler!(self, |OpsRW(tg, imm)| self.write_reg(tg, imm)),
+                    LI64 => handler!(self, |OpsRD(tg, imm)| self.write_reg(tg, imm)),
                     LRA => handler!(self, |OpsRRO(tg, reg, imm)| {
                         self.write_reg(
                             tg,
@@ -272,34 +312,65 @@ where
                         self.bump_pc::<OpsN>();
                         return Ok(VmRunOk::Breakpoint);
                     }
-                    ADDF => self.binary_op::<f64>(ops::Add::add),
-                    SUBF => self.binary_op::<f64>(ops::Sub::sub),
-                    MULF => self.binary_op::<f64>(ops::Mul::mul),
-                    DIRF => handler!(self, |OpsRRRR(dt, rt, a0, a1)| {
-                        let a0 = self.read_reg(a0).cast::<f64>();
-                        let a1 = self.read_reg(a1).cast::<f64>();
-                        self.write_reg(dt, a0 / a1);
-                        self.write_reg(rt, a0 % a1);
+                    FADD32 => self.binary_op::<f32>(ops::Add::add),
+                    FADD64 => self.binary_op::<f64>(ops::Add::add),
+                    FSUB32 => self.binary_op::<f32>(ops::Sub::sub),
+                    FSUB64 => self.binary_op::<f64>(ops::Sub::sub),
+                    FMUL32 => self.binary_op::<f32>(ops::Mul::mul),
+                    FMUL64 => self.binary_op::<f64>(ops::Mul::mul),
+                    FDIV32 => self.binary_op::<f32>(ops::Div::div),
+                    FDIV64 => self.binary_op::<f64>(ops::Div::div),
+                    FMA32 => self.fma::<f32>(),
+                    FMA64 => self.fma::<f64>(),
+                    FINV32 => handler!(self, |OpsRR(tg, reg)| {
+                        self.write_reg(tg, 1. / self.read_reg(reg).cast::<f32>())
                     }),
-                    FMAF => handler!(self, |OpsRRRR(dt, a0, a1, a2)| {
+                    FINV64 => handler!(self, |OpsRR(tg, reg)| {
+                        self.write_reg(tg, 1. / self.read_reg(reg).cast::<f64>())
+                    }),
+                    FCMPLT32 => self.fcmp::<f32>(Ordering::Less),
+                    FCMPLT64 => self.fcmp::<f64>(Ordering::Less),
+                    FCMPGT32 => self.fcmp::<f32>(Ordering::Greater),
+                    FCMPGT64 => self.fcmp::<f64>(Ordering::Greater),
+                    ITF32 => handler!(self, |OpsRR(tg, reg)| {
+                        self.write_reg(tg, self.read_reg(reg).cast::<i64>() as f32);
+                    }),
+                    ITF64 => handler!(self, |OpsRR(tg, reg)| {
+                        self.write_reg(tg, self.read_reg(reg).cast::<i64>() as f64);
+                    }),
+                    FTI32 => handler!(self, |OpsRRB(tg, reg, mode)| {
                         self.write_reg(
-                            dt,
-                            self.read_reg(a0).cast::<f64>() * self.read_reg(a1).cast::<f64>()
-                                + self.read_reg(a2).cast::<f64>(),
+                            tg,
+                            crate::float::f32toint(
+                                self.read_reg(reg).cast::<f32>(),
+                                RoundingMode::try_from(mode)
+                                    .map_err(|()| VmRunError::InvalidOperand)?,
+                            ),
                         );
                     }),
-                    NEGF => handler!(self, |OpsRR(dt, a0)| {
-                        self.write_reg(dt, -self.read_reg(a0).cast::<f64>());
+                    FTI64 => handler!(self, |OpsRRB(tg, reg, mode)| {
+                        self.write_reg(
+                            tg,
+                            crate::float::f64toint(
+                                self.read_reg(reg).cast::<f64>(),
+                                RoundingMode::try_from(mode)
+                                    .map_err(|()| VmRunError::InvalidOperand)?,
+                            ),
+                        );
                     }),
-                    ITF => handler!(self, |OpsRR(dt, a0)| {
-                        self.write_reg(dt, self.read_reg(a0).cast::<i64>() as f64);
+                    FC32T64 => handler!(self, |OpsRR(tg, reg)| {
+                        self.write_reg(tg, self.read_reg(reg).cast::<f32>() as f64);
                     }),
-                    FTI => {
-                        let OpsRR(dt, a0) = self.decode();
-                        self.write_reg(dt, self.read_reg(a0).cast::<f64>() as i64);
-                    }
-                    ADDFI => self.binary_op_imm::<f64>(ops::Add::add),
-                    MULFI => self.binary_op_imm::<f64>(ops::Mul::mul),
+                    FC64T32 => handler!(self, |OpsRRB(tg, reg, mode)| {
+                        self.write_reg(
+                            tg,
+                            crate::float::conv64to32(
+                                self.read_reg(reg).cast(),
+                                RoundingMode::try_from(mode)
+                                    .map_err(|()| VmRunError::InvalidOperand)?,
+                            ),
+                        )
+                    }),
                     LRA16 => handler!(self, |OpsRRP(tg, reg, imm)| {
                         self.write_reg(
                             tg,
@@ -312,7 +383,7 @@ where
                     STR16 => handler!(self, |OpsRRPH(dst, base, off, count)| {
                         self.store(dst, base, u64::from(off).wrapping_add(self.pc.get()), count)?;
                     }),
-                    JMPR16 => handler!(self, |OpsP(off)| self.pc = self.pc.wrapping_add(off)),
+                    JMP16 => handler!(self, |OpsP(off)| self.pc = self.pc.wrapping_add(off)),
                     op => return Err(VmRunError::InvalidOpcode(op)),
                 }
             }
@@ -328,14 +399,14 @@ where
 
     /// Bump instruction pointer
     #[inline(always)]
-    fn bump_pc<T: BytecodeItem>(&mut self) {
+    fn bump_pc<T: Copy>(&mut self) {
         self.pc = self.pc.wrapping_add(core::mem::size_of::<T>() + 1);
     }
 
     /// Decode instruction operands
     #[inline(always)]
-    unsafe fn decode<T: BytecodeItem>(&mut self) -> T {
-        self.memory.prog_read_unchecked::<T>(self.pc + 1_u64)
+    unsafe fn decode<T: Copy>(&mut self) -> T {
+        self.memory.prog_read::<T>(self.pc + 1_u64)
     }
 
     /// Load
@@ -395,12 +466,11 @@ where
     /// Perform binary operation over register and immediate
     #[inline(always)]
     unsafe fn binary_op_imm<T: ValueVariant>(&mut self, op: impl Fn(T, T) -> T) {
-        let OpsRRD(tg, reg, imm) = self.decode();
-        self.write_reg(
-            tg,
-            op(self.read_reg(reg).cast::<T>(), Value::from(imm).cast::<T>()),
-        );
+        let OpsRR(tg, reg) = self.decode();
+        let imm: T = self.decode();
+        self.write_reg(tg, op(self.read_reg(reg).cast::<T>(), imm));
         self.bump_pc::<OpsRRD>();
+        self.bump_pc::<T>();
     }
 
     /// Perform binary operation over register and shift immediate
@@ -409,6 +479,51 @@ where
         let OpsRRW(tg, reg, imm) = self.decode();
         self.write_reg(tg, op(self.read_reg(reg).cast::<T>(), imm));
         self.bump_pc::<OpsRRW>();
+    }
+
+    /// Fused division-remainder
+    #[inline(always)]
+    unsafe fn dir<T: ValueVariant + CheckedDivRem>(&mut self) {
+        handler!(self, |OpsRRRR(td, tr, a0, a1)| {
+            let a0 = self.read_reg(a0).cast::<T>();
+            let a1 = self.read_reg(a1).cast::<T>();
+
+            if let Some(div) = a0.checked_div(a1) {
+                self.write_reg(td, div);
+            } else {
+                self.write_reg(td, -1_i64);
+            }
+
+            if let Some(rem) = a0.checked_rem(a1) {
+                self.write_reg(tr, rem);
+            } else {
+                self.write_reg(tr, a0);
+            }
+        });
+    }
+
+    /// Fused multiply-add
+    #[inline(always)]
+    unsafe fn fma<T>(&mut self)
+    where
+        T: ValueVariant + core::ops::Mul<Output = T> + core::ops::Add<Output = T>,
+    {
+        handler!(self, |OpsRRRR(tg, a0, a1, a2)| {
+            let a0 = self.read_reg(a0).cast::<T>();
+            let a1 = self.read_reg(a1).cast::<T>();
+            let a2 = self.read_reg(a2).cast::<T>();
+            self.write_reg(tg, a0 * a1 + a2)
+        });
+    }
+
+    /// Float comparsion
+    #[inline(always)]
+    unsafe fn fcmp<T: PartialOrd + ValueVariant>(&mut self, nan: Ordering) {
+        handler!(self, |OpsRRR(tg, a0, a1)| {
+            let a0 = self.read_reg(a0).cast::<T>();
+            let a1 = self.read_reg(a1).cast::<T>();
+            self.write_reg(tg, (a0.partial_cmp(&a1).unwrap_or(nan) as i8 + 1) as u8)
+        });
     }
 
     /// Jump at `PC + #3` if ordering on `#0 <=> #1` is equal to expected

@@ -12,7 +12,6 @@
 
 #![no_std]
 #![cfg_attr(feature = "nightly", feature(fn_align))]
-#![warn(missing_docs)]
 
 use mem::{Address, Memory};
 
@@ -23,6 +22,7 @@ pub mod mem;
 pub mod value;
 
 mod bmc;
+mod float;
 mod utils;
 mod vmrun;
 
@@ -92,6 +92,12 @@ pub enum VmRunError {
 
     /// Reached unreachable code
     Unreachable,
+
+    /// Invalid operand
+    InvalidOperand,
+
+    /// Unimplemented feature
+    Unimplemented,
 }
 
 /// Virtual machine halt ok

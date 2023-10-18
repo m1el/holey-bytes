@@ -6,7 +6,7 @@ pub(crate) mod addr;
 
 pub use addr::Address;
 
-use {crate::utils::impl_display, hbbytecode::BytecodeItem};
+use crate::utils::impl_display;
 
 /// Load-store memory access
 pub trait Memory {
@@ -36,13 +36,7 @@ pub trait Memory {
     ///
     /// # Safety
     /// - Data read have to be valid
-    unsafe fn prog_read<T: BytecodeItem>(&mut self, addr: Address) -> Option<T>;
-
-    /// Read from program memory to exectue
-    ///
-    /// # Safety
-    /// - You have to be really sure that these bytes are there, understand?
-    unsafe fn prog_read_unchecked<T: BytecodeItem>(&mut self, addr: Address) -> T;
+    unsafe fn prog_read<T: Copy>(&mut self, addr: Address) -> T;
 }
 
 /// Unhandled load access trap

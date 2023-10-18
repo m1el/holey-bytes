@@ -46,8 +46,8 @@ pub(crate) mod internal {
     pub(crate) use impl_display_match_fragment;
 }
 
-macro_rules! static_assert_eq(($l:expr, $r:expr $(,)?) => {
-    const _: [(); ($l != $r) as usize] = [];
+macro_rules! static_assert(($expr:expr $(,)?) => {
+    const _: [(); !$expr as usize] = [];
 });
 
-pub(crate) use {impl_display, static_assert_eq};
+pub(crate) use {impl_display, static_assert};

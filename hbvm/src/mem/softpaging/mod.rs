@@ -78,31 +78,19 @@ impl<'p, PfH: HandlePageFault, const OUT_PROG_EXEC: bool> Memory
     }
 
     #[inline(always)]
-    unsafe fn prog_read<T>(&mut self, addr: Address) -> Option<T> {
+    unsafe fn prog_read<T>(&mut self, addr: Address) -> T {
         if OUT_PROG_EXEC && addr.truncate_usize() > self.program.len() {
-            return self.icache.fetch::<T>(addr, self.root_pt);
+            return self
+                .icache
+                .fetch::<T>(addr, self.root_pt)
+                .unwrap_or_else(|| unsafe { core::mem::zeroed() });
         }
 
         let addr = addr.truncate_usize();
         self.program
             .get(addr..addr + size_of::<T>())
             .map(|x| x.as_ptr().cast::<T>().read())
-    }
-
-    #[inline(always)]
-    unsafe fn prog_read_unchecked<T>(&mut self, addr: Address) -> T {
-        if OUT_PROG_EXEC && addr.truncate_usize() > self.program.len() {
-            return self
-                .icache
-                .fetch::<T>(addr, self.root_pt)
-                .unwrap_or_else(|| core::mem::zeroed());
-        }
-
-        self.program
-            .as_ptr()
-            .add(addr.truncate_usize())
-            .cast::<T>()
-            .read()
+            .unwrap_or_else(|| unsafe { core::mem::zeroed() })
     }
 }
 

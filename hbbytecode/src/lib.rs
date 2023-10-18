@@ -1,5 +1,7 @@
 #![no_std]
 
+use core::convert::TryFrom;
+
 type OpR = u8;
 
 type OpA = u64;
@@ -17,6 +19,7 @@ pub unsafe trait BytecodeItem {}
 macro_rules! define_items {
     ($($name:ident ($($item:ident),* $(,)?)),* $(,)?) => {
         $(
+            #[derive(Clone, Copy, Debug)]
             #[repr(packed)]
             pub struct $name($(pub $item),*);
             unsafe impl BytecodeItem for $name {}
@@ -31,6 +34,9 @@ define_items! {
     OpsRRB  (OpR, OpR, OpB     ),
     OpsRRH  (OpR, OpR, OpH     ),
     OpsRRW  (OpR, OpR, OpW     ),
+    OpsRB   (OpR, OpB          ),
+    OpsRH   (OpR, OpH          ),
+    OpsRW   (OpR, OpW          ),
     OpsRD   (OpR, OpD          ),
     OpsRRD  (OpR, OpR, OpD     ),
     OpsRRAH (OpR, OpR, OpA, OpH),
@@ -87,6 +93,26 @@ macro_rules! gen_opcodes {
             )*
         }
     };
+}
+
+/// Rounding mode
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RoundingMode {
+    NearestEven = 0,
+    Truncate = 1,
+    Up       = 2,
+    Down     = 3,
+}
+
+impl TryFrom<u8> for RoundingMode {
+    type Error = ();
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        (value >= 3)
+            .then(|| unsafe { core::mem::transmute(value) })
+            .ok_or(())
+    }
 }
 
 invoke_with_def!(gen_opcodes);
