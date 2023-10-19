@@ -280,7 +280,16 @@ where
                     JMP => handler!(self, |OpsO(off)| self.pc = self.pc.wrapping_add(off)),
                     JAL => handler!(self, |OpsRRW(save, reg, offset)| {
                         // Jump and link. Save PC after this instruction to
-                        // specified register and jump to reg + offset.
+                        // specified register and jump to reg + relative offset.
+                        self.write_reg(save, self.pc.get());
+                        self.pc = self
+                            .pc
+                            .wrapping_add(self.read_reg(reg).cast::<u64>())
+                            .wrapping_add(offset);
+                    }),
+                    JALA => handler!(self, |OpsRRW(save, reg, offset)| {
+                        // Jump and link. Save PC after this instruction to
+                        // specified register and jump to reg
                         self.write_reg(save, self.pc.get());
                         self.pc = Address::new(
                             self.read_reg(reg).cast::<u64>().wrapping_add(offset.into()),
@@ -400,7 +409,9 @@ where
     /// Bump instruction pointer
     #[inline(always)]
     fn bump_pc<T: Copy, const PAST_OP: bool>(&mut self) {
-        self.pc = self.pc.wrapping_add(core::mem::size_of::<T>() + PAST_OP as usize);
+        self.pc = self
+            .pc
+            .wrapping_add(core::mem::size_of::<T>() + PAST_OP as usize);
     }
 
     /// Decode instruction operands

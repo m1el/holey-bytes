@@ -82,8 +82,8 @@
 0x51, BMC,      RRH,  "Copy block of memory"                        ;
 0x52, BRC,      RRB,  "Copy register block"                         ;
 0x53, JMP,      O,    "Relative jump"                               ;
-0x54, JAL,      RRA,  "Linking absolute jump"                       ;
-0x55, JALR,     RRO,  "Linking relative jump"                       ;
+0x54, JAL,      RRO,  "Linking relative jump"                       ;
+0x55, JALA,     RRA,  "Linking absolute jump"                       ;
 0x56, JEQ,      RRP,  "Branch on equal"                             ;
 0x57, JNE,      RRP,  "Branch on nonequal"                          ;
 0x58, JLT,      RRP,  "Branch on lesser-than (signed)"              ;
