@@ -1,11 +1,13 @@
 //! Holey Bytes Experimental Runtime
-
 mod mem;
 
 use {
     hbvm::{mem::Address, Vm, VmRunOk},
     nix::sys::mman::{mmap, MapFlags, ProtFlags},
-    std::{env::args, fs::File, num::NonZeroUsize, process::exit},
+    setjmp::sigjmp_buf,
+    std::{
+        cell::UnsafeCell, env::args, fs::File, mem::MaybeUninit, num::NonZeroUsize, process::exit,
+    },
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -35,6 +37,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Execute program
     let mut vm = unsafe { Vm::<_, 0>::new(mem::HostMemory, Address::new(ptr as u64)) };
+
+    // Memory access fault handling
+    unsafe {
+        use nix::sys::signal;
+
+        static JMP_BUF: SyncUnsafeCell<MaybeUninit<sigjmp_buf>> =
+            SyncUnsafeCell::new(MaybeUninit::uninit());
+
+        extern "C" fn action(
+            _: std::ffi::c_int,
+            info: *mut nix::libc::siginfo_t,
+            _: *mut std::ffi::c_void,
+        ) {
+            unsafe {
+                eprintln!("[E] Memory access fault at {:p}", (*info).si_addr());
+                setjmp::siglongjmp((*JMP_BUF.get()).as_mut_ptr(), 1);
+            }
+        }
+
+        if setjmp::sigsetjmp((*JMP_BUF.get()).as_mut_ptr(), 0) > 0 {
+            eprintln!(
+                "    Program counter: {:#x}\n\n== Registers ==\n{:?}",
+                vm.pc.get(),
+                vm.registers
+            );
+            exit(3);
+        }
+
+        signal::sigaction(
+            signal::Signal::SIGSEGV,
+            &nix::sys::signal::SigAction::new(
+                signal::SigHandler::SigAction(action),
+                signal::SaFlags::SA_NODEFER,
+                nix::sys::signalfd::SigSet::empty(),
+            ),
+        )?;
+    }
+
     let stat = loop {
         match vm.run() {
             Ok(VmRunOk::Breakpoint) => eprintln!(
@@ -66,4 +106,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[repr(transparent)]
+struct SyncUnsafeCell<T: ?Sized> {
+    value: UnsafeCell<T>,
+}
+
+unsafe impl<T: ?Sized + Sync> Sync for SyncUnsafeCell<T> {}
+impl<T> SyncUnsafeCell<T> {
+    #[inline(always)]
+    pub const fn new(value: T) -> Self {
+        Self {
+            value: UnsafeCell::new(value),
+        }
+    }
+}
+
+impl<T: ?Sized> SyncUnsafeCell<T> {
+    #[inline(always)]
+    pub const fn get(&self) -> *mut T {
+        self.value.get()
+    }
 }

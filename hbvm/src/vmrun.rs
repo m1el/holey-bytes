@@ -23,7 +23,7 @@ macro_rules! handler {
     ($self:expr, |$ty:ident ($($ident:pat),* $(,)?)| $expr:expr) => {{
         let $ty($($ident),*) = $self.decode::<$ty>();
         #[allow(clippy::no_effect)] let e = $expr;
-        $self.bump_pc::<$ty>();
+        $self.bump_pc::<$ty, true>();
         e
     }};
 }
@@ -61,11 +61,11 @@ where
             unsafe {
                 match self.memory.prog_read::<u8>(self.pc as _) {
                     UN => {
-                        self.bump_pc::<OpsN>();
+                        self.bump_pc::<OpsN, true>();
                         return Err(VmRunError::Unreachable);
                     }
                     TX => {
-                        self.bump_pc::<OpsN>();
+                        self.bump_pc::<OpsN, true>();
                         return Ok(VmRunOk::End);
                     }
                     NOP => handler!(self, |OpsN()| ()),
@@ -254,7 +254,7 @@ where
                             // We are done, shift program counter
                             core::task::Poll::Ready(Ok(())) => {
                                 self.copier = None;
-                                self.bump_pc::<OpsRRH>();
+                                self.bump_pc::<OpsRRH, true>();
                             }
                             // Error, shift program counter (for consistency)
                             // and yield error
@@ -305,11 +305,11 @@ where
                             self.timer = self.timer.wrapping_add(1);
                         }
 
-                        self.bump_pc::<OpsN>();
+                        self.bump_pc::<OpsN, true>();
                         return Ok(VmRunOk::Ecall);
                     }
                     EBP => {
-                        self.bump_pc::<OpsN>();
+                        self.bump_pc::<OpsN, true>();
                         return Ok(VmRunOk::Breakpoint);
                     }
                     FADD32 => self.binary_op::<f32>(ops::Add::add),
@@ -399,8 +399,8 @@ where
 
     /// Bump instruction pointer
     #[inline(always)]
-    fn bump_pc<T: Copy>(&mut self) {
-        self.pc = self.pc.wrapping_add(core::mem::size_of::<T>() + 1);
+    fn bump_pc<T: Copy, const PAST_OP: bool>(&mut self) {
+        self.pc = self.pc.wrapping_add(core::mem::size_of::<T>() + PAST_OP as usize);
     }
 
     /// Decode instruction operands
@@ -460,7 +460,7 @@ where
             tg,
             op(self.read_reg(a0).cast::<T>(), self.read_reg(a1).cast::<T>()),
         );
-        self.bump_pc::<OpsRRR>();
+        self.bump_pc::<OpsRRR, true>();
     }
 
     /// Perform binary operation over register and immediate
@@ -469,8 +469,8 @@ where
         let OpsRR(tg, reg) = self.decode();
         let imm: T = self.decode();
         self.write_reg(tg, op(self.read_reg(reg).cast::<T>(), imm));
-        self.bump_pc::<OpsRRD>();
-        self.bump_pc::<T>();
+        self.bump_pc::<OpsRRD, false>();
+        self.bump_pc::<T, true>();
     }
 
     /// Perform binary operation over register and shift immediate
@@ -478,7 +478,7 @@ where
     unsafe fn binary_op_ims<T: ValueVariant>(&mut self, op: impl Fn(T, u32) -> T) {
         let OpsRRW(tg, reg, imm) = self.decode();
         self.write_reg(tg, op(self.read_reg(reg).cast::<T>(), imm));
-        self.bump_pc::<OpsRRW>();
+        self.bump_pc::<OpsRRW, true>();
     }
 
     /// Fused division-remainder
@@ -539,7 +539,7 @@ where
             self.pc = Address::new(((self.pc.get() as i64).wrapping_add(ja as i64)) as u64);
         }
 
-        self.bump_pc::<OpsRRP>();
+        self.bump_pc::<OpsRRP, true>();
     }
 
     /// Read register
