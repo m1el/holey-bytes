@@ -29,6 +29,8 @@
 - Fl*n*: Floating point number of size *n* bits (Fl32, Fl64)
 
 # Behaviour
+- There is only one type of register, a general-purpose one.
+  Used for both integers and floats.
 - Integer operations are wrapping, including signed numbers
     - Bitshifts are truncating
 - Two's complement
@@ -464,3 +466,32 @@ Program counter stays on the currently executed instruction
 | 0x75   | LDR16    | RRPH | LDR        |
 | 0x76   | STR16    | RRPH | STR        |
 | 0x77   | JMP16    | P    | JMP        |
+
+# psABI
+## C datatypes and alignment
+- One byte is 8 bits
+
+| C Type      | Description              | Byte sizes |
+|:------------|:-------------------------|:-----------|
+| char        | Character / byte         | 1          |
+| short       | SShort integer           | 2          |
+| int         | Integer                  | 4          |
+| long        | Long integer             | 8          |
+| long long   | Long long integer        | 8          |
+| float       | Single-precision float   | 4          |
+| double      | Double-precision float   | 8          |
+| long double | Extended-precision float | TBD        |
+
+## Call convention
+- Registers r1 – r30 are caller saved
+- Registers r31 – r255 are callee saved
+
+| Register | Description         | Saver  |
+|:---------|:--------------------|:-------|
+| r0       | Hard-wired zero     | N/A    |
+| r1 - r2  | Return values       | Caller |
+| r2 - r11 | Function parameters | Caller |
+| r30      | Return address      | Caller |
+
+If return value is too big to fit one register, r2 is also used.
+TODO: Stack pointer, Thread pointer, ...
