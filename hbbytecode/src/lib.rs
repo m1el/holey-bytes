@@ -5,8 +5,8 @@ use core::convert::TryFrom;
 type OpR = u8;
 
 type OpA = u64;
-type OpO = u32;
-type OpP = u16;
+type OpO = i32;
+type OpP = i16;
 
 type OpB = u8;
 type OpH = u16;

@@ -4,6 +4,8 @@
 
 use hbbytecode::RoundingMode;
 
+use crate::mem::addr::AddressOp;
+
 use {
     super::{
         bmc::BlockCopier,
@@ -201,10 +203,12 @@ where
                     LI16 => handler!(self, |OpsRH(tg, imm)| self.write_reg(tg, imm)),
                     LI32 => handler!(self, |OpsRW(tg, imm)| self.write_reg(tg, imm)),
                     LI64 => handler!(self, |OpsRD(tg, imm)| self.write_reg(tg, imm)),
-                    LRA => handler!(self, |OpsRRO(tg, reg, imm)| {
+                    LRA => handler!(self, |OpsRRO(tg, reg, off)| {
                         self.write_reg(
                             tg,
-                            (self.pc + self.read_reg(reg).cast::<u64>() + imm + 3_u16).get(),
+                            self.pcrel(off, 3)
+                                .wrapping_add(self.read_reg(reg).cast::<i64>())
+                                .get(),
                         );
                     }),
                     LD => handler!(self, |OpsRRAH(dst, base, off, count)| {
@@ -216,20 +220,10 @@ where
                         self.store(dst, base, off, count)?;
                     }),
                     LDR => handler!(self, |OpsRROH(dst, base, off, count)| {
-                        self.load(
-                            dst,
-                            base,
-                            u64::from(off).wrapping_add((self.pc + 3_u64).get()),
-                            count,
-                        )?;
+                        self.load(dst, base, self.pcrel(off, 3).get(), count)?;
                     }),
                     STR => handler!(self, |OpsRROH(dst, base, off, count)| {
-                        self.store(
-                            dst,
-                            base,
-                            u64::from(off).wrapping_add((self.pc + 3_u64).get()),
-                            count,
-                        )?;
+                        self.store(dst, base, self.pcrel(off, 3).get(), count)?;
                     }),
                     BMC => {
                         // Block memory copy
@@ -278,14 +272,13 @@ where
                         );
                     }),
                     JMP => handler!(self, |OpsO(off)| self.pc = self.pc.wrapping_add(off)),
-                    JAL => handler!(self, |OpsRRW(save, reg, offset)| {
+                    JAL => handler!(self, |OpsRRO(save, reg, offset)| {
                         // Jump and link. Save PC after this instruction to
                         // specified register and jump to reg + relative offset.
                         self.write_reg(save, self.pc.get());
                         self.pc = self
-                            .pc
-                            .wrapping_add(self.read_reg(reg).cast::<u64>())
-                            .wrapping_add(offset);
+                            .pcrel(offset, 3)
+                            .wrapping_add(self.read_reg(reg).cast::<i64>());
                     }),
                     JALA => handler!(self, |OpsRRW(save, reg, offset)| {
                         // Jump and link. Save PC after this instruction to
@@ -387,12 +380,12 @@ where
                         );
                     }),
                     LDR16 => handler!(self, |OpsRRPH(dst, base, off, count)| {
-                        self.load(dst, base, u64::from(off).wrapping_add(self.pc.get()), count)?;
+                        self.load(dst, base, self.pcrel(off, 3).get(), count)?;
                     }),
                     STR16 => handler!(self, |OpsRRPH(dst, base, off, count)| {
-                        self.store(dst, base, u64::from(off).wrapping_add(self.pc.get()), count)?;
+                        self.store(dst, base, self.pcrel(off, 3).get(), count)?;
                     }),
-                    JMP16 => handler!(self, |OpsP(off)| self.pc = self.pc.wrapping_add(off)),
+                    JMP16 => handler!(self, |OpsP(off)| self.pc = self.pcrel(off, 1)),
                     op => return Err(VmRunError::InvalidOpcode(op)),
                 }
             }
@@ -537,6 +530,12 @@ where
         });
     }
 
+    /// Calculate pc-relative address
+    #[inline(always)]
+    fn pcrel(&self, offset: impl AddressOp, pos: u8) -> Address {
+        self.pc.wrapping_add(pos).wrapping_add(offset)
+    }
+
     /// Jump at `PC + #3` if ordering on `#0 <=> #1` is equal to expected
     #[inline(always)]
     unsafe fn cond_jmp<T: ValueVariant + Ord>(&mut self, expected: Ordering) {
@@ -547,7 +546,7 @@ where
             .cmp(&self.read_reg(a1).cast::<T>())
             == expected
         {
-            self.pc = Address::new(((self.pc.get() as i64).wrapping_add(ja as i64)) as u64);
+            self.pc = self.pcrel(ja, 3);
         }
 
         self.bump_pc::<OpsRRP, true>();

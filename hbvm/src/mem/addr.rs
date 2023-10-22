@@ -112,11 +112,20 @@ pub trait AddressOp {
     fn cast_u64(self) -> u64;
 }
 
-macro_rules! impl_address_ops(($($ty:ty),* $(,)?) => {
+macro_rules! impl_address_ops_u(($($ty:ty),* $(,)?) => {
     $(impl AddressOp for $ty {
         #[inline(always)]
         fn cast_u64(self) -> u64 { self as _ }
     })*
 });
 
-impl_address_ops!(u8, u16, u32, u64, usize);
+macro_rules! impl_address_ops_i(($($ty:ty),* $(,)?) => {
+    $(impl AddressOp for $ty {
+        #[inline(always)]
+        fn cast_u64(self) -> u64 { self as i64 as u64 }
+    })*
+});
+
+
+impl_address_ops_u!(u8, u16, u32, u64, usize);
+impl_address_ops_i!(i8, i16, i32, i64, isize);
