@@ -2,7 +2,7 @@
 //!
 //! Have fun
 
-use hbbytecode::RoundingMode;
+use hbbytecode::{OpsRRA, RoundingMode};
 
 use crate::mem::addr::AddressOp;
 
@@ -271,23 +271,29 @@ where
                             usize::from(count),
                         );
                     }),
-                    JMP => handler!(self, |OpsO(off)| self.pc = self.pc.wrapping_add(off)),
-                    JAL => handler!(self, |OpsRRO(save, reg, offset)| {
+                    JMP => {
+                        let OpsO(off) = self.decode();
+                        self.pc = self.pc.wrapping_add(off);
+                    }
+                    JAL => {
                         // Jump and link. Save PC after this instruction to
                         // specified register and jump to reg + relative offset.
+                        let OpsRRO(save, reg, offset) = self.decode();
+
                         self.write_reg(save, self.pc.get());
                         self.pc = self
                             .pcrel(offset, 3)
                             .wrapping_add(self.read_reg(reg).cast::<i64>());
-                    }),
-                    JALA => handler!(self, |OpsRRW(save, reg, offset)| {
+                    }
+                    JALA => {
                         // Jump and link. Save PC after this instruction to
                         // specified register and jump to reg
+                        let OpsRRA(save, reg, offset) = self.decode();
+
                         self.write_reg(save, self.pc.get());
-                        self.pc = Address::new(
-                            self.read_reg(reg).cast::<u64>().wrapping_add(offset.into()),
-                        );
-                    }),
+                        self.pc =
+                            Address::new(self.read_reg(reg).cast::<u64>().wrapping_add(offset));
+                    }
                     // Conditional jumps, jump only to immediates
                     JEQ => self.cond_jmp::<u64>(Ordering::Equal),
                     JNE => handler!(self, |OpsRRP(a0, a1, ja)| {
@@ -385,7 +391,10 @@ where
                     STR16 => handler!(self, |OpsRRPH(dst, base, off, count)| {
                         self.store(dst, base, self.pcrel(off, 3).get(), count)?;
                     }),
-                    JMP16 => handler!(self, |OpsP(off)| self.pc = self.pcrel(off, 1)),
+                    JMP16 => {
+                        let OpsP(off) = self.decode();
+                        self.pc = self.pcrel(off, 1);
+                    }
                     op => return Err(VmRunError::InvalidOpcode(op)),
                 }
             }

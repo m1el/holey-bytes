@@ -39,6 +39,7 @@ define_items! {
     OpsRW   (OpR, OpW          ),
     OpsRD   (OpR, OpD          ),
     OpsRRD  (OpR, OpR, OpD     ),
+    OpsRRA  (OpR, OpR, OpA     ),
     OpsRRAH (OpR, OpR, OpA, OpH),
     OpsRROH (OpR, OpR, OpO, OpH),
     OpsRRPH (OpR, OpR, OpP, OpH),
