@@ -2,10 +2,6 @@
 //!
 //! Have fun
 
-use hbbytecode::{OpsRRA, RoundingMode};
-
-use crate::mem::addr::AddressOp;
-
 use {
     super::{
         bmc::BlockCopier,
@@ -13,11 +9,14 @@ use {
         value::{Value, ValueVariant},
         Vm, VmRunError, VmRunOk,
     },
-    crate::{mem::Address, value::CheckedDivRem},
+    crate::{
+        mem::{addr::AddressOp, Address},
+        value::CheckedDivRem,
+    },
     core::{cmp::Ordering, ops},
     hbbytecode::{
-        OpsN, OpsO, OpsP, OpsRB, OpsRD, OpsRH, OpsRR, OpsRRAH, OpsRRB, OpsRRD, OpsRRH, OpsRRO,
-        OpsRROH, OpsRRP, OpsRRPH, OpsRRR, OpsRRRR, OpsRRW, OpsRW,
+        OpsN, OpsO, OpsP, OpsRB, OpsRD, OpsRH, OpsRR, OpsRRA, OpsRRAH, OpsRRB, OpsRRD, OpsRRH,
+        OpsRRO, OpsRROH, OpsRRP, OpsRRPH, OpsRRR, OpsRRRR, OpsRRW, OpsRW, RoundingMode,
     },
 };
 
