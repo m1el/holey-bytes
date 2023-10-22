@@ -275,8 +275,8 @@ where
                             self.pc = self.pcrel(ja, 3);
                         }
                     }
-                    JLT => self.cond_jmp::<u64>(Ordering::Less),
-                    JGT => self.cond_jmp::<u64>(Ordering::Greater),
+                    JLTS => self.cond_jmp::<u64>(Ordering::Less),
+                    JGTS => self.cond_jmp::<u64>(Ordering::Greater),
                     JLTU => self.cond_jmp::<i64>(Ordering::Less),
                     JGTU => self.cond_jmp::<i64>(Ordering::Greater),
                     ECA => {
