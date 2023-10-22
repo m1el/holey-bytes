@@ -85,17 +85,17 @@ where
                     AND => self.binary_op::<u64>(ops::BitAnd::bitand),
                     OR => self.binary_op::<u64>(ops::BitOr::bitor),
                     XOR => self.binary_op::<u64>(ops::BitXor::bitxor),
-                    SLU8 => self.binary_op(|l, r| u8::wrapping_shl(l, r as u32)),
-                    SLU16 => self.binary_op(|l, r| u16::wrapping_shl(l, r as u32)),
-                    SLU32 => self.binary_op(u32::wrapping_shl),
-                    SLU64 => self.binary_op(|l, r| u64::wrapping_shl(l, r as u32)),
-                    SRU8 => self.binary_op(|l, r| u8::wrapping_shr(l, r as u32)),
-                    SRU16 => self.binary_op(|l, r| u16::wrapping_shr(l, r as u32)),
-                    SRU32 => self.binary_op(u32::wrapping_shr),
-                    SRS8 => self.binary_op(|l: i8, r| i8::wrapping_shl(l, r as u32)),
-                    SRS16 => self.binary_op(|l: i16, r| i16::wrapping_shl(l, r as u32)),
-                    SRS32 => self.binary_op(|l: i32, r| i32::wrapping_shl(l, r as u32)),
-                    SRS64 => self.binary_op(|l: i64, r| i64::wrapping_shl(l, r as u32)),
+                    SLU8 => self.binary_op::<u8>(ops::Shl::shl),
+                    SLU16 => self.binary_op::<u16>(ops::Shl::shl),
+                    SLU32 => self.binary_op::<u32>(ops::Shl::shl),
+                    SLU64 => self.binary_op::<u64>(ops::Shl::shl),
+                    SRU8 => self.binary_op::<u8>(ops::Shr::shr),
+                    SRU16 => self.binary_op::<u16>(ops::Shr::shr),
+                    SRU32 => self.binary_op::<u32>(ops::Shr::shr),
+                    SRS8 => self.binary_op::<u64>(ops::Shr::shr),
+                    SRS16 => self.binary_op::<i8>(ops::Shr::shr),
+                    SRS32 => self.binary_op::<i16>(ops::Shr::shr),
+                    SRS64 => self.binary_op::<i64>(ops::Shr::shr),
                     CMPU => handler!(self, |OpsRRR(tg, a0, a1)| self.cmp(
                         tg,
                         a0,
@@ -459,8 +459,8 @@ where
 
     /// Perform binary operation over register and shift immediate
     #[inline(always)]
-    unsafe fn binary_op_ims<T: ValueVariant>(&mut self, op: impl Fn(T, u32) -> T) {
-        let OpsRRW(tg, reg, imm) = self.decode();
+    unsafe fn binary_op_ims<T: ValueVariant>(&mut self, op: impl Fn(T, u8) -> T) {
+        let OpsRRB(tg, reg, imm) = self.decode();
         self.write_reg(tg, op(self.read_reg(reg).cast::<T>(), imm));
         self.bump_pc::<OpsRRW, true>();
     }

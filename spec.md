@@ -28,10 +28,13 @@
 - Xi*n*: Sign-agnostic integer of size *n* bits (Xi8, Xi16, Xi32, Xi64)
 - Fl*n*: Floating point number of size *n* bits (Fl32, Fl64)
 
-# Behaviours
-- Integer operations are always wrapping, including signed numbers
+# Behaviour
+- Integer operations are wrapping, including signed numbers
+    - Bitshifts are truncating
 - Two's complement
 - Floats as specified by IEEE 754
+- Execution model is implementation defined as long all observable
+  effects are performed in correct order
 
 ## Relative addressing
 Relative addresses are computed from address of the first byte
@@ -50,6 +53,25 @@ of offset in the code. Not from the beginning of current or following instructio
 | Towards 0 (truncate)     | 0b01  |
 | Towards +∞ (up)          | 0b10  |
 | Towards -∞ (down)        | 0b11  |
+
+- Remaining values in the byte traps with invalid operand exception
+
+# Memory
+- Memory implementation is implementation-defined
+- Zero address (`0x0`) is considered invalid
+
+# Traps
+- Environment call
+- Environment breakpoint
+
+Program counter goes to the following instruction
+
+## Exceptions
+- Memory access fault
+- Invalid operand
+- Unknown opcode
+
+Program counter stays on the currently executed instruction
 
 # Instructions
 - `#n`: register in parameter *n*
@@ -209,6 +231,10 @@ of offset in the code. Not from the beginning of current or following instructio
 | 0x35   | ANDI     | Conjunction (&)     |
 | 0x36   | ORI      | Disjunction (\|)    |
 | 0x37   | XORI     | Non-equivalence (^) |
+
+# Register-immediate bitshifts
+- Type: `RRB`
+- Operation: `#0 ← #1 <OP> $2`
 
 ## Unsigned left bitshift (`<<`)
 | Opcode | Mnemonic | Type |
