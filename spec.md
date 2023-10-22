@@ -474,7 +474,7 @@ Program counter stays on the currently executed instruction
 | C Type      | Description              | Byte sizes |
 |:------------|:-------------------------|:-----------|
 | char        | Character / byte         | 1          |
-| short       | SShort integer           | 2          |
+| short       | Short integer            | 2          |
 | int         | Integer                  | 4          |
 | long        | Long integer             | 8          |
 | long long   | Long long integer        | 8          |
