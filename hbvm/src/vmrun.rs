@@ -96,32 +96,16 @@ where
                     SRS16 => self.binary_op(|l: i16, r| i16::wrapping_shl(l, r as u32)),
                     SRS32 => self.binary_op(|l: i32, r| i32::wrapping_shl(l, r as u32)),
                     SRS64 => self.binary_op(|l: i64, r| i64::wrapping_shl(l, r as u32)),
-                    CMP => handler!(self, |OpsRRR(tg, a0, a1)| {
-                        // Compare a0 <=> a1
-                        // < →  0
-                        // > →  1
-                        // = →  2
-
-                        self.write_reg(
-                            tg,
-                            self.read_reg(a0)
-                                .cast::<i64>()
-                                .cmp(&self.read_reg(a1).cast::<i64>())
-                                as i64
-                                + 1,
-                        );
-                    }),
-                    CMPU => handler!(self, |OpsRRR(tg, a0, a1)| {
-                        // Unsigned comparsion
-                        self.write_reg(
-                            tg,
-                            self.read_reg(a0)
-                                .cast::<u64>()
-                                .cmp(&self.read_reg(a1).cast::<u64>())
-                                as i64
-                                + 1,
-                        );
-                    }),
+                    CMPU => handler!(self, |OpsRRR(tg, a0, a1)| self.cmp(
+                        tg,
+                        a0,
+                        self.read_reg(a1).cast::<u64>()
+                    )),
+                    CMPS => handler!(self, |OpsRRR(tg, a0, a1)| self.cmp(
+                        tg,
+                        a0,
+                        self.read_reg(a1).cast::<i64>()
+                    )),
                     DIRU8 => self.dir::<u8>(),
                     DIRU16 => self.dir::<u16>(),
                     DIRU32 => self.dir::<u32>(),
@@ -170,21 +154,9 @@ where
                     SRSI16 => self.binary_op_ims::<i16>(ops::Shr::shr),
                     SRSI32 => self.binary_op_ims::<i32>(ops::Shr::shr),
                     SRSI64 => self.binary_op_ims::<i64>(ops::Shr::shr),
-                    CMPI => handler!(self, |OpsRRD(tg, a0, imm)| {
-                        self.write_reg(
-                            tg,
-                            self.read_reg(a0)
-                                .cast::<i64>()
-                                .cmp(&Value::from(imm).cast::<i64>())
-                                as i64,
-                        );
-                    }),
-                    CMPUI => handler!(self, |OpsRRD(tg, a0, imm)| {
-                        self.write_reg(tg, self.read_reg(a0).cast::<u64>().cmp(&imm) as i64);
-                    }),
-                    CP => handler!(self, |OpsRR(tg, a0)| {
-                        self.write_reg(tg, self.read_reg(a0));
-                    }),
+                    CMPUI => handler!(self, |OpsRRD(tg, a0, imm)| { self.cmp(tg, a0, imm) }),
+                    CMPSI => handler!(self, |OpsRRD(tg, a0, imm)| { self.cmp(tg, a0, imm as i64) }),
+                    CP => handler!(self, |OpsRR(tg, a0)| self.write_reg(tg, self.read_reg(a0))),
                     SWA => handler!(self, |OpsRR(r0, r1)| {
                         // Swap registers
                         match (r0, r1) {
@@ -202,28 +174,30 @@ where
                     LI16 => handler!(self, |OpsRH(tg, imm)| self.write_reg(tg, imm)),
                     LI32 => handler!(self, |OpsRW(tg, imm)| self.write_reg(tg, imm)),
                     LI64 => handler!(self, |OpsRD(tg, imm)| self.write_reg(tg, imm)),
-                    LRA => handler!(self, |OpsRRO(tg, reg, off)| {
-                        self.write_reg(
-                            tg,
-                            self.pcrel(off, 3)
-                                .wrapping_add(self.read_reg(reg).cast::<i64>())
-                                .get(),
-                        );
-                    }),
-                    LD => handler!(self, |OpsRRAH(dst, base, off, count)| {
-                        // Load. If loading more than register size, continue on adjecent registers
-                        self.load(dst, base, off, count)?;
-                    }),
-                    ST => handler!(self, |OpsRRAH(dst, base, off, count)| {
-                        // Store. Same rules apply as to LD
-                        self.store(dst, base, off, count)?;
-                    }),
-                    LDR => handler!(self, |OpsRROH(dst, base, off, count)| {
-                        self.load(dst, base, self.pcrel(off, 3).get(), count)?;
-                    }),
-                    STR => handler!(self, |OpsRROH(dst, base, off, count)| {
-                        self.store(dst, base, self.pcrel(off, 3).get(), count)?;
-                    }),
+                    LRA => handler!(self, |OpsRRO(tg, reg, off)| self.write_reg(
+                        tg,
+                        self.pcrel(off, 3)
+                            .wrapping_add(self.read_reg(reg).cast::<i64>())
+                            .get(),
+                    )),
+                    // Load. If loading more than register size, continue on adjecent registers
+                    LD => handler!(self, |OpsRRAH(dst, base, off, count)| self
+                        .load(dst, base, off, count)?),
+                    // Store. Same rules apply as to LD
+                    ST => handler!(self, |OpsRRAH(dst, base, off, count)| self
+                        .store(dst, base, off, count)?),
+                    LDR => handler!(self, |OpsRROH(dst, base, off, count)| self.load(
+                        dst,
+                        base,
+                        self.pcrel(off, 3).get(),
+                        count
+                    )?),
+                    STR => handler!(self, |OpsRROH(dst, base, off, count)| self.store(
+                        dst,
+                        base,
+                        self.pcrel(off, 3).get(),
+                        count
+                    )?),
                     BMC => {
                         // Block memory copy
                         match if let Some(copier) = &mut self.copier {
@@ -295,13 +269,12 @@ where
                     }
                     // Conditional jumps, jump only to immediates
                     JEQ => self.cond_jmp::<u64>(Ordering::Equal),
-                    JNE => handler!(self, |OpsRRP(a0, a1, ja)| {
+                    JNE => {
+                        let OpsRRP(a0, a1, ja) = self.decode();
                         if self.read_reg(a0).cast::<u64>() != self.read_reg(a1).cast::<u64>() {
-                            self.pc = Address::new(
-                                ((self.pc.get() as i64).wrapping_add(ja as i64)) as u64,
-                            )
+                            self.pc = self.pcrel(ja, 3);
                         }
-                    }),
+                    }
                     JLT => self.cond_jmp::<u64>(Ordering::Less),
                     JGT => self.cond_jmp::<u64>(Ordering::Greater),
                     JLTU => self.cond_jmp::<i64>(Ordering::Less),
@@ -329,67 +302,60 @@ where
                     FDIV64 => self.binary_op::<f64>(ops::Div::div),
                     FMA32 => self.fma::<f32>(),
                     FMA64 => self.fma::<f64>(),
-                    FINV32 => handler!(self, |OpsRR(tg, reg)| {
-                        self.write_reg(tg, 1. / self.read_reg(reg).cast::<f32>())
-                    }),
-                    FINV64 => handler!(self, |OpsRR(tg, reg)| {
-                        self.write_reg(tg, 1. / self.read_reg(reg).cast::<f64>())
-                    }),
+                    FINV32 => handler!(self, |OpsRR(tg, reg)| self
+                        .write_reg(tg, 1. / self.read_reg(reg).cast::<f32>())),
+                    FINV64 => handler!(self, |OpsRR(tg, reg)| self
+                        .write_reg(tg, 1. / self.read_reg(reg).cast::<f64>())),
                     FCMPLT32 => self.fcmp::<f32>(Ordering::Less),
                     FCMPLT64 => self.fcmp::<f64>(Ordering::Less),
                     FCMPGT32 => self.fcmp::<f32>(Ordering::Greater),
                     FCMPGT64 => self.fcmp::<f64>(Ordering::Greater),
-                    ITF32 => handler!(self, |OpsRR(tg, reg)| {
-                        self.write_reg(tg, self.read_reg(reg).cast::<i64>() as f32);
-                    }),
-                    ITF64 => handler!(self, |OpsRR(tg, reg)| {
-                        self.write_reg(tg, self.read_reg(reg).cast::<i64>() as f64);
-                    }),
-                    FTI32 => handler!(self, |OpsRRB(tg, reg, mode)| {
-                        self.write_reg(
-                            tg,
-                            crate::float::f32toint(
-                                self.read_reg(reg).cast::<f32>(),
-                                RoundingMode::try_from(mode)
-                                    .map_err(|()| VmRunError::InvalidOperand)?,
-                            ),
-                        );
-                    }),
-                    FTI64 => handler!(self, |OpsRRB(tg, reg, mode)| {
-                        self.write_reg(
-                            tg,
-                            crate::float::f64toint(
-                                self.read_reg(reg).cast::<f64>(),
-                                RoundingMode::try_from(mode)
-                                    .map_err(|()| VmRunError::InvalidOperand)?,
-                            ),
-                        );
-                    }),
-                    FC32T64 => handler!(self, |OpsRR(tg, reg)| {
-                        self.write_reg(tg, self.read_reg(reg).cast::<f32>() as f64);
-                    }),
-                    FC64T32 => handler!(self, |OpsRRB(tg, reg, mode)| {
-                        self.write_reg(
-                            tg,
-                            crate::float::conv64to32(
-                                self.read_reg(reg).cast(),
-                                RoundingMode::try_from(mode)
-                                    .map_err(|()| VmRunError::InvalidOperand)?,
-                            ),
-                        )
-                    }),
-                    LRA16 => handler!(self, |OpsRRP(tg, reg, imm)| {
-                        self.write_reg(
-                            tg,
-                            (self.pc + self.read_reg(reg).cast::<u64>() + imm + 3_u16).get(),
-                        );
-                    }),
-                    LDR16 => handler!(self, |OpsRRPH(dst, base, off, count)| {
-                        self.load(dst, base, self.pcrel(off, 3).get(), count)?;
-                    }),
-                    STR16 => handler!(self, |OpsRRPH(dst, base, off, count)| {
-                        self.store(dst, base, self.pcrel(off, 3).get(), count)?;
-                    }),
+                    ITF32 => handler!(self, |OpsRR(tg, reg)| self
+                        .write_reg(tg, self.read_reg(reg).cast::<i64>() as f32)),
+                    ITF64 => handler!(self, |OpsRR(tg, reg)| self
+                        .write_reg(tg, self.read_reg(reg).cast::<i64>() as f64)),
+                    FTI32 => handler!(self, |OpsRRB(tg, reg, mode)| self.write_reg(
+                        tg,
+                        crate::float::f32toint(
+                            self.read_reg(reg).cast::<f32>(),
+                            RoundingMode::try_from(mode)
+                                .map_err(|()| VmRunError::InvalidOperand)?,
+                        ),
+                    )),
+                    FTI64 => handler!(self, |OpsRRB(tg, reg, mode)| self.write_reg(
+                        tg,
+                        crate::float::f64toint(
+                            self.read_reg(reg).cast::<f64>(),
+                            RoundingMode::try_from(mode)
+                                .map_err(|()| VmRunError::InvalidOperand)?,
+                        ),
+                    )),
+                    FC32T64 => handler!(self, |OpsRR(tg, reg)| self
+                        .write_reg(tg, self.read_reg(reg).cast::<f32>() as f64)),
+                    FC64T32 => handler!(self, |OpsRRB(tg, reg, mode)| self.write_reg(
+                        tg,
+                        crate::float::conv64to32(
+                            self.read_reg(reg).cast(),
+                            RoundingMode::try_from(mode)
+                                .map_err(|()| VmRunError::InvalidOperand)?,
+                        ),
+                    )),
+                    LRA16 => handler!(self, |OpsRRP(tg, reg, imm)| self.write_reg(
+                        tg,
+                        (self.pc + self.read_reg(reg).cast::<u64>() + imm + 3_u16).get(),
+                    )),
+                    LDR16 => handler!(self, |OpsRRPH(dst, base, off, count)| self.load(
+                        dst,
+                        base,
+                        self.pcrel(off, 3).get(),
+                        count
+                    )?),
+                    STR16 => handler!(self, |OpsRRPH(dst, base, off, count)| self.store(
+                        dst,
+                        base,
+                        self.pcrel(off, 3).get(),
+                        count
+                    )?),
                     JMP16 => {
                         let OpsP(off) = self.decode();
                         self.pc = self.pcrel(off, 1);
@@ -462,6 +428,12 @@ where
             count.into(),
         )?;
         Ok(())
+    }
+
+    /// Three-way comparsion
+    #[inline(always)]
+    unsafe fn cmp<T: ValueVariant + Ord>(&mut self, to: u8, reg: u8, val: T) {
+        self.write_reg(to, self.read_reg(reg).cast::<T>().cmp(&val) as i64);
     }
 
     /// Perform binary operating over two registers

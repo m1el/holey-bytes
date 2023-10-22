@@ -28,8 +28,8 @@
 0x1B, SRS16,    RRR,  "Signed right bitshift (16b)"                 ;
 0x1C, SRS32,    RRR,  "Signed right bitshift (32b)"                 ;
 0x1D, SRS64,    RRR,  "Signed right bitshift (64b)"                 ;
-0x1E, CMP,      RRR,  "Signed comparsion"                           ;
-0x1F, CMPU,     RRR,  "Unsigned comparsion"                         ;
+0x1E, CMPU,     RRR,  "Unsigned comparsion"                         ;
+0x1F, CMPS,     RRR,  "Signed comparsion"                           ;
 0x20, DIRU8,    RRRR, "Merged divide-remainder (unsigned 8b)"       ;
 0x21, DIRU16,   RRRR, "Merged divide-remainder (unsigned 16b)"      ;
 0x22, DIRU32,   RRRR, "Merged divide-remainder (unsigned 32b)"      ;
@@ -66,8 +66,8 @@
 0x41, SRSI16,   RRW,  "Signed right bitshift with immediate"        ;
 0x42, SRSI32,   RRW,  "Signed right bitshift with immediate"        ;
 0x43, SRSI64,   RRW,  "Signed right bitshift with immediate"        ;
-0x44, CMPI,     RRD,  "Signed compare with immediate"               ;
-0x45, CMPUI,    RRD,  "Unsigned compare with immediate"             ;
+0x44, CMPUI,    RRD,  "Unsigned compare with immediate"             ;
+0x45, CMPSI,    RRD,  "Signed compare with immediate"               ;
 0x46, CP,       RR,   "Copy register"                               ;
 0x47, SWA,      RR,   "Swap registers"                              ;
 0x48, LI8,      RB,   "Load immediate (8b)"                         ;
@@ -86,10 +86,10 @@
 0x55, JALA,     RRA,  "Linking absolute jump"                       ;
 0x56, JEQ,      RRP,  "Branch on equal"                             ;
 0x57, JNE,      RRP,  "Branch on nonequal"                          ;
-0x58, JLT,      RRP,  "Branch on lesser-than (signed)"              ;
-0x59, JGT,      RRP,  "Branch on greater-than (signed)"             ;
-0x5A, JLTU,     RRP,  "Branch on lesser-than (unsigned)"            ;
-0x5B, JGTU,     RRP,  "Branch on greater-than (unsigned)"           ;
+0x58, JLTU,     RRP,  "Branch on lesser-than (unsigned)"            ;
+0x59, JGTU,     RRP,  "Branch on greater-than (unsigned)"           ;
+0x5A, JLTS,     RRP,  "Branch on lesser-than (signed)"              ;
+0x5B, JGTS,     RRP,  "Branch on greater-than (signed)"             ;
 0x5C, ECA,      N,    "Environment call trap"                       ;
 0x5D, EBP,      N,    "Environment breakpoint"                      ;
 0x5E, FADD32,   RRR,  "Floating point addition (32b)"               ;
@@ -100,8 +100,8 @@
 0x63, FMUL64,   RRR,  "Floating point multiply (64b)"               ;
 0x64, FDIV32,   RRR,  "Floating point division (32b)"               ;
 0x65, FDIV64,   RRR,  "Floating point division (64b)"               ;
-0x66, FMA32,    RRR,  "Float fused multiply-add (32b)"              ;
-0x67, FMA64,    RRR,  "Float fused multiply-add (64b)"              ;
+0x66, FMA32,    RRRR, "Float fused multiply-add (32b)"              ;
+0x67, FMA64,    RRRR, "Float fused multiply-add (64b)"              ;
 0x68, FINV32,   RR,   "Float reciprocal (32b)"                      ;
 0x69, FINV64,   RR,   "Float reciprocal (64b)"                      ;
 0x6A, FCMPLT32, RRR,  "Flaot compare less than (32b)"               ;

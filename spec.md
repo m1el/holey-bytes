@@ -1,332 +1,440 @@
 # HoleyBytes ISA Specification
 
 # Bytecode format
-- Holey Bytes program should start with following magic: `[0xAB, 0x1E, 0x0B]`
+- Image format is not specified, though ELF is recommended
 - All numbers are encoded little-endian
 - There is 256 registers, they are represented by a byte
-- Immediate values are 64 bit
-- Program is by spec required to be terminated with 12 zero bytes
+- Immediate values are 8, 16, 32 or 64 bit
 
-### Instruction encoding
-- Instruction parameters are packed (no alignment)
-- [opcode, …parameters…]
+## Instruction encoding
+- Instruction operands are packed (no alignment)
+- [opcode, operand 0, operand 1, …]
 
-### Instruction parameter types
-- B = Byte
-- D = Doubleword (64 bits)
-- H = Halfword (16 bits)
+## Instruction parameter types
+- `R`: Register (8 bits)
+- Relative program-counter offset immediates:
+    - `O`: 32 bit (Si32)
+    - `P`: 16 bit (Si16)
+- Immediates:
+    - `B`: Byte, 8 bit (Xi8)
+    - `H`: Half-word, 16 bit (Xi16)
+    - `W`: Word, 32 bit (Xi32)
+    - `D`: Double-word, 64 bit (Xi64)
+- `A`: Absolute address immediate, 64 bit (Ui64)
 
-| Name | Size    |
-|:----:|:--------|
-| BBBB | 32 bits |
-| BBB  | 24 bits |
-| BBDH | 96 bits |
-| BBD  | 80 bits |
-| BBW  | 48 bits |
-|  BB  | 16 bits |
-|  BD  | 72 bits |
-|  D   | 64 bits |
-|  N   | 0  bits |
+## Types
+- Si*n*: Signed integer of size *n* bits (Si8, Si16, Si32, Si64)
+- Ui*n*: Unsigned integer of size *n* bits (Ui8, Ui16, Ui32, Ui64)
+- Xi*n*: Sign-agnostic integer of size *n* bits (Xi8, Xi16, Xi32, Xi64)
+- Fl*n*: Floating point number of size *n* bits (Fl32, Fl64)
+
+# Behaviours
+- Integer operations are always wrapping, including signed numbers
+- Two's complement
+- Floats as specified by IEEE 754
+
+## Relative addressing
+Relative addresses are computed from address of the first byte
+of offset in the code. Not from the beginning of current or following instruction.
+
+## Zero register
+- Register 0
+- Cannot be clobbered
+    - Write is no-op
+- Load always yields 0
+
+## Rounding modes
+| Rounding mode            | Value |
+|:-------------------------|:------|
+| To nearest, ties to even | 0b00  |
+| Towards 0 (truncate)     | 0b01  |
+| Towards +∞ (up)          | 0b10  |
+| Towards -∞ (down)        | 0b11  |
 
 # Instructions
 - `#n`: register in parameter *n*
-- `imm #n`: for immediate in parameter *n*
-- `P ← V`: Set register P to value V
+- `$n`: for immediate in parameter *n*
+- `#P ← V`: Set register P to value V
 - `[x]`: Address x
+- `XY`: X bytes from location Y
+- `pc`: Program counter
+- `<XYZ>`: Placeholder
+- `Type(X)`: Cast
 
 ## Program execution control
-- N type
+- Type `N`
 
-| Opcode | Name |            Action             |
-|:------:|:----:|:-----------------------------:|
-|   0    |  UN  | Trigger unreachable code trap |
-|   1    |  TX  |      Terminate execution      |
-|   2    | NOP  |          Do nothing           |
+| Opcode | Mnemonic | Action                                      |
+|:-------|:---------|:--------------------------------------------|
+| 0x00   | UN       | Throw unreachable code exception            |
+| 0x01   | TX       | Terminate execution (eg. on end of program) |
+| 0x02   | NOP      | Do nothing                                  |
 
-## Integer binary ops.
-- BBB type
-- `#0 ← #1 <op> #2`
+## Binary register-immediate ops
+- Type `RR<IMM>`
+- Action: `#0 ← #1 <OP> #2`
 
-| Opcode | Name |         Action          |
-|:------:|:----:|:-----------------------:|
-|   3    | ADD  |    Wrapping addition    |
-|   4    | SUB  |  Wrapping subtraction   |
-|   5    | MUL  | Wrapping multiplication |
-|   6    | AND  |         Bitand          |
-|   7    |  OR  |          Bitor          |
-|   8    | XOR  |         Bitxor          |
-|   9    |  SL  | Unsigned left bitshift  |
-|   10   |  SR  | Unsigned right bitshift |
-|   11   | SRS  |  Signed right bitshift  |
+## Addition (`+`)
+| Opcode | Mnemonic | Type |
+|:-------|:---------|:-----|
+| 0x03   | ADD8     | Xi8  |
+| 0x04   | ADD16    | Xi16 |
+| 0x05   | ADD32    | Xi32 |
+| 0x06   | ADD64    | Xi64 |
 
-### Comparsion
-| Opcode | Name |       Action        |
-|:------:|:----:|:-------------------:|
-|   12   | CMP  |  Signed comparsion  |
-|   13   | CMPU | Unsigned comparsion |
+## Subtraction (`-`)
+| Opcode | Mnemonic | Type |
+|:-------|:---------|:-----|
+| 0x07   | SUB8     | Xi8  |
+| 0x08   | SUB16    | Xi16 |
+| 0x09   | SUB32    | Xi32 |
+| 0x0A   | SUB64    | Xi64 |
 
-#### Comparsion table
-| #1 *op* #2 | Result |
-|:----------:|:------:|
-|     <      |   0    |
-|     =      |   1    |
-|     >      |   2    |
+## Multiplication (`*`)
+| Opcode | Mnemonic | Type |
+|:-------|:---------|:-----|
+| 0x0B   | MUL8     | Xi8  |
+| 0x0C   | MUL16    | Xi16 |
+| 0x0D   | MUL32    | Xi32 |
+| 0x0E   | MUL64    | Xi64 |
 
-### Division-remainder
-- Type BBBB
-- In case of `#3` is zero, the resulting value is all-ones
-- `#0 ← #2 ÷ #3`
-- `#1 ← #2 % #3`
+## Bitwise ops (type: Xi64)
+| Opcode | Mnemonic | Operation           |
+|:-------|:---------|:--------------------|
+| 0x0F   | AND      | Conjunction (&)     |
+| 0x10   | OR       | Disjunction (\|)    |
+| 0x11   | XOR      | Non-equivalence (^) |
 
-| Opcode | Name |             Action              |
-|:------:|:----:|:-------------------------------:|
-|   14   | DIR  | Divide and remainder combinated |
+## Unsigned left bitshift (`<<`)
+| Opcode | Mnemonic | Type |
+|:-------|:---------|:-----|
+| 0x12   | SLU8     | Ui8  |
+| 0x13   | SLU16    | Ui16 |
+| 0x14   | SLU32    | Ui32 |
+| 0x15   | SLU64    | Ui64 |
 
-### Negations
-- Type BB
-- `#0 ← #1 <op> #2`
+## Unsigned right bitshift (`>>`)
+| Opcode | Mnemonic | Type |
+|:-------|:---------|:-----|
+| 0x16   | SRU8     | Ui8  |
+| 0x17   | SRU16    | Ui16 |
+| 0x18   | SRU32    | Ui32 |
+| 0x19   | SRU64    | Ui64 |
 
-| Opcode | Name |      Action      |
-|:------:|:----:|:----------------:|
-|   15   | NEG  |   Bit negation   |
-|   16   | NOT  | Logical negation |
+## Signed right bitshift (`>>`)
+| Opcode | Mnemonic | Type |
+|:-------|:---------|:-----|
+| 0x1A   | SRS8     | Si8  |
+| 0x1B   | SRS16    | Si16 |
+| 0x1C   | SRS32    | Si32 |
+| 0x1D   | SRS64    | Si64 |
 
-## Integer immediate binary ops.
-- Type BBD
-- `#0 ← #1 <op> imm #2`
+## Comparsion
+- Compares two numbers, saves result to register
+- Operation: `#0 ← #1 <=> #2`
 
-| Opcode | Name |        Action        |
-|:------:|:----:|:--------------------:|
-|   17   | ADDI |  Wrapping addition   |
-|   18   | MULI | Wrapping subtraction |
-|   19   | ANDI |        Bitand        |
-|   20   | ORI  |        Bitor         |
-|   21   | XORI |        Bitxor        |
+| Ordering | Number |
+|:---------|:-------|
+| <        | -1     |
+| =        | 0      |
+| >        | 1      |
 
-### Bitshifts
-- Type BBW
-| Opcode | Name |         Action          |
-|:------:|:----:|:-----------------------:|
-|   22   | SLI  | Unsigned left bitshift  |
-|   23   | SRI  | Unsigned right bitshift |
-|   24   | SRSI |  Signed right bitshift  |
+| Opcode | Mnemonic | Type |
+|:-------|:---------|:-----|
+| 0x1E   | CMPU     | Ui64 |
+| 0x1F   | CMPS     | Si64 |
 
-### Comparsion
-- Comparsion is the same as when RRR type
+# Merged divide-remainder
+- Type `RRRR`
+- Operation:
+    - `#0 ← #2 / #3`
+    - `#1 ← #2 % #3`
 
-| Opcode | Name  |       Action        |
-|:------:|:-----:|:-------------------:|
-|   25   | CMPI  |  Signed comparsion  |
-|   26   | CMPUI | Unsigned comparsion |
+- If dividing by zero:
+    - `#0 ← Ui64(-1)`
+    - `#1 ← #2`
 
-## Register value set / copy
+| Opcode | Mnemonic | Type |
+|:-------|:---------|:-----|
+| 0x20   | DIRU8    | Ui8  |
+| 0x21   | DIRU16   | Ui16 |
+| 0x22   | DIRU32   | Ui32 |
+| 0x23   | DIRU64   | Ui64 |
+| 0x24   | DIRS8    | Si8  |
+| 0x25   | DIRS16   | Si16 |
+| 0x26   | DIRS32   | Si32 |
+| 0x27   | DIRS64   | Si64 |
 
-### Copy
-- Type BB
-- `#0 ← #1`
+# Unary register operations (type: Xi64)
+- Type: `RR`
+- Operation: `#0 ← <OP> #1`
 
-| Opcode | Name | Action |
-|:------:|:----:|:------:|
-|   27   |  CP  |  Copy  |
+| Opcode | Mnemonic | Operation                |
+|:-------|:---------|:-------------------------|
+| 0x28   | NEG      | Bitwise complement (`~`) |
+| 0x29   | NOT      | Logical negation (`!`)   |
 
-### Swap
-- Type BB
-- Swap #0 and #1
-- Zero register rules:
-    - Both: no-op
-    - One: Copy zero to the non-zero register
+## Sign extensions
+- Operation: `#0 ← Si64(#1)`
 
-| Opcode | Name | Action |
-|:------:|:----:|:------:|
-|   28   | SWA  |  Swap  |
+| Opcode | Mnemonic | Source type |
+|:-------|:---------|:------------|
+| 0x2A   | SXT8     | Si8         |
+| 0x2B   | SXT16    | Si16        |
+| 0x2C   | SXT32    | Si32        |
 
-### Load immediate
-- Type BD
-- `#0 ← #1`
+# Binary register-immediate operations
+- Type: `RR<IMM>`
+- Operation: `#0 ← #1 <OP> $2`
 
-| Opcode | Name |     Action     |
-|:------:|:----:|:--------------:|
-|   29   |  LI  | Load immediate |
+## Addition (`+`)
+| Opcode | Mnemonic | Type |
+|:-------|:---------|:-----|
+| 0x2D   | ADDI8    | Xi8  |
+| 0x2E   | ADDI16   | Xi16 |
+| 0x2F   | ADDI32   | Xi32 |
+| 0x30   | ADDI64   | Xi64 |
 
-### Load relative address
-- Type BBW
-| Opcode | Name |         Action          |
-|:------:|:----:|:-----------------------:|
-|   30   | LRA  | `#0 ← #1 + imm #2 + PC` |
+## Multiplication (`*`)
+| Opcode | Mnemonic | Type |
+|:-------|:---------|:-----|
+| 0x31   | MULI8    | Xi8  |
+| 0x32   | MULI16   | Xi16 |
+| 0x33   | MULI32   | Xi32 |
+| 0x34   | MULI64   | Xi64 |
 
-## Memory operations
-- Type BBDH
-- If loaded/store value exceeds one register size, continue accessing following registers
+## Bitwise ops (type: Xi64)
+| Opcode | Mnemonic | Operation           |
+|:-------|:---------|:--------------------|
+| 0x35   | ANDI     | Conjunction (&)     |
+| 0x36   | ORI      | Disjunction (\|)    |
+| 0x37   | XORI     | Non-equivalence (^) |
 
-### Load / Store
-| Opcode | Name |                 Action                  |
-|:------:|:----:|:---------------------------------------:|
-|   31   |  LD  | `#0 ← [#1 + imm #2], copy imm #3 bytes` |
-|   32   |  ST  | `[#1 + imm #2] ← #0, copy imm #3 bytes` |
+## Unsigned left bitshift (`<<`)
+| Opcode | Mnemonic | Type |
+|:-------|:---------|:-----|
+| 0x38   | SLUI8    | Ui8  |
+| 0x39   | SLUI16   | Ui16 |
+| 0x3A   | SLUI32   | Ui32 |
+| 0x3B   | SLUI64   | Ui64 |
 
-### PC relative Load / Store
-- Type BBDW
-| Opcode | Name |                    Action                    |
-|:------:|:----:|:--------------------------------------------:|
-|   33   | LDR  | `#0 ← [#1 + imm #2 + PC], copy imm #3 bytes` |
-|   34   | STR  | `[#1 + imm #2 + PC] ← #0, copy imm #3 bytes` |
+## Unsigned right bitshift (`>>`)
+| Opcode | Mnemonic | Type |
+|:-------|:---------|:-----|
+| 0x3C   | SRUI8    | Ui8  |
+| 0x3D   | SRUI16   | Ui16 |
+| 0x3E   | SRUI32   | Ui32 |
+| 0x3F   | SRUI64   | Ui64 |
 
-## Block copy
-- Block copy source and target can overlap
+## Signed right bitshift (`>>`)
+| Opcode | Mnemonic | Type |
+|:-------|:---------|:-----|
+| 0x40   | SRSI8    | Si8  |
+| 0x41   | SRSI16   | Si16 |
+| 0x42   | SRSI32   | Si32 |
+| 0x43   | SRSI64   | Si64 |
 
-### Memory copy
-- Type BBD
+## Comparsion
+- Compares two numbers, saves result to register
+- Operation: `#0 ← #1 <=> $2`
+- Comparsion table same for register-register one
 
-| Opcode | Name |              Action              |
-|:------:|:----:|:--------------------------------:|
-|   35   | BMC  | `[#1] ← [#0], copy imm #2 bytes` |
+| Opcode | Mnemonic | Type |
+|:-------|:---------|:-----|
+| 0x44   | CMPUI    | Ui64 |
+| 0x45   | CMPSI    | Si64 |
 
-### Register copy
-- Type BBB
-- Copy a block a register to another location (again, overflowing to following registers)
+# Register copies
+- Type: `RR`
 
-| Opcode | Name |              Action              |
-|:------:|:----:|:--------------------------------:|
-|   36   | BRC  | `#1 ← #0, copy imm #2 registers` |
+| Opcode | Mnemonic | Operation                        |
+|:-------|:---------|:---------------------------------|
+| 0x46   | CP       | Copy register value (`#0 ← #1`)  |
+| 0x47   | SWA      | Swap register values (`#0 ⇆ #1`) |
 
-## Control flow
+# Load immediate
+- Load immediate value from code to register
+- Type: `R<IMM>`
+- Operation: `#0 ← $1`
 
-### Unconditional jump
-- Type D
-| Opcode | Name |                   Action                    |
-|:------:|:----:|:-------------------------------------------:|
-|   37   | JMPR | Jump at address relative to program counter |
+| Opcode | Mnemonic | Type |
+|:-------|:---------|:-----|
+| 0x48   | LI8      | Xi8  |
+| 0x49   | LI16     | Xi16 |
+| 0x4A   | Li32     | Xi32 |
+| 0x4B   | Li64     | Xi64 |
 
-### Unconditional linking jump
-- Type BBD
+# Load relative address
+- Compute value from program counter, register value and offset
+- Type: `RRO`
+- Operation: `#0 ← pc + #1 + $2`
 
-| Opcode | Name |                         Action                          |
-|:------:|:----:|:-------------------------------------------------------:|
-|   38   | JAL  |   Save PC past JAL to `#0` and jump at `#1 + imm #2`    |
-|   39   | JALR | Save PC past JAL to `#0` and jump at `#1 + imm #2 + PC` |
+| Opcode | Mnemonic |
+|:-------|:---------|
+| 0x4C   | LRA      |
 
-### Conditional jumps
-- Type BBH
-- Jump at `PC + imm #2` if `#0 <op> #1`
+# Memory access operations
+- Immediate `$3` specifies size
+- If size is greater than register size,
+    it overflows to adjecent register
+    (eg. copying 16 bytes to register `r1` copies first 8 bytes to it
+         and the remaining to `r2`)
 
-| Opcode | Name |  Comparsion  |
-|:------:|:----:|:------------:|
-|   40   | JEQ  |      =       |
-|   41   | JNE  |      ≠       |
-|   42   | JLT  |  < (signed)  |
-|   43   | JGT  |  > (signed)  |
-|   44   | JLTU | < (unsigned) |
-|   45   | JGTU | > (unsigned) |
+## Absolute addressing
+- Type: `RRAH`
+- Computes address from base register and absolute offset
 
-### Environment call
-- Type N
+| Opcode | Mnemonic | Operation          |
+|:-------|:---------|:-------------------|
+| 0x4D   | LD       | `#0 ← $3[#1 + $2]` |
+| 0x4E   | ST       | `$3[#1 + $2] ← #0` |
 
-| Opcode | Name |                Action                 |
-|:------:|:----:|:-------------------------------------:|
-|   46   | ECA  | Cause an trap to the host environment |
-|   47   | EBP  | Cause breakproint trap to environment |
+## Relative addressing
+- Type: `RROH`
+- Computes address from register and offset from program counter
 
-## Floating point operations
-- Type BBB
-- `#0 ← #1 <op> #2`
+| Opcode | Mnemonic | Operation               |
+|:-------|:---------|:------------------------|
+| 0x4F   | LDR      | `#0 ← $3[pc + #1 + $2]` |
+| 0x50   | STR      | `$3[pc + #1 + $2] ← #0` |
 
-| Opcode | Name |     Action     |
-|:------:|:----:|:--------------:|
-|   48   | ADDF |    Addition    |
-|   49   | SUBF |  Subtraction   |
-|   50   | MULF | Multiplication |
+# Block memory copy
+- Type: `RRH`
+- Copies block of `$3` bytes from memory location on address on `#0` to `#1`
 
-### Division-remainder
-- Type BBBB
+| Opcode | Mnemonic | Operation         |
+|:-------|:---------|:------------------|
+| 0x51   | BMC      | `$3[#1] ← $3[x0]` |
 
-| Opcode | Name |          Action           |
-|:------:|:----:|:-------------------------:|
-|   51   | DIRF | Same as for integer `DIR` |
+# Block register copy
+- Type: `RRB`
+- Copy block of `$3` registers starting with `#0` to `#1`
+- Copying over the 256 registers causes an exception
 
-### Fused Multiply-Add
-- Type BBBB
+| Opcode | Mnemonic | Operation     |
+|:-------|:---------|:--------------|
+| 0x52   | BRC      | `$3#1 ← $3#0` |
 
-| Opcode | Name |        Action         |
-|:------:|:----:|:---------------------:|
-|   52   | FMAF | `#0 ← (#1 * #2) + #3` |
+# Relative jump
+- Type: `O`
 
-### Negation
-- Type BB
-| Opcode | Name |   Action   |
-|:------:|:----:|:----------:|
-|   53   | NEGF | `#0 ← -#1` |
+| Opcode | Mnemonic | Operation      |
+|:-------|:---------|:---------------|
+| 0x53   | JMP      | `pc ← pc + $0` |
 
-### Conversion
-- Type BB
-- Signed
-- `#0 ← #1 as _`
+# Linking jump
+- Operation:
+    - Save address of following instruction to `#0`
+        - `#0 ← pc+<instruction size>`
+    - Jump to specified address 
 
-| Opcode | Name |    Action    |
-|:------:|:----:|:------------:|
-|   54   | ITF  | Int to Float |
-|   55   | FTI  | Float to Int |
+| Opcode | Mnemonic | Instruction type  | Address                  |
+|:-------|:---------|:------------------|:-------------------------|
+| 0x54   | JAL      | RRO (size = 6 B)  | Relative, `pc + #1 + $2` |
+| 0x55   | JALA     | RRA (size = 10 B) | Absolute, `#1 + $2`      |
 
-## Floating point immediate operations
-- Type BBD
-- `#0 ← #1 <op> imm #2`
+# Conditional jump
+- Perform comparsion, if operation met, jump to relative address
+- Type: `RRP`
+- Operation: `if #0 <CMP> #1 { pc ← pc + $2 }`
 
-| Opcode | Name  |     Action     |
-|:------:|:-----:|:--------------:|
-|   56   | ADDFI |    Addition    |
-|   57   | MULFI | Multiplication |
+| Opcode | Mnemonic | Condition          | Type |
+|:-------|:---------|:-------------------|:-----|
+| 0x56   | JEQ      | Equals (`=`)       | Xi64 |
+| 0x57   | JNE      | Not-equals (`≠`)   | Xi64 |
+| 0x58   | JLTU     | Less-than (`<`)    | Ui64 |
+| 0x59   | JGTU     | Greater-than (`>`) | Ui64 |
+| 0x5A   | JLTS     | Less-than (`<`)    | Si64 |
+| 0x5B   | JGTS     | Greater-than (`>`) | Si64 |
 
-# Registers
-- There is 255 registers + one zero register (with index 0)
-- Reading from zero register yields zero
-- Writing to zero register is a no-op
+# Environment traps
+- Traps to the environment
+- Type: `N`
 
-# Memory
-- Addresses are 64 bit
-- Program should be in the same address space as all other data
-- Memory implementation is arbitrary
-    - Address `0x0` may or may not be valid. Count with compilers
-      considering it invalid!
-- In case of accessing invalid address:
-    - Program shall trap (LoadAccessEx, StoreAccessEx) with parameter of accessed address
-    - Value of register when trapped is undefined
+| Opcode | Mnemonic | Trap type        |
+|:-------|:---------|:-----------------|
+| 0x5C   | ECA      | Environment call |
+| 0x5D   | EBP      | Breakpoint       |
 
-## Recommendations
-- If paging used:
-    - Leave first page invalid
-    - Pages should be at least 4 KiB
+# Floating point binary operations
+- Type: `RRR`
+- Operation: `#0 ← #1 <OP> #2`
 
-# Program execution
-- The way of program execution is implementation defined
-- The execution is arbitrary, as long all effects are obervable
-    in the way as program was executed literally, in order.
+| Opcode | Mnemonic | Operation            | Type |
+|:-------|:---------|:---------------------|:-----|
+| 0x5E   | FADD32   | Addition (`+`)       | Fl32 |
+| 0x5F   | FADD64   | Addition (`+`)       | Fl64 |
+| 0x60   | FSUB32   | Subtraction (`-`)    | Fl32 |
+| 0x61   | FSUB64   | Subtraction (`-`)    | Fl64 |
+| 0x62   | FMUL32   | Multiplication (`*`) | Fl32 |
+| 0x63   | FMUL64   | Multiplication (`*`) | Fl64 |
+| 0x64   | FDIV32   | Division (`/`)       | Fl32 |
+| 0x65   | FDIV64   | Division (`/`)       | Fl64 |
 
-# Program validation
-- Invalid program should cause runtime error:
-    - The form of error is arbitrary. Can be a trap or an interpreter-specified error
-    - It shall not be handleable from within the program
-- Executing invalid opcode should trap
-- Program can be validaded either before execution or when executing
+# Fused multiply-add
+- Type: `RRRR`
+- Operation: `#0 ← (#1 * #2) + #3`
 
-# Traps
-Program should at least implement these traps:
-- Environment call
-- Invalid instruction exception
-- Load address exception
-- Store address exception
-- Unreachable instruction
+| Opcode | Mnemonic | Type |
+|:-------|:---------|:-----|
+| 0x66   | FMA32    | Fl32 |
+| 0x67   | FMA64    | Fl64 |
 
-and executing environment should be able to get information about them,
-like the opcode of invalid instruction or attempted address to load/store.
-Details about these are left as an implementation detail.
+# Comparsions
+- Type: `RRR`
+- Operation: `#0 ← #1 <=> #2`
+- Comparsion table same as for `CMPx`/`CMPxI`
+- NaN is less-than/greater-than depends on variant
 
-# Assembly
-HoleyBytes assembly format is not defined, this is just a weak description
-of `hbasm` syntax.
+| Opcode | Mnemonic | Type | NaN is |
+|:-------|:---------|:-----|:-------|
+| 0x6A   | FCMPLT32 | Fl32 | <      |
+| 0x6B   | FCMPLT64 | Fl64 | <      |
+| 0x6C   | FCMPGT32 | Fl32 | >      |
+| 0x6D   | FCMPGT64 | Fl64 | >      |
 
-- Opcode names correspond to specified opcode names, lowercase (`nop`)
-- Parameters are separated by comma (`addi r0, r0, 1`)
-- Instructions are separated by either line feed or semicolon
-- Registers are represented by `r` followed by the number (`r10`)
-- Labels are defined by label name followed with colon (`loop:`)
-- Labels are references simply by their name (`print`)
-- Immediates are entered plainly. Negative numbers supported.
+# Int to float
+- Type: `RR`
+- Converts from `Si64`
+- Operation: `#0 ← Fl<SIZE>(#1)`
+
+| Opcode | Mnemonic | Type |
+|:-------|:---------|:-----|
+| 0x6E   | ITF32    | Fl32 |
+| 0x6F   | ITF64    | Fl64 |
+
+# Float to int
+- Type: `RRB`
+- Operation: `#0 ← Si64(#1)`
+- Immediate `$2` specifies rounding mode
+
+| Opcode | Mnemonic | Type |
+|:-------|:---------|:-----|
+| 0x70   | FTI32    | Fl32 |
+| 0x71   | FTI64    | Fl64 |
+
+# Fl32 to Fl64
+- Type: `RR`
+- Operation: `#0 ← Fl64(#1)`
+
+| Opcode | Mnemonic |
+|:-------|:---------|
+| 0x72   | FC32T64  |
+
+# Fl64 to Fl32
+- Type: `RRB`
+- Operation: `#0 ← Fl32(#1)`
+- Immediate `$2` specified rounding mode
+
+| Opcode | Mnemonic |
+|:-------|:---------|
+| 0x73   | FC64T32  |
+
+# 16-bit relative address instruction variants
+
+| Opcode | Mnemonic | Type | Variant of |
+|:-------|:---------|:-----|:-----------|
+| 0x74   | LRA16    | RRP  | LRA        |
+| 0x75   | LDR16    | RRPH | LDR        |
+| 0x76   | STR16    | RRPH | STR        |
+| 0x77   | JMP16    | P    | JMP        |
