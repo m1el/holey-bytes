@@ -4,10 +4,7 @@ mod mem;
 use {
     hbvm::{mem::Address, Vm, VmRunOk},
     nix::sys::mman::{mmap, MapFlags, ProtFlags},
-    setjmp::sigjmp_buf,
-    std::{
-        cell::UnsafeCell, env::args, fs::File, mem::MaybeUninit, num::NonZeroUsize, process::exit,
-    },
+    std::{env::args, fs::File, num::NonZeroUsize, process::exit},
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -42,9 +39,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     unsafe {
         use nix::sys::signal;
 
-        static JMP_BUF: SyncUnsafeCell<MaybeUninit<sigjmp_buf>> =
-            SyncUnsafeCell::new(MaybeUninit::uninit());
-
         extern "C" fn action(
             _: std::ffi::c_int,
             info: *mut nix::libc::siginfo_t,
@@ -52,17 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ) {
             unsafe {
                 eprintln!("[E] Memory access fault at {:p}", (*info).si_addr());
-                setjmp::siglongjmp((*JMP_BUF.get()).as_mut_ptr(), 1);
             }
-        }
-
-        if setjmp::sigsetjmp((*JMP_BUF.get()).as_mut_ptr(), 0) > 0 {
-            eprintln!(
-                "    Program counter: {:#x}\n\n== Registers ==\n{:?}",
-                vm.pc.get(),
-                vm.registers
-            );
-            exit(3);
         }
 
         signal::sigaction(
@@ -106,26 +90,4 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
-}
-
-#[repr(transparent)]
-struct SyncUnsafeCell<T: ?Sized> {
-    value: UnsafeCell<T>,
-}
-
-unsafe impl<T: ?Sized + Sync> Sync for SyncUnsafeCell<T> {}
-impl<T> SyncUnsafeCell<T> {
-    #[inline(always)]
-    pub const fn new(value: T) -> Self {
-        Self {
-            value: UnsafeCell::new(value),
-        }
-    }
-}
-
-impl<T: ?Sized> SyncUnsafeCell<T> {
-    #[inline(always)]
-    pub const fn get(&self) -> *mut T {
-        self.value.get()
-    }
 }
