@@ -273,6 +273,8 @@ where
                         let OpsRRP(a0, a1, ja) = self.decode();
                         if self.read_reg(a0).cast::<u64>() != self.read_reg(a1).cast::<u64>() {
                             self.pc = self.pcrel(ja, 3);
+                        } else {
+                            self.bump_pc::<OpsRRP, true>();
                         }
                     }
                     JLTS => self.cond_jmp::<u64>(Ordering::Less),
@@ -453,7 +455,7 @@ where
         let OpsRR(tg, reg) = self.decode();
         let imm: T = self.decode();
         self.write_reg(tg, op(self.read_reg(reg).cast::<T>(), imm));
-        self.bump_pc::<OpsRRD, false>();
+        self.bump_pc::<OpsRR, false>();
         self.bump_pc::<T, true>();
     }
 
@@ -527,9 +529,9 @@ where
             == expected
         {
             self.pc = self.pcrel(ja, 3);
+        } else {
+            self.bump_pc::<OpsRRP, true>();
         }
-
-        self.bump_pc::<OpsRRP, true>();
     }
 
     /// Read register

@@ -1,44 +1,35 @@
-use mlua::prelude::*;
+use {
+    crate::{
+        object::{RelocKey, RelocType, Section},
+        SharedObject,
+    },
+    std::io::Write,
+};
 
-pub fn link(
-    symrt: LuaTable,
-    symtab: LuaTable,
-    labels: &[Option<usize>],
-    code: &mut [u8],
-    out: &mut impl std::io::Write,
-) -> mlua::Result<()> {
-    for item in symrt.pairs::<usize, LuaTable>() {
-        let (loc, val) = item?;
-        let size: usize = val.get("size")?;
-        let dest = labels
-            .get(
-                match val.get::<_, LuaValue>("label")? {
-                    LuaValue::Integer(i) => i,
-                    LuaValue::String(s) => symtab.get(s)?,
-                    _ => {
-                        return Err(mlua::Error::runtime(
-                            "Invalid symbol type (int or string expected)",
-                        ))
-                    }
-                } as usize
-                    - 1,
-            )
-            .copied()
-            .flatten()
-            .ok_or_else(|| mlua::Error::runtime("Invalid label"))?;
+pub fn link(object: SharedObject, out: &mut impl Write) -> std::io::Result<()> {
+    let obj = &mut *object.borrow_mut();
+    for (&loc, entry) in &obj.relocs {
+        let value = match &entry.key {
+            RelocKey::Symbol(sym) => obj.symbols[*sym],
+            RelocKey::Label(label) => obj.symbols[obj.labels[label]],
+        }
+        .ok_or_else(|| std::io::Error::other("Invalid symbol"))?;
 
-        let loc = loc - 1;
-        let dest = dest - 1;
-        
-        let offset = dest.wrapping_sub(loc);
-        match size {
-            4 => code[loc..loc + size].copy_from_slice(&(offset as u32).to_le_bytes()),
-            2 => code[loc..loc + size].copy_from_slice(&(offset as u16).to_le_bytes()),
-            _ => return Err(mlua::Error::runtime("Invalid symbol")),
+        let offset = match value.location {
+            Section::Text => value.offset,
+            Section::Data => value.offset + obj.sections.text.len(),
+        };
+
+        match entry.ty {
+            RelocType::Rel32 => obj.sections.text[loc..loc + 4]
+                .copy_from_slice(&((offset as isize - loc as isize) as i32).to_le_bytes()),
+            RelocType::Rel16 => obj.sections.text[loc..loc + 2]
+                .copy_from_slice(&((offset as isize - loc as isize) as i16).to_le_bytes()),
+            RelocType::Abs64 => obj.sections.text[loc..loc + 8]
+                .copy_from_slice(&(offset as isize - loc as isize).to_le_bytes()),
         }
     }
 
-    dbg!(&code);
-    out.write_all(code)?;
-    Ok(())
+    out.write_all(&obj.sections.text)?;
+    out.write_all(&obj.sections.data)
 }
