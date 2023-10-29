@@ -45,6 +45,8 @@ impl Value {
 /// # Safety
 /// - N/A, not to be implemented manually
 pub unsafe trait ValueVariant: private::Sealed + Copy + Into<Value> {}
+impl private::Sealed for Value {}
+unsafe impl ValueVariant for Value {}
 
 mod private {
     pub trait Sealed {}

@@ -543,9 +543,15 @@ where
     /// Write a register.
     /// Writing to register 0 is no-op.
     #[inline(always)]
-    fn write_reg(&mut self, n: u8, value: impl Into<Value>) {
+    fn write_reg<T: ValueVariant>(&mut self, n: u8, value: T) {
         if n != 0 {
-            unsafe { *self.registers.get_unchecked_mut(n as usize) = value.into() };
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    (&value as *const T).cast::<u8>(),
+                    self.registers.as_mut_ptr().add(n.into()).cast::<u8>(),
+                    core::mem::size_of::<T>(),
+                );
+            };
         }
     }
 
