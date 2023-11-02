@@ -46,6 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ) {
             unsafe {
                 eprintln!("[E] Memory access fault at {:p}", (*info).si_addr());
+                exit(2);
             }
         }
 
