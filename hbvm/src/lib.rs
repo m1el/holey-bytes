@@ -13,7 +13,10 @@
 #![no_std]
 #![cfg_attr(feature = "nightly", feature(fn_align))]
 
-use mem::{Address, Memory};
+use {
+    mem::{Address, Memory},
+    value::ValueVariant,
+};
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -64,6 +67,27 @@ where
             pc: entry,
             timer: 0,
             copier: None,
+        }
+    }
+
+    /// Read register
+    #[inline(always)]
+    pub fn read_reg(&self, n: u8) -> Value {
+        unsafe { *self.registers.get_unchecked(n as usize) }
+    }
+
+    /// Write a register.
+    /// Writing to register 0 is no-op.
+    #[inline(always)]
+    pub fn write_reg<T: ValueVariant>(&mut self, n: u8, value: T) {
+        if n != 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    (&value as *const T).cast::<u8>(),
+                    self.registers.as_mut_ptr().add(n.into()).cast::<u8>(),
+                    core::mem::size_of::<T>(),
+                );
+            };
         }
     }
 }

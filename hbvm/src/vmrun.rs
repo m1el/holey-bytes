@@ -3,12 +3,7 @@
 //! Have fun
 
 use {
-    super::{
-        bmc::BlockCopier,
-        mem::Memory,
-        value::{Value, ValueVariant},
-        Vm, VmRunError, VmRunOk,
-    },
+    super::{bmc::BlockCopier, mem::Memory, value::ValueVariant, Vm, VmRunError, VmRunOk},
     crate::{
         mem::{addr::AddressOp, Address},
         value::CheckedDivRem,
@@ -531,27 +526,6 @@ where
             self.pc = self.pcrel(ja, 3);
         } else {
             self.bump_pc::<OpsRRP, true>();
-        }
-    }
-
-    /// Read register
-    #[inline(always)]
-    fn read_reg(&self, n: u8) -> Value {
-        unsafe { *self.registers.get_unchecked(n as usize) }
-    }
-
-    /// Write a register.
-    /// Writing to register 0 is no-op.
-    #[inline(always)]
-    fn write_reg<T: ValueVariant>(&mut self, n: u8, value: T) {
-        if n != 0 {
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    (&value as *const T).cast::<u8>(),
-                    self.registers.as_mut_ptr().add(n.into()).cast::<u8>(),
-                    core::mem::size_of::<T>(),
-                );
-            };
         }
     }
 
