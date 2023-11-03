@@ -13,11 +13,6 @@
 #![no_std]
 #![cfg_attr(feature = "nightly", feature(fn_align))]
 
-use {
-    mem::{Address, Memory},
-    value::ValueVariant,
-};
-
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
@@ -29,7 +24,11 @@ mod float;
 mod utils;
 mod vmrun;
 
-use {bmc::BlockCopier, value::Value};
+use {
+    bmc::BlockCopier,
+    mem::{Address, Memory},
+    value::{Value, ValueVariant},
+};
 
 /// HoleyBytes Virtual Machine
 pub struct Vm<Mem, const TIMER_QUOTIENT: usize> {
