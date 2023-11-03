@@ -110,7 +110,7 @@ impl TryFrom<u8> for RoundingMode {
     type Error = ();
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        (value >= 3)
+        (value <= 3)
             .then(|| unsafe { core::mem::transmute(value) })
             .ok_or(())
     }
