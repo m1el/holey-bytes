@@ -1,8 +1,9 @@
 //! Virtual(?) memory address
 
-use core::{fmt::Debug, ops};
-
-use crate::utils::impl_display;
+use {
+    crate::utils::impl_display,
+    core::{fmt::Debug, ops},
+};
 
 /// Memory address
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -125,7 +126,6 @@ macro_rules! impl_address_ops_i(($($ty:ty),* $(,)?) => {
         fn cast_u64(self) -> u64 { self as i64 as u64 }
     })*
 });
-
 
 impl_address_ops_u!(u8, u16, u32, u64, usize);
 impl_address_ops_i!(i8, i16, i32, i64, isize);
