@@ -80,17 +80,18 @@ where
                     AND => self.binary_op::<u64>(ops::BitAnd::bitand),
                     OR => self.binary_op::<u64>(ops::BitOr::bitor),
                     XOR => self.binary_op::<u64>(ops::BitXor::bitxor),
-                    SLU8 => self.binary_op::<u8>(ops::Shl::shl),
-                    SLU16 => self.binary_op::<u16>(ops::Shl::shl),
-                    SLU32 => self.binary_op::<u32>(ops::Shl::shl),
-                    SLU64 => self.binary_op::<u64>(ops::Shl::shl),
-                    SRU8 => self.binary_op::<u8>(ops::Shr::shr),
-                    SRU16 => self.binary_op::<u16>(ops::Shr::shr),
-                    SRU32 => self.binary_op::<u32>(ops::Shr::shr),
-                    SRS8 => self.binary_op::<u64>(ops::Shr::shr),
-                    SRS16 => self.binary_op::<i8>(ops::Shr::shr),
-                    SRS32 => self.binary_op::<i16>(ops::Shr::shr),
-                    SRS64 => self.binary_op::<i64>(ops::Shr::shr),
+                    SLU8 => self.binary_op_shift::<u8>(u8::wrapping_shl),
+                    SLU16 => self.binary_op_shift::<u16>(u16::wrapping_shl),
+                    SLU32 => self.binary_op_shift::<u32>(u32::wrapping_shl),
+                    SLU64 => self.binary_op_shift::<u64>(u64::wrapping_shl),
+                    SRU8 => self.binary_op_shift::<u8>(u8::wrapping_shr),
+                    SRU16 => self.binary_op_shift::<u16>(u16::wrapping_shr),
+                    SRU32 => self.binary_op_shift::<u32>(u32::wrapping_shr),
+                    SRU64 => self.binary_op_shift::<u64>(u64::wrapping_shr),
+                    SRS8 => self.binary_op_shift::<i8>(i8::wrapping_shr),
+                    SRS16 => self.binary_op_shift::<i16>(i16::wrapping_shr),
+                    SRS32 => self.binary_op_shift::<i32>(i32::wrapping_shr),
+                    SRS64 => self.binary_op_shift::<i64>(i64::wrapping_shr),
                     CMPU => handler!(self, |OpsRRR(tg, a0, a1)| self.cmp(
                         tg,
                         a0,
@@ -137,18 +138,18 @@ where
                     ANDI => self.binary_op_imm::<u64>(ops::BitAnd::bitand),
                     ORI => self.binary_op_imm::<u64>(ops::BitOr::bitor),
                     XORI => self.binary_op_imm::<u64>(ops::BitXor::bitxor),
-                    SLUI8 => self.binary_op_ims::<u8>(ops::Shl::shl),
-                    SLUI16 => self.binary_op_ims::<u16>(ops::Shl::shl),
-                    SLUI32 => self.binary_op_ims::<u32>(ops::Shl::shl),
-                    SLUI64 => self.binary_op_ims::<u64>(ops::Shl::shl),
-                    SRUI8 => self.binary_op_ims::<u8>(ops::Shr::shr),
-                    SRUI16 => self.binary_op_ims::<u16>(ops::Shr::shr),
-                    SRUI32 => self.binary_op_ims::<u32>(ops::Shr::shr),
-                    SRUI64 => self.binary_op_ims::<u64>(ops::Shr::shr),
-                    SRSI8 => self.binary_op_ims::<i8>(ops::Shr::shr),
-                    SRSI16 => self.binary_op_ims::<i16>(ops::Shr::shr),
-                    SRSI32 => self.binary_op_ims::<i32>(ops::Shr::shr),
-                    SRSI64 => self.binary_op_ims::<i64>(ops::Shr::shr),
+                    SLUI8 => self.binary_op_ims::<u8>(u8::wrapping_shl),
+                    SLUI16 => self.binary_op_ims::<u16>(u16::wrapping_shl),
+                    SLUI32 => self.binary_op_ims::<u32>(u32::wrapping_shl),
+                    SLUI64 => self.binary_op_ims::<u64>(u64::wrapping_shl),
+                    SRUI8 => self.binary_op_ims::<u8>(u8::wrapping_shr),
+                    SRUI16 => self.binary_op_ims::<u16>(u16::wrapping_shr),
+                    SRUI32 => self.binary_op_ims::<u32>(u32::wrapping_shr),
+                    SRUI64 => self.binary_op_ims::<u64>(u64::wrapping_shr),
+                    SRSI8 => self.binary_op_ims::<i8>(i8::wrapping_shr),
+                    SRSI16 => self.binary_op_ims::<i16>(i16::wrapping_shr),
+                    SRSI32 => self.binary_op_ims::<i32>(i32::wrapping_shr),
+                    SRSI64 => self.binary_op_ims::<i64>(i64::wrapping_shr),
                     CMPUI => handler!(self, |OpsRRD(tg, a0, imm)| { self.cmp(tg, a0, imm) }),
                     CMPSI => handler!(self, |OpsRRD(tg, a0, imm)| { self.cmp(tg, a0, imm as i64) }),
                     CP => handler!(self, |OpsRR(tg, a0)| self.write_reg(tg, self.read_reg(a0))),
@@ -404,7 +405,7 @@ where
                 .as_mut_ptr()
                 .add(usize::from(dst) + usize::from(n))
                 .cast(),
-            usize::from(count).wrapping_sub(n.into()),
+            usize::from(count).saturating_sub(n.into()),
         )?;
 
         Ok(())
@@ -456,9 +457,23 @@ where
 
     /// Perform binary operation over register and shift immediate
     #[inline(always)]
-    unsafe fn binary_op_ims<T: ValueVariant>(&mut self, op: impl Fn(T, u8) -> T) {
+    unsafe fn binary_op_shift<T: ValueVariant>(&mut self, op: impl Fn(T, u32) -> T) {
+        let OpsRRR(tg, a0, a1) = self.decode();
+        self.write_reg(
+            tg,
+            op(
+                self.read_reg(a0).cast::<T>(),
+                self.read_reg(a1).cast::<u32>(),
+            ),
+        );
+        self.bump_pc::<OpsRRR, true>();
+    }
+
+    /// Perform binary operation over register and shift immediate
+    #[inline(always)]
+    unsafe fn binary_op_ims<T: ValueVariant>(&mut self, op: impl Fn(T, u32) -> T) {
         let OpsRRB(tg, reg, imm) = self.decode();
-        self.write_reg(tg, op(self.read_reg(reg).cast::<T>(), imm));
+        self.write_reg(tg, op(self.read_reg(reg).cast::<T>(), imm.into()));
         self.bump_pc::<OpsRRW, true>();
     }
 
