@@ -23,7 +23,7 @@ pub fn assembler(
     label::setup(&mut engine, &mut module, Rc::clone(&obj));
 
     // Registers
-    for n in 0_u8..255 {
+    for n in 0_u8..=255 {
         module.set_var(format!("r{n}"), n);
     }
 
