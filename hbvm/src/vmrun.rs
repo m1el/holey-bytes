@@ -242,7 +242,7 @@ where
                     }),
                     JMP => {
                         let OpsO(off) = self.decode();
-                        self.pc = self.pc.wrapping_add(off);
+                        self.pc = self.pc.wrapping_add(off).wrapping_add(1);
                     }
                     JAL => {
                         // Jump and link. Save PC after this instruction to
