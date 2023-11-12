@@ -19,7 +19,7 @@ macro_rules! handler {
     ($self:expr, |$ty:ident ($($ident:pat),* $(,)?)| $expr:expr) => {{
         let $ty($($ident),*) = $self.decode::<$ty>();
         #[allow(clippy::no_effect)] let e = $expr;
-        $self.bump_pc::<$ty, true>();
+        $self.bump_pc::<$ty>();
         e
     }};
 }
@@ -57,11 +57,11 @@ where
             unsafe {
                 match self.memory.prog_read::<u8>(self.pc as _) {
                     UN => {
-                        self.bump_pc::<OpsN, true>();
+                        self.bump_pc::<OpsN>();
                         return Err(VmRunError::Unreachable);
                     }
                     TX => {
-                        self.bump_pc::<OpsN, true>();
+                        self.bump_pc::<OpsN>();
                         return Ok(VmRunOk::End);
                     }
                     NOP => handler!(self, |OpsN()| ()),
@@ -217,7 +217,7 @@ where
                             // We are done, shift program counter
                             core::task::Poll::Ready(Ok(())) => {
                                 self.copier = None;
-                                self.bump_pc::<OpsRRH, true>();
+                                self.bump_pc::<OpsRRH>();
                             }
                             // Error, shift program counter (for consistency)
                             // and yield error
@@ -270,7 +270,7 @@ where
                         if self.read_reg(a0).cast::<u64>() != self.read_reg(a1).cast::<u64>() {
                             self.pc = self.pcrel(ja, 3);
                         } else {
-                            self.bump_pc::<OpsRRP, true>();
+                            self.bump_pc::<OpsRRP>();
                         }
                     }
                     JLTS => self.cond_jmp::<u64>(Ordering::Less),
@@ -283,11 +283,11 @@ where
                             self.timer = self.timer.wrapping_add(1);
                         }
 
-                        self.bump_pc::<OpsN, true>();
+                        self.bump_pc::<OpsN>();
                         return Ok(VmRunOk::Ecall);
                     }
                     EBP => {
-                        self.bump_pc::<OpsN, true>();
+                        self.bump_pc::<OpsN>();
                         return Ok(VmRunOk::Breakpoint);
                     }
                     FADD32 => self.binary_op::<f32>(ops::Add::add),
@@ -373,10 +373,8 @@ where
 
     /// Bump instruction pointer
     #[inline(always)]
-    fn bump_pc<T: Copy, const PAST_OP: bool>(&mut self) {
-        self.pc = self
-            .pc
-            .wrapping_add(core::mem::size_of::<T>() + PAST_OP as usize);
+    fn bump_pc<T: Copy>(&mut self) {
+        self.pc = self.pc.wrapping_add(core::mem::size_of::<T>());
     }
 
     /// Decode instruction operands
@@ -442,17 +440,19 @@ where
             tg,
             op(self.read_reg(a0).cast::<T>(), self.read_reg(a1).cast::<T>()),
         );
-        self.bump_pc::<OpsRRR, true>();
+        self.bump_pc::<OpsRRR>();
     }
 
     /// Perform binary operation over register and immediate
     #[inline(always)]
     unsafe fn binary_op_imm<T: ValueVariant>(&mut self, op: impl Fn(T, T) -> T) {
-        let OpsRR(tg, reg) = self.decode();
-        let imm: T = self.decode();
+        #[derive(Clone, Copy)]
+        #[repr(packed)]
+        struct OpsRRImm<I>(OpsRR, I);
+
+        let OpsRRImm::<T>(OpsRR(tg, reg), imm) = self.decode();
         self.write_reg(tg, op(self.read_reg(reg).cast::<T>(), imm));
-        self.bump_pc::<OpsRR, false>();
-        self.bump_pc::<T, true>();
+        self.bump_pc::<OpsRRImm<T>>();
     }
 
     /// Perform binary operation over register and shift immediate
@@ -466,7 +466,7 @@ where
                 self.read_reg(a1).cast::<u32>(),
             ),
         );
-        self.bump_pc::<OpsRRR, true>();
+        self.bump_pc::<OpsRRR>();
     }
 
     /// Perform binary operation over register and shift immediate
@@ -474,7 +474,7 @@ where
     unsafe fn binary_op_ims<T: ValueVariant>(&mut self, op: impl Fn(T, u32) -> T) {
         let OpsRRB(tg, reg, imm) = self.decode();
         self.write_reg(tg, op(self.read_reg(reg).cast::<T>(), imm.into()));
-        self.bump_pc::<OpsRRW, true>();
+        self.bump_pc::<OpsRRW>();
     }
 
     /// Fused division-remainder
@@ -540,7 +540,7 @@ where
         {
             self.pc = self.pcrel(ja, 3);
         } else {
-            self.bump_pc::<OpsRRP, true>();
+            self.bump_pc::<OpsRRP>();
         }
     }
 
