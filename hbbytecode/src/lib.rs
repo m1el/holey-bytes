@@ -1,107 +1,119 @@
 #![no_std]
 
-macro_rules! constmod {
-    ($vis:vis $mname:ident($repr:ty) {
-        $(#![doc = $mdoc:literal])?
-        $($cname:ident = $val:expr $(,$doc:literal)?;)*
-    }) => {
-        $(#[doc = $mdoc])?
-        $vis mod $mname {
+use core::convert::TryFrom;
+
+type OpR = u8;
+
+type OpA = u64;
+type OpO = i32;
+type OpP = i16;
+
+type OpB = u8;
+type OpH = u16;
+type OpW = u32;
+type OpD = u64;
+
+/// # Safety
+/// Has to be valid to be decoded from bytecode.
+pub unsafe trait BytecodeItem {}
+macro_rules! define_items {
+    ($($name:ident ($($item:ident),* $(,)?)),* $(,)?) => {
+        $(
+            #[derive(Clone, Copy, Debug)]
+            #[repr(packed)]
+            pub struct $name($(pub $item),*);
+            unsafe impl BytecodeItem for $name {}
+        )*
+    };
+}
+
+define_items! {
+    OpsRR   (OpR, OpR          ),
+    OpsRRR  (OpR, OpR, OpR     ),
+    OpsRRRR (OpR, OpR, OpR, OpR),
+    OpsRRB  (OpR, OpR, OpB     ),
+    OpsRRH  (OpR, OpR, OpH     ),
+    OpsRRW  (OpR, OpR, OpW     ),
+    OpsRRD  (OpR, OpR, OpD     ),
+    OpsRB   (OpR, OpB          ),
+    OpsRH   (OpR, OpH          ),
+    OpsRW   (OpR, OpW          ),
+    OpsRD   (OpR, OpD          ),
+    OpsRRA  (OpR, OpR, OpA     ),
+    OpsRRAH (OpR, OpR, OpA, OpH),
+    OpsRROH (OpR, OpR, OpO, OpH),
+    OpsRRPH (OpR, OpR, OpP, OpH),
+    OpsRRO  (OpR, OpR, OpO     ),
+    OpsRRP  (OpR, OpR, OpP     ),
+    OpsO    (OpO,              ),
+    OpsP    (OpP,              ),
+    OpsN    (                  ),
+}
+
+unsafe impl BytecodeItem for u8 {}
+
+::with_builtin_macros::with_builtin! {
+    let $spec = include_from_root!("instructions.in") in {
+        /// Invoke macro with bytecode definition
+        ///
+        /// # Format
+        /// ```text
+        /// Opcode, Mnemonic, Type, Docstring;
+        /// ```
+        ///
+        /// # Type
+        /// ```text
+        /// Types consist of letters meaning a single field
+        /// | Type | Size (B) | Meaning                 |
+        /// |:-----|:---------|:------------------------|
+        /// | N    | 0        | Empty                   |
+        /// | R    | 1        | Register                |
+        /// | A    | 8        | Absolute address        |
+        /// | O    | 4        | Relative address offset |
+        /// | P    | 2        | Relative address offset |
+        /// | B    | 1        | Immediate               |
+        /// | H    | 2        | Immediate               |
+        /// | W    | 4        | Immediate               |
+        /// | D    | 8        | Immediate               |
+        /// ```
+        #[macro_export]
+            macro_rules! invoke_with_def {
+                ($macro:path) => {
+                    $macro! { $spec }
+                };
+            }
+    }
+}
+
+macro_rules! gen_opcodes {
+    ($($opcode:expr, $mnemonic:ident, $_ty:ident, $doc:literal;)*) => {
+        pub mod opcode {
             $(
-                $(#[doc = $doc])?
-                pub const $cname: $repr = $val;
+                #[doc = $doc]
+                pub const $mnemonic: u8 = $opcode;
             )*
         }
     };
 }
 
-constmod!(pub opcode(u8) {
-    //! Opcode constant module
+/// Rounding mode
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RoundingMode {
+    NearestEven = 0,
+    Truncate = 1,
+    Up       = 2,
+    Down     = 3,
+}
 
-    NOP = 0, "N; Do nothing";
+impl TryFrom<u8> for RoundingMode {
+    type Error = ();
 
-    ADD  = 1,  "BBB; #0 ← #1 + #2";
-    SUB  = 2,  "BBB; #0 ← #1 - #2";
-    MUL  = 3,  "BBB; #0 ← #1 × #2";
-    AND  = 4,  "BBB; #0 ← #1 & #2";
-    OR   = 5,  "BBB; #0 ← #1 | #2";
-    XOR  = 6,  "BBB; #0 ← #1 ^ #2";
-    SL   = 7,  "BBB; #0 ← #1 « #2";
-    SR   = 8,  "BBB; #0 ← #1 » #2";
-    SRS  = 9,  "BBB; #0 ← #1 » #2 (signed)";
-    CMP  = 10, "BBB; #0 ← #1 <=> #2";
-    CMPU = 11, "BBB; #0 ← #1 <=> #2 (unsigned)";
-    DIR  = 12, "BBBB; #0 ← #2 / #3, #1 ← #2 % #3";
-    NEG  = 13, "BB; #0 ← -#1";
-    NOT  = 14, "BB; #0 ← !#1";
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        (value <= 3)
+            .then(|| unsafe { core::mem::transmute(value) })
+            .ok_or(())
+    }
+}
 
-    ADDI  = 15, "BBD; #0 ← #1 + imm #2";
-    MULI  = 16, "BBD; #0 ← #1 × imm #2";
-    ANDI  = 17, "BBD; #0 ← #1 & imm #2";
-    ORI   = 18, "BBD; #0 ← #1 | imm #2";
-    XORI  = 19, "BBD; #0 ← #1 ^ imm #2";
-    SLI   = 20, "BBD; #0 ← #1 « imm #2";
-    SRI   = 21, "BBD; #0 ← #1 » imm #2";
-    SRSI  = 22, "BBD; #0 ← #1 » imm #2 (signed)";
-    CMPI  = 23, "BBD; #0 ← #1 <=> imm #2";
-    CMPUI = 24, "BBD; #0 ← #1 <=> imm #2 (unsigned)";
-
-    CP  = 25, "BB; Copy #0 ← #1";
-    SWA = 26, "BB; Swap #0 and #1";
-    LI  = 27, "BD; #0 ← imm #1";
-    LD  = 28, "BBDB; #0 ← [#1 + imm #3], imm #4 bytes, overflowing";
-    ST  = 29, "BBDB; [#1 + imm #3] ← #0, imm #4 bytes, overflowing";
-    BMC = 30, "BBD; [#0] ← [#1], imm #2 bytes";
-    BRC = 31, "BBB; #0 ← #1, imm #2 registers";
-
-    JAL   = 32, "BD;  Copy PC to #0 and unconditional jump [#1 + imm #2]";
-    JEQ   = 33, "BBD; if #0 = #1 → jump imm #2";
-    JNE   = 34, "BBD; if #0 ≠ #1 → jump imm #2";
-    JLT   = 35, "BBD; if #0 < #1 → jump imm #2";
-    JGT   = 36, "BBD; if #0 > #1 → jump imm #2";
-    JLTU  = 37, "BBD; if #0 < #1 → jump imm #2 (unsigned)";
-    JGTU  = 38, "BBD; if #0 > #1 → jump imm #2 (unsigned)";
-    ECALL = 39, "N; Issue system call";
-
-    ADDF = 40, "BBB; #0 ← #1 +. #2";
-    SUBF = 41, "BBB; #0 ← #1 -. #2";
-    MULF = 42, "BBB; #0 ← #1 +. #2";
-    DIRF = 43, "BBBB; #0 ← #2 / #3, #1 ← #2 % #3";
-    FMAF = 44, "BBBB; #0 ← (#1 * #2) + #3";
-    NEGF = 45, "BB; #0 ← -#1";
-    ITF  = 46, "BB; #0 ← #1 as float";
-    FTI  = 47, "BB; #0 ← #1 as int";
-
-    ADDFI = 48, "BBD; #0 ← #1 +. imm #2";
-    MULFI = 49, "BBD; #0 ← #1 *. imm #2";
-});
-
-#[repr(packed)]
-pub struct ParamBBBB(pub u8, pub u8, pub u8, pub u8);
-
-#[repr(packed)]
-pub struct ParamBBB(pub u8, pub u8, pub u8);
-
-#[repr(packed)]
-pub struct ParamBBDH(pub u8, pub u8, pub u64, pub u16);
-
-#[repr(packed)]
-pub struct ParamBBD(pub u8, pub u8, pub u64);
-
-#[repr(packed)]
-pub struct ParamBB(pub u8, pub u8);
-
-#[repr(packed)]
-pub struct ParamBD(pub u8, pub u64);
-
-/// # Safety
-/// Has to be valid to be decoded from bytecode.
-pub unsafe trait OpParam {}
-unsafe impl OpParam for ParamBBBB {}
-unsafe impl OpParam for ParamBBB {}
-unsafe impl OpParam for ParamBBDH {}
-unsafe impl OpParam for ParamBBD {}
-unsafe impl OpParam for ParamBB {}
-unsafe impl OpParam for ParamBD {}
-unsafe impl OpParam for u64 {}
-unsafe impl OpParam for () {}
+invoke_with_def!(gen_opcodes);
