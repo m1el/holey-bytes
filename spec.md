@@ -480,18 +480,26 @@ Program counter stays on the currently executed instruction
 | long long   | Long long integer        | 8          |
 | float       | Single-precision float   | 4          |
 | double      | Double-precision float   | 8          |
-| long double | Extended-precision float | TBD        |
+| long double | Extended-precision float | 8          |
+
+- Bikeshedding note: `long double` is now 8 bytes as
+  the base ISA does not support `f128`. an extension
+  for that should be made.
 
 ## Call convention
-- Registers r1 – r30 are caller saved
-- Registers r31 – r255 are callee saved
+- Registers r1 – r31 are caller saved
+- Registers r32 – r255 are callee saved
 
-| Register | Description         | Saver  |
-|:---------|:--------------------|:-------|
-| r0       | Hard-wired zero     | N/A    |
-| r1 - r2  | Return values       | Caller |
-| r2 - r11 | Function parameters | Caller |
-| r30      | Return address      | Caller |
+| Register   | Description         | Saver  |
+|:-----------|:--------------------|:-------|
+| r0         | Hard-wired zero     | N/A    |
+| r1 - r2    | Return values       | Caller |
+| r2 - r11   | Function parameters | Caller |
+| r12 - r30  | General purpose     | Caller |
+| r31        | Return address      | Caller |
+| r32 - r253 | General purpose     | Callee |
+| r254       | Stack pointer       | Callee |
+| r255       | Thread pointer      | N/A    |
 
-If return value is too big to fit one register, r2 is also used.
-TODO: Stack pointer, Thread pointer, ...
+- If return value is too big to fit r1, r2 is also used.
+- Values larger than two double-words are passed by reference
