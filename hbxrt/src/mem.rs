@@ -26,6 +26,6 @@ impl Memory for HostMemory {
 
     #[inline]
     unsafe fn prog_read<T: Copy>(&mut self, addr: Address) -> T {
-        core::ptr::read(addr.get() as *const T)
+        unsafe { core::ptr::read(addr.get() as *const T) }
     }
 }

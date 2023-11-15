@@ -46,7 +46,7 @@ unsafe fn set_rounding_mode(mode: RoundingMode) {
     }
 
     let fpcr: u64;
-    asm!("mrs {}, fpcr", out(reg) fpcr);
+    unsafe { asm!("mrs {}, fpcr", out(reg) fpcr) };
 
     let fpcr = fpcr & !(0b11 << 22)
         | (match mode {
@@ -56,7 +56,7 @@ unsafe fn set_rounding_mode(mode: RoundingMode) {
             RoundingMode::Down => 0b10,
         }) << 22;
 
-    asm!("msr fpcr, {}", in(reg) fpcr);
+    unsafe { asm!("msr fpcr, {}", in(reg) fpcr) };
 }
 
 #[inline(always)]

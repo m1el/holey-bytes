@@ -17,7 +17,8 @@ use {
 
 macro_rules! handler {
     ($self:expr, |$ty:ident ($($ident:pat),* $(,)?)| $expr:expr) => {{
-        let $ty($($ident),*) = $self.decode::<$ty>();
+        #[allow(unused_unsafe)]
+        let $ty($($ident),*) = unsafe { $self.decode::<$ty>() };
         #[allow(clippy::no_effect)] let e = $expr;
         $self.bump_pc::<$ty>();
         e
@@ -383,7 +384,7 @@ where
     /// Decode instruction operands
     #[inline(always)]
     unsafe fn decode<T: Copy>(&mut self) -> T {
-        self.memory.prog_read::<T>(self.pc + 1_u64)
+        unsafe { self.memory.prog_read::<T>(self.pc + 1_u64) }
     }
 
     /// Load
@@ -400,14 +401,16 @@ where
             _ => 0,
         };
 
-        self.memory.load(
-            self.ldst_addr_uber(dst, base, offset, count, n)?,
-            self.registers
-                .as_mut_ptr()
-                .add(usize::from(dst) + usize::from(n))
-                .cast(),
-            usize::from(count).saturating_sub(n.into()),
-        )?;
+        unsafe {
+            self.memory.load(
+                self.ldst_addr_uber(dst, base, offset, count, n)?,
+                self.registers
+                    .as_mut_ptr()
+                    .add(usize::from(dst) + usize::from(n))
+                    .cast(),
+                usize::from(count).saturating_sub(n.into()),
+            )
+        }?;
 
         Ok(())
     }
@@ -421,11 +424,13 @@ where
         offset: u64,
         count: u16,
     ) -> Result<(), VmRunError> {
-        self.memory.store(
-            self.ldst_addr_uber(dst, base, offset, count, 0)?,
-            self.registers.as_ptr().add(usize::from(dst)).cast(),
-            count.into(),
-        )?;
+        unsafe {
+            self.memory.store(
+                self.ldst_addr_uber(dst, base, offset, count, 0)?,
+                self.registers.as_ptr().add(usize::from(dst)).cast(),
+                count.into(),
+            )
+        }?;
         Ok(())
     }
 
@@ -438,7 +443,7 @@ where
     /// Perform binary operating over two registers
     #[inline(always)]
     unsafe fn binary_op<T: ValueVariant>(&mut self, op: impl Fn(T, T) -> T) {
-        let OpsRRR(tg, a0, a1) = self.decode();
+        let OpsRRR(tg, a0, a1) = unsafe { self.decode() };
         self.write_reg(
             tg,
             op(self.read_reg(a0).cast::<T>(), self.read_reg(a1).cast::<T>()),
@@ -453,7 +458,7 @@ where
         #[repr(packed)]
         struct OpsRRImm<I>(OpsRR, I);
 
-        let OpsRRImm::<T>(OpsRR(tg, reg), imm) = self.decode();
+        let OpsRRImm::<T>(OpsRR(tg, reg), imm) = unsafe { self.decode() };
         self.write_reg(tg, op(self.read_reg(reg).cast::<T>(), imm));
         self.bump_pc::<OpsRRImm<T>>();
     }
@@ -461,7 +466,7 @@ where
     /// Perform binary operation over register and shift immediate
     #[inline(always)]
     unsafe fn binary_op_shift<T: ValueVariant>(&mut self, op: impl Fn(T, u32) -> T) {
-        let OpsRRR(tg, a0, a1) = self.decode();
+        let OpsRRR(tg, a0, a1) = unsafe { self.decode() };
         self.write_reg(
             tg,
             op(
@@ -475,7 +480,7 @@ where
     /// Perform binary operation over register and shift immediate
     #[inline(always)]
     unsafe fn binary_op_ims<T: ValueVariant>(&mut self, op: impl Fn(T, u32) -> T) {
-        let OpsRRB(tg, reg, imm) = self.decode();
+        let OpsRRB(tg, reg, imm) = unsafe { self.decode() };
         self.write_reg(tg, op(self.read_reg(reg).cast::<T>(), imm.into()));
         self.bump_pc::<OpsRRW>();
     }
@@ -534,7 +539,7 @@ where
     /// Jump at `PC + #3` if ordering on `#0 <=> #1` is equal to expected
     #[inline(always)]
     unsafe fn cond_jmp<T: ValueVariant + Ord>(&mut self, expected: Ordering) {
-        let OpsRRP(a0, a1, ja) = self.decode();
+        let OpsRRP(a0, a1, ja) = unsafe { self.decode() };
         if self
             .read_reg(a0)
             .cast::<T>()

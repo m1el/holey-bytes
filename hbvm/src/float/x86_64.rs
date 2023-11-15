@@ -56,12 +56,14 @@ fnsdef! {
 ///   [`default_rounding_mode`], you have to rely on inline assembly
 #[inline(always)]
 unsafe fn set_rounding_mode(mode: RoundingMode) {
-    arin::_MM_SET_ROUNDING_MODE(match mode {
-        RoundingMode::NearestEven => return,
-        RoundingMode::Truncate => arin::_MM_ROUND_TOWARD_ZERO,
-        RoundingMode::Up => arin::_MM_ROUND_UP,
-        RoundingMode::Down => arin::_MM_ROUND_DOWN,
-    })
+    unsafe {
+        arin::_MM_SET_ROUNDING_MODE(match mode {
+            RoundingMode::NearestEven => return,
+            RoundingMode::Truncate => arin::_MM_ROUND_TOWARD_ZERO,
+            RoundingMode::Up => arin::_MM_ROUND_UP,
+            RoundingMode::Down => arin::_MM_ROUND_DOWN,
+        })
+    }
 }
 
 #[inline(always)]

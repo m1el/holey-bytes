@@ -51,7 +51,7 @@ impl<'p, PfH: HandlePageFault, const OUT_PROG_EXEC: bool> Memory
             target,
             count,
             perm_check::readable,
-            |src, dst, count| core::ptr::copy_nonoverlapping(src, dst, count),
+            |src, dst, count| unsafe { core::ptr::copy_nonoverlapping(src, dst, count) },
         )
         .map_err(LoadError)
     }
@@ -72,7 +72,7 @@ impl<'p, PfH: HandlePageFault, const OUT_PROG_EXEC: bool> Memory
             source.cast_mut(),
             count,
             perm_check::writable,
-            |dst, src, count| core::ptr::copy_nonoverlapping(src, dst, count),
+            |dst, src, count| unsafe { core::ptr::copy_nonoverlapping(src, dst, count) },
         )
         .map_err(StoreError)
     }
@@ -80,16 +80,14 @@ impl<'p, PfH: HandlePageFault, const OUT_PROG_EXEC: bool> Memory
     #[inline(always)]
     unsafe fn prog_read<T>(&mut self, addr: Address) -> T {
         if OUT_PROG_EXEC && addr.truncate_usize() > self.program.len() {
-            return self
-                .icache
-                .fetch::<T>(addr, self.root_pt)
+            return unsafe { self.icache.fetch::<T>(addr, self.root_pt) }
                 .unwrap_or_else(|| unsafe { core::mem::zeroed() });
         }
 
         let addr = addr.truncate_usize();
         self.program
             .get(addr..addr + size_of::<T>())
-            .map(|x| x.as_ptr().cast::<T>().read())
+            .map(|x| unsafe { x.as_ptr().cast::<T>().read() })
             .unwrap_or_else(|| unsafe { core::mem::zeroed() })
     }
 }

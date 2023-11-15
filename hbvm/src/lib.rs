@@ -12,6 +12,7 @@
 
 #![no_std]
 #![cfg_attr(feature = "nightly", feature(fn_align))]
+#![deny(unsafe_op_in_unsafe_fn)]
 
 #[cfg(feature = "alloc")]
 extern crate alloc;

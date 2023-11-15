@@ -48,14 +48,14 @@ impl ICache {
 
         let pbase = self
             .data
-            .or_else(|| self.fetch_page(self.base + self.size, root_pt))?;
+            .or_else(|| unsafe { self.fetch_page(self.base + self.size, root_pt) })?;
 
         // Get address base
         let base = addr.map(|x| x & self.mask);
 
         // Base not matching, fetch anew
         if base != self.base {
-            self.fetch_page(base, root_pt)?;
+            unsafe { self.fetch_page(base, root_pt) }?;
         };
 
         let offset = addr.get() & !self.mask;
@@ -68,25 +68,27 @@ impl ICache {
         let first_copy = requ_size.saturating_sub(rem);
 
         // Copy non-overflowing part
-        copy_nonoverlapping(pbase.as_ptr(), ret.as_mut_ptr().cast::<u8>(), first_copy);
+        unsafe { copy_nonoverlapping(pbase.as_ptr(), ret.as_mut_ptr().cast::<u8>(), first_copy) };
 
         // Copy overflow
         if rem != 0 {
-            let pbase = self.fetch_page(self.base + self.size, root_pt)?;
+            let pbase = unsafe { self.fetch_page(self.base + self.size, root_pt) }?;
 
             // Unlikely, unsupported scenario
             if rem > self.size as _ {
                 return None;
             }
 
-            copy_nonoverlapping(
-                pbase.as_ptr(),
-                ret.as_mut_ptr().cast::<u8>().add(first_copy),
-                rem,
-            );
+            unsafe {
+                copy_nonoverlapping(
+                    pbase.as_ptr(),
+                    ret.as_mut_ptr().cast::<u8>().add(first_copy),
+                    rem,
+                )
+            };
         }
 
-        Some(ret.assume_init())
+        Some(unsafe { ret.assume_init() })
     }
 
     /// Fetch a page

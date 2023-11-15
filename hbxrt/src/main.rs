@@ -1,4 +1,7 @@
 //! Holey Bytes Experimental Runtime
+
+#![deny(unsafe_op_in_unsafe_fn)]
+
 mod mem;
 
 use {
@@ -32,7 +35,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("[I] Image loaded at {ptr:p}");
 
-    // Execute program
     let mut vm = unsafe { Vm::<_, 0>::new(mem::HostMemory, Address::new(ptr as u64)) };
 
     // Memory access fault handling
@@ -60,6 +62,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
     }
 
+    // Execute program
     let stat = loop {
         match vm.run() {
             Ok(VmRunOk::Breakpoint) => eprintln!(

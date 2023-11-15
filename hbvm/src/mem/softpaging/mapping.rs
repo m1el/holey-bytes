@@ -36,9 +36,11 @@ impl<'p, A, const OUT_PROG_EXEC: bool> SoftPagedMem<'p, A, OUT_PROG_EXEC> {
 
         // Walk pagetable levels
         for lvl in (lookup_depth + 1..5).rev() {
-            let entry = (*current_pt)
-                .table
-                .get_unchecked_mut(addr_extract_index(target, lvl));
+            let entry = unsafe {
+                (*current_pt)
+                    .table
+                    .get_unchecked_mut(addr_extract_index(target, lvl))
+            };
 
             let ptr = entry.ptr();
             match entry.permission() {
@@ -46,13 +48,13 @@ impl<'p, A, const OUT_PROG_EXEC: bool> SoftPagedMem<'p, A, OUT_PROG_EXEC> {
                 // No worries! Let's create one (allocates).
                 Permission::Empty => {
                     // Increase children count
-                    (*current_pt).childen += 1;
+                    unsafe { *current_pt }.childen += 1;
 
                     let table = Box::into_raw(Box::new(PtPointedData {
                         pt: PageTable::default(),
                     }));
 
-                    core::ptr::write(entry, PtEntry::new(table, Permission::Node));
+                    unsafe { core::ptr::write(entry, PtEntry::new(table, Permission::Node)) };
                     current_pt = table as _;
                 }
                 // Continue walking
@@ -63,9 +65,11 @@ impl<'p, A, const OUT_PROG_EXEC: bool> SoftPagedMem<'p, A, OUT_PROG_EXEC> {
             }
         }
 
-        let node = (*current_pt)
-            .table
-            .get_unchecked_mut(addr_extract_index(target, lookup_depth));
+        let node = unsafe {
+            (*current_pt)
+                .table
+                .get_unchecked_mut(addr_extract_index(target, lookup_depth))
+        };
 
         // Check if node is not mapped
         if node.permission() != Permission::Empty {
@@ -73,8 +77,10 @@ impl<'p, A, const OUT_PROG_EXEC: bool> SoftPagedMem<'p, A, OUT_PROG_EXEC> {
         }
 
         // Write entry
-        (*current_pt).childen += 1;
-        core::ptr::write(node, PtEntry::new(host.cast(), perm));
+        unsafe {
+            (*current_pt).childen += 1;
+            core::ptr::write(node, PtEntry::new(host.cast(), perm));
+        }
 
         Ok(())
     }
