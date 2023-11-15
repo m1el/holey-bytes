@@ -19,6 +19,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         exit(1);
     };
 
+    // Allocate stack
+    const STACK_SIZE: usize = 1024 * 1024 * 2;
+
+    let stack_ptr = unsafe {
+        mmap::<std::fs::File>(
+            None,
+            NonZeroUsize::new(STACK_SIZE).expect("Stack size should be > 0"),
+            ProtFlags::PROT_GROWSDOWN | ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
+            MapFlags::MAP_GROWSDOWN
+                | MapFlags::MAP_STACK
+                | MapFlags::MAP_ANON
+                | MapFlags::MAP_PRIVATE,
+            None,
+            0,
+        )
+    }?;
+
+    eprintln!("[I] Stack allocated at {stack_ptr:p}");
+
     // Load program
     eprintln!("[I] Loading image from \"{image_path}\"");
     let file = File::open(image_path)?;
@@ -36,6 +55,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("[I] Image loaded at {ptr:p}");
 
     let mut vm = unsafe { Vm::<_, 0>::new(mem::HostMemory, Address::new(ptr as u64)) };
+    vm.write_reg(254, stack_ptr as u64);
 
     // Memory access fault handling
     unsafe {
