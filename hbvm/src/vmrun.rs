@@ -374,7 +374,10 @@ where
     /// Bump instruction pointer
     #[inline(always)]
     fn bump_pc<T: Copy>(&mut self) {
-        self.pc = self.pc.wrapping_add(core::mem::size_of::<T>());
+        self.pc = self
+            .pc
+            .wrapping_add(core::mem::size_of::<T>())
+            .wrapping_add(1);
     }
 
     /// Decode instruction operands
