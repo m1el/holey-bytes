@@ -94,8 +94,8 @@ Program counter stays on the currently executed instruction
 | 0x01   | TX       | Terminate execution (eg. on end of program) |
 | 0x02   | NOP      | Do nothing                                  |
 
-## Binary register-immediate ops
-- Type `RR<IMM>`
+## Binary register-register ops
+- Type `RRR`
 - Action: `#0 ← #1 <OP> #2`
 
 ## Addition (`+`)
