@@ -11,7 +11,7 @@
 - [opcode, operand 0, operand 1, …]
 
 ## Instruction parameter types
-- `R`: Register (8 bits)
+- `R`: Register (8 bytes)
 - Relative program-counter offset immediates:
     - `O`: 32 bit (Si32)
     - `P`: 16 bit (Si16)
