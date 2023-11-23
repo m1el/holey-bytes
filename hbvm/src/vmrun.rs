@@ -41,14 +41,14 @@ where
             // Contribution guide:
             // - Zero register shall never be overwitten. It's value has to always be 0.
             //     - Prefer `Self::read_reg` and `Self::write_reg` functions
-            // - Extract parameters using `param!` macro
+            // - Try to use `handler!` macro for decoding and then bumping program counter
             // - Prioritise speed over code size
             //     - Memory is cheap, CPUs not that much
             // - Do not heap allocate at any cost
             //     - Yes, user-provided trap handler may allocate,
             //       but that is not our »fault«.
             // - Unsafe is kinda must, but be sure you have validated everything
-            //     - Your contributions have to pass sanitizers and Miri
+            //     - Your contributions have to pass sanitizers, fuzzer and Miri
             // - Strictly follow the spec
             //     - The spec does not specify how you perform actions, in what order,
             //       just that the observable effects have to be performed in order and
