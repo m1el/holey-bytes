@@ -2,6 +2,7 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+mod linux;
 mod mem;
 
 use {
@@ -20,67 +21,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Allocate stack
-    const STACK_SIZE: usize = 1024 * 1024 * 2;
-
-    let stack_ptr = unsafe {
-        mmap::<std::fs::File>(
-            None,
-            NonZeroUsize::new(STACK_SIZE).expect("Stack size should be > 0"),
-            ProtFlags::PROT_GROWSDOWN | ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
-            MapFlags::MAP_GROWSDOWN
-                | MapFlags::MAP_STACK
-                | MapFlags::MAP_ANON
-                | MapFlags::MAP_PRIVATE,
-            None,
-            0,
-        )
-    }?;
-
+    let stack_ptr = unsafe { linux::alloc_stack(1024 * 1024 * 2) }?;
     eprintln!("[I] Stack allocated at {stack_ptr:p}");
 
     // Load program
     eprintln!("[I] Loading image from \"{image_path}\"");
-    let file = File::open(image_path)?;
-    let ptr = unsafe {
-        mmap(
-            None,
-            NonZeroUsize::new(file.metadata()?.len() as usize).ok_or("File is empty")?,
-            ProtFlags::PROT_READ,
-            MapFlags::MAP_PRIVATE,
-            Some(&file),
-            0,
-        )?
-    };
-
+    let ptr = unsafe { linux::mmap_bytecode(image_path) }?;
     eprintln!("[I] Image loaded at {ptr:p}");
 
     let mut vm = unsafe { Vm::<_, 0>::new(mem::HostMemory, Address::new(ptr as u64)) };
     vm.write_reg(254, stack_ptr as u64);
 
-    // Memory access fault handling
-    unsafe {
-        use nix::sys::signal;
-
-        extern "C" fn action(
-            _: std::ffi::c_int,
-            info: *mut nix::libc::siginfo_t,
-            _: *mut std::ffi::c_void,
-        ) {
-            unsafe {
-                eprintln!("[E] Memory access fault at {:p}", (*info).si_addr());
-                exit(2);
-            }
-        }
-
-        signal::sigaction(
-            signal::Signal::SIGSEGV,
-            &nix::sys::signal::SigAction::new(
-                signal::SigHandler::SigAction(action),
-                signal::SaFlags::SA_NODEFER,
-                nix::sys::signalfd::SigSet::empty(),
-            ),
-        )?;
-    }
+    unsafe { linux::hook_pagefault() }?;
 
     // Execute program
     let stat = loop {
