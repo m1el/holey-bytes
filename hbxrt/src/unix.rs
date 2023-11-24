@@ -38,7 +38,7 @@ pub unsafe fn mmap_bytecode(path: impl AsRef<Path>) -> Result<*mut u8, Box<dyn s
 }
 
 /// Set handler for page fault
-pub unsafe fn hook_pagefault() -> nix::Result<()> {
+pub unsafe fn catch_mafs() -> nix::Result<()> {
     unsafe {
         use nix::sys::signal;
 

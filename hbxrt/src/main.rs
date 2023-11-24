@@ -2,17 +2,23 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-mod linux;
+#[cfg(unix)]
+#[path = "unix.rs"]
+mod platform;
+
+#[cfg(windows)]
+#[path = "win32.rs"]
+mod platform;
+
 mod mem;
 
 use {
     hbvm::{mem::Address, Vm, VmRunOk},
-    nix::sys::mman::{mmap, MapFlags, ProtFlags},
-    std::{env::args, fs::File, num::NonZeroUsize, process::exit},
+    std::{env::args, process::exit},
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    eprintln!("== HB×RT (Holey Bytes Linux Runtime) v0.1 ==");
+    eprintln!("== HB×RT (Holey Bytes Experimental Runtime) v0.1 ==");
     eprintln!("[W] Currently supporting only flat images");
 
     let Some(image_path) = args().nth(1) else {
@@ -21,18 +27,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Allocate stack
-    let stack_ptr = unsafe { linux::alloc_stack(1024 * 1024 * 2) }?;
+    let stack_ptr = unsafe { platform::alloc_stack(1024 * 1024 * 2) }?;
     eprintln!("[I] Stack allocated at {stack_ptr:p}");
 
     // Load program
     eprintln!("[I] Loading image from \"{image_path}\"");
-    let ptr = unsafe { linux::mmap_bytecode(image_path) }?;
+    let ptr = unsafe { platform::mmap_bytecode(image_path) }?;
     eprintln!("[I] Image loaded at {ptr:p}");
 
     let mut vm = unsafe { Vm::<_, 0>::new(mem::HostMemory, Address::new(ptr as u64)) };
     vm.write_reg(254, stack_ptr as u64);
 
-    unsafe { linux::hook_pagefault() }?;
+    unsafe { platform::catch_mafs() }?;
 
     // Execute program
     let stat = loop {
