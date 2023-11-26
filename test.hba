@@ -1,9 +1,0 @@
-let hello = data::str("Hello, world!");
-
-li8(r1, 6);
-li8(r2, 10);
-lra16(r3, r0, hello);
-li8(r4, hello.len);
-
-eca();
-tx();

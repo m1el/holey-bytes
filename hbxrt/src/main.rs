@@ -2,16 +2,13 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
-mod eca;
 mod mem;
 
 use {
     hbvm::{mem::Address, Vm, VmRunOk},
     memmap2::Mmap,
-    std::{env::args, fs::File, io::Read, mem::MaybeUninit, process::exit},
+    std::{env::args, fs::File, mem::MaybeUninit, process::exit},
 };
-
-type RtVm = Vm<mem::HostMemory, 0>;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("== HB×RT (Holey Bytes Experimental Runtime) v0.1 ==");
