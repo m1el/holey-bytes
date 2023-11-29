@@ -47,7 +47,7 @@
 0x2E, ADDI16,   RRH,  "Addition with immediate (16b)"               ;
 0x2F, ADDI32,   RRW,  "Addition with immediate (32b)"               ;
 0x30, ADDI64,   RRD,  "Addition with immediate (64b)"               ;
-0x31, MULI8,    RRW,  "Multiplication with immediate (8b)"          ;
+0x31, MULI8,    RRB,  "Multiplication with immediate (8b)"          ;
 0x32, MULI16,   RRH,  "Multiplication with immediate (16b)"         ;
 0x33, MULI32,   RRW,  "Multiplication with immediate (32b)"         ;
 0x34, MULI64,   RRD,  "Multiplication with immediate (64b)"         ;
@@ -114,7 +114,7 @@
 0x71, FTI64,    RRB,  "Float 64 to int"                             ;
 0x72, FC32T64,  RR,   "Float 64 to Float 32"                        ;
 0x73, FC64T32,  RRB,  "Float 32 to Float 64"                        ;
-0x74, LRA16,    RRP,  "Load relative immediate (16 bit)"            ;
+0x74, LRA16,    RRO,  "Load relative immediate (16 bit)"            ;
 0x75, LDR16,    RRPH, "Load from relative address (16 bit)"         ;
 0x76, STR16,    RRPH, "Store to relative address (16 bit)"          ;
 0x77, JMP16,    P,    "Relative jump (16 bit)"                      ;
