@@ -77,11 +77,11 @@ unsafe impl BytecodeItem for u8 {}
         /// | D    | 8        | Immediate               |
         /// ```
         #[macro_export]
-            macro_rules! invoke_with_def {
-                ($macro:path) => {
-                    $macro! { $spec }
-                };
-            }
+        macro_rules! invoke_with_def {
+            ($($macro:tt)*) => {
+                $($macro)*! { $spec }
+            };
+        }
     }
 }
 
