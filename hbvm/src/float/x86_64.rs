@@ -30,9 +30,24 @@ macro_rules! fnsdef {
         $vis fn $name(val: $from, mode: RoundingMode) -> $to {
             let result: $to;
             unsafe {
-                set_rounding_mode(mode);
+                let mut mxcsr = 0_u32;
+                'a: {
+                    asm!("stmxcsr {}", in(reg) &mut mxcsr);
+                    asm!(
+                        "ldmxcsr {}",
+                        in(reg) &(mxcsr & !arin::_MM_ROUND_MASK | match mode {
+                            RoundingMode::NearestEven => break 'a,
+                            RoundingMode::Truncate => arin::_MM_ROUND_TOWARD_ZERO,
+                            RoundingMode::Up => arin::_MM_ROUND_UP,
+                            RoundingMode::Down => arin::_MM_ROUND_DOWN,
+                        })
+                    );
+                }
+
                 op!($ins, val, result => $to);
-                default_rounding_mode();
+
+                // Set MXCSR to original value
+                asm!("ldmxcsr {}", in(reg) &mxcsr);
             }
             result
         }
@@ -46,28 +61,4 @@ fnsdef! {
     pub fn f32toint(f32 -> i64): "cvttss2si";
     /// Convert [`f64`] to [`i64`] with chosen rounding mode
     pub fn f64toint(f64 -> i64): "cvttsd2si";
-}
-
-/// Set rounding mode
-///
-/// # Safety
-/// - Do not call if rounding mode isn't [`RoundingMode::NearestEven`]
-/// - Do not perform any Rust FP operations until reset using
-///   [`default_rounding_mode`], you have to rely on inline assembly
-#[inline(always)]
-unsafe fn set_rounding_mode(mode: RoundingMode) {
-    unsafe {
-        arin::_MM_SET_ROUNDING_MODE(match mode {
-            RoundingMode::NearestEven => return,
-            RoundingMode::Truncate => arin::_MM_ROUND_TOWARD_ZERO,
-            RoundingMode::Up => arin::_MM_ROUND_UP,
-            RoundingMode::Down => arin::_MM_ROUND_DOWN,
-        })
-    }
-}
-
-#[inline(always)]
-fn default_rounding_mode() {
-    // SAFETY: This is said to be the default mode, do not trust me.
-    unsafe { arin::_MM_SET_ROUNDING_MODE(arin::_MM_ROUND_NEAREST) };
 }
