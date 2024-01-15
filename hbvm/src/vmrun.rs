@@ -482,7 +482,7 @@ where
     unsafe fn binary_op_ims<T: ValueVariant>(&mut self, op: impl Fn(T, u32) -> T) {
         let OpsRRB(tg, reg, imm) = unsafe { self.decode() };
         self.write_reg(tg, op(self.read_reg(reg).cast::<T>(), imm.into()));
-        self.bump_pc::<OpsRRW>();
+        self.bump_pc::<OpsRRB>();
     }
 
     /// Fused division-remainder
