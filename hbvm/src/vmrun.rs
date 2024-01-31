@@ -11,7 +11,7 @@ use {
     core::{cmp::Ordering, ops},
     hbbytecode::{
         OpsN, OpsO, OpsP, OpsRB, OpsRD, OpsRH, OpsRR, OpsRRA, OpsRRAH, OpsRRB, OpsRRD, OpsRRH,
-        OpsRRO, OpsRROH, OpsRRP, OpsRRPH, OpsRRR, OpsRRRR, OpsRRW, OpsRW, RoundingMode,
+        OpsRRO, OpsRROH, OpsRRP, OpsRRPH, OpsRRR, OpsRRRR, OpsRW, RoundingMode,
     },
 };
 
