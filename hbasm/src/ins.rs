@@ -4,7 +4,7 @@ use {
     std::{cell::RefCell, rc::Rc},
 };
 
-mod optypes {
+pub mod optypes {
     use {
         crate::{
             label::UnboundLabel,
@@ -101,7 +101,7 @@ mod optypes {
     use crate::data::DataRef;
 }
 
-mod rity {
+pub mod rity {
     pub use super::optypes::{A, O, P, R};
     pub type B = i64;
     pub type H = i64;
@@ -109,7 +109,7 @@ mod rity {
     pub type D = i64;
 }
 
-mod generic {
+pub mod generic {
     use {crate::object::Object, rhai::EvalAltResult};
 
     pub(super) fn convert_op<A, B>(from: A) -> Result<B, EvalAltResult>

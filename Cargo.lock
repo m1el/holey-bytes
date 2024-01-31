@@ -201,6 +201,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "hblang"
+version = "0.1.0"
+
+[[package]]
 name = "hbvm"
 version = "0.1.0"
 dependencies = [

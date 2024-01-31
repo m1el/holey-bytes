@@ -1,8 +1,8 @@
-mod data;
-mod ins;
-mod label;
-mod linker;
-mod object;
+pub mod data;
+pub mod ins;
+pub mod label;
+pub mod linker;
+pub mod object;
 
 use {
     object::Object,
