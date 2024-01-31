@@ -23,6 +23,21 @@ macro_rules! define_items {
             #[repr(packed)]
             pub struct $name($(pub $item),*);
             unsafe impl BytecodeItem for $name {}
+
+            impl Encodable for $name {
+                fn encode(self, buffer: &mut impl Buffer) {
+                    let array = unsafe {
+                        core::mem::transmute::<Self, [u8; core::mem::size_of::<Self>()]>(self)
+                    };
+                    for byte in array {
+                        unsafe { buffer.write(byte) };
+                    }
+                }
+
+                fn encode_len(self) -> usize {
+                    core::mem::size_of::<Self>()
+                }
+            }
         )*
     };
 }
@@ -85,13 +100,55 @@ unsafe impl BytecodeItem for u8 {}
     }
 }
 
+pub trait Buffer {
+    fn reserve(&mut self, bytes: usize);
+    /// # Safety
+    /// Reserve needs to be called before this function, and only reserved amount can be written.
+    unsafe fn write(&mut self, byte: u8);
+}
+
+pub trait Encodable {
+    fn encode(self, buffer: &mut impl Buffer);
+    fn encode_len(self) -> usize;
+}
+
 macro_rules! gen_opcodes {
-    ($($opcode:expr, $mnemonic:ident, $_ty:ident, $doc:literal;)*) => {
+    ($($opcode:expr, $mnemonic:ident, $ty:ident, $doc:literal;)*) => {
         pub mod opcode {
             $(
                 #[doc = $doc]
                 pub const $mnemonic: u8 = $opcode;
             )*
+
+            paste::paste! {
+                #[derive(Clone, Copy, Debug)]
+                pub enum Op { $(
+                    [< $mnemonic:lower:camel >](super::[<Ops $ty>]),
+                )* }
+
+                impl crate::Encodable for Op {
+                    fn encode(self, buffer: &mut impl crate::Buffer) {
+                        match self {
+                            $(
+                                Self::[< $mnemonic:lower:camel >](op) => {
+                                    unsafe { buffer.write($opcode) };
+                                    op.encode(buffer);
+                                }
+                            )*
+                        }
+                    }
+
+                    fn encode_len(self) -> usize {
+                        match self {
+                            $(
+                                Self::[< $mnemonic:lower:camel >](op) => {
+                                    1 + crate::Encodable::encode_len(op)
+                                }
+                            )*
+                        }
+                    }
+                }
+            }
         }
     };
 }

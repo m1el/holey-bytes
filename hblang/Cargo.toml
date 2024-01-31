@@ -6,3 +6,8 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+#hbbytecode = { version = "0.1.0", path = "../hbbytecode" }
+logos = "0.13.0"
+
+[dev-dependencies]
+hbvm = { path = "../hbvm", features = ["nightly"] }
