@@ -51,6 +51,7 @@ macro_rules! gen_token {
 gen_token! {
     TokenKind {
         keywords: {
+            Use = "use",
             Fn = "fn",
             Let = "let",
             If = "if",

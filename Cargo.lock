@@ -217,7 +217,7 @@ dependencies = [
 name = "hblang"
 version = "0.1.0"
 dependencies = [
- "hbvm",
+ "hbbytecode",
  "logos",
 ]
 
