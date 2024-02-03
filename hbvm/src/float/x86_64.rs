@@ -32,9 +32,9 @@ macro_rules! fnsdef {
             unsafe {
                 let mut mxcsr = 0_u32;
                 'a: {
-                    asm!("stmxcsr {}", in(reg) &mut mxcsr);
+                    asm!("stmxcsr [{}]", in(reg) &mut mxcsr);
                     asm!(
-                        "ldmxcsr {}",
+                        "ldmxcsr [{}]",
                         in(reg) &(mxcsr & !arin::_MM_ROUND_MASK | match mode {
                             RoundingMode::NearestEven => break 'a,
                             RoundingMode::Truncate => arin::_MM_ROUND_TOWARD_ZERO,
@@ -47,7 +47,7 @@ macro_rules! fnsdef {
                 op!($ins, val, result => $to);
 
                 // Set MXCSR to original value
-                asm!("ldmxcsr {}", in(reg) &mxcsr);
+                asm!("ldmxcsr [{}]", in(reg) &mxcsr);
             }
             result
         }
