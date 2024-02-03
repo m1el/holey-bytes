@@ -13,7 +13,7 @@ pub enum Item {
     Function(Function),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Type {
     Builtin(Ty),
     Struct(String),
@@ -22,6 +22,7 @@ pub enum Type {
 
 #[derive(Clone, Debug)]
 pub struct Struct {
+    pub name:   String,
     pub fields: Vec<Field>,
 }
 
@@ -104,7 +105,7 @@ pub enum Exp {
 
 #[derive(Clone, Debug)]
 pub enum Literal {
-    Int(i64),
+    Int(u64),
     Bool(bool),
 }
 
@@ -197,6 +198,7 @@ impl<'a> Parser<'a> {
         match token.kind {
             TokenKind::Struct => Some(self.parse_struct()),
             TokenKind::Fn => Some(self.parse_function()),
+            TokenKind::Use => Some(Item::Import(self.expect(TokenKind::String).value)),
             tkn => {
                 let (line, col) = self.pos_to_line_col(token.span.start);
                 panic!("Unexpected {:?} at {}:{}", tkn, line, col)
@@ -301,7 +303,6 @@ impl<'a> Parser<'a> {
                 let value = token.value.parse().unwrap();
                 Exp::Literal(Literal::Int(value))
             }
-            TokenKind::Fn => todo!(),
             TokenKind::Let => {
                 let name = self.expect(TokenKind::Ident).value;
                 let ty = self.try_advance(TokenKind::Colon).then(|| self.type_());
@@ -332,7 +333,6 @@ impl<'a> Parser<'a> {
                     else_,
                 }
             }
-            TokenKind::Else => todo!(),
             TokenKind::For => {
                 let params =
                     self.sequence(TokenKind::Semicolon, TokenKind::LBrace, Self::parse_expr);
@@ -385,21 +385,10 @@ impl<'a> Parser<'a> {
                     .then(|| Box::new(self.parse_expr()));
                 Exp::Return(value)
             }
-            TokenKind::Break => todo!(),
-            TokenKind::Continue => todo!(),
-            TokenKind::Struct => todo!(),
-            TokenKind::RBrace => todo!(),
-            TokenKind::RParen => todo!(),
-            TokenKind::LBracket => todo!(),
-            TokenKind::RBracket => todo!(),
-            TokenKind::Colon => todo!(),
-            TokenKind::Semicolon => todo!(),
-            TokenKind::Comma => todo!(),
             TokenKind::Op(op) => Exp::Unary {
                 op,
                 exp: Box::new(self.parse_expr()),
             },
-            TokenKind::Ty(_) => todo!(),
             TokenKind::Dot => {
                 let token = self.expect_any();
                 match token.kind {
@@ -416,6 +405,25 @@ impl<'a> Parser<'a> {
                         panic!("Unexpected {:?} at {}:{}", tkn, line, col)
                     }
                 }
+            }
+
+            TokenKind::Ty(_)
+            | TokenKind::String
+            | TokenKind::Use
+            | TokenKind::Break
+            | TokenKind::Continue
+            | TokenKind::Struct
+            | TokenKind::RBrace
+            | TokenKind::RParen
+            | TokenKind::LBracket
+            | TokenKind::RBracket
+            | TokenKind::Colon
+            | TokenKind::Semicolon
+            | TokenKind::Comma
+            | TokenKind::Fn
+            | TokenKind::Else => {
+                let (line, col) = self.pos_to_line_col(token.span.start);
+                panic!("Unexpected {:?} at {}:{}", token.kind, line, col)
             }
         };
 

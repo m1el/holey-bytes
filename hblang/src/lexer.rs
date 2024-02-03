@@ -144,6 +144,7 @@ gen_token! {
         },
         regexes: {
             Ident = "[a-zA-Z_][a-zA-Z0-9_]*",
+            String = r#""([^"\\]|\\.)*""#,
             Number = "[0-9]+",
         },
     }

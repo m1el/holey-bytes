@@ -17,7 +17,7 @@ type OpD = u64;
 /// Has to be valid to be decoded from bytecode.
 pub unsafe trait BytecodeItem {}
 macro_rules! define_items {
-    ($($name:ident ($($item:ident),* $(,)?)),* $(,)?) => {
+    ($($name:ident ($($nm:ident: $item:ident),* $(,)?)),* $(,)?) => {
         $(
             #[derive(Clone, Copy, Debug)]
             #[repr(packed)]
@@ -25,13 +25,13 @@ macro_rules! define_items {
             unsafe impl BytecodeItem for $name {}
 
             impl Encodable for $name {
-                fn encode(self, buffer: &mut impl Buffer) {
-                    let array = unsafe {
-                        core::mem::transmute::<Self, [u8; core::mem::size_of::<Self>()]>(self)
-                    };
-                    for byte in array {
-                        unsafe { buffer.write(byte) };
-                    }
+                fn encode(self, _buffer: &mut impl Buffer) {
+                    let Self($($nm),*) = self;
+                    $(
+                        for byte in $nm.to_le_bytes() {
+                            unsafe { _buffer.write(byte) };
+                        }
+                    )*
                 }
 
                 fn encode_len(self) -> usize {
@@ -43,26 +43,26 @@ macro_rules! define_items {
 }
 
 define_items! {
-    OpsRR   (OpR, OpR          ),
-    OpsRRR  (OpR, OpR, OpR     ),
-    OpsRRRR (OpR, OpR, OpR, OpR),
-    OpsRRB  (OpR, OpR, OpB     ),
-    OpsRRH  (OpR, OpR, OpH     ),
-    OpsRRW  (OpR, OpR, OpW     ),
-    OpsRRD  (OpR, OpR, OpD     ),
-    OpsRB   (OpR, OpB          ),
-    OpsRH   (OpR, OpH          ),
-    OpsRW   (OpR, OpW          ),
-    OpsRD   (OpR, OpD          ),
-    OpsRRA  (OpR, OpR, OpA     ),
-    OpsRRAH (OpR, OpR, OpA, OpH),
-    OpsRROH (OpR, OpR, OpO, OpH),
-    OpsRRPH (OpR, OpR, OpP, OpH),
-    OpsRRO  (OpR, OpR, OpO     ),
-    OpsRRP  (OpR, OpR, OpP     ),
-    OpsO    (OpO,              ),
-    OpsP    (OpP,              ),
-    OpsN    (                  ),
+    OpsRR   (a: OpR, b: OpR                ),
+    OpsRRR  (a: OpR, b: OpR, c: OpR        ),
+    OpsRRRR (a: OpR, b: OpR, c: OpR, d: OpR),
+    OpsRRB  (a: OpR, b: OpR, c: OpB        ),
+    OpsRRH  (a: OpR, b: OpR, c: OpH        ),
+    OpsRRW  (a: OpR, b: OpR, c: OpW        ),
+    OpsRRD  (a: OpR, b: OpR, c: OpD        ),
+    OpsRB   (a: OpR, b: OpB                ),
+    OpsRH   (a: OpR, b: OpH                ),
+    OpsRW   (a: OpR, b: OpW                ),
+    OpsRD   (a: OpR, b: OpD                ),
+    OpsRRA  (a: OpR, b: OpR, c: OpA        ),
+    OpsRRAH (a: OpR, b: OpR, c: OpA, d: OpH),
+    OpsRROH (a: OpR, b: OpR, c: OpO, d: OpH),
+    OpsRRPH (a: OpR, b: OpR, c: OpP, d: OpH),
+    OpsRRO  (a: OpR, b: OpR, c: OpO        ),
+    OpsRRP  (a: OpR, b: OpR, c: OpP        ),
+    OpsO    (a: OpO,                       ),
+    OpsP    (a: OpP,                       ),
+    OpsN    (                              ),
 }
 
 unsafe impl BytecodeItem for u8 {}
