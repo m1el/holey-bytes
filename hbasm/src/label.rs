@@ -3,73 +3,78 @@ use {
     rhai::{Engine, ImmutableString, Module},
 };
 
+macro_rules! shdm_fns {
+    (
+        module: $module:expr;
+        shared: $shared:expr => $shname:ident;
+
+        $(
+            $vis:ident fn $name:ident($($params:tt)*) $(-> $ret:ty)? $blk:block
+        )*
+    ) => {{
+        let module = $module;
+        let shared = $shared;
+        $({
+            let $shname = SharedObject::clone(&shared);
+            let hash    = module.set_native_fn(
+                stringify!($name),
+                move |$($params)*| $(-> $ret)? {
+                    let mut $shname = $shname.borrow_mut();
+                    $blk
+                },
+            );
+
+            module.update_fn_namespace(
+                hash,
+                paste::paste!(rhai::FnNamespace::[<$vis:camel>])
+            );
+        })*
+    }};
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct UnboundLabel(pub usize);
 
 pub fn setup(engine: &mut Engine, module: &mut Module, object: SharedObject) {
-    {
-        let object = SharedObject::clone(&object);
-        let hash = module.set_native_fn("label", move || {
-            let mut obj = object.borrow_mut();
+    shdm_fns! {
+        module: module;
+        shared: object => obj;
+
+        global fn label() {
             let symbol = obj.symbol(crate::object::Section::Text);
             Ok(symbol)
-        });
+        }
 
-        module.update_fn_namespace(hash, rhai::FnNamespace::Global);
-    }
-
-    {
-        let object = SharedObject::clone(&object);
-        let hash = module.set_native_fn("label", move |label: ImmutableString| {
-            let mut obj = object.borrow_mut();
+        global fn label(label: ImmutableString) {
             let symbol = obj.symbol(crate::object::Section::Text);
             obj.labels.insert(label, symbol.0);
 
             Ok(symbol)
-        });
+        }
 
-        module.update_fn_namespace(hash, rhai::FnNamespace::Global);
-    }
-
-    {
-        let object = SharedObject::clone(&object);
-        let hash = module.set_native_fn("declabel", move || {
-            let mut obj = object.borrow_mut();
-
+        global fn declabel() {
             let index = obj.symbols.len();
             obj.symbols.push(None);
 
             Ok(UnboundLabel(index))
-        });
+        }
 
-        module.update_fn_namespace(hash, rhai::FnNamespace::Global);
-    }
-
-    {
-        let object = SharedObject::clone(&object);
-        let hash = module.set_native_fn("declabel", move |label: ImmutableString| {
-            let mut obj = object.borrow_mut();
-
+        global fn declabel(label: ImmutableString) {
             let index = obj.symbols.len();
             obj.symbols.push(None);
             obj.labels.insert(label, index);
 
             Ok(UnboundLabel(index))
-        });
+        }
 
-        module.update_fn_namespace(hash, rhai::FnNamespace::Global);
-    }
-
-    {
-        module.set_native_fn("here", move |label: UnboundLabel| {
-            let mut obj = object.borrow_mut();
+        global fn here(label: UnboundLabel) {
             obj.symbols[label.0] = Some(crate::object::SymbolEntry {
                 location: crate::object::Section::Text,
                 offset:   obj.sections.text.len(),
             });
 
             Ok(())
-        });
+        }
     }
 
     engine.register_type_with_name::<UnboundLabel>("UnboundLabel");
