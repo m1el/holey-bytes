@@ -3,7 +3,6 @@ use std::{iter::Cycle, ops::Range};
 use crate::{
     lexer::Ty,
     parser::{Exp, Function, Item, Literal, Struct, Type},
-    typechk::Type,
 };
 
 //| Register   | Description         | Saver  |
@@ -75,10 +74,10 @@ pub struct ParamAlloc {
 }
 
 impl ParamAlloc {
-    fn new(reg_range: Range<Reg>) -> Self {
+    fn new() -> Self {
         Self {
-            stack: 16,
-            reg_range,
+            stack:     16,
+            reg_range: 2..12,
         }
     }
 
@@ -103,12 +102,12 @@ impl ParamAlloc {
             1 => {
                 let reg = self.reg_range.start;
                 self.reg_range.start += 1;
-                Some(Value::Reg(reg))
+                Some(Value::Reg(reg, None))
             }
             2 => {
                 let reg = self.reg_range.start;
                 self.reg_range.start += 2;
-                Some(Value::Pair(reg, reg + 1))
+                Some(Value::Reg(reg, Some(reg + 1)))
             }
             _ => unreachable!(),
         }
@@ -162,12 +161,11 @@ type Reg = u8;
 type Offset = i32;
 
 enum Value {
-    Pair(Reg, Reg),
-    Reg(Reg),
+    Reg(Reg, Option<Reg>),
     Stack(Offset),
     Imm(u64),
-    Spilled(Reg, SlotId),
-    DoubleSpilled(SlotId, Offset),
+    Spilled(Reg, SlotId, Option<Reg>, Option<SlotId>),
+    DoubleSpilled(SlotId, Offset, Option<SlotId>),
 }
 
 type Label = usize;
@@ -194,6 +192,9 @@ pub struct Generator<'a> {
     ast: &'a [Item],
 
     func_labels: Vec<(String, Label)>,
+
+    stack_size:  usize,
+    pushed_size: usize,
 
     regs:      RegAlloc,
     variables: Vec<Variable>,
@@ -222,7 +223,7 @@ impl<'a> Generator<'a> {
     fn generate_function(&mut self, f: &Function) {
         let frame = self.push_frame();
 
-        let mut param_alloc = ParamAlloc::new(2..12);
+        let mut param_alloc = ParamAlloc::new();
 
         for param in f.args.iter() {
             let param_size = self.size_of(&param.ty);
@@ -246,7 +247,7 @@ impl<'a> Generator<'a> {
                 Literal::Bool(b) => self.add_slot(Type::Builtin(Ty::Bool), Value::Imm(*b as u64)),
             },
             Exp::Variable(ident) => self.lookup_variable(ident).unwrap().location,
-            Exp::Call { name, args } => todo!(),
+            Exp::Call { name, args } => self.generate_call(expected, name, args),
             Exp::Ctor { name, fields } => todo!(),
             Exp::Index { base, index } => todo!(),
             Exp::Field { base, field } => todo!(),
@@ -272,6 +273,29 @@ impl<'a> Generator<'a> {
         }
 
         Some(value)
+    }
+
+    fn generate_call(&mut self, expected: Option<Type>, name: &str, args: &[Exp]) -> SlotId {
+        let frame = self.push_frame();
+        let func = self.lookup_function(name);
+
+        let mut arg_alloc = ParamAlloc::new();
+        for (arg, param) in args.iter().zip(&func.args) {
+            let arg_slot = self.generate_expr(Some(param.ty.clone()), arg).unwrap();
+            let arg_size = self.size_of(&param.ty);
+            let param_slot = arg_alloc.alloc(arg_size);
+            self.set_temporarly(arg_slot, param_slot);
+        }
+
+        todo!()
+    }
+
+    fn set_temporarly(&mut self, from: SlotId, to: Value) {
+        match to {
+            Value::Reg(f, s) => {}
+        };
+
+        todo!()
     }
 
     fn size_of(&self, ty: &Type) -> usize {

@@ -57,7 +57,7 @@ pub enum Exp {
     Literal(Literal),
     Variable(String),
     Call {
-        name: Box<Exp>,
+        name: String,
         args: Vec<Exp>,
     },
     Ctor {
