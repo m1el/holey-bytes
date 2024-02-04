@@ -1,7 +1,7 @@
-use std::{iter::Cycle, ops::Range};
+use std::{iter::Cycle, mem::offset_of, ops::Range};
 
 use crate::{
-    lexer::Ty,
+    lexer::{self, Ty},
     parser::{Exp, Function, Item, Literal, Struct, Type},
 };
 
@@ -16,14 +16,16 @@ use crate::{
 //| r254       | Stack pointer       | Callee |
 //| r255       | Thread pointer      | N/A    |
 
+const STACK_POINTER: Reg = 254;
+
 struct RegAlloc {
     pub regs:        Box<[Option<usize>; 256]>,
     pub used:        Box<[bool; 256]>,
-    pub spill_cycle: Cycle<Range<usize>>,
+    pub spill_cycle: Cycle<Range<u8>>,
 }
 
 impl RegAlloc {
-    fn alloc_regurn(&mut self, slot: SlotId) -> Option<Reg> {
+    fn alloc_return(&mut self, slot: SlotId) -> Option<Reg> {
         self.regs[1..2]
             .iter_mut()
             .position(|reg| {
@@ -57,14 +59,26 @@ impl RegAlloc {
         assert!(self.regs[reg as usize].take().is_some());
     }
 
-    fn spill(&mut self, for_slot: SlotId) -> (Reg, SlotId) {
+    fn is_used(&self, reg: Reg) -> bool {
+        self.regs[reg as usize].is_some()
+    }
+
+    fn spill(&mut self, for_slot: SlotId) -> (Reg, Option<SlotId>) {
         let to_spill = self.spill_cycle.next().unwrap();
-        let slot = self.regs[to_spill].replace(for_slot).unwrap();
+        let slot = self.spill_specific(to_spill, for_slot);
         (to_spill as Reg + 32, slot)
+    }
+
+    fn spill_specific(&mut self, reg: Reg, for_slot: SlotId) -> Option<SlotId> {
+        self.regs[reg as usize].replace(for_slot)
     }
 
     fn restore(&mut self, reg: Reg, slot: SlotId) -> SlotId {
         self.regs[reg as usize].replace(slot).unwrap()
+    }
+
+    fn alloc_specific(&mut self, reg: u8, to: usize) {
+        assert!(self.regs[reg as usize].replace(to).is_none());
     }
 }
 
@@ -81,7 +95,7 @@ impl ParamAlloc {
         }
     }
 
-    fn alloc(&mut self, mut size: usize) -> Value {
+    fn alloc(&mut self, size: usize) -> Value {
         match self.try_alloc_regs(size) {
             Some(reg) => reg,
             None => panic!("Too many arguments o7"),
@@ -102,12 +116,12 @@ impl ParamAlloc {
             1 => {
                 let reg = self.reg_range.start;
                 self.reg_range.start += 1;
-                Some(Value::Reg(reg, None))
+                Some(Value::Reg(reg, None, 0))
             }
             2 => {
                 let reg = self.reg_range.start;
                 self.reg_range.start += 2;
-                Some(Value::Reg(reg, Some(reg + 1)))
+                Some(Value::Reg(reg, Some(reg + 1), 0))
             }
             _ => unreachable!(),
         }
@@ -159,13 +173,36 @@ impl hbbytecode::Buffer for InstBuffer {
 
 type Reg = u8;
 type Offset = i32;
+type Pushed = bool;
 
+#[derive(Clone, Copy)]
 enum Value {
-    Reg(Reg, Option<Reg>),
-    Stack(Offset),
+    Reg(Reg, Option<Reg>, Offset),
+    Stack(Offset, Pushed),
     Imm(u64),
-    Spilled(Reg, SlotId, Option<Reg>, Option<SlotId>),
+    Spilled(Reg, SlotId, Option<Reg>, Option<SlotId>, Offset),
     DoubleSpilled(SlotId, Offset, Option<SlotId>),
+}
+
+#[derive(Clone, Copy)]
+enum NormalizedValue {
+    Reg(Reg, Option<Reg>, Offset),
+    Stack(Offset, Pushed),
+    Imm(u64),
+}
+
+impl From<Value> for NormalizedValue {
+    fn from(value: Value) -> Self {
+        match value {
+            Value::Reg(reg, secondary, offset) => NormalizedValue::Reg(reg, secondary, offset),
+            Value::Stack(offset, pushed) => NormalizedValue::Stack(offset, pushed),
+            Value::Imm(imm) => NormalizedValue::Imm(imm),
+            Value::Spilled(reg, _, secondary, _, offset) => {
+                NormalizedValue::Reg(reg, secondary, offset)
+            }
+            Value::DoubleSpilled(_, offset, _) => NormalizedValue::Stack(offset, false),
+        }
+    }
 }
 
 type Label = usize;
@@ -185,6 +222,13 @@ pub struct DataReloc {
 pub struct Frame {
     pub slot_count: usize,
     pub var_count:  usize,
+}
+
+enum Instr {
+    BinOp(lexer::Op, NormalizedValue, NormalizedValue),
+    Move(usize, NormalizedValue, NormalizedValue),
+    Jump(Label),
+    JumpIfZero(NormalizedValue, Label),
 }
 
 #[derive(Default)]
@@ -208,6 +252,8 @@ pub struct Generator<'a> {
 
     code_section: Vec<u8>,
     data_section: Vec<u8>,
+
+    instrs: Vec<Instr>,
 }
 
 impl<'a> Generator<'a> {
@@ -227,7 +273,9 @@ impl<'a> Generator<'a> {
 
         for param in f.args.iter() {
             let param_size = self.size_of(&param.ty);
-            let slot = self.add_slot(param.ty.clone(), param_alloc.alloc(param_size));
+            let value = param_alloc.alloc(param_size);
+            let slot = self.add_slot(param.ty.clone(), value);
+            self.allocate_value_regs(value, slot);
             self.add_variable(param.name.clone(), slot);
         }
 
@@ -240,14 +288,23 @@ impl<'a> Generator<'a> {
         self.pop_frame(frame);
     }
 
+    fn allocate_value_regs(&mut self, value: Value, to: SlotId) {
+        if let Value::Reg(primary, secondary, _) = value {
+            self.regs.alloc_specific(primary, to);
+            if let Some(secondary) = secondary {
+                self.regs.alloc_specific(secondary, to);
+            }
+        }
+    }
+
     fn generate_expr(&mut self, expected: Option<Type>, expr: &Exp) -> Option<SlotId> {
         let value = match expr {
             Exp::Literal(lit) => match lit {
-                Literal::Int(i) => self.add_slot(expected.unwrap(), Value::Imm(*i)),
+                Literal::Int(i) => self.add_slot(expected.clone().unwrap(), Value::Imm(*i)),
                 Literal::Bool(b) => self.add_slot(Type::Builtin(Ty::Bool), Value::Imm(*b as u64)),
             },
             Exp::Variable(ident) => self.lookup_variable(ident).unwrap().location,
-            Exp::Call { name, args } => self.generate_call(expected, name, args),
+            Exp::Call { name, args } => self.generate_call(expected.clone(), name, args),
             Exp::Ctor { name, fields } => todo!(),
             Exp::Index { base, index } => todo!(),
             Exp::Field { base, field } => todo!(),
@@ -292,10 +349,25 @@ impl<'a> Generator<'a> {
 
     fn set_temporarly(&mut self, from: SlotId, to: Value) {
         match to {
-            Value::Reg(f, s) => {}
+            Value::Reg(dst, secondary, offset) => {
+                let other_slot = secondary.and_then(|s| self.regs.spill_specific(s, usize::MAX));
+                if let Some(slot) = self.regs.spill_specific(dst, usize::MAX) {
+                    self.slots[slot].value =
+                        Value::Spilled(dst, slot, secondary, other_slot, offset);
+                } else if let Some(slot) = other_slot {
+                    self.slots[slot].value =
+                        Value::Spilled(secondary.unwrap(), slot, Some(dst), None, offset);
+                }
+            }
+            _ => unreachable!(),
         };
 
-        todo!()
+        let size = self.size_of(&self.slots[from].ty);
+        self.emit_move(size, self.slots[from].value, to);
+    }
+
+    fn emit_move(&mut self, size: usize, from: Value, to: Value) {
+        self.instrs.push(Instr::Move(size, from.into(), to.into()));
     }
 
     fn size_of(&self, ty: &Type) -> usize {
@@ -377,23 +449,23 @@ impl<'a> Generator<'a> {
 
     fn lookup_struct(&self, name: &str) -> &Struct {
         self.lookup_item(name)
-            .and_then(|item| match item {
-                Item::Struct(s) => Some(s),
+            .map(|item| match item {
+                Item::Struct(s) => s,
                 _ => panic!("Not a struct: {}", name),
             })
             .expect("Struct not found")
     }
 
-    fn lookup_function(&self, name: &str) -> &Function {
+    fn lookup_function(&self, name: &str) -> &'a Function {
         self.lookup_item(name)
-            .and_then(|item| match item {
-                Item::Function(f) => Some(f),
+            .map(|item| match item {
+                Item::Function(f) => f,
                 _ => panic!("Not a function: {}", name),
             })
             .expect("Function not found")
     }
 
-    fn lookup_item(&self, name: &str) -> Option<&Item> {
+    fn lookup_item(&self, name: &str) -> Option<&'a Item> {
         self.ast.iter().find(|item| match item {
             Item::Import(_) => false,
             Item::Struct(s) => s.name == name,

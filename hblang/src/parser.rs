@@ -432,7 +432,13 @@ impl<'a> Parser<'a> {
                 Some(TokenKind::LParen) => {
                     self.next();
                     expr = Exp::Call {
-                        name: Box::new(expr),
+                        name: match expr {
+                            Exp::Variable(name) => name,
+                            _ => {
+                                let (line, col) = self.pos_to_line_col(token.span.start);
+                                panic!("Expected function name at {}:{}", line, col)
+                            }
+                        },
                         args: self.sequence(TokenKind::Comma, TokenKind::RParen, Self::parse_expr),
                     };
                 }
