@@ -9,13 +9,28 @@ macro_rules! fnsdef {
         $vis fn $name(val: $from, mode: RoundingMode) -> $to {
             let result: $to;
             unsafe {
-                set_rounding_mode(mode);
+                if mode == RoundingMode::NearestEven {
+                    return;
+                }
+
+                let fpcr: u64;
+                unsafe { asm!("mrs {}, fpcr", out(reg) fpcr) };
+
+                let fpcr_new = fpcr & !(0b11 << 22)
+                    | (match mode {
+                        RoundingMode::NearestEven => 0b00,
+                        RoundingMode::Truncate => 0b11,
+                        RoundingMode::Up => 0b01,
+                        RoundingMode::Down => 0b10,
+                    }) << 22;
+
+                unsafe { asm!("msr fpcr, {}", in(reg) fpcr_new) };
                 asm!(
                     $ins,
                     out($outreg) result,
                     in($inreg)   val,
                 );
-                default_rounding_mode();
+                unsafe { asm!("msr fpcr, {}", in(reg) fpcr) };
             }
             result
         }
@@ -31,36 +46,4 @@ fnsdef! {
 
     /// Convert [`f64`] to [`i64`] with chosen rounding mode
     pub fn f64toint[vreg -> reg](f64 -> i64): "fcvtzs {}, {:d}";
-}
-
-/// Set rounding mode
-///
-/// # Safety
-/// - Do not call if rounding mode isn't [`RoundingMode::NearestEven`]
-/// - Do not perform any Rust FP operations until reset using
-///   [`default_rounding_mode`], you have to rely on inline assembly
-#[inline(always)]
-unsafe fn set_rounding_mode(mode: RoundingMode) {
-    if mode == RoundingMode::NearestEven {
-        return;
-    }
-
-    let fpcr: u64;
-    unsafe { asm!("mrs {}, fpcr", out(reg) fpcr) };
-
-    let fpcr = fpcr & !(0b11 << 22)
-        | (match mode {
-            RoundingMode::NearestEven => 0b00,
-            RoundingMode::Truncate => 0b11,
-            RoundingMode::Up => 0b01,
-            RoundingMode::Down => 0b10,
-        }) << 22;
-
-    unsafe { asm!("msr fpcr, {}", in(reg) fpcr) };
-}
-
-#[inline(always)]
-unsafe fn default_rounding_mode() {
-    // I hope so much it gets optimised
-    set_rounding_mode(RoundingMode::NearestEven);
 }
