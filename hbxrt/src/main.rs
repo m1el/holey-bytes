@@ -31,7 +31,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Allocate stack
-    let mut stack = Box::new(MaybeUninit::<[u8; 1024 * 1024 * 2]>::uninit());
+    let mut stack = unsafe { mem::alloc_stack() };
     eprintln!("[I] Stack allocated at {:p}", stack.as_ptr());
 
     // Load program
