@@ -7,7 +7,7 @@ mod mem;
 use {
     hbvm::{mem::Address, Vm, VmRunOk},
     memmap2::Mmap,
-    std::{env::args, fs::File, mem::MaybeUninit, process::exit},
+    std::{env::args, fs::File, process::exit},
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
