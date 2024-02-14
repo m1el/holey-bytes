@@ -14,6 +14,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("== HB×RT (Holey Bytes Experimental Runtime) v0.1 ==");
     eprintln!("[W] Currently supporting only flat images");
 
+    if !hbvm::FL_ARCH_SPECIFIC_SUPPORTED {
+        eprintln!(
+            "\
+                [W] Architecture not fully supported!\n    \
+                    FTI32, FTI64 will yield {:#x}\n    \
+                    FC64T32 will yield NaN\
+            ",
+            i64::MAX,
+        )
+    }
+
     let mut args = args().skip(1);
     let Some(image_path) = args.next() else {
         eprintln!("[E] Missing image path");

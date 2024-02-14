@@ -25,6 +25,8 @@ mod float;
 mod utils;
 mod vmrun;
 
+pub use float::FL_ARCH_SPECIFIC_SUPPORTED;
+
 use {
     bmc::BlockCopier,
     mem::{Address, Memory},
