@@ -1,6 +1,6 @@
 use {
     crate::SharedObject,
-    rhai::{Engine, ImmutableString, Module},
+    rhai::{Engine, FuncRegistration, ImmutableString, Module},
 };
 
 macro_rules! shdm_fns {
@@ -9,25 +9,24 @@ macro_rules! shdm_fns {
         shared: $shared:expr => $shname:ident;
 
         $(
-            $vis:ident fn $name:ident($($params:tt)*) $(-> $ret:ty)? $blk:block
+            $vis:ident fn $name:ident($($param_name:ident: $param_ty:ty),*) $(-> $ret:ty)? $blk:block
         )*
     ) => {{
         let module = $module;
         let shared = $shared;
         $({
-            let $shname = SharedObject::clone(&shared);
-            let hash    = module.set_native_fn(
-                stringify!($name),
-                move |$($params)*| $(-> $ret)? {
-                    let mut $shname = $shname.borrow_mut();
-                    $blk
-                },
-            );
 
-            module.update_fn_namespace(
-                hash,
-                paste::paste!(rhai::FnNamespace::[<$vis:camel>])
-            );
+            let $shname = SharedObject::clone(&shared);
+
+            FuncRegistration::new(stringify!($name))
+                .with_namespace(rhai::FnNamespace::Global)
+                .set_into_module::<_, { ["", $(stringify!($param_name)),*].len() - 1 }, false, _, true, _>(
+                    module,
+                    move |$($param_name: $param_ty),*| $(-> $ret)? {
+                        let mut $shname = $shname.borrow_mut();
+                        $blk
+                    }
+                );
         })*
     }};
 }

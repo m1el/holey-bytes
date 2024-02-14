@@ -1,9 +1,17 @@
-use std::{iter::Cycle, mem::offset_of, ops::Range};
+use std::{iter::Cycle, ops::Range, usize};
 
 use crate::{
     lexer::{self, Ty},
     parser::{Exp, Function, Item, Literal, Struct, Type},
 };
+
+type Reg = u8;
+type Offset = i32;
+type Pushed = bool;
+type SlotIndex = usize;
+type Label = usize;
+type Data = usize;
+type Size = usize;
 
 //| Register   | Description         | Saver  |
 //|:-----------|:--------------------|:-------|
@@ -16,8 +24,6 @@ use crate::{
 //| r254       | Stack pointer       | Callee |
 //| r255       | Thread pointer      | N/A    |
 
-const STACK_POINTER: Reg = 254;
-
 struct RegAlloc {
     pub regs:        Box<[Option<usize>; 256]>,
     pub used:        Box<[bool; 256]>,
@@ -25,7 +31,11 @@ struct RegAlloc {
 }
 
 impl RegAlloc {
-    fn alloc_return(&mut self, slot: SlotId) -> Option<Reg> {
+    const STACK_POINTER: Reg = 254;
+    const ZERO: Reg = 0;
+    const RETURN_ADDRESS: Reg = 31;
+
+    fn alloc_return(&mut self, slot: usize) -> Option<Reg> {
         self.regs[1..2]
             .iter_mut()
             .position(|reg| {
@@ -39,7 +49,7 @@ impl RegAlloc {
             .map(|reg| reg as Reg + 1)
     }
 
-    fn alloc_general(&mut self, slot: SlotId) -> Option<Reg> {
+    fn alloc_general(&mut self, slot: usize) -> Option<Reg> {
         self.regs[32..254]
             .iter_mut()
             .zip(&mut self.used[32..254])
@@ -63,22 +73,32 @@ impl RegAlloc {
         self.regs[reg as usize].is_some()
     }
 
-    fn spill(&mut self, for_slot: SlotId) -> (Reg, Option<SlotId>) {
+    fn spill(&mut self, for_slot: usize) -> (Reg, Option<usize>) {
         let to_spill = self.spill_cycle.next().unwrap();
         let slot = self.spill_specific(to_spill, for_slot);
         (to_spill as Reg + 32, slot)
     }
 
-    fn spill_specific(&mut self, reg: Reg, for_slot: SlotId) -> Option<SlotId> {
+    fn spill_specific(&mut self, reg: Reg, for_slot: usize) -> Option<usize> {
         self.regs[reg as usize].replace(for_slot)
     }
 
-    fn restore(&mut self, reg: Reg, slot: SlotId) -> SlotId {
+    fn restore(&mut self, reg: Reg, slot: usize) -> usize {
         self.regs[reg as usize].replace(slot).unwrap()
     }
 
     fn alloc_specific(&mut self, reg: u8, to: usize) {
         assert!(self.regs[reg as usize].replace(to).is_none());
+    }
+
+    fn alloc_specific_in_reg(&mut self, reg: InReg, to: usize) {
+        match reg {
+            InReg::Single(r) => self.alloc_specific(r, to),
+            InReg::Pair(r1, r2) => {
+                self.alloc_specific(r1, to);
+                self.alloc_specific(r2, to);
+            }
+        }
     }
 }
 
@@ -90,19 +110,23 @@ pub struct ParamAlloc {
 impl ParamAlloc {
     fn new() -> Self {
         Self {
-            stack:     16,
+            stack:     8, // return adress is in callers stack frame
             reg_range: 2..12,
         }
     }
 
-    fn alloc(&mut self, size: usize) -> Value {
+    fn alloc(&mut self, size: usize) -> SlotValue {
         match self.try_alloc_regs(size) {
             Some(reg) => reg,
-            None => panic!("Too many arguments o7"),
+            None => {
+                let stack = self.stack;
+                self.stack += size as Offset;
+                SlotValue::Stack(stack)
+            }
         }
     }
 
-    fn try_alloc_regs(&mut self, size: usize) -> Option<Value> {
+    fn try_alloc_regs(&mut self, size: usize) -> Option<SlotValue> {
         let mut needed = size.div_ceil(8);
         if needed > 2 {
             needed = 1; // passed by ref
@@ -116,12 +140,12 @@ impl ParamAlloc {
             1 => {
                 let reg = self.reg_range.start;
                 self.reg_range.start += 1;
-                Some(Value::Reg(reg, None, 0))
+                Some(SlotValue::Reg(InReg::Single(reg)))
             }
             2 => {
                 let reg = self.reg_range.start;
                 self.reg_range.start += 2;
-                Some(Value::Reg(reg, Some(reg + 1), 0))
+                Some(SlotValue::Reg(InReg::Pair(reg, reg + 1)))
             }
             _ => unreachable!(),
         }
@@ -140,14 +164,39 @@ impl Default for RegAlloc {
 
 struct Variable {
     name:     String,
-    location: SlotId,
+    location: usize,
 }
 
-type SlotId = usize;
+#[derive(Clone, Copy)]
+struct SlotId {
+    // index into slot stack
+    index:  SlotIndex,
+    // temorary offset carried over when eg. accessing fields
+    offset: Offset,
+    // this means we can mutate the value as part of computation
+    owned:  bool,
+}
+
+impl SlotId {
+    fn base(location: usize) -> Self {
+        Self {
+            index:  location,
+            offset: 0,
+            owned:  true,
+        }
+    }
+
+    fn borrowed(self) -> Self {
+        Self {
+            owned: false,
+            ..self
+        }
+    }
+}
 
 struct Slot {
     ty:    Type,
-    value: Value,
+    value: SlotValue,
 }
 
 #[repr(transparent)]
@@ -171,42 +220,53 @@ impl hbbytecode::Buffer for InstBuffer {
     }
 }
 
-type Reg = u8;
-type Offset = i32;
-type Pushed = bool;
-
 #[derive(Clone, Copy)]
-enum Value {
-    Reg(Reg, Option<Reg>, Offset),
-    Stack(Offset, Pushed),
-    Imm(u64),
-    Spilled(Reg, SlotId, Option<Reg>, Option<SlotId>, Offset),
-    DoubleSpilled(SlotId, Offset, Option<SlotId>),
+enum InReg {
+    Single(Reg),
+    // if one of the registes is allocated, the other is too, ALWAYS
+    // with the same slot
+    Pair(Reg, Reg),
 }
 
 #[derive(Clone, Copy)]
-enum NormalizedValue {
-    Reg(Reg, Option<Reg>, Offset),
+enum Spill {
+    Reg(InReg),
+    Stack(Offset), // relative to frame end (rsp if nothing was pushed)
+}
+
+#[derive(Clone, Copy)]
+enum SlotValue {
+    Reg(InReg),
+    Stack(Offset), // relative to frame start (rbp)
+    Imm(u64),
+    Spilled(Spill, SlotIndex),
+}
+
+pub struct Value {
+    store:  ValueStore,
+    offset: Offset,
+}
+
+#[derive(Clone, Copy)]
+enum ValueStore {
+    Reg(InReg),
     Stack(Offset, Pushed),
     Imm(u64),
 }
 
-impl From<Value> for NormalizedValue {
-    fn from(value: Value) -> Self {
+impl From<SlotValue> for ValueStore {
+    fn from(value: SlotValue) -> Self {
         match value {
-            Value::Reg(reg, secondary, offset) => NormalizedValue::Reg(reg, secondary, offset),
-            Value::Stack(offset, pushed) => NormalizedValue::Stack(offset, pushed),
-            Value::Imm(imm) => NormalizedValue::Imm(imm),
-            Value::Spilled(reg, _, secondary, _, offset) => {
-                NormalizedValue::Reg(reg, secondary, offset)
-            }
-            Value::DoubleSpilled(_, offset, _) => NormalizedValue::Stack(offset, false),
+            SlotValue::Reg(reg) => ValueStore::Reg(reg),
+            SlotValue::Stack(offset) => ValueStore::Stack(offset, false),
+            SlotValue::Imm(imm) => ValueStore::Imm(imm),
+            SlotValue::Spilled(spill, _) => match spill {
+                Spill::Reg(reg) => ValueStore::Reg(reg),
+                Spill::Stack(offset) => ValueStore::Stack(offset, true),
+            },
         }
     }
 }
-
-type Label = usize;
-type Data = usize;
 
 pub struct LabelReloc {
     pub label:  Label,
@@ -225,10 +285,12 @@ pub struct Frame {
 }
 
 enum Instr {
-    BinOp(lexer::Op, NormalizedValue, NormalizedValue),
-    Move(usize, NormalizedValue, NormalizedValue),
+    BinOp(lexer::Op, Value, Value),
+    Move(Size, Value, Value),
+    Push(Reg),
     Jump(Label),
-    JumpIfZero(NormalizedValue, Label),
+    Call(String),
+    JumpIfZero(Value, Label),
 }
 
 #[derive(Default)]
@@ -237,8 +299,8 @@ pub struct Generator<'a> {
 
     func_labels: Vec<(String, Label)>,
 
-    stack_size:  usize,
-    pushed_size: usize,
+    stack_size:  Offset,
+    pushed_size: Offset,
 
     regs:      RegAlloc,
     variables: Vec<Variable>,
@@ -275,7 +337,9 @@ impl<'a> Generator<'a> {
             let param_size = self.size_of(&param.ty);
             let value = param_alloc.alloc(param_size);
             let slot = self.add_slot(param.ty.clone(), value);
-            self.allocate_value_regs(value, slot);
+            if let SlotValue::Reg(reg) = value {
+                self.regs.alloc_specific_in_reg(reg, slot);
+            }
             self.add_variable(param.name.clone(), slot);
         }
 
@@ -288,22 +352,17 @@ impl<'a> Generator<'a> {
         self.pop_frame(frame);
     }
 
-    fn allocate_value_regs(&mut self, value: Value, to: SlotId) {
-        if let Value::Reg(primary, secondary, _) = value {
-            self.regs.alloc_specific(primary, to);
-            if let Some(secondary) = secondary {
-                self.regs.alloc_specific(secondary, to);
-            }
-        }
-    }
-
     fn generate_expr(&mut self, expected: Option<Type>, expr: &Exp) -> Option<SlotId> {
         let value = match expr {
-            Exp::Literal(lit) => match lit {
-                Literal::Int(i) => self.add_slot(expected.clone().unwrap(), Value::Imm(*i)),
-                Literal::Bool(b) => self.add_slot(Type::Builtin(Ty::Bool), Value::Imm(*b as u64)),
-            },
-            Exp::Variable(ident) => self.lookup_variable(ident).unwrap().location,
+            Exp::Literal(lit) => SlotId::base(match lit {
+                Literal::Int(i) => self.add_slot(expected.clone().unwrap(), SlotValue::Imm(*i)),
+                Literal::Bool(b) => {
+                    self.add_slot(Type::Builtin(Ty::Bool), SlotValue::Imm(*b as u64))
+                }
+            }),
+            Exp::Variable(ident) => {
+                SlotId::base(self.lookup_variable(ident).unwrap().location).borrowed()
+            }
             Exp::Call { name, args } => self.generate_call(expected.clone(), name, args),
             Exp::Ctor { name, fields } => todo!(),
             Exp::Index { base, index } => todo!(),
@@ -325,7 +384,7 @@ impl<'a> Generator<'a> {
         };
 
         if let Some(expected) = expected {
-            let actual = self.slots[value].ty.clone();
+            let actual = self.slots[value.index].ty.clone();
             assert_eq!(expected, actual);
         }
 
@@ -344,33 +403,68 @@ impl<'a> Generator<'a> {
             self.set_temporarly(arg_slot, param_slot);
         }
 
+        self.instrs.push(Instr::Call(name.to_owned()));
+
         todo!()
     }
 
-    fn set_temporarly(&mut self, from: SlotId, to: Value) {
-        match to {
-            Value::Reg(dst, secondary, offset) => {
-                let other_slot = secondary.and_then(|s| self.regs.spill_specific(s, usize::MAX));
-                if let Some(slot) = self.regs.spill_specific(dst, usize::MAX) {
-                    self.slots[slot].value =
-                        Value::Spilled(dst, slot, secondary, other_slot, offset);
-                } else if let Some(slot) = other_slot {
-                    self.slots[slot].value =
-                        Value::Spilled(secondary.unwrap(), slot, Some(dst), None, offset);
-                }
+    fn set_temporarly(&mut self, from: SlotId, to: SlotValue) {
+        let to = self.make_mutable(to, from.index);
+        let to_slot = self.add_slot(self.slots[from.index].ty.clone(), to);
+        self.emit_move(from, SlotId::base(to_slot));
+    }
+
+    fn make_mutable(&mut self, target: SlotValue, by: SlotIndex) -> SlotValue {
+        match target {
+            SlotValue::Reg(in_reg) => {
+                self.regs.alloc_specific_in_reg(in_reg, by);
+                target
+            }
+            SlotValue::Spilled(Spill::Reg(in_reg), slot) => {
+                let new_val = SlotValue::Spilled(
+                    match in_reg {
+                        InReg::Single(reg) => Spill::Stack(self.emmit_push(reg)),
+                        InReg::Pair(r1, r2) => {
+                            self.emmit_push(r2);
+                            Spill::Stack(self.emmit_push(r1))
+                        }
+                    },
+                    slot,
+                );
+                let new_slot = self.add_slot(self.slots[slot].ty.clone(), new_val);
+                SlotValue::Spilled(Spill::Reg(in_reg), new_slot)
             }
             _ => unreachable!(),
-        };
-
-        let size = self.size_of(&self.slots[from].ty);
-        self.emit_move(size, self.slots[from].value, to);
+        }
     }
 
-    fn emit_move(&mut self, size: usize, from: Value, to: Value) {
-        self.instrs.push(Instr::Move(size, from.into(), to.into()));
+    fn emmit_push(&mut self, reg: Reg) -> Offset {
+        self.pushed_size += 8;
+        self.instrs.push(Instr::Push(reg));
+        self.pushed_size
     }
 
-    fn size_of(&self, ty: &Type) -> usize {
+    fn emit_move(&mut self, from: SlotId, to: SlotId) {
+        let size = self.size_of(&self.slots[from.index].ty);
+        let other_size = self.size_of(&self.slots[to.index].ty);
+        assert_eq!(size, other_size);
+
+        self.instrs.push(Instr::Move(
+            size,
+            self.slot_to_value(from),
+            self.slot_to_value(to),
+        ));
+    }
+
+    fn slot_to_value(&self, slot: SlotId) -> Value {
+        let slot_val = &self.slots[slot.index];
+        Value {
+            store:  slot_val.value.into(),
+            offset: slot.offset,
+        }
+    }
+
+    fn size_of(&self, ty: &Type) -> Size {
         match ty {
             Type::Builtin(ty) => match ty {
                 Ty::U8 | Ty::I8 | Ty::Bool => 1,
@@ -388,12 +482,14 @@ impl<'a> Generator<'a> {
             Type::Pinter(_) => 8,
         }
     }
+}
 
-    fn add_variable(&mut self, name: String, location: SlotId) {
+impl<'a> Generator<'a> {
+    fn add_variable(&mut self, name: String, location: usize) {
         self.variables.push(Variable { name, location });
     }
 
-    fn add_slot(&mut self, ty: Type, value: Value) -> SlotId {
+    fn add_slot(&mut self, ty: Type, value: SlotValue) -> usize {
         let slot = self.slots.len();
         self.slots.push(Slot { ty, value });
         slot

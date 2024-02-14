@@ -1,6 +1,6 @@
 use {
     crate::object::Object,
-    rhai::{FnNamespace, Module},
+    rhai::{FuncRegistration, Module},
     std::{cell::RefCell, rc::Rc},
 };
 
@@ -137,27 +137,37 @@ pub mod generic {
                 })*
 
                 macro_rules! gen_ins_fn {
-                    $(($obj:expr, $opcode:expr, [<$($ty)*>]) => {
-                        move |$($name: $crate::ins::rity::$ty),*| {
-                            $crate::ins::generic::[<$($ty:lower)*>](
-                                &mut *$obj.borrow_mut(),
-                                $opcode,
-                                $(
-                                    $crate::ins::generic::convert_op::<
-                                        _,
-                                        $crate::ins::optypes::$ty
-                                    >($name)?
-                                ),*
-                            )?;
-                            Ok(())
-                        }
-                    };)*
+                    $(
+                        ($obj:expr, $opcode:expr, [<$($ty)*>]) => {
+                            move |$($name: $crate::ins::rity::$ty),*| {
+                                $crate::ins::generic::[<$($ty:lower)*>](
+                                    &mut *$obj.borrow_mut(),
+                                    $opcode,
+                                    $(
+                                        $crate::ins::generic::convert_op::<
+                                            _,
+                                            $crate::ins::optypes::$ty
+                                        >($name)?
+                                    ),*
+                                )?;
+                                Ok(())
+                            }
+                        };
+
+                        (@arg_count [<$($ty)*>]) => {
+                            { ["", $(stringify!($ty)),*].len() - 1 }
+                        };
+                    )*
 
                     ($obj:expr, $opcode:expr, N) => {
                         move || {
                             $crate::ins::generic::n(&mut *$obj.borrow_mut(), $opcode);
                             Ok(())
                         }
+                    };
+
+                    (@arg_count N) => {
+                        { 0 }
                     };
                 }
             }
@@ -198,21 +208,21 @@ pub mod generic {
 macro_rules! instructions {
     (
         ($module:expr, $obj:expr $(,)?)
-        { $($opcode:expr, $mnemonic:ident, $ops:ident, $doc:literal;)* }
+        { $($opcode:expr, $mnemonic:ident, $ops:tt, $doc:literal;)* }
     ) => {{
         let (module, obj) = ($module, $obj);
         $({
             let obj = Rc::clone(&obj);
-            let hash = module.set_native_fn(
-                paste::paste!(stringify!([<$mnemonic:lower>])),
-                generic::gen_ins_fn!(
-                    obj,
-                    $opcode,
-                    $ops
-                )
-            );
-
-            module.update_fn_namespace(hash, FnNamespace::Global);
+            FuncRegistration::new(stringify!([<$mnemonic:lower>]))
+                .with_namespace(rhai::FnNamespace::Global)
+                .set_into_module::<_, { generic::gen_ins_fn!(@arg_count $ops) }, false, _, true, _>(
+                    module,
+                    generic::gen_ins_fn!(
+                        obj,
+                        $opcode,
+                        $ops
+                    )
+                );
         })*
     }};
 }
