@@ -122,6 +122,7 @@ macro_rules! gen_opcodes {
 
             paste::paste! {
                 #[derive(Clone, Copy, Debug)]
+                #[repr(u8)]
                 pub enum Op { $(
                     [< $mnemonic:lower:camel >](super::[<Ops $ty>]),
                 )* }
