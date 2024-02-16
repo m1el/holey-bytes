@@ -127,6 +127,14 @@ macro_rules! gen_opcodes {
                     [< $mnemonic:lower:camel >](super::[<Ops $ty>]),
                 )* }
 
+                impl Op {
+                    pub fn size(&self) -> usize {
+                        (match self {
+                            $(Self::[<$mnemonic:lower:camel>] { .. } => core::mem::size_of::<super::[<Ops $ty>]>(),)*
+                        }) + 1
+                    }
+                }
+
                 impl crate::Encodable for Op {
                     fn encode(self, buffer: &mut impl crate::Buffer) {
                         match self {
