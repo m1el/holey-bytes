@@ -1,14 +1,21 @@
-use rhai::{CustomType, Engine, FuncRegistration, ImmutableString};
+//! Data section inserts
 
 use {
     crate::{object::SymbolRef, SharedObject},
-    rhai::Module,
+    rhai::{CustomType, Engine, FuncRegistration, ImmutableString, Module},
 };
 
+/// Generate insertions for data types
+///
+/// `gen_data_instructions!($module, $obj, [$type, …]);`
+/// - `$module`: Rhai module
+/// - `$obj`: Code object
+/// - `$type`: Type of single array item
 macro_rules! gen_data_insertions {
     ($module:expr, $obj:expr, [$($ty:ident),* $(,)?] $(,)?) => {{
         let (module, obj) = ($module, $obj);
         $({
+            // Clone object to each function
             let obj = ::std::rc::Rc::clone(obj);
 
             FuncRegistration::new(stringify!($ty))
@@ -17,17 +24,23 @@ macro_rules! gen_data_insertions {
                     let obj    = &mut *obj.borrow_mut();
                     let symbol = obj.symbol($crate::object::Section::Data);
 
+                    // Reserve space for object so we don't resize it
+                    // all the time
                     obj.sections
                         .data
                         .reserve(arr.len() * ::std::mem::size_of::<$ty>());
 
+                    // For every item…
                     for item in arr {
+                        // … try do conversions from i32 to desired type
+                        //   and insert it.
                         obj.sections.data.extend(
                             match item.as_int() {
                                 Ok(num) => $ty::try_from(num).map_err(|_| "i64".to_owned()),
                                 Err(ty) => Err(ty.to_owned()),
                             }
                             .map_err(|err| {
+
                                 ::rhai::EvalAltResult::ErrorMismatchDataType(
                                     stringify!($ty).to_owned(),
                                     err,
@@ -47,6 +60,7 @@ macro_rules! gen_data_insertions {
     }};
 }
 
+/// Reference to entry in data section
 #[derive(Clone, Copy, Debug)]
 pub struct DataRef {
     pub symbol: SymbolRef,
@@ -67,6 +81,8 @@ pub fn module(engine: &mut Engine, obj: SharedObject) -> Module {
 
     gen_data_insertions!(&mut module, &obj, [i8, i16, i32, i64]);
 
+    // Specialisation for strings, they should be
+    // inserted as plain UTF-8 arrays
     FuncRegistration::new("str")
         .with_namespace(rhai::FnNamespace::Global)
         .set_into_module::<_, 1, false, _, true, _>(&mut module, move |s: ImmutableString| {
