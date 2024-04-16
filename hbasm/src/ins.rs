@@ -288,23 +288,25 @@ macro_rules! instructions {
         ($module:expr, $obj:expr $(,)?)
         { $($opcode:expr, $mnemonic:ident, $ops:tt, $doc:literal;)* }
     ) => {{
-        let (module, obj) = ($module, $obj);
-        $({
-            // Object is shared across all functions
-            let obj = Rc::clone(&obj);
+        paste::paste! {
+            let (module, obj) = ($module, $obj);
+            $({
+                // Object is shared across all functions
+                let obj = Rc::clone(&obj);
 
-            // Register newly generated function for each instruction
-            FuncRegistration::new(stringify!([<$mnemonic:lower>]))
-                .with_namespace(rhai::FnNamespace::Global)
-                .set_into_module::<_, { generic::gen_ins_fn!(@arg_count $ops) }, false, _, true, _>(
-                    module,
-                    generic::gen_ins_fn!(
-                        obj,
-                        $opcode,
-                        $ops
-                    )
-                );
-        })*
+                // Register newly generated function for each instruction
+                FuncRegistration::new(stringify!([<$mnemonic:lower>]))
+                    .with_namespace(rhai::FnNamespace::Global)
+                    .set_into_module::<_, { generic::gen_ins_fn!(@arg_count $ops) }, false, _, true, _>(
+                        module,
+                        generic::gen_ins_fn!(
+                            obj,
+                            $opcode,
+                            $ops
+                        )
+                    );
+            })*
+        }
     }};
 }
 
