@@ -1,9 +1,0 @@
-[package]
-name = "hbvm_aos_on_linux"
-version = "0.1.0"
-edition = "2021"
-default-run = "hbvm_aos_on_linux"
-
-[dependencies]
-hbvm.path = "../hbvm"
-nix = { version = "0.27", features = ["mman", "signal"] }
