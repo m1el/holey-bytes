@@ -47,6 +47,12 @@ impl Address {
         self.0
     }
 
+    /// Get ptr to the next instruction
+    #[inline(always)]
+    pub fn next<A>(self) -> u64 {
+        self.0.wrapping_add(core::mem::size_of::<A>() as u64 + 1)
+    }
+
     /// Construct new address
     #[inline(always)]
     pub fn new(val: u64) -> Self {

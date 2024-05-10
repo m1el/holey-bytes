@@ -1,5 +1,3 @@
-use std::{iter::Peekable, str::Chars};
-
 #[derive(Debug, PartialEq)]
 pub struct Token {
     pub kind:  TokenKind,

@@ -1,4 +1,8 @@
 #![feature(noop_waker)]
+#![feature(non_null_convenience)]
+#![allow(dead_code)]
+#![feature(const_mut_refs)]
+
 #[macro_export]
 macro_rules! run_tests {
     ($runner:path: $($name:ident => $input:expr;)*) => {$(

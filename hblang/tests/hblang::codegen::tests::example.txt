@@ -1,9 +1,8 @@
 start:
-    jala r0, main, 0
+    addi64 r254, r254, 8
+    jal r0, r0, main
     tx
 main:
-    subi64 r254, r254, 8
-    ld r31, r254, r0, 8
     jala r0, r31, 0
 
 

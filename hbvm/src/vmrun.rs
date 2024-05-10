@@ -250,7 +250,7 @@ where
                         // specified register and jump to reg + relative offset.
                         let OpsRRO(save, reg, offset) = self.decode();
 
-                        self.write_reg(save, self.pc.get());
+                        self.write_reg(save, self.pc.next::<OpsRRO>());
                         self.pc = self
                             .pcrel(offset, 3)
                             .wrapping_add(self.read_reg(reg).cast::<i64>());
@@ -260,7 +260,7 @@ where
                         // specified register and jump to reg
                         let OpsRRA(save, reg, offset) = self.decode();
 
-                        self.write_reg(save, self.pc.get());
+                        self.write_reg(save, self.pc.next::<OpsRRA>());
                         self.pc =
                             Address::new(self.read_reg(reg).cast::<u64>().wrapping_add(offset));
                     }
