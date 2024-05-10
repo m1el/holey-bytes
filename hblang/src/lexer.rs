@@ -162,6 +162,6 @@ mod tests {
     crate::run_tests! { lex:
         empty => "";
         whitespace => " \t\n\r";
-        examples => include_str!("../examples/main_fn.hb");
+        example => include_str!("../examples/main_fn.hb");
     }
 }

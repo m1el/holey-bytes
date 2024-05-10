@@ -14,10 +14,18 @@ macro_rules! run_tests {
 }
 
 mod codegen;
+mod ident;
+mod instrs;
 mod lexer;
 mod parser;
 mod tests;
 mod typechk;
+
+#[repr(packed)]
+struct Args<A, B, C, D>(u8, A, B, C, D);
+fn as_bytes<T>(args: &T) -> &[u8] {
+    unsafe { core::slice::from_raw_parts(args as *const _ as *const u8, core::mem::size_of::<T>()) }
+}
 
 pub fn try_block<R>(f: impl FnOnce() -> R) -> R {
     f()

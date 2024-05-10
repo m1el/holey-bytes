@@ -118,7 +118,7 @@ impl<'a, 'b> Parser<'a, 'b> {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Expr<'a> {
     Decl {
         name: Ptr<'a, str>,

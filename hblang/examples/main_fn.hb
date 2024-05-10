@@ -1,3 +1,3 @@
-main := ||: void {
-	return;
+main := ||: int {
+	return 1;
 }

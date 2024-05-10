@@ -1,5 +1,9 @@
-use {crate::parser, std::fmt::Write};
+use {
+    crate::parser::{self, Expr},
+    std::rc::Rc,
+};
 
+type LabelId = u32;
 type Reg = u8;
 type MaskElem = u64;
 
@@ -8,25 +12,102 @@ const ZERO: Reg = 0;
 const RET_ADDR: Reg = 31;
 const ELEM_WIDTH: usize = std::mem::size_of::<MaskElem>() * 8;
 
+struct Frame {
+    label:       LabelId,
+    prev_relocs: usize,
+    offset:      u32,
+}
+
+struct Reloc {
+    id:     LabelId,
+    offset: u32,
+    size:   u16,
+}
+
+#[derive(Default)]
+pub struct Func {
+    code:   Vec<u8>,
+    relocs: Vec<Reloc>,
+}
+
+impl Func {
+    pub fn extend(&mut self, bytes: &[u8]) {
+        self.code.extend_from_slice(bytes);
+    }
+
+    pub fn offset(&mut self, id: LabelId, offset: u32, size: u16) {
+        self.relocs.push(Reloc {
+            id,
+            offset: self.code.len() as u32 + offset,
+            size,
+        });
+    }
+
+    fn push(&mut self, value: Reg, size: usize) {
+        self.st(value, STACK_PTR, 0, size as _);
+        self.addi64(STACK_PTR, STACK_PTR, size as _);
+    }
+
+    fn pop(&mut self, value: Reg, size: usize) {
+        self.addi64(STACK_PTR, STACK_PTR, (size as u64).wrapping_neg());
+        self.ld(value, STACK_PTR, 0, size as _);
+    }
+
+    fn call(&mut self, func: LabelId) {
+        self.jal(RET_ADDR, ZERO, func);
+    }
+
+    fn ret(&mut self) {
+        self.jala(ZERO, RET_ADDR, 0);
+    }
+
+    fn prelude(&mut self, entry: LabelId) {
+        self.call(entry);
+        self.tx();
+    }
+
+    fn relocate(&mut self, labels: &[Label], shift: i64) {
+        for reloc in self.relocs.drain(..) {
+            let label = &labels[reloc.id as usize];
+            let offset = if reloc.size == 8 {
+                reloc.offset as i64
+            } else {
+                label.offset as i64 - reloc.offset as i64
+            } + shift;
+
+            let dest = &mut self.code[reloc.offset as usize..][..reloc.size as usize];
+            match reloc.size {
+                2 => dest.copy_from_slice(&(offset as i16).to_le_bytes()),
+                4 => dest.copy_from_slice(&(offset as i32).to_le_bytes()),
+                8 => dest.copy_from_slice(&(offset as i64).to_le_bytes()),
+                _ => unreachable!(),
+            };
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct RegAlloc {
     free: Vec<Reg>,
     // TODO:use 256 bit mask instead
-    used: Vec<std::cmp::Reverse<Reg>>,
+    used: Vec<Reg>,
 }
 
 impl RegAlloc {
-    fn callee_general_purpose() -> Self {
-        Self {
-            free: (32..=253).collect(),
-            used: Vec::new(),
-        }
+    fn init_caller(&mut self) {
+        self.clear();
+        self.free.extend(1..=31);
+    }
+
+    fn clear(&mut self) {
+        self.free.clear();
+        self.used.clear();
     }
 
     fn allocate(&mut self) -> Reg {
         let reg = self.free.pop().expect("TODO: we need to spill");
-        if self.used.binary_search(&std::cmp::Reverse(reg)).is_err() {
-            self.used.push(std::cmp::Reverse(reg));
+        if self.used.binary_search_by_key(&!reg, |&r| !r).is_err() {
+            self.used.push(reg);
         }
         reg
     }
@@ -36,129 +117,171 @@ impl RegAlloc {
     }
 }
 
+struct Label {
+    offset: u32,
+    // TODO: use different stile of identifier that does not allocate, eg. index + length into a
+    // file
+    name:   Rc<str>,
+}
+
 pub struct Codegen<'a> {
-    path:        &'a std::path::Path,
-    gpa:         RegAlloc,
-    code:        String,
-    data:        String,
-    prelude_buf: String,
+    path:   &'a std::path::Path,
+    ret:    Expr<'a>,
+    gpa:    RegAlloc,
+    code:   Func,
+    temp:   Func,
+    labels: Vec<Label>,
 }
 
 impl<'a> Codegen<'a> {
     pub fn new() -> Self {
         Self {
-            path:        std::path::Path::new(""),
-            gpa:         RegAlloc::callee_general_purpose(),
-            code:        String::new(),
-            data:        String::new(),
-            prelude_buf: String::new(),
+            path:   std::path::Path::new(""),
+            ret:    Expr::Return { val: None },
+            gpa:    Default::default(),
+            code:   Default::default(),
+            temp:   Default::default(),
+            labels: Default::default(),
         }
     }
 
-    pub fn file(&mut self, path: &'a std::path::Path, exprs: &[parser::Expr]) -> std::fmt::Result {
+    pub fn file(
+        &mut self,
+        path: &'a std::path::Path,
+        exprs: &'a [parser::Expr<'a>],
+    ) -> std::fmt::Result {
         self.path = path;
         for expr in exprs {
-            self.expr(expr)?;
+            self.expr(expr, None);
         }
         Ok(())
     }
 
-    fn expr(&mut self, expr: &parser::Expr) -> std::fmt::Result {
+    fn expr(&mut self, expr: &'a parser::Expr<'a>, expeted: Option<Expr<'a>>) -> Option<Value<'a>> {
         use parser::Expr as E;
         match *expr {
             E::Decl {
                 name,
-                val:
-                    E::Closure {
-                        ret: E::Ident { name: "void" },
-                        body,
-                    },
+                val: E::Closure { ret, body },
             } => {
-                writeln!(self.code, "{name}:")?;
-                let fn_start = self.code.len();
-                self.expr(body)?;
-                self.write_fn_prelude(fn_start)
+                let frame = self.add_label(name);
+                self.ret = **ret;
+                self.expr(body, None);
+                self.write_fn_prelude(frame);
+                None
             }
-            E::Return { val: None } => self.ret(),
+            E::Return { val } => {
+                if let Some(val) = val {
+                    let val = self.expr(val, Some(self.ret)).unwrap();
+                    if val.ty != self.ret {
+                        panic!("expected {:?}, got {:?}", self.ret, val.ty);
+                    }
+                    match val.loc {
+                        Loc::Reg(reg) => self.code.cp(1, reg),
+                        Loc::Imm(imm) => self.code.li64(1, imm),
+                    }
+                }
+                self.ret();
+                None
+            }
             E::Block { stmts } => {
                 for stmt in stmts {
-                    self.expr(stmt)?;
+                    self.expr(stmt, None);
                 }
-                Ok(())
+                None
             }
+            E::Number { value } => Some(Value {
+                ty:  expeted.unwrap_or(Expr::Ident { name: "int" }),
+                loc: Loc::Imm(value),
+            }),
             ast => unimplemented!("{:?}", ast),
         }
     }
 
-    fn write_fn_prelude(&mut self, fn_start: usize) -> std::fmt::Result {
-        self.prelude_buf.clear();
-        // TODO: avoid clone here
-        for reg in self.gpa.used.clone().iter() {
-            stack_push(&mut self.prelude_buf, reg.0, 8)?;
+    fn get_or_reserve_label(&mut self, name: &str) -> LabelId {
+        if let Some(label) = self.labels.iter().position(|l| l.name.as_ref() == name) {
+            label as u32
+        } else {
+            self.labels.push(Label {
+                offset: 0,
+                name:   name.into(),
+            });
+            self.labels.len() as u32 - 1
         }
-
-        self.code.insert_str(fn_start, &self.prelude_buf);
-        self.gpa = RegAlloc::callee_general_purpose();
-
-        Ok(())
     }
 
-    fn ret(&mut self) -> std::fmt::Result {
+    fn add_label(&mut self, name: &str) -> Frame {
+        let offset = self.code.code.len() as u32;
+        let label = if let Some(label) = self.labels.iter().position(|l| l.name.as_ref() == name) {
+            self.labels[label].offset = offset;
+            label as u32
+        } else {
+            self.labels.push(Label {
+                offset,
+                name: name.into(),
+            });
+            self.labels.len() as u32 - 1
+        };
+
+        Frame {
+            label,
+            prev_relocs: self.code.relocs.len(),
+            offset,
+        }
+    }
+
+    fn get_label(&self, name: &str) -> LabelId {
+        self.labels
+            .iter()
+            .position(|l| l.name.as_ref() == name)
+            .unwrap() as _
+    }
+
+    fn write_fn_prelude(&mut self, frame: Frame) {
+        for &reg in self.gpa.used.clone().iter() {
+            self.temp.push(reg, 8);
+        }
+
+        for reloc in &mut self.code.relocs[frame.prev_relocs..] {
+            reloc.offset += self.temp.code.len() as u32;
+        }
+
+        self.code.code.splice(
+            frame.offset as usize..frame.offset as usize,
+            self.temp.code.drain(..),
+        );
+    }
+
+    fn ret(&mut self) {
         for reg in self.gpa.used.clone().iter().rev() {
-            stack_pop(&mut self.code, reg.0, 8)?;
+            self.code.pop(*reg, 8);
         }
-        ret(&mut self.code)
+        self.code.ret();
     }
 
-    pub fn dump(self, mut out: impl std::fmt::Write) -> std::fmt::Result {
-        prelude(&mut out)?;
-        writeln!(out, "{}", self.code)?;
-        writeln!(out, "{}", self.data)
+    pub fn dump(mut self, out: &mut impl std::io::Write) -> std::io::Result<()> {
+        self.temp.prelude(self.get_label("main"));
+        self.temp
+            .relocate(&self.labels, self.temp.code.len() as i64);
+
+        self.code.relocate(&self.labels, 0);
+        out.write_all(&self.temp.code)?;
+        out.write_all(&self.code.code)
     }
 }
 
-fn stack_push(out: &mut impl std::fmt::Write, value: Reg, size: usize) -> std::fmt::Result {
-    writeln!(out, "    st r{value}, r{STACK_PTR}, r{ZERO}, {size}")?;
-    writeln!(
-        out,
-        "    addi{} r{STACK_PTR}, r{STACK_PTR}, {size}",
-        size * 8
-    )
+pub struct Value<'a> {
+    ty:  Expr<'a>,
+    loc: Loc,
 }
 
-fn stack_pop(out: &mut impl std::fmt::Write, value: Reg, size: usize) -> std::fmt::Result {
-    writeln!(
-        out,
-        "    subi{} r{STACK_PTR}, r{STACK_PTR}, {size}",
-        size * 8
-    )?;
-    writeln!(out, "    ld r{value}, r{STACK_PTR}, r{ZERO}, {size}")
-}
-
-fn call(out: &mut impl std::fmt::Write, func: &str) -> std::fmt::Result {
-    stack_push(out, RET_ADDR, 8)?;
-    jump_label(out, func)?;
-    stack_pop(out, RET_ADDR, 8)
-}
-
-fn ret(out: &mut impl std::fmt::Write) -> std::fmt::Result {
-    writeln!(out, "    jala r{ZERO}, r{RET_ADDR}, 0")
-}
-
-fn jump_label(out: &mut impl std::fmt::Write, label: &str) -> std::fmt::Result {
-    writeln!(out, "    jal r{RET_ADDR}, r{ZERO}, {label}")
-}
-
-fn prelude(out: &mut impl std::fmt::Write) -> std::fmt::Result {
-    writeln!(out, "start:")?;
-    writeln!(out, "    jal r{RET_ADDR}, r{ZERO}, main")?;
-    writeln!(out, "    tx")
+pub enum Loc {
+    Reg(Reg),
+    Imm(u64),
 }
 
 #[cfg(test)]
 mod tests {
-    use std::io::Write;
-
     struct TestMem;
 
     impl hbvm::mem::Memory for TestMem {
@@ -198,55 +321,37 @@ mod tests {
         let exprs = parser.file();
         let mut codegen = super::Codegen::new();
         codegen.file(path, &exprs).unwrap();
-        codegen.dump(&mut *output).unwrap();
+        let mut out = Vec::new();
+        codegen.dump(&mut out).unwrap();
 
-        let mut proc = std::process::Command::new("/usr/bin/hbas")
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .unwrap();
-        proc.stdin
-            .as_mut()
-            .unwrap()
-            .write_all(output.as_bytes())
-            .unwrap();
-        let out = proc.wait_with_output().unwrap();
+        use std::fmt::Write;
 
-        if !out.status.success() {
-            panic!(
-                "hbas failed with status: {}\n{}",
-                out.status,
-                String::from_utf8_lossy(&out.stderr)
-            );
-        } else {
-            use std::fmt::Write;
+        let mut stack = [0_u64; 1024];
 
-            let mut stack = [0_u64; 1024];
-
-            for b in &out.stdout {
-                writeln!(output, "{:02x}", b).unwrap();
+        for (i, b) in out.iter().enumerate() {
+            write!(output, "{:02x}", b).unwrap();
+            if (i + 1) % 4 == 0 {
+                writeln!(output).unwrap();
             }
-
-            let mut vm = unsafe {
-                hbvm::Vm::<TestMem, 0>::new(
-                    TestMem,
-                    hbvm::mem::Address::new(out.stdout.as_ptr() as u64),
-                )
-            };
-
-            vm.write_reg(super::STACK_PTR, stack.as_mut_ptr() as u64);
-
-            let stat = loop {
-                match vm.run() {
-                    Ok(hbvm::VmRunOk::End) => break Ok(()),
-                    Ok(ev) => writeln!(output, "ev: {:?}", ev).unwrap(),
-                    Err(e) => break Err(e),
-                }
-            };
-
-            writeln!(output, "ret: {:?}", vm.read_reg(0)).unwrap();
-            writeln!(output, "status: {:?}", stat).unwrap();
         }
+        writeln!(output).unwrap();
+
+        let mut vm = unsafe {
+            hbvm::Vm::<TestMem, 0>::new(TestMem, hbvm::mem::Address::new(out.as_ptr() as u64))
+        };
+
+        vm.write_reg(super::STACK_PTR, stack.as_mut_ptr() as u64);
+
+        let stat = loop {
+            match vm.run() {
+                Ok(hbvm::VmRunOk::End) => break Ok(()),
+                Ok(ev) => writeln!(output, "ev: {:?}", ev).unwrap(),
+                Err(e) => break Err(e),
+            }
+        };
+
+        writeln!(output, "ret: {:?}", vm.read_reg(1)).unwrap();
+        writeln!(output, "status: {:?}", stat).unwrap();
     }
 
     crate::run_tests! { generate:
