@@ -45,6 +45,34 @@ impl<'a, 'b> Parser<'a, 'b> {
     }
 
     fn expr(&mut self) -> Expr<'a> {
+        let left = self.unit_expr();
+        self.bin_expr(left, 0)
+    }
+
+    fn bin_expr(&mut self, mut left: Expr<'a>, min_prec: u8) -> Expr<'a> {
+        loop {
+            let Some(prec) = self.token.kind.precedence() else {
+                break;
+            };
+
+            if prec < min_prec {
+                break;
+            }
+
+            let op = self.next().kind;
+            let right = self.unit_expr();
+            let right = self.bin_expr(right, prec);
+            left = Expr::BinOp {
+                left: self.arena.alloc(left),
+                right: self.arena.alloc(right),
+                op,
+            };
+        }
+
+        left
+    }
+
+    fn unit_expr(&mut self) -> Expr<'a> {
         let token = self.next();
         let expr = match token.kind {
             TokenKind::Ident => {
@@ -74,6 +102,11 @@ impl<'a, 'b> Parser<'a, 'b> {
                     Err(e) => self.report(format_args!("invalid number: {e}")),
                 },
             },
+            TokenKind::LParen => {
+                let expr = self.expr();
+                self.expect_advance(TokenKind::RParen);
+                expr
+            }
             tok => self.report(format_args!("unexpected token: {tok:?}")),
         };
 
@@ -140,6 +173,11 @@ pub enum Expr<'a> {
     Number {
         value: u64,
     },
+    BinOp {
+        left:  Ptr<'a, Expr<'a>>,
+        op:    TokenKind,
+        right: Ptr<'a, Expr<'a>>,
+    },
 }
 
 impl<'a> std::fmt::Display for Expr<'a> {
@@ -148,7 +186,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
             static INDENT: Cell<usize> = Cell::new(0);
         }
 
-        match self {
+        match *self {
             Self::Decl { name, val } => write!(f, "{} := {}", name, val),
             Self::Closure { ret, body } => write!(f, "||: {} {}", ret, body),
             Self::Return { val: Some(val) } => write!(f, "return {};", val),
@@ -158,7 +196,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 writeln!(f, "{{")?;
                 INDENT.with(|i| i.set(i.get() + 1));
                 let res = crate::try_block(|| {
-                    for stmt in *stmts {
+                    for stmt in stmts {
                         for _ in 0..INDENT.with(|i| i.get()) {
                             write!(f, "    ")?;
                         }
@@ -171,6 +209,21 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 res
             }
             Self::Number { value } => write!(f, "{}", value),
+            Self::BinOp { left, right, op } => {
+                let display_branch = |f: &mut std::fmt::Formatter, expr: &Self| {
+                    if let Self::BinOp { op: lop, .. } = expr
+                        && op.precedence() > lop.precedence()
+                    {
+                        write!(f, "({})", expr)
+                    } else {
+                        write!(f, "{}", expr)
+                    }
+                };
+
+                display_branch(f, left)?;
+                write!(f, " {} ", op)?;
+                display_branch(f, right)
+            }
         }
     }
 }
@@ -360,5 +413,6 @@ mod tests {
 
     crate::run_tests! { parse:
         example => include_str!("../examples/main_fn.hb");
+        arithmetic => include_str!("../examples/arithmetic.hb");
     }
 }

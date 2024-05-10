@@ -1,5 +1,8 @@
 use {
-    crate::parser::{self, Expr},
+    crate::{
+        lexer,
+        parser::{self, Expr},
+    },
     std::rc::Rc,
 };
 
@@ -64,6 +67,10 @@ impl Func {
     fn prelude(&mut self, entry: LabelId) {
         self.call(entry);
         self.tx();
+    }
+
+    fn div64(&mut self, reg0: Reg, reg1: Reg, reg2: Reg) {
+        self.diru64(reg0, ZERO, reg1, reg2);
     }
 
     fn relocate(&mut self, labels: &[Label], shift: i64) {
@@ -158,13 +165,14 @@ impl<'a> Codegen<'a> {
     }
 
     fn expr(&mut self, expr: &'a parser::Expr<'a>, expeted: Option<Expr<'a>>) -> Option<Value<'a>> {
-        use parser::Expr as E;
+        use {lexer::TokenKind as T, parser::Expr as E};
         match *expr {
             E::Decl {
                 name,
                 val: E::Closure { ret, body },
             } => {
                 let frame = self.add_label(name);
+                self.gpa.init_caller();
                 self.ret = **ret;
                 self.expr(body, None);
                 self.write_fn_prelude(frame);
@@ -194,7 +202,48 @@ impl<'a> Codegen<'a> {
                 ty:  expeted.unwrap_or(Expr::Ident { name: "int" }),
                 loc: Loc::Imm(value),
             }),
-            ast => unimplemented!("{:?}", ast),
+            E::BinOp { left, op, right } => {
+                let left = self.expr(left, expeted).unwrap();
+                let right = self.expr(right, Some(left.ty)).unwrap();
+
+                type Op = fn(&mut Func, u8, u8, u8);
+                type ImmOp = fn(&mut Func, u8, u8, u64);
+
+                let op = match op {
+                    T::Plus => Func::add64 as Op,
+                    T::Minus => Func::sub64 as Op,
+                    T::Star => Func::mul64 as Op,
+                    T::FSlash => Func::div64 as Op,
+                    _ => unimplemented!("{:#?}", op),
+                };
+
+                let lhs = match left.loc {
+                    Loc::Reg(reg) => reg,
+                    Loc::Imm(imm) => {
+                        let reg = self.gpa.allocate();
+                        self.code.li64(reg, imm);
+                        reg
+                    }
+                };
+
+                let rhs = match right.loc {
+                    Loc::Reg(reg) => reg,
+                    Loc::Imm(imm) => {
+                        let reg = self.gpa.allocate();
+                        self.code.li64(reg, imm);
+                        reg
+                    }
+                };
+
+                op(&mut self.code, lhs, lhs, rhs);
+                self.gpa.free(rhs);
+
+                Some(Value {
+                    ty:  left.ty,
+                    loc: Loc::Reg(lhs),
+                })
+            }
+            ast => unimplemented!("{:#?}", ast),
         }
     }
 
@@ -328,14 +377,6 @@ mod tests {
 
         let mut stack = [0_u64; 1024];
 
-        for (i, b) in out.iter().enumerate() {
-            write!(output, "{:02x}", b).unwrap();
-            if (i + 1) % 4 == 0 {
-                writeln!(output).unwrap();
-            }
-        }
-        writeln!(output).unwrap();
-
         let mut vm = unsafe {
             hbvm::Vm::<TestMem, 0>::new(TestMem, hbvm::mem::Address::new(out.as_ptr() as u64))
         };
@@ -356,5 +397,6 @@ mod tests {
 
     crate::run_tests! { generate:
         example => include_str!("../examples/main_fn.hb");
+        arithmetic => include_str!("../examples/arithmetic.hb");
     }
 }

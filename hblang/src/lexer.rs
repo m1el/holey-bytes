@@ -11,7 +11,7 @@ impl Token {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum TokenKind {
     Ident,
     Number,
@@ -22,12 +22,54 @@ pub enum TokenKind {
     LBrack,
     RBrack,
     Decl,
+    Plus,
+    Minus,
+    Star,
+    FSlash,
     Or,
     Semi,
     Colon,
     Return,
     Eof,
     Error,
+}
+
+impl std::fmt::Display for TokenKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        use TokenKind as T;
+        let s = match self {
+            T::Ident => "<identifier>",
+            T::Number => "<number>",
+            T::LParen => "(",
+            T::RParen => ")",
+            T::LBrace => "{",
+            T::RBrace => "}",
+            T::LBrack => "[",
+            T::RBrack => "]",
+            T::Decl => ":=",
+            T::Plus => "+",
+            T::Minus => "-",
+            T::Star => "*",
+            T::FSlash => "/",
+            T::Or => "||",
+            T::Semi => ";",
+            T::Colon => ":",
+            T::Return => "return",
+            T::Eof => "<eof>",
+            T::Error => "<error>",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+impl TokenKind {
+    pub fn precedence(&self) -> Option<u8> {
+        match self {
+            Self::Plus | Self::Minus => Some(2),
+            Self::Star | Self::FSlash => Some(3),
+            _ => None,
+        }
+    }
 }
 
 pub struct Lexer<'a> {
@@ -120,6 +162,10 @@ impl<'a> Iterator for Lexer<'a> {
                     false => T::Colon,
                 },
                 b';' => T::Semi,
+                b'+' => T::Plus,
+                b'-' => T::Minus,
+                b'*' => T::Star,
+                b'/' => T::FSlash,
                 b'|' => match self.advance_if(b'|') {
                     true => T::Or,
                     false => T::Error,

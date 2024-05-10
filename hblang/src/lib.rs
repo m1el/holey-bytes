@@ -1,4 +1,5 @@
 #![feature(noop_waker)]
+#![feature(let_chains)]
 #![feature(non_null_convenience)]
 #![allow(dead_code)]
 #![feature(const_mut_refs)]
