@@ -163,5 +163,6 @@ mod tests {
         empty => "";
         whitespace => " \t\n\r";
         example => include_str!("../examples/main_fn.hb");
+        arithmetic => include_str!("../examples/arithmetic.hb");
     }
 }
