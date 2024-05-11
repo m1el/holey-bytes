@@ -50,7 +50,7 @@ of offset in the code. Not from the beginning of current or following instructio
 
 ## Rounding modes
 | Rounding mode            | Value |
-|:-------------------------|:------|
+fn():------|
 | To nearest, ties to even | 0b00  |
 | Towards 0 (truncate)     | 0b01  |
 | Towards +∞ (up)          | 0b10  |
@@ -89,7 +89,7 @@ Program counter stays on the currently executed instruction
 - Type `N`
 
 | Opcode | Mnemonic | Action                                      |
-|:-------|:---------|:--------------------------------------------|
+fn():--------------------------------------------|
 | 0x00   | UN       | Throw unreachable code exception            |
 | 0x01   | TX       | Terminate execution (eg. on end of program) |
 | 0x02   | NOP      | Do nothing                                  |
@@ -100,7 +100,7 @@ Program counter stays on the currently executed instruction
 
 ## Addition (`+`)
 | Opcode | Mnemonic | Type |
-|:-------|:---------|:-----|
+fn():-----|
 | 0x03   | ADD8     | Xi8  |
 | 0x04   | ADD16    | Xi16 |
 | 0x05   | ADD32    | Xi32 |
@@ -108,7 +108,7 @@ Program counter stays on the currently executed instruction
 
 ## Subtraction (`-`)
 | Opcode | Mnemonic | Type |
-|:-------|:---------|:-----|
+fn():-----|
 | 0x07   | SUB8     | Xi8  |
 | 0x08   | SUB16    | Xi16 |
 | 0x09   | SUB32    | Xi32 |
@@ -116,7 +116,7 @@ Program counter stays on the currently executed instruction
 
 ## Multiplication (`*`)
 | Opcode | Mnemonic | Type |
-|:-------|:---------|:-----|
+fn():-----|
 | 0x0B   | MUL8     | Xi8  |
 | 0x0C   | MUL16    | Xi16 |
 | 0x0D   | MUL32    | Xi32 |
@@ -124,14 +124,14 @@ Program counter stays on the currently executed instruction
 
 ## Bitwise ops (type: Xi64)
 | Opcode | Mnemonic | Operation           |
-|:-------|:---------|:--------------------|
+fn():--------------------|
 | 0x0F   | AND      | Conjunction (&)     |
 | 0x10   | OR       | Disjunction (\|)    |
 | 0x11   | XOR      | Non-equivalence (^) |
 
 ## Unsigned left bitshift (`<<`)
 | Opcode | Mnemonic | Type |
-|:-------|:---------|:-----|
+fn():-----|
 | 0x12   | SLU8     | Ui8  |
 | 0x13   | SLU16    | Ui16 |
 | 0x14   | SLU32    | Ui32 |
@@ -139,7 +139,7 @@ Program counter stays on the currently executed instruction
 
 ## Unsigned right bitshift (`>>`)
 | Opcode | Mnemonic | Type |
-|:-------|:---------|:-----|
+fn():-----|
 | 0x16   | SRU8     | Ui8  |
 | 0x17   | SRU16    | Ui16 |
 | 0x18   | SRU32    | Ui32 |
@@ -147,7 +147,7 @@ Program counter stays on the currently executed instruction
 
 ## Signed right bitshift (`>>`)
 | Opcode | Mnemonic | Type |
-|:-------|:---------|:-----|
+fn():-----|
 | 0x1A   | SRS8     | Si8  |
 | 0x1B   | SRS16    | Si16 |
 | 0x1C   | SRS32    | Si32 |
@@ -158,13 +158,13 @@ Program counter stays on the currently executed instruction
 - Operation: `#0 ← #1 <=> #2`
 
 | Ordering | Number |
-|:---------|:-------|
+fn():-------|
 | <        | -1     |
 | =        | 0      |
 | >        | 1      |
 
 | Opcode | Mnemonic | Type |
-|:-------|:---------|:-----|
+fn():-----|
 | 0x1E   | CMPU     | Ui64 |
 | 0x1F   | CMPS     | Si64 |
 
@@ -179,7 +179,7 @@ Program counter stays on the currently executed instruction
     - `#1 ← #2`
 
 | Opcode | Mnemonic | Type |
-|:-------|:---------|:-----|
+fn():-----|
 | 0x20   | DIRU8    | Ui8  |
 | 0x21   | DIRU16   | Ui16 |
 | 0x22   | DIRU32   | Ui32 |
@@ -194,7 +194,7 @@ Program counter stays on the currently executed instruction
 - Operation: `#0 ← <OP> #1`
 
 | Opcode | Mnemonic | Operation                |
-|:-------|:---------|:-------------------------|
+fn():-------------------------|
 | 0x28   | NEG      | Bitwise complement (`~`) |
 | 0x29   | NOT      | Logical negation (`!`)   |
 
@@ -202,7 +202,7 @@ Program counter stays on the currently executed instruction
 - Operation: `#0 ← Si64(#1)`
 
 | Opcode | Mnemonic | Source type |
-|:-------|:---------|:------------|
+fn():------------|
 | 0x2A   | SXT8     | Si8         |
 | 0x2B   | SXT16    | Si16        |
 | 0x2C   | SXT32    | Si32        |
@@ -213,7 +213,7 @@ Program counter stays on the currently executed instruction
 
 ## Addition (`+`)
 | Opcode | Mnemonic | Type |
-|:-------|:---------|:-----|
+fn():-----|
 | 0x2D   | ADDI8    | Xi8  |
 | 0x2E   | ADDI16   | Xi16 |
 | 0x2F   | ADDI32   | Xi32 |
@@ -221,7 +221,7 @@ Program counter stays on the currently executed instruction
 
 ## Multiplication (`*`)
 | Opcode | Mnemonic | Type |
-|:-------|:---------|:-----|
+fn():-----|
 | 0x31   | MULI8    | Xi8  |
 | 0x32   | MULI16   | Xi16 |
 | 0x33   | MULI32   | Xi32 |
@@ -229,7 +229,7 @@ Program counter stays on the currently executed instruction
 
 ## Bitwise ops (type: Xi64)
 | Opcode | Mnemonic | Operation           |
-|:-------|:---------|:--------------------|
+fn():--------------------|
 | 0x35   | ANDI     | Conjunction (&)     |
 | 0x36   | ORI      | Disjunction (\|)    |
 | 0x37   | XORI     | Non-equivalence (^) |
@@ -240,7 +240,7 @@ Program counter stays on the currently executed instruction
 
 ## Unsigned left bitshift (`<<`)
 | Opcode | Mnemonic | Type |
-|:-------|:---------|:-----|
+fn():-----|
 | 0x38   | SLUI8    | Ui8  |
 | 0x39   | SLUI16   | Ui16 |
 | 0x3A   | SLUI32   | Ui32 |
@@ -248,7 +248,7 @@ Program counter stays on the currently executed instruction
 
 ## Unsigned right bitshift (`>>`)
 | Opcode | Mnemonic | Type |
-|:-------|:---------|:-----|
+fn():-----|
 | 0x3C   | SRUI8    | Ui8  |
 | 0x3D   | SRUI16   | Ui16 |
 | 0x3E   | SRUI32   | Ui32 |
@@ -256,7 +256,7 @@ Program counter stays on the currently executed instruction
 
 ## Signed right bitshift (`>>`)
 | Opcode | Mnemonic | Type |
-|:-------|:---------|:-----|
+fn():-----|
 | 0x40   | SRSI8    | Si8  |
 | 0x41   | SRSI16   | Si16 |
 | 0x42   | SRSI32   | Si32 |
@@ -268,7 +268,7 @@ Program counter stays on the currently executed instruction
 - Comparsion table same for register-register one
 
 | Opcode | Mnemonic | Type |
-|:-------|:---------|:-----|
+fn():-----|
 | 0x44   | CMPUI    | Ui64 |
 | 0x45   | CMPSI    | Si64 |
 
@@ -276,7 +276,7 @@ Program counter stays on the currently executed instruction
 - Type: `RR`
 
 | Opcode | Mnemonic | Operation                        |
-|:-------|:---------|:---------------------------------|
+fn():---------------------------------|
 | 0x46   | CP       | Copy register value (`#0 ← #1`)  |
 | 0x47   | SWA      | Swap register values (`#0 ⇆ #1`) |
 
@@ -286,7 +286,7 @@ Program counter stays on the currently executed instruction
 - Operation: `#0 ← $1`
 
 | Opcode | Mnemonic | Type |
-|:-------|:---------|:-----|
+fn():-----|
 | 0x48   | LI8      | Xi8  |
 | 0x49   | LI16     | Xi16 |
 | 0x4A   | Li32     | Xi32 |
@@ -298,7 +298,7 @@ Program counter stays on the currently executed instruction
 - Operation: `#0 ← pc + #1 + $2`
 
 | Opcode | Mnemonic |
-|:-------|:---------|
+fn():---------|
 | 0x4C   | LRA      |
 
 # Memory access operations
@@ -313,7 +313,7 @@ Program counter stays on the currently executed instruction
 - Computes address from base register and absolute offset
 
 | Opcode | Mnemonic | Operation          |
-|:-------|:---------|:-------------------|
+fn():-------------------|
 | 0x4D   | LD       | `#0 ← $3[#1 + $2]` |
 | 0x4E   | ST       | `$3[#1 + $2] ← #0` |
 
@@ -322,7 +322,7 @@ Program counter stays on the currently executed instruction
 - Computes address from register and offset from program counter
 
 | Opcode | Mnemonic | Operation               |
-|:-------|:---------|:------------------------|
+fn():------------------------|
 | 0x4F   | LDR      | `#0 ← $3[pc + #1 + $2]` |
 | 0x50   | STR      | `$3[pc + #1 + $2] ← #0` |
 
@@ -331,7 +331,7 @@ Program counter stays on the currently executed instruction
 - Copies block of `$3` bytes from memory location on address on `#0` to `#1`
 
 | Opcode | Mnemonic | Operation         |
-|:-------|:---------|:------------------|
+fn():------------------|
 | 0x51   | BMC      | `$3[#1] ← $3[x0]` |
 
 # Block register copy
@@ -340,14 +340,14 @@ Program counter stays on the currently executed instruction
 - Copying over the 256 registers causes an exception
 
 | Opcode | Mnemonic | Operation     |
-|:-------|:---------|:--------------|
+fn():--------------|
 | 0x52   | BRC      | `$3#1 ← $3#0` |
 
 # Relative jump
 - Type: `O`
 
 | Opcode | Mnemonic | Operation      |
-|:-------|:---------|:---------------|
+fn():---------------|
 | 0x53   | JMP      | `pc ← pc + $0` |
 
 # Linking jump
@@ -357,7 +357,7 @@ Program counter stays on the currently executed instruction
     - Jump to specified address 
 
 | Opcode | Mnemonic | Instruction type  | Address                  |
-|:-------|:---------|:------------------|:-------------------------|
+fn():-------------------------|
 | 0x54   | JAL      | RRO (size = 6 B)  | Relative, `pc + #1 + $2` |
 | 0x55   | JALA     | RRA (size = 10 B) | Absolute, `#1 + $2`      |
 
@@ -367,7 +367,7 @@ Program counter stays on the currently executed instruction
 - Operation: `if #0 <CMP> #1 { pc ← pc + $2 }`
 
 | Opcode | Mnemonic | Condition          | Type |
-|:-------|:---------|:-------------------|:-----|
+fn():-----|
 | 0x56   | JEQ      | Equals (`=`)       | Xi64 |
 | 0x57   | JNE      | Not-equals (`≠`)   | Xi64 |
 | 0x58   | JLTU     | Less-than (`<`)    | Ui64 |
@@ -380,7 +380,7 @@ Program counter stays on the currently executed instruction
 - Type: `N`
 
 | Opcode | Mnemonic | Trap type        |
-|:-------|:---------|:-----------------|
+fn():-----------------|
 | 0x5C   | ECA      | Environment call |
 | 0x5D   | EBP      | Breakpoint       |
 
@@ -389,7 +389,7 @@ Program counter stays on the currently executed instruction
 - Operation: `#0 ← #1 <OP> #2`
 
 | Opcode | Mnemonic | Operation            | Type |
-|:-------|:---------|:---------------------|:-----|
+fn():-----|
 | 0x5E   | FADD32   | Addition (`+`)       | Fl32 |
 | 0x5F   | FADD64   | Addition (`+`)       | Fl64 |
 | 0x60   | FSUB32   | Subtraction (`-`)    | Fl32 |
@@ -404,7 +404,7 @@ Program counter stays on the currently executed instruction
 - Operation: `#0 ← (#1 * #2) + #3`
 
 | Opcode | Mnemonic | Type |
-|:-------|:---------|:-----|
+fn():-----|
 | 0x66   | FMA32    | Fl32 |
 | 0x67   | FMA64    | Fl64 |
 
@@ -415,7 +415,7 @@ Program counter stays on the currently executed instruction
 - NaN is less-than/greater-than depends on variant
 
 | Opcode | Mnemonic | Type | NaN is |
-|:-------|:---------|:-----|:-------|
+fn():-------|
 | 0x6A   | FCMPLT32 | Fl32 | <      |
 | 0x6B   | FCMPLT64 | Fl64 | <      |
 | 0x6C   | FCMPGT32 | Fl32 | >      |
@@ -427,7 +427,7 @@ Program counter stays on the currently executed instruction
 - Operation: `#0 ← Fl<SIZE>(#1)`
 
 | Opcode | Mnemonic | Type |
-|:-------|:---------|:-----|
+fn():-----|
 | 0x6E   | ITF32    | Fl32 |
 | 0x6F   | ITF64    | Fl64 |
 
@@ -437,7 +437,7 @@ Program counter stays on the currently executed instruction
 - Immediate `$2` specifies rounding mode
 
 | Opcode | Mnemonic | Type |
-|:-------|:---------|:-----|
+fn():-----|
 | 0x70   | FTI32    | Fl32 |
 | 0x71   | FTI64    | Fl64 |
 
@@ -446,7 +446,7 @@ Program counter stays on the currently executed instruction
 - Operation: `#0 ← Fl64(#1)`
 
 | Opcode | Mnemonic |
-|:-------|:---------|
+fn():---------|
 | 0x72   | FC32T64  |
 
 # Fl64 to Fl32
@@ -455,13 +455,13 @@ Program counter stays on the currently executed instruction
 - Immediate `$2` specified rounding mode
 
 | Opcode | Mnemonic |
-|:-------|:---------|
+fn():---------|
 | 0x73   | FC64T32  |
 
 # 16-bit relative address instruction variants
 
 | Opcode | Mnemonic | Type | Variant of |
-|:-------|:---------|:-----|:-----------|
+fn():-----------|
 | 0x74   | LRA16    | RRP  | LRA        |
 | 0x75   | LDR16    | RRPH | LDR        |
 | 0x76   | STR16    | RRPH | STR        |
@@ -472,7 +472,7 @@ Program counter stays on the currently executed instruction
 - One byte is 8 bits
 
 | C Type      | Description              | Byte sizes |
-|:------------|:-------------------------|:-----------|
+fn():-----------|
 | char        | Character / byte         | 1          |
 | short       | Short integer            | 2          |
 | int         | Integer                  | 4          |
@@ -491,7 +491,7 @@ Program counter stays on the currently executed instruction
 - Registers r32 – r255 are callee saved
 
 | Register   | Description         | Saver  |
-|:-----------|:--------------------|:-------|
+fn():-------|
 | r0         | Hard-wired zero     | N/A    |
 | r1 - r2    | Return values       | Caller |
 | r2 - r11   | Function parameters | Caller |

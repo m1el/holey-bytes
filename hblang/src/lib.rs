@@ -1,4 +1,5 @@
 #![feature(noop_waker)]
+#![feature(macro_metavar_expr)]
 #![feature(let_chains)]
 #![feature(non_null_convenience)]
 #![allow(dead_code)]
@@ -18,6 +19,7 @@ mod codegen;
 mod ident;
 mod instrs;
 mod lexer;
+mod log;
 mod parser;
 mod tests;
 mod typechk;

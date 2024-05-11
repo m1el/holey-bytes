@@ -70,69 +70,61 @@ impl<'a, 'b> Parser<'a, 'b> {
     }
 
     fn unit_expr(&mut self) -> Expr<'a> {
+        use {Expr as E, TokenKind as T};
         let token = self.next();
         let mut expr = match token.kind {
-            TokenKind::Ident => {
-                let name = self.arena.alloc_str(self.lexer.slice(token));
-                if self.advance_if(TokenKind::Decl) {
-                    let val = self.ptr_expr();
-                    Expr::Decl { name, val }
-                } else {
-                    Expr::Ident { name }
-                }
-            }
-            TokenKind::If => {
-                let cond = self.ptr_expr();
-                let then = self.ptr_expr();
-                let else_ = self.advance_if(TokenKind::Else).then(|| self.ptr_expr());
-                Expr::If { cond, then, else_ }
-            }
-            TokenKind::Loop => Expr::Loop {
+            T::Ident => E::Ident {
+                pos:  token.start,
+                name: self.arena.alloc_str(self.lexer.slice(token)),
+            },
+            T::If => E::If {
+                pos:   token.start,
+                cond:  self.ptr_expr(),
+                then:  self.ptr_expr(),
+                else_: self.advance_if(T::Else).then(|| self.ptr_expr()),
+            },
+            T::Loop => E::Loop {
+                pos:  token.start,
                 body: self.ptr_expr(),
             },
-            TokenKind::Break => Expr::Break,
-            TokenKind::Continue => Expr::Continue,
-            TokenKind::Return => Expr::Return {
-                val: (self.token.kind != TokenKind::Semi).then(|| self.ptr_expr()),
+            T::Break => E::Break { pos: token.start },
+            T::Continue => E::Continue { pos: token.start },
+            T::Return => E::Return {
+                pos: token.start,
+                val: (self.token.kind != T::Semi).then(|| self.ptr_expr()),
             },
-            TokenKind::Or => {
-                self.expect_advance(TokenKind::Colon);
-                let ret = self.ptr_expr();
-                let body = self.ptr_expr();
-                Expr::Closure {
-                    ret,
-                    body,
-                    args: &[],
-                }
-            }
-            TokenKind::Bor => {
-                let args = self.collect(|s| {
-                    s.advance_if(TokenKind::Bor).not().then(|| {
-                        let name = s.expect_advance(TokenKind::Ident);
+            T::Fn => E::Closure {
+                pos:  token.start,
+                args: {
+                    self.expect_advance(T::LParen);
+                    self.collect_list(T::Comma, T::RParen, |s| {
+                        let name = s.expect_advance(T::Ident);
                         let name = s.arena.alloc_str(s.lexer.slice(name));
-                        s.expect_advance(TokenKind::Colon);
+                        s.expect_advance(T::Colon);
                         let val = s.expr();
-                        s.advance_if(TokenKind::Comma);
                         (name, val)
                     })
-                });
-                self.expect_advance(TokenKind::Colon);
-                let ret = self.ptr_expr();
-                let body = self.ptr_expr();
-                Expr::Closure { args, ret, body }
-            }
-            TokenKind::LBrace => Expr::Block {
-                stmts: self.collect(|s| (!s.advance_if(TokenKind::RBrace)).then(|| s.expr())),
+                },
+                ret:  {
+                    self.expect_advance(T::Colon);
+                    self.ptr_expr()
+                },
+                body: self.ptr_expr(),
             },
-            TokenKind::Number => Expr::Number {
+            T::LBrace => E::Block {
+                pos:   token.start,
+                stmts: self.collect_list(T::Semi, T::RBrace, Self::expr),
+            },
+            T::Number => E::Number {
+                pos:   token.start,
                 value: match self.lexer.slice(token).parse() {
                     Ok(value) => value,
                     Err(e) => self.report(format_args!("invalid number: {e}")),
                 },
             },
-            TokenKind::LParen => {
+            T::LParen => {
                 let expr = self.expr();
-                self.expect_advance(TokenKind::RParen);
+                self.expect_advance(T::RParen);
                 expr
             }
             tok => self.report(format_args!("unexpected token: {tok:?}")),
@@ -144,13 +136,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                     self.next();
                     Expr::Call {
                         func: self.arena.alloc(expr),
-                        args: self.collect(|s| {
-                            s.advance_if(TokenKind::RParen).not().then(|| {
-                                let arg = s.expr();
-                                s.advance_if(TokenKind::Comma);
-                                arg
-                            })
-                        }),
+                        args: self.collect_list(TokenKind::Comma, TokenKind::RParen, Self::expr),
                     }
                 }
                 _ => break,
@@ -160,6 +146,21 @@ impl<'a, 'b> Parser<'a, 'b> {
         self.advance_if(TokenKind::Semi);
 
         expr
+    }
+
+    fn collect_list<T: Copy>(
+        &mut self,
+        delim: TokenKind,
+        end: TokenKind,
+        mut f: impl FnMut(&mut Self) -> T,
+    ) -> &'a [T] {
+        self.collect(|s| {
+            s.advance_if(end).not().then(|| {
+                let val = f(s);
+                s.advance_if(delim);
+                val
+            })
+        })
     }
 
     fn collect<T: Copy>(&mut self, mut f: impl FnMut(&mut Self) -> Option<T>) -> &'a [T] {
@@ -195,13 +196,14 @@ impl<'a, 'b> Parser<'a, 'b> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Expr<'a> {
-    Break,
-    Continue,
-    Decl {
-        name: &'a str,
-        val:  &'a Expr<'a>,
+    Break {
+        pos: u32,
+    },
+    Continue {
+        pos: u32,
     },
     Closure {
+        pos:  u32,
         args: &'a [(&'a str, Expr<'a>)],
         ret:  &'a Expr<'a>,
         body: &'a Expr<'a>,
@@ -211,15 +213,19 @@ pub enum Expr<'a> {
         args: &'a [Expr<'a>],
     },
     Return {
+        pos: u32,
         val: Option<&'a Expr<'a>>,
     },
     Ident {
+        pos:  u32,
         name: &'a str,
     },
     Block {
+        pos:   u32,
         stmts: &'a [Expr<'a>],
     },
     Number {
+        pos:   u32,
         value: u64,
     },
     BinOp {
@@ -228,11 +234,13 @@ pub enum Expr<'a> {
         right: &'a Expr<'a>,
     },
     If {
+        pos:   u32,
         cond:  &'a Expr<'a>,
         then:  &'a Expr<'a>,
         else_: Option<&'a Expr<'a>>,
     },
     Loop {
+        pos:  u32,
         body: &'a Expr<'a>,
     },
 }
@@ -244,18 +252,21 @@ impl<'a> std::fmt::Display for Expr<'a> {
         }
 
         match *self {
-            Self::Break => write!(f, "break;"),
-            Self::Continue => write!(f, "continue;"),
-            Self::If { cond, then, else_ } => {
+            Self::Break { .. } => write!(f, "break;"),
+            Self::Continue { .. } => write!(f, "continue;"),
+            Self::If {
+                cond, then, else_, ..
+            } => {
                 write!(f, "if {} {}", cond, then)?;
                 if let Some(else_) = else_ {
                     write!(f, " else {}", else_)?;
                 }
                 Ok(())
             }
-            Self::Loop { body } => write!(f, "loop {}", body),
-            Self::Decl { name, val } => write!(f, "{} := {}", name, val),
-            Self::Closure { ret, body, args } => {
+            Self::Loop { body, .. } => write!(f, "loop {}", body),
+            Self::Closure {
+                ret, body, args, ..
+            } => {
                 write!(f, "|")?;
                 let first = &mut true;
                 for (name, val) in args {
@@ -277,10 +288,10 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 }
                 write!(f, ")")
             }
-            Self::Return { val: Some(val) } => write!(f, "return {};", val),
-            Self::Return { val: None } => write!(f, "return;"),
-            Self::Ident { name } => write!(f, "{}", name),
-            Self::Block { stmts } => {
+            Self::Return { val: Some(val), .. } => write!(f, "return {};", val),
+            Self::Return { val: None, .. } => write!(f, "return;"),
+            Self::Ident { name, .. } => write!(f, "{}", name),
+            Self::Block { stmts, .. } => {
                 writeln!(f, "{{")?;
                 INDENT.with(|i| i.set(i.get() + 1));
                 let res = (|| {
@@ -296,7 +307,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 write!(f, "}}")?;
                 res
             }
-            Self::Number { value } => write!(f, "{}", value),
+            Self::Number { value, .. } => write!(f, "{}", value),
             Self::BinOp { left, right, op } => {
                 let display_branch = |f: &mut std::fmt::Formatter, expr: &Self| {
                     if let Self::BinOp { op: lop, .. } = expr

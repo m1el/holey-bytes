@@ -1,6 +1,6 @@
 use {
     crate::{
-        instrs, lexer,
+        instrs, lexer, log,
         parser::{self, Expr},
     },
     std::rc::Rc,
@@ -9,6 +9,42 @@ use {
 type LabelId = u32;
 type Reg = u8;
 type MaskElem = u64;
+type Type = u32;
+
+mod bt {
+    use super::*;
+
+    const fn builtin_type(id: u32) -> Type {
+        Type::MAX - id
+    }
+
+    macro_rules! builtin_type {
+        ($($name:ident;)*) => {$(
+            pub const $name: Type = builtin_type(${index(0)});
+        )*};
+    }
+
+    builtin_type! {
+        INT;
+        BOOL;
+        MAX;
+    }
+}
+
+enum TypeKind {
+    Builtin(Type),
+    Struct(Type),
+}
+
+impl TypeKind {
+    fn from_ty(ty: Type) -> Self {
+        if ty > bt::MAX {
+            Self::Builtin(ty)
+        } else {
+            Self::Struct(ty)
+        }
+    }
+}
 
 const STACK_PTR: Reg = 254;
 const ZERO: Reg = 0;
@@ -55,7 +91,7 @@ impl Func {
 
     fn encode(&mut self, (len, instr): (usize, [u8; instrs::MAX_SIZE])) {
         let name = instrs::NAMES[instr[0] as usize];
-        println!(
+        log::dbg!(
             "{:08x}: {}: {}",
             self.code.len(),
             name,
@@ -107,7 +143,7 @@ impl Func {
                 label.offset as i64 - reloc.offset as i64
             } + shift;
 
-            dbg!(
+            log::dbg!(
                 label.name.as_ref(),
                 offset,
                 reloc.size,
@@ -184,6 +220,11 @@ struct Loop {
     relocs: Vec<RetReloc>,
 }
 
+struct Struct {
+    name:   Rc<str>,
+    fields: Vec<(Rc<str>, Type)>,
+}
+
 pub struct Codegen<'a> {
     path: &'a std::path::Path,
     ret: Expr<'a>,
@@ -196,13 +237,14 @@ pub struct Codegen<'a> {
     stack_relocs: Vec<StackReloc>,
     ret_relocs: Vec<RetReloc>,
     loops: Vec<Loop>,
+    records: Vec<Struct>,
 }
 
 impl<'a> Codegen<'a> {
     pub fn new() -> Self {
         Self {
             path:       std::path::Path::new(""),
-            ret:        Expr::Return { val: None },
+            ret:        Expr::Return { val: None, pos: 0 },
             gpa:        Default::default(),
             code:       Default::default(),
             temp:       Default::default(),
@@ -213,6 +255,7 @@ impl<'a> Codegen<'a> {
             stack_relocs: Default::default(),
             ret_relocs:   Default::default(),
             loops:        Default::default(),
+            records:      Default::default(),
         }
     }
 
@@ -289,9 +332,12 @@ impl<'a> Codegen<'a> {
     fn expr(&mut self, expr: &'a parser::Expr<'a>, expeted: Option<Expr<'a>>) -> Option<Value<'a>> {
         use {lexer::TokenKind as T, parser::Expr as E};
         match *expr {
-            E::Decl {
-                name,
-                val: E::Closure { ret, body, args },
+            E::BinOp {
+                left: E::Ident { name, .. },
+                op: T::Decl,
+                right: E::Closure {
+                    ret, body, args, ..
+                },
             } => {
                 let frame = self.add_label(name);
                 for (i, &(name, ty)) in args.iter().enumerate() {
@@ -310,8 +356,20 @@ impl<'a> Codegen<'a> {
                 self.ret();
                 None
             }
+            E::BinOp {
+                left: E::Ident { name, .. },
+                op: T::Decl,
+                right,
+            } => {
+                let val = self.expr(right, None).unwrap();
+                let reg = self.loc_to_reg(val.loc);
+                let offset = self.alloc_stack(8);
+                self.decl_var(name, offset, val.ty);
+                self.store_stack(reg, offset, 8);
+                None
+            }
             E::Call {
-                func: E::Ident { name },
+                func: E::Ident { name, .. },
                 args,
             } => {
                 for (i, arg) in args.iter().enumerate() {
@@ -328,22 +386,14 @@ impl<'a> Codegen<'a> {
                     loc: Loc::Reg(reg),
                 })
             }
-            E::Decl { name, val } => {
-                let val = self.expr(val, None).unwrap();
-                let reg = self.loc_to_reg(val.loc);
-                let offset = self.alloc_stack(8);
-                self.decl_var(name, offset, val.ty);
-                self.store_stack(reg, offset, 8);
-                None
-            }
-            E::Ident { name } => {
+            E::Ident { name, .. } => {
                 let var = self.vars.iter().find(|v| v.name.as_ref() == name).unwrap();
                 Some(Value {
                     ty:  var.ty,
                     loc: Loc::Stack(var.offset),
                 })
             }
-            E::Return { val } => {
+            E::Return { val, .. } => {
                 if let Some(val) = val {
                     let val = self.expr(val, Some(self.ret)).unwrap();
                     if val.ty != self.ret {
@@ -365,21 +415,33 @@ impl<'a> Codegen<'a> {
                 self.code.encode(instrs::jmp(0));
                 None
             }
-            E::Block { stmts } => {
+            E::Block { stmts, .. } => {
                 for stmt in stmts {
                     self.expr(stmt, None);
                 }
                 None
             }
-            E::Number { value } => Some(Value {
-                ty:  expeted.unwrap_or(Expr::Ident { name: "int" }),
+            E::Number { value, .. } => Some(Value {
+                ty:  expeted.unwrap_or(Expr::Ident {
+                    name: "int",
+                    pos:  0,
+                }),
                 loc: Loc::Imm(value),
             }),
-            E::If { cond, then, else_ } => {
-                let cond = self.expr(cond, Some(Expr::Ident { name: "bool" })).unwrap();
+            E::If {
+                cond, then, else_, ..
+            } => {
+                let cond = self
+                    .expr(
+                        cond,
+                        Some(Expr::Ident {
+                            name: "bool",
+                            pos:  0,
+                        }),
+                    )
+                    .unwrap();
                 let reg = self.loc_to_reg(cond.loc);
                 let jump_offset = self.code.code.len() as u32;
-                println!("jump_offset: {:02x}", jump_offset);
                 self.code.encode(instrs::jeq(reg, 0, 0));
                 self.gpa.free(reg);
 
@@ -389,7 +451,6 @@ impl<'a> Codegen<'a> {
 
                 if let Some(else_) = else_ {
                     let else_jump_offset = self.code.code.len() as u32;
-                    println!("jump_offset: {:02x}", jump_offset);
                     self.code.encode(instrs::jmp(0));
 
                     jump = self.code.code.len() as i16 - jump_offset as i16;
@@ -397,20 +458,18 @@ impl<'a> Codegen<'a> {
                     self.expr(else_, None);
 
                     let jump = self.code.code.len() as i32 - else_jump_offset as i32;
-                    println!("jump: {:02x}", jump);
                     self.code.code[else_jump_offset as usize + 1..][..4]
                         .copy_from_slice(&jump.to_ne_bytes());
                 } else {
                     jump = self.code.code.len() as i16 - jump_offset as i16;
                 }
 
-                println!("jump: {:02x}", jump);
                 self.code.code[jump_offset as usize + 3..][..2]
                     .copy_from_slice(&jump.to_ne_bytes());
 
                 None
             }
-            E::Loop { body } => {
+            E::Loop { body, .. } => {
                 let loop_start = self.code.code.len() as u32;
                 self.loops.push(Loop {
                     offset: loop_start,
@@ -434,7 +493,7 @@ impl<'a> Codegen<'a> {
 
                 None
             }
-            E::Break => {
+            E::Break { .. } => {
                 let loop_ = self.loops.last_mut().unwrap();
                 let offset = self.code.code.len() as u32;
                 self.code.encode(instrs::jmp(0));
@@ -445,7 +504,7 @@ impl<'a> Codegen<'a> {
                 });
                 None
             }
-            E::Continue => {
+            E::Continue { .. } => {
                 let loop_ = self.loops.last().unwrap();
                 let offset = self.code.code.len() as u32;
                 self.code
@@ -468,7 +527,10 @@ impl<'a> Codegen<'a> {
                         self.gpa.free(rhs);
                         self.code.encode(instrs::cmpui(lhs, lhs, 1));
                         return Some(Value {
-                            ty:  Expr::Ident { name: "bool" },
+                            ty:  Expr::Ident {
+                                name: "bool",
+                                pos:  0,
+                            },
                             loc: Loc::Reg(lhs),
                         });
                     }
@@ -478,7 +540,10 @@ impl<'a> Codegen<'a> {
                         self.code.encode(instrs::cmpui(lhs, lhs, 0));
                         self.code.encode(instrs::not(lhs, lhs));
                         return Some(Value {
-                            ty:  Expr::Ident { name: "bool" },
+                            ty:  Expr::Ident {
+                                name: "bool",
+                                pos:  0,
+                            },
                             loc: Loc::Reg(lhs),
                         });
                     }
@@ -612,7 +677,7 @@ pub enum Loc {
 
 #[cfg(test)]
 mod tests {
-    use crate::instrs;
+    use crate::{instrs, log};
 
     struct TestMem;
 
@@ -624,7 +689,7 @@ mod tests {
             target: *mut u8,
             count: usize,
         ) -> Result<(), hbvm::mem::LoadError> {
-            println!(
+            log::dbg!(
                 "read: {:x} {} {:?}",
                 addr.get(),
                 count,
@@ -646,14 +711,14 @@ mod tests {
             source: *const u8,
             count: usize,
         ) -> Result<(), hbvm::mem::StoreError> {
-            println!("write: {:x} {}", addr.get(), count);
+            log::dbg!("write: {:x} {}", addr.get(), count);
             unsafe { core::ptr::copy(source, addr.get() as *mut u8, count) }
             Ok(())
         }
 
         #[inline]
         unsafe fn prog_read<T: Copy>(&mut self, addr: hbvm::mem::Address) -> T {
-            println!(
+            log::dbg!(
                 "read-typed: {:x} {} {:?}",
                 addr.get(),
                 std::any::type_name::<T>(),

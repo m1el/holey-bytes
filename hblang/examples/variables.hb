@@ -1,4 +1,4 @@
-main := ||: int {
+main := fn(): int {
 	a := 1;
 	b := 2;
 	a = a + 1;

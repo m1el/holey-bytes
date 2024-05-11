@@ -80,7 +80,7 @@ unsafe impl BytecodeItem for u8 {}
         /// ```text
         /// Types consist of letters meaning a single field
         /// | Type | Size (B) | Meaning                 |
-        /// |:-----|:---------|:------------------------|
+        /// fn():------------------------|
         /// | N    | 0        | Empty                   |
         /// | R    | 1        | Register                |
         /// | A    | 8        | Absolute address        |

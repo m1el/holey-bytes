@@ -1,8 +1,8 @@
-main := ||: int {
+main := fn(): int {
 	return fib(10);
 }
 
-fib := |n: int|: int {
+fib := fn(n: int): int {
 	a := 0;
 	b := 1;
 	loop {

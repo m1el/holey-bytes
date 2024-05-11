@@ -11,86 +11,103 @@ impl Token {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum TokenKind {
-    Ident,
-    Number,
-    LParen,
-    RParen,
-    LBrace,
-    RBrace,
-    LBrack,
-    RBrack,
-    Decl,
-    Assign,
-    Plus,
-    Minus,
-    Star,
-    FSlash,
-    Bor,
-    Or,
-    Le,
-    Eq,
-    Semi,
-    Colon,
-    Comma,
-    Return,
-    If,
-    Else,
-    Loop,
-    Break,
-    Continue,
-    Eof,
-    Error,
+macro_rules! gen_token_kind {
+    ($(
+        #[$atts:meta])*
+        $vis:vis enum $name:ident {
+            #[patterns] $(
+                $pattern:ident,
+            )*
+            #[keywords] $(
+                $keyword:ident = $keyword_lit:literal,
+            )*
+            #[punkt] $(
+                $punkt:ident = $punkt_lit:literal,
+            )*
+            #[ops] $(
+                #[prec = $prec:literal] $(
+                    $op:ident = $op_lit:literal,
+                )*
+            )*
+        }
+    ) => {
+        impl std::fmt::Display for $name {
+            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                let s = match *self {
+                    $( Self::$pattern => concat!('<', stringify!($pattern), '>'), )*
+
+                    $( Self::$keyword => stringify!($keyword_lit), )*
+                    $( Self::$punkt   => stringify!($punkt_lit),   )*
+                    $($( Self::$op    => $op_lit,                )*)*
+                };
+                f.write_str(s)
+            }
+        }
+
+        impl $name {
+            #[inline(always)]
+            pub fn precedence(&self) -> Option<u8> {
+                Some(match self {
+                    $($(Self::$op)|* => $prec,)*
+                    _ => return None,
+                })
+            }
+
+            #[inline(always)]
+            fn from_ident(ident: &[u8]) -> Self {
+                match ident {
+                    $($keyword_lit => Self::$keyword,)*
+                    _ => Self::Ident,
+                }
+            }
+        }
+
+        #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+        $vis enum $name {
+            $( $pattern, )*
+            $( $keyword, )*
+            $( $punkt,   )*
+            $($( $op,  )*)*
+        }
+    };
 }
 
-impl std::fmt::Display for TokenKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        use TokenKind as T;
-        let s = match self {
-            T::Ident => "<identifier>",
-            T::Number => "<number>",
-            T::LParen => "(",
-            T::RParen => ")",
-            T::LBrace => "{",
-            T::RBrace => "}",
-            T::LBrack => "[",
-            T::RBrack => "]",
-            T::Decl => ":=",
-            T::Assign => "=",
-            T::Plus => "+",
-            T::Minus => "-",
-            T::Star => "*",
-            T::FSlash => "/",
-            T::Bor => "|",
-            T::Or => "||",
-            T::Le => "<=",
-            T::Eq => "==",
-            T::Semi => ";",
-            T::Colon => ":",
-            T::Comma => ",",
-            T::Return => "return",
-            T::If => "if",
-            T::Else => "else",
-            T::Loop => "loop",
-            T::Break => "break",
-            T::Continue => "continue",
-            T::Eof => "<eof>",
-            T::Error => "<error>",
-        };
-        write!(f, "{}", s)
-    }
-}
-
-impl TokenKind {
-    pub fn precedence(&self) -> Option<u8> {
-        Some(match self {
-            Self::Assign => 1,
-            Self::Le | Self::Eq => 21,
-            Self::Plus | Self::Minus => 23,
-            Self::Star | Self::FSlash => 24,
-            _ => return None,
-        })
+gen_token_kind! {
+    pub enum TokenKind {
+        #[patterns]
+        Ident,
+        Number,
+        Eof,
+        Error,
+        #[keywords]
+        Return   = b"return",
+        If       = b"if",
+        Else     = b"else",
+        Loop     = b"loop",
+        Break    = b"break",
+        Continue = b"continue",
+        Fn       = b"fn",
+        #[punkt]
+        LParen = b'(',
+        RParen = b')',
+        LBrace = b'{',
+        RBrace = b'}',
+        Semi =   b';',
+        Colon =  b':',
+        Comma =  b',',
+        #[ops]
+        #[prec = 1]
+        Decl =   ":=",
+        Assign = "=",
+        #[prec = 21]
+        Le = "<=",
+        Eq = "==",
+        #[prec = 23]
+        Plus =  "+",
+        Minus = "-",
+        #[prec = 24]
+        Star =   "*",
+        FSlash = "/",
     }
 }
 
@@ -174,44 +191,23 @@ impl<'a> Iterator for Lexer<'a> {
                     }
 
                     let ident = &self.bytes[start as usize..self.pos as usize];
-                    match ident {
-                        b"return" => T::Return,
-                        b"if" => T::If,
-                        b"else" => T::Else,
-                        b"loop" => T::Loop,
-                        b"break" => T::Break,
-                        b"continue" => T::Continue,
-                        _ => T::Ident,
-                    }
+                    T::from_ident(ident)
                 }
-                b':' => match self.advance_if(b'=') {
-                    true => T::Decl,
-                    false => T::Colon,
-                },
+                b':' if self.advance_if(b'=') => T::Decl,
+                b':' => T::Colon,
                 b',' => T::Comma,
                 b';' => T::Semi,
-                b'=' => match self.advance_if(b'=') {
-                    true => T::Eq,
-                    false => T::Assign,
-                },
-                b'<' => match self.advance_if(b'=') {
-                    true => T::Le,
-                    false => T::Error,
-                },
+                b'=' if self.advance_if(b'=') => T::Eq,
+                b'=' => T::Assign,
+                b'<' if self.advance_if(b'=') => T::Le,
                 b'+' => T::Plus,
                 b'-' => T::Minus,
                 b'*' => T::Star,
                 b'/' => T::FSlash,
-                b'|' => match self.advance_if(b'|') {
-                    true => T::Or,
-                    false => T::Bor,
-                },
                 b'(' => T::LParen,
                 b')' => T::RParen,
                 b'{' => T::LBrace,
                 b'}' => T::RBrace,
-                b'[' => T::LBrack,
-                b']' => T::RBrack,
                 _ => T::Error,
             };
 
