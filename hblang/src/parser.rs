@@ -1,4 +1,4 @@
-use std::{cell::Cell, ptr::NonNull};
+use std::{cell::Cell, ops::Not, ptr::NonNull};
 
 use crate::lexer::{Lexer, Token, TokenKind};
 
@@ -74,7 +74,7 @@ impl<'a, 'b> Parser<'a, 'b> {
 
     fn unit_expr(&mut self) -> Expr<'a> {
         let token = self.next();
-        let expr = match token.kind {
+        let mut expr = match token.kind {
             TokenKind::Ident => {
                 let name = self.arena.alloc_str(self.lexer.slice(token));
                 if self.advance_if(TokenKind::Decl) {
@@ -91,7 +91,27 @@ impl<'a, 'b> Parser<'a, 'b> {
                 self.expect_advance(TokenKind::Colon);
                 let ret = self.ptr_expr();
                 let body = self.ptr_expr();
-                Expr::Closure { ret, body }
+                Expr::Closure {
+                    ret,
+                    body,
+                    args: &[],
+                }
+            }
+            TokenKind::Bor => {
+                let args = self.collect(|s| {
+                    s.advance_if(TokenKind::Bor).not().then(|| {
+                        let name = s.expect_advance(TokenKind::Ident);
+                        let name = s.arena.alloc_str(s.lexer.slice(name));
+                        s.expect_advance(TokenKind::Colon);
+                        let val = s.expr();
+                        s.advance_if(TokenKind::Comma);
+                        (name, val)
+                    })
+                });
+                self.expect_advance(TokenKind::Colon);
+                let ret = self.ptr_expr();
+                let body = self.ptr_expr();
+                Expr::Closure { args, ret, body }
             }
             TokenKind::LBrace => Expr::Block {
                 stmts: self.collect(|s| (!s.advance_if(TokenKind::RBrace)).then(|| s.expr())),
@@ -110,19 +130,33 @@ impl<'a, 'b> Parser<'a, 'b> {
             tok => self.report(format_args!("unexpected token: {tok:?}")),
         };
 
+        loop {
+            expr = match self.token.kind {
+                TokenKind::LParen => {
+                    self.next();
+                    Expr::Call {
+                        func: self.arena.alloc(expr),
+                        args: self.collect(|s| {
+                            s.advance_if(TokenKind::RParen).not().then(|| {
+                                let arg = s.expr();
+                                s.advance_if(TokenKind::Comma);
+                                arg
+                            })
+                        }),
+                    }
+                }
+                _ => break,
+            }
+        }
+
         self.advance_if(TokenKind::Semi);
 
         expr
     }
 
-    fn collect(&mut self, mut f: impl FnMut(&mut Self) -> Option<Expr<'a>>) -> Slice<'a, Expr<'a>> {
-        let prev_len = self.expr_buf.len();
-        while let Some(v) = f(self) {
-            self.expr_buf.push(v);
-        }
-        let sl = self.arena.alloc_slice(&self.expr_buf[prev_len..]);
-        self.expr_buf.truncate(prev_len);
-        sl
+    fn collect<T: Copy>(&mut self, mut f: impl FnMut(&mut Self) -> Option<T>) -> Slice<'a, T> {
+        let vec = std::iter::from_fn(|| f(self)).collect::<Vec<_>>();
+        self.arena.alloc_slice(&vec)
     }
 
     fn advance_if(&mut self, kind: TokenKind) -> bool {
@@ -134,14 +168,14 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
     }
 
-    fn expect_advance(&mut self, kind: TokenKind) {
+    fn expect_advance(&mut self, kind: TokenKind) -> Token {
         if self.token.kind != kind {
             self.report(format_args!(
                 "expected {:?}, found {:?}",
                 kind, self.token.kind
             ));
         }
-        self.next();
+        self.next()
     }
 
     fn report(&self, msg: impl std::fmt::Display) -> ! {
@@ -158,8 +192,13 @@ pub enum Expr<'a> {
         val:  Ptr<'a, Expr<'a>>,
     },
     Closure {
+        args: Slice<'a, (Ptr<'a, str>, Expr<'a>)>,
         ret:  Ptr<'a, Expr<'a>>,
         body: Ptr<'a, Expr<'a>>,
+    },
+    Call {
+        func: Ptr<'a, Expr<'a>>,
+        args: Slice<'a, Expr<'a>>,
     },
     Return {
         val: Option<Ptr<'a, Expr<'a>>>,
@@ -188,7 +227,28 @@ impl<'a> std::fmt::Display for Expr<'a> {
 
         match *self {
             Self::Decl { name, val } => write!(f, "{} := {}", name, val),
-            Self::Closure { ret, body } => write!(f, "||: {} {}", ret, body),
+            Self::Closure { ret, body, args } => {
+                write!(f, "|")?;
+                let first = &mut true;
+                for (name, val) in args {
+                    if !std::mem::take(first) {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", name, val)?;
+                }
+                write!(f, "|: {} {}", ret, body)
+            }
+            Self::Call { func, args } => {
+                write!(f, "{}(", func)?;
+                let first = &mut true;
+                for arg in args {
+                    if !std::mem::take(first) {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", arg)?;
+                }
+                write!(f, ")")
+            }
             Self::Return { val: Some(val) } => write!(f, "return {};", val),
             Self::Return { val: None } => write!(f, "return;"),
             Self::Ident { name } => write!(f, "{}", name),

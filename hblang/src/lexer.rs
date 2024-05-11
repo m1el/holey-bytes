@@ -1,4 +1,4 @@
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Token {
     pub kind:  TokenKind,
     pub start: u32,
@@ -27,9 +27,11 @@ pub enum TokenKind {
     Minus,
     Star,
     FSlash,
+    Bor,
     Or,
     Semi,
     Colon,
+    Comma,
     Return,
     Eof,
     Error,
@@ -53,9 +55,11 @@ impl std::fmt::Display for TokenKind {
             T::Minus => "-",
             T::Star => "*",
             T::FSlash => "/",
+            T::Bor => "|",
             T::Or => "||",
             T::Semi => ";",
             T::Colon => ":",
+            T::Comma => ",",
             T::Return => "return",
             T::Eof => "<eof>",
             T::Error => "<error>",
@@ -164,6 +168,7 @@ impl<'a> Iterator for Lexer<'a> {
                     true => T::Decl,
                     false => T::Colon,
                 },
+                b',' => T::Comma,
                 b';' => T::Semi,
                 b'=' => T::Assign,
                 b'+' => T::Plus,
@@ -172,7 +177,7 @@ impl<'a> Iterator for Lexer<'a> {
                 b'/' => T::FSlash,
                 b'|' => match self.advance_if(b'|') {
                     true => T::Or,
-                    false => T::Error,
+                    false => T::Bor,
                 },
                 b'(' => T::LParen,
                 b')' => T::RParen,

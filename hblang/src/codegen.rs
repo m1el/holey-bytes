@@ -22,9 +22,10 @@ struct Frame {
 }
 
 struct Reloc {
-    id:     LabelId,
+    id: LabelId,
     offset: u32,
-    size:   u16,
+    instr_offset: u16,
+    size: u16,
 }
 
 struct StackReloc {
@@ -43,26 +44,27 @@ impl Func {
         self.code.extend_from_slice(bytes);
     }
 
-    pub fn offset(&mut self, id: LabelId, offset: u32, size: u16) {
+    pub fn offset(&mut self, id: LabelId, instr_offset: u16, size: u16) {
         self.relocs.push(Reloc {
             id,
-            offset: self.code.len() as u32 + offset,
+            offset: self.code.len() as u32,
+            instr_offset,
             size,
         });
     }
 
     fn encode(&mut self, (len, instr): (usize, [u8; instrs::MAX_SIZE])) {
-        let name = instrs::NAMES[instr[0] as usize];
-        println!(
-            "{}: {}",
-            name,
-            instr
-                .iter()
-                .take(len)
-                .skip(1)
-                .map(|b| format!("{:02x}", b))
-                .collect::<String>()
-        );
+        // let name = instrs::NAMES[instr[0] as usize];
+        // println!(
+        //     "{}: {}",
+        //     name,
+        //     instr
+        //         .iter()
+        //         .take(len)
+        //         .skip(1)
+        //         .map(|b| format!("{:02x}", b))
+        //         .collect::<String>()
+        // );
         self.code.extend_from_slice(&instr[..len]);
     }
 
@@ -95,7 +97,7 @@ impl Func {
         self.encode(instrs::tx());
     }
 
-    fn relocate(&mut self, labels: &[Label], shift: i64) {
+    fn relocate(&mut self, labels: &[FnLabel], shift: i64) {
         for reloc in self.relocs.drain(..) {
             let label = &labels[reloc.id as usize];
             let offset = if reloc.size == 8 {
@@ -104,7 +106,18 @@ impl Func {
                 label.offset as i64 - reloc.offset as i64
             } + shift;
 
-            let dest = &mut self.code[reloc.offset as usize..][..reloc.size as usize];
+            dbg!(
+                label.name.as_ref(),
+                offset,
+                reloc.size,
+                reloc.instr_offset,
+                reloc.offset,
+                shift,
+                label.offset
+            );
+
+            let dest = &mut self.code[reloc.offset as usize + reloc.instr_offset as usize..]
+                [..reloc.size as usize];
             match reloc.size {
                 2 => dest.copy_from_slice(&(offset as i16).to_le_bytes()),
                 4 => dest.copy_from_slice(&(offset as i32).to_le_bytes()),
@@ -123,9 +136,9 @@ pub struct RegAlloc {
 }
 
 impl RegAlloc {
-    fn init_caller(&mut self) {
+    fn init_callee(&mut self) {
         self.clear();
-        self.free.extend(1..=31);
+        self.free.extend(32..=253);
     }
 
     fn clear(&mut self) {
@@ -146,7 +159,7 @@ impl RegAlloc {
     }
 }
 
-struct Label {
+struct FnLabel {
     offset: u32,
     // TODO: use different stile of identifier that does not allocate, eg. index + length into a
     // file
@@ -159,17 +172,23 @@ struct Variable<'a> {
     ty:     Expr<'a>,
 }
 
-pub struct Codegen<'a> {
-    path:       &'a std::path::Path,
-    ret:        Expr<'a>,
-    gpa:        RegAlloc,
-    code:       Func,
-    temp:       Func,
-    labels:     Vec<Label>,
-    stack_size: u64,
-    vars:       Vec<Variable<'a>>,
+struct RetReloc {
+    offset:       u32,
+    instr_offset: u16,
+    size:         u16,
+}
 
+pub struct Codegen<'a> {
+    path: &'a std::path::Path,
+    ret: Expr<'a>,
+    gpa: RegAlloc,
+    code: Func,
+    temp: Func,
+    labels: Vec<FnLabel>,
+    stack_size: u64,
+    vars: Vec<Variable<'a>>,
     stack_relocs: Vec<StackReloc>,
+    ret_relocs: Vec<RetReloc>,
 }
 
 impl<'a> Codegen<'a> {
@@ -185,6 +204,7 @@ impl<'a> Codegen<'a> {
             vars:       Default::default(),
 
             stack_relocs: Default::default(),
+            ret_relocs:   Default::default(),
         }
     }
 
@@ -247,21 +267,58 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    fn reloc_rets(&mut self) {
+        let len = self.code.code.len() as i32;
+        for reloc in self.ret_relocs.drain(..) {
+            let dest = &mut self.code.code[reloc.offset as usize + reloc.instr_offset as usize..]
+                [..reloc.size as usize];
+            debug_assert!(dest.iter().all(|&b| b == 0));
+            let offset = len - reloc.offset as i32;
+            dest.copy_from_slice(&offset.to_ne_bytes());
+        }
+    }
+
     fn expr(&mut self, expr: &'a parser::Expr<'a>, expeted: Option<Expr<'a>>) -> Option<Value<'a>> {
         use {lexer::TokenKind as T, parser::Expr as E};
         match *expr {
             E::Decl {
                 name,
-                val: E::Closure { ret, body },
+                val: E::Closure { ret, body, args },
             } => {
                 let frame = self.add_label(name);
-                self.gpa.init_caller();
+                for (i, &(name, ty)) in args.iter().enumerate() {
+                    let offset = self.alloc_stack(8);
+                    self.decl_var(name, offset, ty);
+                    self.store_stack(i as Reg + 2, offset, 8);
+                }
+                self.gpa.init_callee();
                 self.ret = **ret;
                 self.expr(body, None);
+                self.vars.clear();
                 let stack = std::mem::take(&mut self.stack_size);
                 self.reloc_stack(stack);
                 self.write_fn_prelude(frame);
+                self.reloc_rets();
+                self.ret();
                 None
+            }
+            E::Call {
+                func: E::Ident { name },
+                args,
+            } => {
+                for (i, arg) in args.iter().enumerate() {
+                    let arg = self.expr(arg, None).unwrap();
+                    let reg = self.loc_to_reg(arg.loc);
+                    self.code.encode(instrs::cp(i as Reg + 2, reg));
+                }
+                let func = self.get_or_reserve_label(name);
+                self.code.call(func);
+                let reg = self.gpa.allocate();
+                self.code.encode(instrs::cp(reg, 1));
+                Some(Value {
+                    ty:  self.ret,
+                    loc: Loc::Reg(reg),
+                })
             }
             E::Decl { name, val } => {
                 let val = self.expr(val, None).unwrap();
@@ -292,7 +349,12 @@ impl<'a> Codegen<'a> {
                         val,
                     );
                 }
-                self.ret();
+                self.ret_relocs.push(RetReloc {
+                    offset:       self.code.code.len() as u32,
+                    instr_offset: 1,
+                    size:         4,
+                });
+                self.code.encode(instrs::jmp(0));
                 None
             }
             E::Block { stmts } => {
@@ -348,7 +410,7 @@ impl<'a> Codegen<'a> {
         if let Some(label) = self.labels.iter().position(|l| l.name.as_ref() == name) {
             label as u32
         } else {
-            self.labels.push(Label {
+            self.labels.push(FnLabel {
                 offset: 0,
                 name:   name.into(),
             });
@@ -362,7 +424,7 @@ impl<'a> Codegen<'a> {
             self.labels[label].offset = offset;
             label as u32
         } else {
-            self.labels.push(Label {
+            self.labels.push(FnLabel {
                 offset,
                 name: name.into(),
             });
@@ -394,6 +456,10 @@ impl<'a> Codegen<'a> {
             reloc.offset += self.temp.code.len() as u32;
         }
 
+        for reloc in &mut self.ret_relocs {
+            reloc.offset += self.temp.code.len() as u32;
+        }
+
         self.code.code.splice(
             frame.offset as usize..frame.offset as usize,
             self.temp.code.drain(..),
@@ -401,11 +467,8 @@ impl<'a> Codegen<'a> {
     }
 
     fn ret(&mut self) {
-        self.stack_relocs.push(StackReloc {
-            offset: self.code.code.len() as u32 + 3,
-            size:   8,
-        });
-        self.code.encode(instrs::addi64(STACK_PTR, STACK_PTR, 0));
+        self.code
+            .encode(instrs::addi64(STACK_PTR, STACK_PTR, self.stack_size as _));
         for reg in self.gpa.used.clone().iter().rev() {
             self.code.pop(*reg, 8);
         }
@@ -413,6 +476,8 @@ impl<'a> Codegen<'a> {
     }
 
     pub fn dump(mut self, out: &mut impl std::io::Write) -> std::io::Result<()> {
+        assert!(self.labels.iter().filter(|l| l.offset == 0).count() == 1);
+
         self.temp.prelude(self.get_label("main"));
         self.temp
             .relocate(&self.labels, self.temp.code.len() as i64);
@@ -444,6 +509,8 @@ pub enum Loc {
 
 #[cfg(test)]
 mod tests {
+    use crate::instrs;
+
     struct TestMem;
 
     impl hbvm::mem::Memory for TestMem {
@@ -454,6 +521,17 @@ mod tests {
             target: *mut u8,
             count: usize,
         ) -> Result<(), hbvm::mem::LoadError> {
+            println!(
+                "read: {:x} {} {:?}",
+                addr.get(),
+                count,
+                core::slice::from_raw_parts(target, count)
+                    .iter()
+                    .rev()
+                    .skip_while(|&&b| b == 0)
+                    .map(|&b| format!("{:02x}", b))
+                    .collect::<String>()
+            );
             unsafe { core::ptr::copy(addr.get() as *const u8, target, count) }
             Ok(())
         }
@@ -465,12 +543,26 @@ mod tests {
             source: *const u8,
             count: usize,
         ) -> Result<(), hbvm::mem::StoreError> {
+            println!("write: {:x} {}", addr.get(), count);
             unsafe { core::ptr::copy(source, addr.get() as *mut u8, count) }
             Ok(())
         }
 
         #[inline]
         unsafe fn prog_read<T: Copy>(&mut self, addr: hbvm::mem::Address) -> T {
+            println!(
+                "read-typed: {:x} {} {:?}",
+                addr.get(),
+                std::any::type_name::<T>(),
+                if core::mem::size_of::<T>() == 1 {
+                    instrs::NAMES[std::ptr::read(addr.get() as *const u8) as usize].to_string()
+                } else {
+                    core::slice::from_raw_parts(addr.get() as *const u8, core::mem::size_of::<T>())
+                        .iter()
+                        .map(|&b| format!("{:02x}", b))
+                        .collect::<String>()
+                }
+            );
             unsafe { core::ptr::read(addr.get() as *const T) }
         }
     }
@@ -507,7 +599,7 @@ mod tests {
             }
         };
 
-        writeln!(output, "ret: {:?}", vm.read_reg(1)).unwrap();
+        writeln!(output, "ret: {:?}", vm.read_reg(1).0).unwrap();
         writeln!(output, "status: {:?}", stat).unwrap();
     }
 
@@ -515,5 +607,6 @@ mod tests {
         example => include_str!("../examples/main_fn.hb");
         arithmetic => include_str!("../examples/arithmetic.hb");
         variables => include_str!("../examples/variables.hb");
+        functions => include_str!("../examples/functions.hb");
     }
 }
