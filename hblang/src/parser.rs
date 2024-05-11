@@ -195,7 +195,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
             Self::Block { stmts } => {
                 writeln!(f, "{{")?;
                 INDENT.with(|i| i.set(i.get() + 1));
-                let res = crate::try_block(|| {
+                let res = (|| {
                     for stmt in stmts {
                         for _ in 0..INDENT.with(|i| i.get()) {
                             write!(f, "    ")?;
@@ -203,7 +203,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
                         writeln!(f, "{}", stmt)?;
                     }
                     Ok(())
-                });
+                })();
                 INDENT.with(|i| i.set(i.get() - 1));
                 write!(f, "}}")?;
                 res

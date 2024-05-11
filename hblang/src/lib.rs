@@ -22,12 +22,9 @@ mod parser;
 mod tests;
 mod typechk;
 
-#[repr(packed)]
-struct Args<A, B, C, D>(u8, A, B, C, D);
-fn as_bytes<T>(args: &T) -> &[u8] {
-    unsafe { core::slice::from_raw_parts(args as *const _ as *const u8, core::mem::size_of::<T>()) }
-}
-
-pub fn try_block<R>(f: impl FnOnce() -> R) -> R {
-    f()
+#[inline]
+unsafe fn encode<T>(instr: T) -> (usize, [u8; instrs::MAX_SIZE]) {
+    let mut buf = [0; instrs::MAX_SIZE];
+    std::ptr::write(buf.as_mut_ptr() as *mut T, instr);
+    (std::mem::size_of::<T>(), buf)
 }

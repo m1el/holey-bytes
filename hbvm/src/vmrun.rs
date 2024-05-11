@@ -173,7 +173,7 @@ where
                     LI64 => handler!(self, |OpsRD(tg, imm)| self.write_reg(tg, imm)),
                     LRA => handler!(self, |OpsRRO(tg, reg, off)| self.write_reg(
                         tg,
-                        self.pcrel(off, 3)
+                        self.pcrel(off)
                             .wrapping_add(self.read_reg(reg).cast::<i64>())
                             .get(),
                     )),
@@ -186,13 +186,13 @@ where
                     LDR => handler!(self, |OpsRROH(dst, base, off, count)| self.load(
                         dst,
                         base,
-                        self.pcrel(off, 3).get(),
+                        self.pcrel(off).get(),
                         count
                     )?),
                     STR => handler!(self, |OpsRROH(dst, base, off, count)| self.store(
                         dst,
                         base,
-                        self.pcrel(off, 3).get(),
+                        self.pcrel(off).get(),
                         count
                     )?),
                     BMC => {
@@ -252,7 +252,7 @@ where
 
                         self.write_reg(save, self.pc.next::<OpsRRO>());
                         self.pc = self
-                            .pcrel(offset, 3)
+                            .pcrel(offset)
                             .wrapping_add(self.read_reg(reg).cast::<i64>());
                     }
                     JALA => {
@@ -269,7 +269,7 @@ where
                     JNE => {
                         let OpsRRP(a0, a1, ja) = self.decode();
                         if self.read_reg(a0).cast::<u64>() != self.read_reg(a1).cast::<u64>() {
-                            self.pc = self.pcrel(ja, 3);
+                            self.pc = self.pcrel(ja);
                         } else {
                             self.bump_pc::<OpsRRP>();
                         }
@@ -346,18 +346,18 @@ where
                     LDR16 => handler!(self, |OpsRRPH(dst, base, off, count)| self.load(
                         dst,
                         base,
-                        self.pcrel(off, 3).get(),
+                        self.pcrel(off).get(),
                         count
                     )?),
                     STR16 => handler!(self, |OpsRRPH(dst, base, off, count)| self.store(
                         dst,
                         base,
-                        self.pcrel(off, 3).get(),
+                        self.pcrel(off).get(),
                         count
                     )?),
                     JMP16 => {
                         let OpsP(off) = self.decode();
-                        self.pc = self.pcrel(off, 1);
+                        self.pc = self.pcrel(off);
                     }
                     op => return Err(VmRunError::InvalidOpcode(op)),
                 }
@@ -532,8 +532,8 @@ where
 
     /// Calculate pc-relative address
     #[inline(always)]
-    fn pcrel(&self, offset: impl AddressOp, pos: u8) -> Address {
-        self.pc.wrapping_add(pos).wrapping_add(offset)
+    fn pcrel(&self, offset: impl AddressOp) -> Address {
+        self.pc.wrapping_add(offset)
     }
 
     /// Jump at `PC + #3` if ordering on `#0 <=> #1` is equal to expected
@@ -546,7 +546,7 @@ where
             .cmp(&self.read_reg(a1).cast::<T>())
             == expected
         {
-            self.pc = self.pcrel(ja, 3);
+            self.pc = self.pcrel(ja);
         } else {
             self.bump_pc::<OpsRRP>();
         }

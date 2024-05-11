@@ -22,6 +22,7 @@ pub enum TokenKind {
     LBrack,
     RBrack,
     Decl,
+    Assign,
     Plus,
     Minus,
     Star,
@@ -47,6 +48,7 @@ impl std::fmt::Display for TokenKind {
             T::LBrack => "[",
             T::RBrack => "]",
             T::Decl => ":=",
+            T::Assign => "=",
             T::Plus => "+",
             T::Minus => "-",
             T::Star => "*",
@@ -64,11 +66,12 @@ impl std::fmt::Display for TokenKind {
 
 impl TokenKind {
     pub fn precedence(&self) -> Option<u8> {
-        match self {
-            Self::Plus | Self::Minus => Some(2),
-            Self::Star | Self::FSlash => Some(3),
-            _ => None,
-        }
+        Some(match self {
+            Self::Assign => 1,
+            Self::Plus | Self::Minus => 2,
+            Self::Star | Self::FSlash => 3,
+            _ => return None,
+        })
     }
 }
 
@@ -162,6 +165,7 @@ impl<'a> Iterator for Lexer<'a> {
                     false => T::Colon,
                 },
                 b';' => T::Semi,
+                b'=' => T::Assign,
                 b'+' => T::Plus,
                 b'-' => T::Minus,
                 b'*' => T::Star,
