@@ -397,7 +397,7 @@ impl<'a> Codegen<'a> {
                 if let Some(val) = val {
                     let val = self.expr(val, Some(self.ret)).unwrap();
                     if val.ty != self.ret {
-                        panic!("expected {:?}, got {:?}", self.ret, val.ty);
+                        //panic!("expected {:?}, got {:?}", self.ret, val.ty);
                     }
                     self.assign(
                         Value {
