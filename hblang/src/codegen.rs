@@ -179,6 +179,11 @@ struct RetReloc {
     size:         u16,
 }
 
+struct Loop {
+    offset: u32,
+    relocs: Vec<RetReloc>,
+}
+
 pub struct Codegen<'a> {
     path: &'a std::path::Path,
     ret: Expr<'a>,
@@ -190,6 +195,7 @@ pub struct Codegen<'a> {
     vars: Vec<Variable<'a>>,
     stack_relocs: Vec<StackReloc>,
     ret_relocs: Vec<RetReloc>,
+    loops: Vec<Loop>,
 }
 
 impl<'a> Codegen<'a> {
@@ -206,6 +212,7 @@ impl<'a> Codegen<'a> {
 
             stack_relocs: Default::default(),
             ret_relocs:   Default::default(),
+            loops:        Default::default(),
         }
     }
 
@@ -368,7 +375,7 @@ impl<'a> Codegen<'a> {
                 ty:  expeted.unwrap_or(Expr::Ident { name: "int" }),
                 loc: Loc::Imm(value),
             }),
-            E::If { cond, then } => {
+            E::If { cond, then, else_ } => {
                 let cond = self.expr(cond, Some(Expr::Ident { name: "bool" })).unwrap();
                 let reg = self.loc_to_reg(cond.loc);
                 let jump_offset = self.code.code.len() as u32;
@@ -377,11 +384,72 @@ impl<'a> Codegen<'a> {
                 self.gpa.free(reg);
 
                 self.expr(then, None);
-                let jump = self.code.code.len() as i16 - jump_offset as i16;
+
+                let jump;
+
+                if let Some(else_) = else_ {
+                    let else_jump_offset = self.code.code.len() as u32;
+                    println!("jump_offset: {:02x}", jump_offset);
+                    self.code.encode(instrs::jmp(0));
+
+                    jump = self.code.code.len() as i16 - jump_offset as i16;
+
+                    self.expr(else_, None);
+
+                    let jump = self.code.code.len() as i32 - else_jump_offset as i32;
+                    println!("jump: {:02x}", jump);
+                    self.code.code[else_jump_offset as usize + 1..][..4]
+                        .copy_from_slice(&jump.to_ne_bytes());
+                } else {
+                    jump = self.code.code.len() as i16 - jump_offset as i16;
+                }
+
                 println!("jump: {:02x}", jump);
                 self.code.code[jump_offset as usize + 3..][..2]
                     .copy_from_slice(&jump.to_ne_bytes());
 
+                None
+            }
+            E::Loop { body } => {
+                let loop_start = self.code.code.len() as u32;
+                self.loops.push(Loop {
+                    offset: loop_start,
+                    relocs: Default::default(),
+                });
+                self.expr(body, None);
+
+                let loop_end = self.code.code.len();
+                self.code
+                    .encode(instrs::jmp(loop_start as i32 - loop_end as i32));
+                let loop_end = self.code.code.len() as u32;
+
+                let loop_ = self.loops.pop().unwrap();
+                for reloc in loop_.relocs {
+                    let dest = &mut self.code.code
+                        [reloc.offset as usize + reloc.instr_offset as usize..]
+                        [..reloc.size as usize];
+                    let offset = loop_end as i32 - reloc.offset as i32;
+                    dest.copy_from_slice(&offset.to_ne_bytes());
+                }
+
+                None
+            }
+            E::Break => {
+                let loop_ = self.loops.last_mut().unwrap();
+                let offset = self.code.code.len() as u32;
+                self.code.encode(instrs::jmp(0));
+                loop_.relocs.push(RetReloc {
+                    offset,
+                    instr_offset: 1,
+                    size: 4,
+                });
+                None
+            }
+            E::Continue => {
+                let loop_ = self.loops.last().unwrap();
+                let offset = self.code.code.len() as u32;
+                self.code
+                    .encode(instrs::jmp(loop_.offset as i32 - offset as i32));
                 None
             }
             E::BinOp { left, op, right } => {
@@ -399,6 +467,16 @@ impl<'a> Codegen<'a> {
                         self.code.encode(instrs::cmpu(lhs, lhs, rhs));
                         self.gpa.free(rhs);
                         self.code.encode(instrs::cmpui(lhs, lhs, 1));
+                        return Some(Value {
+                            ty:  Expr::Ident { name: "bool" },
+                            loc: Loc::Reg(lhs),
+                        });
+                    }
+                    T::Eq => {
+                        self.code.encode(instrs::cmpu(lhs, lhs, rhs));
+                        self.gpa.free(rhs);
+                        self.code.encode(instrs::cmpui(lhs, lhs, 0));
+                        self.code.encode(instrs::not(lhs, lhs));
                         return Some(Value {
                             ty:  Expr::Ident { name: "bool" },
                             loc: Loc::Reg(lhs),
@@ -635,5 +713,6 @@ mod tests {
         variables => include_str!("../examples/variables.hb");
         functions => include_str!("../examples/functions.hb");
         if_statements => include_str!("../examples/if_statement.hb");
+        loops => include_str!("../examples/loops.hb");
     }
 }

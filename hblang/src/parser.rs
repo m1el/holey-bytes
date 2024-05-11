@@ -84,8 +84,14 @@ impl<'a, 'b> Parser<'a, 'b> {
             TokenKind::If => {
                 let cond = self.ptr_expr();
                 let then = self.ptr_expr();
-                Expr::If { cond, then }
+                let else_ = self.advance_if(TokenKind::Else).then(|| self.ptr_expr());
+                Expr::If { cond, then, else_ }
             }
+            TokenKind::Loop => Expr::Loop {
+                body: self.ptr_expr(),
+            },
+            TokenKind::Break => Expr::Break,
+            TokenKind::Continue => Expr::Continue,
             TokenKind::Return => Expr::Return {
                 val: (self.token.kind != TokenKind::Semi).then(|| self.ptr_expr()),
             },
@@ -189,6 +195,8 @@ impl<'a, 'b> Parser<'a, 'b> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Expr<'a> {
+    Break,
+    Continue,
     Decl {
         name: &'a str,
         val:  &'a Expr<'a>,
@@ -220,8 +228,12 @@ pub enum Expr<'a> {
         right: &'a Expr<'a>,
     },
     If {
-        cond: &'a Expr<'a>,
-        then: &'a Expr<'a>,
+        cond:  &'a Expr<'a>,
+        then:  &'a Expr<'a>,
+        else_: Option<&'a Expr<'a>>,
+    },
+    Loop {
+        body: &'a Expr<'a>,
     },
 }
 
@@ -232,7 +244,16 @@ impl<'a> std::fmt::Display for Expr<'a> {
         }
 
         match *self {
-            Self::If { cond, then } => write!(f, "if {} {}", cond, then),
+            Self::Break => write!(f, "break;"),
+            Self::Continue => write!(f, "continue;"),
+            Self::If { cond, then, else_ } => {
+                write!(f, "if {} {}", cond, then)?;
+                if let Some(else_) = else_ {
+                    write!(f, " else {}", else_)?;
+                }
+                Ok(())
+            }
+            Self::Loop { body } => write!(f, "loop {}", body),
             Self::Decl { name, val } => write!(f, "{} := {}", name, val),
             Self::Closure { ret, body, args } => {
                 write!(f, "|")?;

@@ -12,7 +12,7 @@ pub fn run_test(name: &'static str, input: &'static str, test: fn(&'static str, 
     test(input, &mut output);
 
     let mut root = PathBuf::from(std::env::var("PT_TEST_ROOT").unwrap_or("tests".to_string()));
-    root.push(name);
+    root.push(name.replace("::", "_"));
     root.set_extension("txt");
 
     let expected = std::fs::read_to_string(&root).unwrap_or_default();

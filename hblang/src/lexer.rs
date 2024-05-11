@@ -30,11 +30,16 @@ pub enum TokenKind {
     Bor,
     Or,
     Le,
+    Eq,
     Semi,
     Colon,
     Comma,
     Return,
     If,
+    Else,
+    Loop,
+    Break,
+    Continue,
     Eof,
     Error,
 }
@@ -60,11 +65,16 @@ impl std::fmt::Display for TokenKind {
             T::Bor => "|",
             T::Or => "||",
             T::Le => "<=",
+            T::Eq => "==",
             T::Semi => ";",
             T::Colon => ":",
             T::Comma => ",",
             T::Return => "return",
             T::If => "if",
+            T::Else => "else",
+            T::Loop => "loop",
+            T::Break => "break",
+            T::Continue => "continue",
             T::Eof => "<eof>",
             T::Error => "<error>",
         };
@@ -76,7 +86,7 @@ impl TokenKind {
     pub fn precedence(&self) -> Option<u8> {
         Some(match self {
             Self::Assign => 1,
-            Self::Le => 21,
+            Self::Le | Self::Eq => 21,
             Self::Plus | Self::Minus => 23,
             Self::Star | Self::FSlash => 24,
             _ => return None,
@@ -167,6 +177,10 @@ impl<'a> Iterator for Lexer<'a> {
                     match ident {
                         b"return" => T::Return,
                         b"if" => T::If,
+                        b"else" => T::Else,
+                        b"loop" => T::Loop,
+                        b"break" => T::Break,
+                        b"continue" => T::Continue,
                         _ => T::Ident,
                     }
                 }
@@ -176,7 +190,10 @@ impl<'a> Iterator for Lexer<'a> {
                 },
                 b',' => T::Comma,
                 b';' => T::Semi,
-                b'=' => T::Assign,
+                b'=' => match self.advance_if(b'=') {
+                    true => T::Eq,
+                    false => T::Assign,
+                },
                 b'<' => match self.advance_if(b'=') {
                     true => T::Le,
                     false => T::Error,
