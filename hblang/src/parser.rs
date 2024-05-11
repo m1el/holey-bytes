@@ -2,9 +2,6 @@ use std::{cell::Cell, ops::Not, ptr::NonNull};
 
 use crate::lexer::{Lexer, Token, TokenKind};
 
-type Ptr<'a, T> = &'a T;
-type Slice<'a, T> = &'a [T];
-
 pub struct Parser<'a, 'b> {
     path:     &'a std::path::Path,
     lexer:    Lexer<'a>,
@@ -32,7 +29,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
     }
 
-    pub fn file(&mut self) -> Slice<'a, Expr<'a>> {
+    pub fn file(&mut self) -> &'a [Expr<'a>] {
         self.collect(|s| (s.token.kind != TokenKind::Eof).then(|| s.expr()))
     }
 
@@ -40,7 +37,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         std::mem::replace(&mut self.token, self.lexer.next())
     }
 
-    fn ptr_expr(&mut self) -> Ptr<'a, Expr<'a>> {
+    fn ptr_expr(&mut self) -> &'a Expr<'a> {
         self.arena.alloc(self.expr())
     }
 
@@ -83,6 +80,11 @@ impl<'a, 'b> Parser<'a, 'b> {
                 } else {
                     Expr::Ident { name }
                 }
+            }
+            TokenKind::If => {
+                let cond = self.ptr_expr();
+                let then = self.ptr_expr();
+                Expr::If { cond, then }
             }
             TokenKind::Return => Expr::Return {
                 val: (self.token.kind != TokenKind::Semi).then(|| self.ptr_expr()),
@@ -154,7 +156,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         expr
     }
 
-    fn collect<T: Copy>(&mut self, mut f: impl FnMut(&mut Self) -> Option<T>) -> Slice<'a, T> {
+    fn collect<T: Copy>(&mut self, mut f: impl FnMut(&mut Self) -> Option<T>) -> &'a [T] {
         let vec = std::iter::from_fn(|| f(self)).collect::<Vec<_>>();
         self.arena.alloc_slice(&vec)
     }
@@ -188,34 +190,38 @@ impl<'a, 'b> Parser<'a, 'b> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Expr<'a> {
     Decl {
-        name: Ptr<'a, str>,
-        val:  Ptr<'a, Expr<'a>>,
+        name: &'a str,
+        val:  &'a Expr<'a>,
     },
     Closure {
-        args: Slice<'a, (Ptr<'a, str>, Expr<'a>)>,
-        ret:  Ptr<'a, Expr<'a>>,
-        body: Ptr<'a, Expr<'a>>,
+        args: &'a [(&'a str, Expr<'a>)],
+        ret:  &'a Expr<'a>,
+        body: &'a Expr<'a>,
     },
     Call {
-        func: Ptr<'a, Expr<'a>>,
-        args: Slice<'a, Expr<'a>>,
+        func: &'a Expr<'a>,
+        args: &'a [Expr<'a>],
     },
     Return {
-        val: Option<Ptr<'a, Expr<'a>>>,
+        val: Option<&'a Expr<'a>>,
     },
     Ident {
-        name: Ptr<'a, str>,
+        name: &'a str,
     },
     Block {
-        stmts: Slice<'a, Expr<'a>>,
+        stmts: &'a [Expr<'a>],
     },
     Number {
         value: u64,
     },
     BinOp {
-        left:  Ptr<'a, Expr<'a>>,
+        left:  &'a Expr<'a>,
         op:    TokenKind,
-        right: Ptr<'a, Expr<'a>>,
+        right: &'a Expr<'a>,
+    },
+    If {
+        cond: &'a Expr<'a>,
+        then: &'a Expr<'a>,
     },
 }
 
@@ -226,6 +232,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
         }
 
         match *self {
+            Self::If { cond, then } => write!(f, "if {} {}", cond, then),
             Self::Decl { name, val } => write!(f, "{} := {}", name, val),
             Self::Closure { ret, body, args } => {
                 write!(f, "|")?;

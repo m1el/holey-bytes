@@ -29,10 +29,12 @@ pub enum TokenKind {
     FSlash,
     Bor,
     Or,
+    Le,
     Semi,
     Colon,
     Comma,
     Return,
+    If,
     Eof,
     Error,
 }
@@ -57,10 +59,12 @@ impl std::fmt::Display for TokenKind {
             T::FSlash => "/",
             T::Bor => "|",
             T::Or => "||",
+            T::Le => "<=",
             T::Semi => ";",
             T::Colon => ":",
             T::Comma => ",",
             T::Return => "return",
+            T::If => "if",
             T::Eof => "<eof>",
             T::Error => "<error>",
         };
@@ -72,8 +76,9 @@ impl TokenKind {
     pub fn precedence(&self) -> Option<u8> {
         Some(match self {
             Self::Assign => 1,
-            Self::Plus | Self::Minus => 2,
-            Self::Star | Self::FSlash => 3,
+            Self::Le => 21,
+            Self::Plus | Self::Minus => 23,
+            Self::Star | Self::FSlash => 24,
             _ => return None,
         })
     }
@@ -161,6 +166,7 @@ impl<'a> Iterator for Lexer<'a> {
                     let ident = &self.bytes[start as usize..self.pos as usize];
                     match ident {
                         b"return" => T::Return,
+                        b"if" => T::If,
                         _ => T::Ident,
                     }
                 }
@@ -171,6 +177,10 @@ impl<'a> Iterator for Lexer<'a> {
                 b',' => T::Comma,
                 b';' => T::Semi,
                 b'=' => T::Assign,
+                b'<' => match self.advance_if(b'=') {
+                    true => T::Le,
+                    false => T::Error,
+                },
                 b'+' => T::Plus,
                 b'-' => T::Minus,
                 b'*' => T::Star,

@@ -54,17 +54,18 @@ impl Func {
     }
 
     fn encode(&mut self, (len, instr): (usize, [u8; instrs::MAX_SIZE])) {
-        // let name = instrs::NAMES[instr[0] as usize];
-        // println!(
-        //     "{}: {}",
-        //     name,
-        //     instr
-        //         .iter()
-        //         .take(len)
-        //         .skip(1)
-        //         .map(|b| format!("{:02x}", b))
-        //         .collect::<String>()
-        // );
+        let name = instrs::NAMES[instr[0] as usize];
+        println!(
+            "{:08x}: {}: {}",
+            self.code.len(),
+            name,
+            instr
+                .iter()
+                .take(len)
+                .skip(1)
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>()
+        );
         self.code.extend_from_slice(&instr[..len]);
     }
 
@@ -367,21 +368,46 @@ impl<'a> Codegen<'a> {
                 ty:  expeted.unwrap_or(Expr::Ident { name: "int" }),
                 loc: Loc::Imm(value),
             }),
+            E::If { cond, then } => {
+                let cond = self.expr(cond, Some(Expr::Ident { name: "bool" })).unwrap();
+                let reg = self.loc_to_reg(cond.loc);
+                let jump_offset = self.code.code.len() as u32;
+                println!("jump_offset: {:02x}", jump_offset);
+                self.code.encode(instrs::jeq(reg, 0, 0));
+                self.gpa.free(reg);
+
+                self.expr(then, None);
+                let jump = self.code.code.len() as i16 - jump_offset as i16;
+                println!("jump: {:02x}", jump);
+                self.code.code[jump_offset as usize + 3..][..2]
+                    .copy_from_slice(&jump.to_ne_bytes());
+
+                None
+            }
             E::BinOp { left, op, right } => {
                 let left = self.expr(left, expeted).unwrap();
                 let right = self.expr(right, Some(left.ty)).unwrap();
+
+                let lhs = self.loc_to_reg(left.loc);
+                let rhs = self.loc_to_reg(right.loc);
 
                 let op = match op {
                     T::Plus => instrs::add64,
                     T::Minus => instrs::sub64,
                     T::Star => instrs::mul64,
+                    T::Le => {
+                        self.code.encode(instrs::cmpu(lhs, lhs, rhs));
+                        self.gpa.free(rhs);
+                        self.code.encode(instrs::cmpui(lhs, lhs, 1));
+                        return Some(Value {
+                            ty:  Expr::Ident { name: "bool" },
+                            loc: Loc::Reg(lhs),
+                        });
+                    }
                     T::FSlash => |reg0, reg1, reg2| instrs::diru64(reg0, ZERO, reg1, reg2),
                     T::Assign => return self.assign(left, right),
                     _ => unimplemented!("{:#?}", op),
                 };
-
-                let lhs = self.loc_to_reg(left.loc);
-                let rhs = self.loc_to_reg(right.loc);
 
                 self.code.encode(op(lhs, lhs, rhs));
                 self.gpa.free(rhs);
@@ -476,8 +502,6 @@ impl<'a> Codegen<'a> {
     }
 
     pub fn dump(mut self, out: &mut impl std::io::Write) -> std::io::Result<()> {
-        assert!(self.labels.iter().filter(|l| l.offset == 0).count() == 1);
-
         self.temp.prelude(self.get_label("main"));
         self.temp
             .relocate(&self.labels, self.temp.code.len() as i64);
@@ -501,6 +525,7 @@ pub struct Value<'a> {
     loc: Loc,
 }
 
+#[derive(Clone, Copy)]
 pub enum Loc {
     Reg(Reg),
     Imm(u64),
@@ -578,6 +603,7 @@ mod tests {
         let mut out = Vec::new();
         codegen.dump(&mut out).unwrap();
 
+        std::fs::write("test.bin", &out).unwrap();
         use std::fmt::Write;
 
         let mut stack = [0_u64; 1024];
@@ -608,5 +634,6 @@ mod tests {
         arithmetic => include_str!("../examples/arithmetic.hb");
         variables => include_str!("../examples/variables.hb");
         functions => include_str!("../examples/functions.hb");
+        if_statements => include_str!("../examples/if_statement.hb");
     }
 }
