@@ -252,7 +252,7 @@ struct Loop {
 
 struct Struct {
     id:     Ident,
-    fields: Vec<(Rc<str>, Type)>,
+    fields: Rc<[(Rc<str>, Type)]>,
 }
 
 pub struct Codegen<'a> {
@@ -305,16 +305,18 @@ impl<'a> Codegen<'a> {
     }
 
     fn size_of(&self, ty: Type) -> u64 {
-        // TODO: proper alignment
-        match TypeKind::from_ty(ty) {
-            TypeKind::Pointer(_) | TypeKind::Builtin(bt::INT) => 8,
-            TypeKind::Builtin(bt::BOOL) => 1,
-            TypeKind::Builtin(_) => unreachable!(),
-            TypeKind::Struct(ty) => self.records[ty as usize]
-                .fields
-                .iter()
-                .map(|(_, ty)| self.size_of(*ty))
-                .sum(),
+        match ty {
+            bt::INT => 8,
+            bt::BOOL => 1,
+            _ => match TypeKind::from_ty(ty) {
+                TypeKind::Pointer(_) => 8,
+                TypeKind::Builtin(e) => unreachable!("{:?}", e),
+                TypeKind::Struct(ty) => self.records[ty as usize]
+                    .fields
+                    .iter()
+                    .map(|(_, ty)| self.size_of(*ty))
+                    .sum(),
+            },
         }
     }
 
@@ -337,7 +339,7 @@ impl<'a> Codegen<'a> {
                 self.code.encode(instrs::li64(reg.0, imm));
                 reg
             }
-            Loc::Stack(offset) => {
+            Loc::Stack(offset) | Loc::StackRef(offset) => {
                 let reg = self.gpa.allocate();
                 self.load_stack(reg.0, offset, 8);
                 reg
@@ -391,12 +393,82 @@ impl<'a> Codegen<'a> {
         match *expr {
             E::Ident { name: "int", .. } => bt::INT,
             E::Ident { name: "bool", .. } => bt::BOOL,
+            E::Ident { id, .. } => {
+                let index = self
+                    .records
+                    .iter()
+                    .position(|r| r.id == id)
+                    .unwrap_or_else(|| {
+                        panic!("type not found: {:?}", id);
+                    });
+                TypeKind::Struct(index as Type).encode()
+            }
             expr => unimplemented!("type: {:#?}", expr),
         }
     }
 
     fn expr(&mut self, expr: &'a parser::Expr<'a>, expeted: Option<Type>) -> Option<Value> {
         match *expr {
+            E::Ctor { ty, fields } => {
+                let ty = self.ty(&ty);
+                let TypeKind::Struct(idx) = TypeKind::from_ty(ty) else {
+                    panic!("expected struct, got {:?}", ty);
+                };
+                let size = self.size_of(ty);
+                let stack = self.alloc_stack(size as u32);
+                let mut field_values = fields
+                    .iter()
+                    .map(|(name, field)| (*name, self.expr(field, None).unwrap()))
+                    .collect::<Vec<_>>();
+                let decl_fields = self.records[idx as usize].fields.clone();
+                let mut offset = 0;
+                for (name, ty) in decl_fields.as_ref() {
+                    let index = field_values
+                        .iter()
+                        .position(|(n, _)| *n == name.as_ref())
+                        .unwrap();
+                    let (_, value) = field_values.remove(index);
+                    if value.ty != *ty {
+                        panic!("expected {:?}, got {:?}", ty, value.ty);
+                    }
+                    let reg = self.loc_to_reg(value.loc);
+                    self.store_stack(reg.0, stack + offset, 8);
+                    self.gpa.free(reg);
+                    offset += 8;
+                }
+                Some(Value {
+                    ty,
+                    loc: Loc::Stack(stack),
+                })
+            }
+            E::Field { target, field } => {
+                let target = self.expr(target, None).unwrap();
+                let TypeKind::Struct(idx) = TypeKind::from_ty(target.ty) else {
+                    panic!("expected struct, got {:?}", target.ty);
+                };
+                let decl_fields = self.records[idx as usize].fields.clone();
+                let index = decl_fields
+                    .iter()
+                    .position(|(name, _)| name.as_ref() == field)
+                    .unwrap();
+                let size = self.size_of(decl_fields[index].1);
+                assert_eq!(size, 8, "TODO: implement other sizes");
+                let value = match target.loc {
+                    Loc::Reg(_) => todo!(),
+                    Loc::RegRef(_) => todo!(),
+                    Loc::Deref(r) => {
+                        self.code.encode(instrs::addi64(r.0, r.0, index as u64 * 8));
+                        Loc::Deref(r)
+                    }
+                    Loc::Imm(_) => todo!(),
+                    Loc::Stack(stack) => Loc::Stack(stack + index as u64 * 8),
+                    Loc::StackRef(stack) => Loc::StackRef(stack + index as u64 * 8),
+                };
+                Some(Value {
+                    ty:  decl_fields[index].1,
+                    loc: value,
+                })
+            }
             E::BinOp {
                 left: E::Ident { id, .. },
                 op: T::Decl,
@@ -414,7 +486,7 @@ impl<'a> Codegen<'a> {
             } => {
                 let val = self.expr(val, None).unwrap();
                 match val.loc {
-                    Loc::Stack(off) => {
+                    Loc::StackRef(off) => {
                         let reg = self.gpa.allocate();
                         self.stack_relocs.push(StackReloc {
                             offset: self.code.code.len() as u32 + 3,
@@ -489,17 +561,12 @@ impl<'a> Codegen<'a> {
                 right,
             } => {
                 let val = self.expr(right, None).unwrap();
-                let reg = self.loc_to_reg(val.loc);
-                let offset = self.alloc_stack(8);
+                let loc = self.make_loc_owned(val.loc, val.ty);
+                let loc = self.ensure_spilled(loc);
                 self.vars.push(Variable {
                     id:    *id,
-                    value: Value {
-                        ty:  val.ty,
-                        loc: Loc::Stack(offset),
-                    },
+                    value: Value { ty: val.ty, loc },
                 });
-                self.store_stack(reg.0, offset, 8);
-                self.gpa.free(reg);
                 None
             }
             E::Call {
@@ -705,7 +772,7 @@ impl<'a> Codegen<'a> {
                 self.gpa.free(reg);
             }
             Loc::RegRef(reg) => self.code.encode(instrs::cp(reg, rhs.0)),
-            Loc::Stack(offset) => self.store_stack(rhs.0, offset, 8),
+            Loc::StackRef(offset) => self.store_stack(rhs.0, offset, 8),
             _ => unimplemented!(),
         }
         self.gpa.free(rhs);
@@ -797,6 +864,47 @@ impl<'a> Codegen<'a> {
 
         TypeKind::Pointer(ty as Type).encode()
     }
+
+    fn make_loc_owned(&mut self, loc: Loc, ty: Type) -> Loc {
+        match loc {
+            Loc::RegRef(rreg) => {
+                let reg = self.gpa.allocate();
+                self.code.encode(instrs::cp(reg.0, rreg));
+                Loc::Reg(reg)
+            }
+            Loc::Imm(imm) => {
+                let reg = self.gpa.allocate();
+                self.code.encode(instrs::li64(reg.0, imm));
+                Loc::Reg(reg)
+            }
+            Loc::StackRef(mut off) => {
+                let size = self.size_of(ty);
+                assert!(size % 8 == 0, "TODO: implement other sizes");
+                let stack = self.alloc_stack(size as u32);
+                let reg = self.gpa.allocate();
+                while size > 0 {
+                    self.load_stack(reg.0, off, 8);
+                    self.store_stack(reg.0, stack, 8);
+                    off += 8;
+                }
+                self.gpa.free(reg);
+                Loc::Stack(stack)
+            }
+            l => l,
+        }
+    }
+
+    fn ensure_spilled(&mut self, loc: Loc) -> Loc {
+        match loc {
+            Loc::Reg(reg) => {
+                let stack = self.alloc_stack(8);
+                self.store_stack(reg.0, stack, 8);
+                self.gpa.free(reg);
+                Loc::Stack(stack)
+            }
+            l => l,
+        }
+    }
 }
 
 pub struct Value {
@@ -811,13 +919,14 @@ enum Loc {
     Deref(LinReg),
     Imm(u64),
     Stack(u64),
+    StackRef(u64),
 }
 impl Loc {
     fn take_ref(&self) -> Loc {
         match self {
             Self::Reg(reg) => Self::RegRef(reg.0),
-            Self::Stack(off) => Self::Stack(*off),
-            _ => unreachable!(),
+            Self::Stack(off) => Self::StackRef(*off),
+            un => unreachable!("{:?}", un),
         }
     }
 }

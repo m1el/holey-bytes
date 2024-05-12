@@ -239,8 +239,8 @@ impl<'a, 'b> Parser<'a, 'b> {
                     }),
                 },
                 T::Dot => E::Field {
-                    ty:    self.arena.alloc(expr),
-                    field: {
+                    target: self.arena.alloc(expr),
+                    field:  {
                         let token = self.expect_advance(T::Ident);
                         self.lexer.slice(token.range())
                     },
@@ -396,8 +396,8 @@ pub enum Expr<'a> {
         fields: &'a [(&'a str, Self)],
     },
     Field {
-        ty:    &'a Self,
-        field: &'a str,
+        target: &'a Self,
+        field:  &'a str,
     },
 }
 
@@ -408,7 +408,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
         }
 
         match *self {
-            Self::Field { ty, field } => write!(f, "{}.{}", ty, field),
+            Self::Field { target, field } => write!(f, "{}.{}", target, field),
             Self::Struct { fields, .. } => {
                 write!(f, "struct {{")?;
                 let first = &mut true;
