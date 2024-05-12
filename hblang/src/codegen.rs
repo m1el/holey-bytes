@@ -915,5 +915,6 @@ mod tests {
         loops => include_str!("../examples/loops.hb");
         fb_driver => include_str!("../examples/fb_driver.hb");
         pointers => include_str!("../examples/pointers.hb");
+        structs => include_str!("../examples/structs.hb");
     }
 }

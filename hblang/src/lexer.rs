@@ -91,17 +91,20 @@ gen_token_kind! {
         Break    = b"break",
         Continue = b"continue",
         Fn       = b"fn",
+        Struct   = b"struct",
         #[punkt]
-        LParen = b'(',
-        RParen = b')',
-        LBrace = b'{',
-        RBrace = b'}',
-        Semi =   b';',
-        Colon =  b':',
-        Comma =  b',',
+        LParen = "(",
+        RParen = ")",
+        LBrace = "{",
+        RBrace = "}",
+        Semi   = ";",
+        Colon  = ":",
+        Comma  = ",",
+        Dot    = ".",
+        Ctor   = ".{",
         #[ops]
         #[prec = 1]
-        Decl =   ":=",
+        Decl   = ":=",
         Assign = "=",
         #[prec = 21]
         Le = "<=",
@@ -109,10 +112,10 @@ gen_token_kind! {
         #[prec = 22]
         Amp = "&",
         #[prec = 23]
-        Plus =  "+",
+        Plus  = "+",
         Minus = "-",
         #[prec = 24]
-        Star =   "*",
+        Star   = "*",
         FSlash = "/",
     }
 }
@@ -202,6 +205,8 @@ impl<'a> Iterator for Lexer<'a> {
                 b':' if self.advance_if(b'=') => T::Decl,
                 b':' => T::Colon,
                 b',' => T::Comma,
+                b'.' if self.advance_if(b'{') => T::Ctor,
+                b'.' => T::Dot,
                 b';' => T::Semi,
                 b'=' if self.advance_if(b'=') => T::Eq,
                 b'=' => T::Assign,

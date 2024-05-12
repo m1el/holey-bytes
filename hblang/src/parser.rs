@@ -139,6 +139,18 @@ impl<'a, 'b> Parser<'a, 'b> {
         let frame = self.idents.len();
         let token = self.next();
         let mut expr = match token.kind {
+            T::Struct => E::Struct {
+                pos:    token.start,
+                fields: {
+                    self.expect_advance(T::LBrace);
+                    self.collect_list(T::Comma, T::RBrace, |s| {
+                        let name = s.expect_advance(T::Ident);
+                        s.expect_advance(T::Colon);
+                        let ty = s.expr();
+                        (s.lexer.slice(name.range()), ty)
+                    })
+                },
+            },
             T::Ident => {
                 let (id, last) = self.resolve_ident(token, self.token.kind == T::Decl);
                 let name = self.lexer.slice(token.range());
@@ -207,14 +219,32 @@ impl<'a, 'b> Parser<'a, 'b> {
         };
 
         loop {
-            expr = match self.token.kind {
-                T::LParen => {
-                    self.next();
-                    Expr::Call {
-                        func: self.arena.alloc(expr),
-                        args: self.collect_list(T::Comma, T::RParen, Self::expr),
-                    }
-                }
+            let token = self.token.kind;
+            if matches!(token, T::LParen | T::Ctor | T::Dot) {
+                self.next();
+            }
+
+            expr = match token {
+                T::LParen => Expr::Call {
+                    func: self.arena.alloc(expr),
+                    args: self.collect_list(T::Comma, T::RParen, Self::expr),
+                },
+                T::Ctor => E::Ctor {
+                    ty:     self.arena.alloc(expr),
+                    fields: self.collect_list(T::Comma, T::RBrace, |s| {
+                        let name = s.expect_advance(T::Ident);
+                        s.expect_advance(T::Colon);
+                        let val = s.expr();
+                        (s.lexer.slice(name.range()), val)
+                    }),
+                },
+                T::Dot => E::Field {
+                    ty:    self.arena.alloc(expr),
+                    field: {
+                        let token = self.expect_advance(T::Ident);
+                        self.lexer.slice(token.range())
+                    },
+                },
                 _ => break,
             }
         }
@@ -313,16 +343,16 @@ pub enum Expr<'a> {
     Closure {
         pos:  u32,
         args: &'a [Arg<'a>],
-        ret:  &'a Expr<'a>,
-        body: &'a Expr<'a>,
+        ret:  &'a Self,
+        body: &'a Self,
     },
     Call {
-        func: &'a Expr<'a>,
-        args: &'a [Expr<'a>],
+        func: &'a Self,
+        args: &'a [Self],
     },
     Return {
         pos: u32,
-        val: Option<&'a Expr<'a>>,
+        val: Option<&'a Self>,
     },
     Ident {
         name: &'a str,
@@ -331,31 +361,43 @@ pub enum Expr<'a> {
     },
     Block {
         pos:   u32,
-        stmts: &'a [Expr<'a>],
+        stmts: &'a [Self],
     },
     Number {
         pos:   u32,
         value: u64,
     },
     BinOp {
-        left:  &'a Expr<'a>,
+        left:  &'a Self,
         op:    TokenKind,
-        right: &'a Expr<'a>,
+        right: &'a Self,
     },
     If {
         pos:   u32,
-        cond:  &'a Expr<'a>,
-        then:  &'a Expr<'a>,
-        else_: Option<&'a Expr<'a>>,
+        cond:  &'a Self,
+        then:  &'a Self,
+        else_: Option<&'a Self>,
     },
     Loop {
         pos:  u32,
-        body: &'a Expr<'a>,
+        body: &'a Self,
     },
     UnOp {
         pos: u32,
         op:  TokenKind,
-        val: &'a Expr<'a>,
+        val: &'a Self,
+    },
+    Struct {
+        pos:    u32,
+        fields: &'a [(&'a str, Self)],
+    },
+    Ctor {
+        ty:     &'a Self,
+        fields: &'a [(&'a str, Self)],
+    },
+    Field {
+        ty:    &'a Self,
+        field: &'a str,
     },
 }
 
@@ -366,6 +408,29 @@ impl<'a> std::fmt::Display for Expr<'a> {
         }
 
         match *self {
+            Self::Field { ty, field } => write!(f, "{}.{}", ty, field),
+            Self::Struct { fields, .. } => {
+                write!(f, "struct {{")?;
+                let first = &mut true;
+                for (name, ty) in fields {
+                    if !std::mem::take(first) {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", name, ty)?;
+                }
+                write!(f, "}}")
+            }
+            Self::Ctor { ty, fields } => {
+                write!(f, "{} {{", ty)?;
+                let first = &mut true;
+                for (name, val) in fields {
+                    if !std::mem::take(first) {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", name, val)?;
+                }
+                write!(f, "}}")
+            }
             Self::UnOp { op, val, .. } => write!(f, "{}{}", op, val),
             Self::Break { .. } => write!(f, "break;"),
             Self::Continue { .. } => write!(f, "continue;"),
