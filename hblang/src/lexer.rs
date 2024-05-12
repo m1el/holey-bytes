@@ -165,19 +165,23 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn line_col(&self, mut start: u32) -> (usize, usize) {
-        self.bytes
-            .split(|&b| b == b'\n')
-            .enumerate()
-            .find_map(|(i, line)| {
-                if start < line.len() as u32 {
-                    return Some((i + 1, start as usize + 1));
-                }
-                start -= line.len() as u32 + 1;
-                None
-            })
-            .unwrap_or((1, 1))
+    pub fn line_col(&self, pos: u32) -> (usize, usize) {
+        line_col(self.bytes, pos)
     }
+}
+
+pub fn line_col(bytes: &[u8], mut start: u32) -> (usize, usize) {
+    bytes
+        .split(|&b| b == b'\n')
+        .enumerate()
+        .find_map(|(i, line)| {
+            if start < line.len() as u32 {
+                return Some((i + 1, start as usize + 1));
+            }
+            start -= line.len() as u32 + 1;
+            None
+        })
+        .unwrap_or((1, 1))
 }
 
 impl<'a> Iterator for Lexer<'a> {

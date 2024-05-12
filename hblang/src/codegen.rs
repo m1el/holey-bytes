@@ -306,6 +306,7 @@ impl<'a> std::fmt::Display for TypeDisplay<'a> {
 
 pub struct Codegen<'a> {
     path:       &'a std::path::Path,
+    input:      &'a [u8],
     ret:        Type,
     gpa:        RegAlloc,
     code:       Func,
@@ -324,6 +325,7 @@ impl<'a> Codegen<'a> {
     pub fn new() -> Self {
         Self {
             path:       std::path::Path::new(""),
+            input:      &[],
             ret:        bt::VOID,
             gpa:        Default::default(),
             code:       Default::default(),
@@ -342,10 +344,22 @@ impl<'a> Codegen<'a> {
     pub fn file(
         &mut self,
         path: &'a std::path::Path,
+        input: &'a [u8],
         exprs: &'a [parser::Expr<'a>],
     ) -> std::fmt::Result {
         self.path = path;
+        self.input = input;
+
         for expr in exprs {
+            let E::BinOp {
+                left: E::Ident { .. },
+                op: T::Decl,
+                ..
+            } = expr
+            else {
+                self.report(expr.pos(), format_args!("expected declaration"));
+            };
+
             self.expr(expr, None);
         }
         Ok(())
@@ -393,9 +407,12 @@ impl<'a> Codegen<'a> {
         TypeDisplay::new(self, ty)
     }
 
-    fn offset_of(&self, ty: Type, field: &str) -> (u64, Type) {
+    fn offset_of(&self, pos: parser::Pos, ty: Type, field: &str) -> (u64, Type) {
         let TypeKind::Struct(idx) = TypeKind::from_ty(ty) else {
-            panic!("expected struct, got {}", self.display_ty(ty));
+            self.report(
+                pos,
+                format_args!("expected struct, got {}", self.display_ty(ty)),
+            );
         };
         let record = &self.records[idx as usize];
         let mut offset = 0;
@@ -407,7 +424,7 @@ impl<'a> Codegen<'a> {
             offset = (offset + align - 1) & !(align - 1);
             offset += self.size_of(*ty);
         }
-        panic!("field not found: {:?}", field);
+        self.report(pos, format_args!("field not found: {}", field));
     }
 
     fn loc_to_reg(&mut self, loc: Loc) -> LinReg {
@@ -481,11 +498,9 @@ impl<'a> Codegen<'a> {
                 self.alloc_pointer(ty)
             }
             E::Ident { id, name, .. } => {
-                let index = self
-                    .records
-                    .iter()
-                    .position(|r| r.id == id)
-                    .unwrap_or_else(|| panic!("type not found: {name}"));
+                let Some(index) = self.records.iter().position(|r| r.id == id) else {
+                    self.report(expr.pos(), format_args!("unknown type: {}", name))
+                };
                 TypeKind::Struct(index as Type).encode()
             }
             expr => unimplemented!("type: {:#?}", expr),
@@ -501,7 +516,10 @@ impl<'a> Codegen<'a> {
             E::Ctor { ty, fields } => {
                 let ty = self.ty(&ty);
                 let TypeKind::Struct(idx) = TypeKind::from_ty(ty) else {
-                    panic!("expected struct, got {}", self.display_ty(ty));
+                    self.report(
+                        expr.pos(),
+                        format_args!("expected struct, got {}", self.display_ty(ty)),
+                    );
                 };
 
                 let mut field_values = fields
@@ -514,17 +532,20 @@ impl<'a> Codegen<'a> {
 
                 let decl_fields = self.records[idx as usize].fields.clone();
                 let mut offset = 0;
-                for (name, ty) in decl_fields.as_ref() {
+                for &(ref name, ty) in decl_fields.as_ref() {
                     let index = field_values
                         .iter()
                         .position(|(n, _)| *n == name.as_ref())
                         .unwrap();
                     let (_, value) = field_values.remove(index);
-                    if value.ty != *ty {
-                        panic!(
-                            "expected {}, got {}",
-                            self.display_ty(*ty),
-                            self.display_ty(value.ty)
+                    if value.ty != ty {
+                        self.report(
+                            expr.pos(),
+                            format_args!(
+                                "expected {}, got {}",
+                                self.display_ty(ty),
+                                self.display_ty(value.ty)
+                            ),
                         );
                     }
                     log::dbg!("ctor: {} {} {:?}", stack, offset, value.loc);
@@ -535,7 +556,7 @@ impl<'a> Codegen<'a> {
                         },
                         value,
                     );
-                    offset += self.size_of(*ty);
+                    offset += self.size_of(ty);
                 }
                 Some(Value {
                     ty,
@@ -543,10 +564,10 @@ impl<'a> Codegen<'a> {
                 })
             }
             E::Field { target, field } => {
-                let mut target = self.expr(target, None)?;
-                if let TypeKind::Pointer(ty) = TypeKind::from_ty(target.ty) {
-                    target.ty = self.pointers[ty as usize];
-                    target.loc = match target.loc {
+                let mut tal = self.expr(target, None)?;
+                if let TypeKind::Pointer(ty) = TypeKind::from_ty(tal.ty) {
+                    tal.ty = self.pointers[ty as usize];
+                    tal.loc = match tal.loc {
                         Loc::Reg(r) => Loc::Deref(r, 0),
                         Loc::RegRef(r) => Loc::DerefRef(r, 0),
                         Loc::StackRef(stack) | Loc::Stack(stack) => {
@@ -554,11 +575,11 @@ impl<'a> Codegen<'a> {
                             self.load_stack(reg.0, stack, 8);
                             Loc::Deref(reg, 0)
                         }
-                        l => panic!("cant get field of {:?}", l),
+                        l => todo!("cant get field of {:?}", l),
                     };
                 }
-                let (offset, ty) = self.offset_of(target.ty, field);
-                let loc = match target.loc {
+                let (offset, ty) = self.offset_of(target.pos(), tal.ty, field);
+                let loc = match tal.loc {
                     Loc::Deref(r, off) => Loc::Deref(r, off + offset),
                     Loc::DerefRef(r, off) => Loc::DerefRef(r, off + offset),
                     Loc::Stack(stack) => Loc::Stack(stack + offset),
@@ -584,7 +605,9 @@ impl<'a> Codegen<'a> {
                 Some(Value::VOID)
             }
             E::UnOp {
-                op: T::Amp, val, ..
+                op: T::Amp,
+                val,
+                pos,
             } => {
                 let val = self.expr(val, None)?;
                 match val.loc {
@@ -596,11 +619,16 @@ impl<'a> Codegen<'a> {
                             loc: Loc::Reg(reg),
                         })
                     }
-                    l => panic!("cant take pointer of {} ({:?})", self.display_ty(val.ty), l),
+                    l => self.report(
+                        pos,
+                        format_args!("cant take pointer of {} ({:?})", self.display_ty(val.ty), l),
+                    ),
                 }
             }
             E::UnOp {
-                op: T::Star, val, ..
+                op: T::Star,
+                val,
+                pos,
             } => {
                 let val = self.expr(val, None)?;
                 let reg = self.loc_to_reg(val.loc);
@@ -609,7 +637,10 @@ impl<'a> Codegen<'a> {
                         ty:  self.pointers[ty as usize],
                         loc: Loc::Deref(reg, 0),
                     }),
-                    _ => panic!("cant deref {}", self.display_ty(val.ty)),
+                    _ => self.report(
+                        pos,
+                        format_args!("expected pointer, got {}", self.display_ty(val.ty)),
+                    ),
                 }
             }
             E::BinOp {
@@ -641,7 +672,7 @@ impl<'a> Codegen<'a> {
 
                 log::dbg!("fn-body");
                 if self.expr(body, None).is_some() {
-                    panic!("expected all paths in the fucntion {name} to return");
+                    self.report(body.pos(), "expected all paths in the fucntion to return");
                 }
                 self.vars.clear();
 
@@ -689,24 +720,25 @@ impl<'a> Codegen<'a> {
                 })
             }
             E::Ident { name, id, .. } => {
-                let var = self
-                    .vars
-                    .iter()
-                    .find(|v| v.id == id)
-                    .unwrap_or_else(|| panic!("variable not found: {name}"));
+                let Some(var) = self.vars.iter().find(|v| v.id == id) else {
+                    self.report(expr.pos(), format_args!("unknown variable: {}", name))
+                };
                 Some(Value {
                     ty:  var.value.ty,
                     loc: var.value.loc.take_ref(),
                 })
             }
-            E::Return { val, .. } => {
+            E::Return { val, pos } => {
                 if let Some(val) = val {
                     let val = self.expr(val, Some(self.ret))?;
                     if val.ty != self.ret {
-                        panic!(
-                            "expected {}, got {}",
-                            self.display_ty(self.ret),
-                            self.display_ty(val.ty)
+                        self.report(
+                            pos,
+                            format_args!(
+                                "expected {}, got {}",
+                                self.display_ty(self.ret),
+                                self.display_ty(val.ty)
+                            ),
                         );
                     }
                     self.assign(
@@ -1055,7 +1087,7 @@ impl<'a> Codegen<'a> {
 
         if size > 16 {
             let (Loc::Stack(stack) | Loc::StackRef(stack)) = value.loc else {
-                panic!("expected stack location, got {:?}", value.loc);
+                todo!("expected stack location, got {:?}", value.loc);
             };
             self.code.encode(instrs::addi64(p, STACK_PTR, stack));
         }
@@ -1128,6 +1160,12 @@ impl<'a> Codegen<'a> {
             }
             l => l,
         }
+    }
+
+    fn report(&self, pos: parser::Pos, msg: impl std::fmt::Display) -> ! {
+        let (line, col) = lexer::line_col(self.input, pos);
+        println!("{}:{}:{}: {}", self.path.display(), line, col, msg);
+        unreachable!();
     }
 }
 
@@ -1239,7 +1277,7 @@ mod tests {
         let mut parser = super::parser::Parser::new(input, path, &arena);
         let exprs = parser.file();
         let mut codegen = super::Codegen::new();
-        codegen.file(path, &exprs).unwrap();
+        codegen.file(path, input.as_bytes(), &exprs).unwrap();
         let mut out = Vec::new();
         codegen.dump(&mut out).unwrap();
 

@@ -6,6 +6,8 @@ use crate::{
     lexer::{Lexer, Token, TokenKind},
 };
 
+pub type Pos = u32;
+
 struct ScopeIdent<'a> {
     ident:    Ident,
     declared: bool,
@@ -341,13 +343,13 @@ pub struct Arg<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Expr<'a> {
     Break {
-        pos: u32,
+        pos: Pos,
     },
     Continue {
-        pos: u32,
+        pos: Pos,
     },
     Closure {
-        pos:  u32,
+        pos:  Pos,
         args: &'a [Arg<'a>],
         ret:  &'a Self,
         body: &'a Self,
@@ -357,7 +359,7 @@ pub enum Expr<'a> {
         args: &'a [Self],
     },
     Return {
-        pos: u32,
+        pos: Pos,
         val: Option<&'a Self>,
     },
     Ident {
@@ -366,11 +368,11 @@ pub enum Expr<'a> {
         last: Option<&'a Cell<bool>>,
     },
     Block {
-        pos:   u32,
+        pos:   Pos,
         stmts: &'a [Self],
     },
     Number {
-        pos:   u32,
+        pos:   Pos,
         value: u64,
     },
     BinOp {
@@ -379,22 +381,22 @@ pub enum Expr<'a> {
         right: &'a Self,
     },
     If {
-        pos:   u32,
+        pos:   Pos,
         cond:  &'a Self,
         then:  &'a Self,
         else_: Option<&'a Self>,
     },
     Loop {
-        pos:  u32,
+        pos:  Pos,
         body: &'a Self,
     },
     UnOp {
-        pos: u32,
+        pos: Pos,
         op:  TokenKind,
         val: &'a Self,
     },
     Struct {
-        pos:    u32,
+        pos:    Pos,
         fields: &'a [(&'a str, Self)],
     },
     Ctor {
@@ -406,9 +408,32 @@ pub enum Expr<'a> {
         field:  &'a str,
     },
     Bool {
-        pos:   u32,
+        pos:   Pos,
         value: bool,
     },
+}
+
+impl<'a> Expr<'a> {
+    pub fn pos(&self) -> Pos {
+        match self {
+            Self::Break { pos } => *pos,
+            Self::Continue { pos } => *pos,
+            Self::Closure { pos, .. } => *pos,
+            Self::Call { func, .. } => func.pos(),
+            Self::Return { pos, .. } => *pos,
+            Self::Ident { id, .. } => ident::pos(*id),
+            Self::Block { pos, .. } => *pos,
+            Self::Number { pos, .. } => *pos,
+            Self::BinOp { left, .. } => left.pos(),
+            Self::If { pos, .. } => *pos,
+            Self::Loop { pos, .. } => *pos,
+            Self::UnOp { pos, .. } => *pos,
+            Self::Struct { pos, .. } => *pos,
+            Self::Ctor { ty, .. } => ty.pos(),
+            Self::Field { target, .. } => target.pos(),
+            Self::Bool { pos, .. } => *pos,
+        }
+    }
 }
 
 impl<'a> std::fmt::Display for Expr<'a> {
