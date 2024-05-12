@@ -42,7 +42,7 @@ pub mod bt {
 
     builtin_type! {
         VOID;
-        UNREACHABLE;
+        NEVER;
         INT;
         BOOL;
     }
@@ -393,6 +393,8 @@ impl<'a> Codegen<'a> {
         match *expr {
             E::Ident { name: "int", .. } => bt::INT,
             E::Ident { name: "bool", .. } => bt::BOOL,
+            E::Ident { name: "void", .. } => bt::VOID,
+            E::Ident { name: "never", .. } => bt::NEVER,
             E::Ident { id, .. } => {
                 let index = self
                     .records
@@ -418,8 +420,9 @@ impl<'a> Codegen<'a> {
                 let stack = self.alloc_stack(size as u32);
                 let mut field_values = fields
                     .iter()
-                    .map(|(name, field)| (*name, self.expr(field, None).unwrap()))
-                    .collect::<Vec<_>>();
+                    .map(|(name, field)| self.expr(field, None).map(|v| (*name, v)))
+                    .collect::<Option<Vec<_>>>()?;
+
                 let decl_fields = self.records[idx as usize].fields.clone();
                 let mut offset = 0;
                 for (name, ty) in decl_fields.as_ref() {
@@ -442,7 +445,7 @@ impl<'a> Codegen<'a> {
                 })
             }
             E::Field { target, field } => {
-                let target = self.expr(target, None).unwrap();
+                let target = self.expr(target, None)?;
                 let TypeKind::Struct(idx) = TypeKind::from_ty(target.ty) else {
                     panic!("expected struct, got {:?}", target.ty);
                 };
@@ -479,12 +482,12 @@ impl<'a> Codegen<'a> {
                     .map(|&(name, ty)| (name.into(), self.ty(&ty)))
                     .collect();
                 self.records.push(Struct { id: *id, fields });
-                None
+                Some(Value::VOID)
             }
             E::UnOp {
                 op: T::Amp, val, ..
             } => {
-                let val = self.expr(val, None).unwrap();
+                let val = self.expr(val, None)?;
                 match val.loc {
                     Loc::StackRef(off) => {
                         let reg = self.gpa.allocate();
@@ -504,7 +507,7 @@ impl<'a> Codegen<'a> {
             E::UnOp {
                 op: T::Star, val, ..
             } => {
-                let val = self.expr(val, None).unwrap();
+                let val = self.expr(val, None)?;
                 let reg = self.loc_to_reg(val.loc);
                 match TypeKind::from_ty(val.ty) {
                     TypeKind::Pointer(ty) => Some(Value {
@@ -542,7 +545,9 @@ impl<'a> Codegen<'a> {
                 self.gpa.init_callee();
                 self.ret = self.ty(ret);
                 log::dbg!("fn-body");
-                self.expr(body, None);
+                if self.expr(body, None).is_some() {
+                    panic!("expected all paths in the fucntion {name} to return");
+                }
                 self.vars.clear();
                 log::dbg!("fn-relocs");
                 self.reloc_stack();
@@ -553,28 +558,28 @@ impl<'a> Codegen<'a> {
                 self.ret();
                 self.stack_size = 0;
                 self.vars.clear();
-                None
+                Some(Value::VOID)
             }
             E::BinOp {
                 left: E::Ident { id, .. },
                 op: T::Decl,
                 right,
             } => {
-                let val = self.expr(right, None).unwrap();
+                let val = self.expr(right, None)?;
                 let loc = self.make_loc_owned(val.loc, val.ty);
                 let loc = self.ensure_spilled(loc);
                 self.vars.push(Variable {
                     id:    *id,
                     value: Value { ty: val.ty, loc },
                 });
-                None
+                Some(Value::VOID)
             }
             E::Call {
                 func: E::Ident { id, .. },
                 args,
             } => {
                 for (i, arg) in args.iter().enumerate() {
-                    let arg = self.expr(arg, None).unwrap();
+                    let arg = self.expr(arg, None)?;
                     let reg = self.loc_to_reg(arg.loc);
                     self.code.encode(instrs::cp(i as Reg + 2, reg.0));
                     self.gpa.free(reg);
@@ -601,7 +606,7 @@ impl<'a> Codegen<'a> {
             }
             E::Return { val, .. } => {
                 if let Some(val) = val {
-                    let val = self.expr(val, Some(self.ret)).unwrap();
+                    let val = self.expr(val, Some(self.ret))?;
                     if val.ty != self.ret {
                         panic!("expected {:?}, got {:?}", self.ret, val.ty);
                     }
@@ -623,11 +628,11 @@ impl<'a> Codegen<'a> {
             }
             E::Block { stmts, .. } => {
                 for stmt in stmts {
-                    if let Some(Loc::Reg(reg)) = self.expr(stmt, None).map(|v| v.loc) {
+                    if let Loc::Reg(reg) = self.expr(stmt, None)?.loc {
                         self.gpa.free(reg);
                     }
                 }
-                None
+                Some(Value::VOID)
             }
             E::Number { value, .. } => Some(Value {
                 ty:  expeted.unwrap_or(bt::INT),
@@ -635,58 +640,68 @@ impl<'a> Codegen<'a> {
             }),
             E::If {
                 cond, then, else_, ..
-            } => {
+            } => 'b: {
                 log::dbg!("if-cond");
-                let cond = self.expr(cond, Some(bt::BOOL)).unwrap();
+                let cond = self.expr(cond, Some(bt::BOOL))?;
                 let reg = self.loc_to_reg(cond.loc);
                 let jump_offset = self.code.code.len() as u32;
                 self.code.encode(instrs::jeq(reg.0, 0, 0));
                 self.gpa.free(reg);
 
                 log::dbg!("if-then");
-                self.expr(then, None);
+                let then_unreachable = self.expr(then, None).is_none();
+                let mut else_unreachable = false;
 
-                let jump;
+                let mut jump = self.code.code.len() as i16 - jump_offset as i16;
 
                 if let Some(else_) = else_ {
                     log::dbg!("if-else");
                     let else_jump_offset = self.code.code.len() as u32;
-                    self.code.encode(instrs::jmp(0));
+                    if !then_unreachable {
+                        self.code.encode(instrs::jmp(0));
+                        jump = self.code.code.len() as i16 - jump_offset as i16;
+                    }
 
-                    jump = self.code.code.len() as i16 - jump_offset as i16;
+                    else_unreachable = self.expr(else_, None).is_none();
 
-                    self.expr(else_, None);
-
-                    let jump = self.code.code.len() as i32 - else_jump_offset as i32;
-                    log::dbg!("if-else-jump: {}", jump);
-                    self.code.code[else_jump_offset as usize + 1..][..4]
-                        .copy_from_slice(&jump.to_ne_bytes());
-                } else {
-                    jump = self.code.code.len() as i16 - jump_offset as i16;
+                    if !then_unreachable {
+                        let jump = self.code.code.len() as i32 - else_jump_offset as i32;
+                        log::dbg!("if-else-jump: {}", jump);
+                        self.code.code[else_jump_offset as usize + 1..][..4]
+                            .copy_from_slice(&jump.to_ne_bytes());
+                    }
                 }
 
                 log::dbg!("if-then-jump: {}", jump);
                 self.code.code[jump_offset as usize + 3..][..2]
                     .copy_from_slice(&jump.to_ne_bytes());
 
-                None
+                if then_unreachable && else_unreachable {
+                    break 'b None;
+                }
+
+                Some(Value::VOID)
             }
-            E::Loop { body, .. } => {
+            E::Loop { body, .. } => 'a: {
                 log::dbg!("loop");
                 let loop_start = self.code.code.len() as u32;
                 self.loops.push(Loop {
                     offset: loop_start,
                     relocs: Default::default(),
                 });
-                self.expr(body, None);
+                let body_unreachable = self.expr(body, None).is_none();
 
                 log::dbg!("loop-end");
-                let loop_end = self.code.code.len();
-                self.code
-                    .encode(instrs::jmp(loop_start as i32 - loop_end as i32));
+                if !body_unreachable {
+                    let loop_end = self.code.code.len();
+                    self.code
+                        .encode(instrs::jmp(loop_start as i32 - loop_end as i32));
+                }
+
                 let loop_end = self.code.code.len() as u32;
 
                 let loop_ = self.loops.pop().unwrap();
+                let is_unreachable = loop_.relocs.is_empty();
                 for reloc in loop_.relocs {
                     let dest = &mut self.code.code
                         [reloc.offset as usize + reloc.instr_offset as usize..]
@@ -695,7 +710,12 @@ impl<'a> Codegen<'a> {
                     dest.copy_from_slice(&offset.to_ne_bytes());
                 }
 
-                None
+                if is_unreachable {
+                    log::dbg!("infinite loop");
+                    break 'a None;
+                }
+
+                Some(Value::VOID)
             }
             E::Break { .. } => {
                 let loop_ = self.loops.last_mut().unwrap();
@@ -716,8 +736,8 @@ impl<'a> Codegen<'a> {
                 None
             }
             E::BinOp { left, op, right } => {
-                let left = self.expr(left, expeted).unwrap();
-                let right = self.expr(right, Some(left.ty)).unwrap();
+                let left = self.expr(left, expeted)?;
+                let right = self.expr(right, Some(left.ty))?;
                 if op == T::Assign {
                     return self.assign(left, right);
                 }
@@ -776,7 +796,7 @@ impl<'a> Codegen<'a> {
             _ => unimplemented!(),
         }
         self.gpa.free(rhs);
-        None
+        Some(Value::VOID)
     }
 
     fn get_or_reserve_label(&mut self, name: Ident) -> LabelId {
@@ -912,6 +932,13 @@ pub struct Value {
     loc: Loc,
 }
 
+impl Value {
+    const VOID: Self = Self {
+        ty:  bt::VOID,
+        loc: Loc::Imm(0),
+    };
+}
+
 #[derive(Debug)]
 enum Loc {
     Reg(LinReg),
@@ -1001,7 +1028,6 @@ mod tests {
         let mut out = Vec::new();
         codegen.dump(&mut out).unwrap();
 
-        std::fs::write("test.bin", &out).unwrap();
         use std::fmt::Write;
 
         let mut stack = [0_u64; 128];

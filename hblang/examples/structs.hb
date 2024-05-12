@@ -1,6 +1,6 @@
 Ty := struct {
-	a: int
-	b: int
+	a: int,
+	b: int,
 }
 
 main := fn(): int {
