@@ -1,22 +1,27 @@
 use std::{cell::Cell, ops::Not, ptr::NonNull};
 
-use crate::lexer::{Lexer, Token, TokenKind};
+use crate::{
+    codegen::bt,
+    ident::{self, Ident},
+    lexer::{Lexer, Token, TokenKind},
+};
+
+struct ScopeIdent<'a> {
+    ident:    Ident,
+    declared: bool,
+    last:     &'a Cell<bool>,
+}
 
 pub struct Parser<'a, 'b> {
-    path:     &'a std::path::Path,
-    lexer:    Lexer<'a>,
-    arena:    &'b Arena<'a>,
-    expr_buf: &'b mut Vec<Expr<'a>>,
-    token:    Token,
+    path:   &'a std::path::Path,
+    lexer:  Lexer<'a>,
+    arena:  &'b Arena<'a>,
+    token:  Token,
+    idents: Vec<ScopeIdent<'a>>,
 }
 
 impl<'a, 'b> Parser<'a, 'b> {
-    pub fn new(
-        input: &'a str,
-        path: &'a std::path::Path,
-        arena: &'b Arena<'a>,
-        expr_buf: &'b mut Vec<Expr<'static>>,
-    ) -> Self {
+    pub fn new(input: &'a str, path: &'a std::path::Path, arena: &'b Arena<'a>) -> Self {
         let mut lexer = Lexer::new(input);
         let token = lexer.next();
         Self {
@@ -24,13 +29,30 @@ impl<'a, 'b> Parser<'a, 'b> {
             token,
             path,
             arena,
-            // we ensure its empty before returning form parse
-            expr_buf: unsafe { std::mem::transmute(expr_buf) },
+            idents: Vec::new(),
         }
     }
 
     pub fn file(&mut self) -> &'a [Expr<'a>] {
-        self.collect(|s| (s.token.kind != TokenKind::Eof).then(|| s.expr()))
+        let f = self.collect(|s| (s.token.kind != TokenKind::Eof).then(|| s.expr()));
+        self.pop_scope(0);
+        let has_undeclared = !self.idents.is_empty();
+        for id in self.idents.drain(..) {
+            let (line, col) = self.lexer.line_col(ident::pos(id.ident));
+            eprintln!(
+                "{}:{}:{} => undeclared identifier: {}",
+                self.path.display(),
+                line,
+                col,
+                self.lexer.slice(ident::range(id.ident))
+            );
+        }
+
+        if has_undeclared {
+            unreachable!();
+        }
+
+        f
     }
 
     fn next(&mut self) -> Token {
@@ -69,14 +91,59 @@ impl<'a, 'b> Parser<'a, 'b> {
         left
     }
 
+    fn try_resolve_builtin(name: &str) -> Option<Ident> {
+        // FIXME: we actually do this the second time in the codegen
+        Some(match name {
+            "int" => bt::INT,
+            "bool" => bt::BOOL,
+            _ => return None,
+        })
+    }
+
+    fn resolve_ident(&mut self, token: Token, decl: bool) -> (Ident, Option<&'a Cell<bool>>) {
+        let name = self.lexer.slice(token.range());
+
+        if let Some(builtin) = Self::try_resolve_builtin(name) {
+            return (builtin, None);
+        }
+
+        let last = self.arena.alloc(Cell::new(false));
+        let id = match self
+            .idents
+            .iter_mut()
+            .rfind(|elem| self.lexer.slice(ident::range(elem.ident)) == name)
+        {
+            Some(elem) if decl && elem.declared => {
+                self.report(format_args!("redeclaration of identifier: {name}"))
+            }
+            Some(elem) => elem,
+            None => {
+                let id = ident::new(token.start, name.len() as _);
+                self.idents.push(ScopeIdent {
+                    ident: id,
+                    declared: false,
+                    last,
+                });
+                self.idents.last_mut().unwrap()
+            }
+        };
+
+        id.last = last;
+        id.declared |= decl;
+
+        (id.ident, Some(last))
+    }
+
     fn unit_expr(&mut self) -> Expr<'a> {
         use {Expr as E, TokenKind as T};
+        let frame = self.idents.len();
         let token = self.next();
         let mut expr = match token.kind {
-            T::Ident => E::Ident {
-                pos:  token.start,
-                name: self.arena.alloc_str(self.lexer.slice(token)),
-            },
+            T::Ident => {
+                let (id, last) = self.resolve_ident(token, self.token.kind == T::Decl);
+                let name = self.lexer.slice(token.range());
+                E::Ident { name, id, last }
+            }
             T::If => E::If {
                 pos:   token.start,
                 cond:  self.ptr_expr(),
@@ -99,10 +166,14 @@ impl<'a, 'b> Parser<'a, 'b> {
                     self.expect_advance(T::LParen);
                     self.collect_list(T::Comma, T::RParen, |s| {
                         let name = s.expect_advance(T::Ident);
-                        let name = s.arena.alloc_str(s.lexer.slice(name));
+                        let (id, last) = s.resolve_ident(name, true);
                         s.expect_advance(T::Colon);
-                        let val = s.expr();
-                        (name, val)
+                        Arg {
+                            name: s.lexer.slice(name.range()),
+                            id,
+                            last,
+                            ty: s.expr(),
+                        }
                     })
                 },
                 ret:  {
@@ -111,13 +182,18 @@ impl<'a, 'b> Parser<'a, 'b> {
                 },
                 body: self.ptr_expr(),
             },
+            T::Amp | T::Star => E::UnOp {
+                pos: token.start,
+                op:  token.kind,
+                val: self.ptr_unit_expr(),
+            },
             T::LBrace => E::Block {
                 pos:   token.start,
                 stmts: self.collect_list(T::Semi, T::RBrace, Self::expr),
             },
             T::Number => E::Number {
                 pos:   token.start,
-                value: match self.lexer.slice(token).parse() {
+                value: match self.lexer.slice(token.range()).parse() {
                     Ok(value) => value,
                     Err(e) => self.report(format_args!("invalid number: {e}")),
                 },
@@ -132,20 +208,44 @@ impl<'a, 'b> Parser<'a, 'b> {
 
         loop {
             expr = match self.token.kind {
-                TokenKind::LParen => {
+                T::LParen => {
                     self.next();
                     Expr::Call {
                         func: self.arena.alloc(expr),
-                        args: self.collect_list(TokenKind::Comma, TokenKind::RParen, Self::expr),
+                        args: self.collect_list(T::Comma, T::RParen, Self::expr),
                     }
                 }
                 _ => break,
             }
         }
 
-        self.advance_if(TokenKind::Semi);
+        if matches!(token.kind, T::Return) {
+            self.expect_advance(T::Semi);
+        }
+
+        if matches!(token.kind, T::Loop | T::LBrace | T::Fn) {
+            self.pop_scope(frame);
+        }
 
         expr
+    }
+
+    fn pop_scope(&mut self, frame: usize) {
+        let mut undeclared_count = frame;
+        for i in frame..self.idents.len() {
+            if !self.idents[i].declared {
+                self.idents.swap(i, undeclared_count);
+                undeclared_count += 1;
+            }
+        }
+
+        for id in self.idents.drain(undeclared_count..) {
+            id.last.set(true);
+        }
+    }
+
+    fn ptr_unit_expr(&mut self) -> &'a Expr<'a> {
+        self.arena.alloc(self.unit_expr())
     }
 
     fn collect_list<T: Copy>(
@@ -195,6 +295,14 @@ impl<'a, 'b> Parser<'a, 'b> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Arg<'a> {
+    pub name: &'a str,
+    pub id:   Ident,
+    pub last: Option<&'a Cell<bool>>,
+    pub ty:   Expr<'a>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Expr<'a> {
     Break {
         pos: u32,
@@ -204,7 +312,7 @@ pub enum Expr<'a> {
     },
     Closure {
         pos:  u32,
-        args: &'a [(&'a str, Expr<'a>)],
+        args: &'a [Arg<'a>],
         ret:  &'a Expr<'a>,
         body: &'a Expr<'a>,
     },
@@ -217,8 +325,9 @@ pub enum Expr<'a> {
         val: Option<&'a Expr<'a>>,
     },
     Ident {
-        pos:  u32,
         name: &'a str,
+        id:   Ident,
+        last: Option<&'a Cell<bool>>,
     },
     Block {
         pos:   u32,
@@ -243,6 +352,11 @@ pub enum Expr<'a> {
         pos:  u32,
         body: &'a Expr<'a>,
     },
+    UnOp {
+        pos: u32,
+        op:  TokenKind,
+        val: &'a Expr<'a>,
+    },
 }
 
 impl<'a> std::fmt::Display for Expr<'a> {
@@ -252,6 +366,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
         }
 
         match *self {
+            Self::UnOp { op, val, .. } => write!(f, "{}{}", op, val),
             Self::Break { .. } => write!(f, "break;"),
             Self::Continue { .. } => write!(f, "continue;"),
             Self::If {
@@ -269,11 +384,11 @@ impl<'a> std::fmt::Display for Expr<'a> {
             } => {
                 write!(f, "|")?;
                 let first = &mut true;
-                for (name, val) in args {
+                for arg in args {
                     if !std::mem::take(first) {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}: {}", name, val)?;
+                    write!(f, "{}: {}", arg.name, arg.ty)?;
                 }
                 write!(f, "|: {} {}", ret, body)
             }
@@ -501,9 +616,7 @@ mod tests {
     fn parse(input: &'static str, output: &mut String) {
         use std::fmt::Write;
         let mut arena = super::Arena::default();
-        let mut buffer = Vec::new();
-        let mut parser =
-            super::Parser::new(input, std::path::Path::new("test"), &arena, &mut buffer);
+        let mut parser = super::Parser::new(input, std::path::Path::new("test"), &arena);
         for expr in parser.file() {
             writeln!(output, "{}", expr).unwrap();
         }

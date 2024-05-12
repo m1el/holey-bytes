@@ -9,6 +9,10 @@ impl Token {
     pub fn range(&self) -> std::ops::Range<usize> {
         self.start as usize..self.end as usize
     }
+
+    pub fn len(&self) -> u32 {
+        self.end - self.start
+    }
 }
 
 macro_rules! gen_token_kind {
@@ -102,6 +106,8 @@ gen_token_kind! {
         #[prec = 21]
         Le = "<=",
         Eq = "==",
+        #[prec = 22]
+        Amp = "&",
         #[prec = 23]
         Plus =  "+",
         Minus = "-",
@@ -124,8 +130,8 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn slice(&self, tok: Token) -> &'a str {
-        unsafe { std::str::from_utf8_unchecked(&self.bytes[tok.range()]) }
+    pub fn slice(&self, tok: std::ops::Range<usize>) -> &'a str {
+        unsafe { std::str::from_utf8_unchecked(&self.bytes[tok]) }
     }
 
     fn peek(&self) -> Option<u8> {
@@ -204,6 +210,7 @@ impl<'a> Iterator for Lexer<'a> {
                 b'-' => T::Minus,
                 b'*' => T::Star,
                 b'/' => T::FSlash,
+                b'&' => T::Amp,
                 b'(' => T::LParen,
                 b')' => T::RParen,
                 b'{' => T::LBrace,

@@ -1,17 +1,33 @@
+use crate::ident::Ident;
+
 use {
     crate::{
         instrs, lexer, log,
-        parser::{self, Expr},
+        parser::{self},
     },
     std::rc::Rc,
 };
+
+use {lexer::TokenKind as T, parser::Expr as E};
 
 type LabelId = u32;
 type Reg = u8;
 type MaskElem = u64;
 type Type = u32;
 
-mod bt {
+#[derive(Debug)]
+struct LinReg(Reg);
+
+#[cfg(debug_assertions)]
+impl Drop for LinReg {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            panic!("reg leaked");
+        }
+    }
+}
+
+pub mod bt {
     use super::*;
 
     const fn builtin_type(id: u32) -> Type {
@@ -20,29 +36,43 @@ mod bt {
 
     macro_rules! builtin_type {
         ($($name:ident;)*) => {$(
-            pub const $name: Type = builtin_type(${index(0)});
+            pub const $name: Type = TypeKind::Builtin(${index(0)}).encode();
         )*};
     }
 
     builtin_type! {
+        VOID;
+        UNREACHABLE;
         INT;
         BOOL;
-        MAX;
     }
 }
 
+#[derive(Debug)]
 enum TypeKind {
     Builtin(Type),
     Struct(Type),
+    Pointer(Type),
 }
 
 impl TypeKind {
-    fn from_ty(ty: Type) -> Self {
-        if ty > bt::MAX {
-            Self::Builtin(ty)
-        } else {
-            Self::Struct(ty)
+    const fn from_ty(ty: Type) -> Self {
+        let (flag, index) = (ty & 0b11, ty >> 2);
+        match flag {
+            0 => Self::Builtin(index),
+            1 => Self::Pointer(index),
+            2 => Self::Struct(index),
+            _ => unreachable!(),
         }
+    }
+
+    const fn encode(self) -> Type {
+        let (index, flag) = match self {
+            Self::Builtin(index) => (index, 0),
+            Self::Pointer(index) => (index, 1),
+            Self::Struct(index) => (index, 2),
+        };
+        index << 2 | flag
     }
 }
 
@@ -144,7 +174,7 @@ impl Func {
             } + shift;
 
             log::dbg!(
-                label.name.as_ref(),
+                label.name,
                 offset,
                 reloc.size,
                 reloc.instr_offset,
@@ -183,16 +213,17 @@ impl RegAlloc {
         self.used.clear();
     }
 
-    fn allocate(&mut self) -> Reg {
+    fn allocate(&mut self) -> LinReg {
         let reg = self.free.pop().expect("TODO: we need to spill");
         if self.used.binary_search_by_key(&!reg, |&r| !r).is_err() {
             self.used.push(reg);
         }
-        reg
+        LinReg(reg)
     }
 
-    fn free(&mut self, reg: Reg) {
-        self.free.push(reg);
+    fn free(&mut self, reg: LinReg) {
+        self.free.push(reg.0);
+        std::mem::forget(reg);
     }
 }
 
@@ -200,13 +231,12 @@ struct FnLabel {
     offset: u32,
     // TODO: use different stile of identifier that does not allocate, eg. index + length into a
     // file
-    name:   Rc<str>,
+    name:   Ident,
 }
 
-struct Variable<'a> {
-    name:   Rc<str>,
-    offset: u64,
-    ty:     Expr<'a>,
+struct Variable {
+    id:    Ident,
+    value: Value,
 }
 
 struct RetReloc {
@@ -227,35 +257,38 @@ struct Struct {
 
 pub struct Codegen<'a> {
     path: &'a std::path::Path,
-    ret: Expr<'a>,
+    ret: Type,
     gpa: RegAlloc,
     code: Func,
     temp: Func,
     labels: Vec<FnLabel>,
     stack_size: u64,
-    vars: Vec<Variable<'a>>,
+    vars: Vec<Variable>,
     stack_relocs: Vec<StackReloc>,
     ret_relocs: Vec<RetReloc>,
     loops: Vec<Loop>,
     records: Vec<Struct>,
+    pointers: Vec<Type>,
+    main: Option<LabelId>,
 }
 
 impl<'a> Codegen<'a> {
     pub fn new() -> Self {
         Self {
-            path:       std::path::Path::new(""),
-            ret:        Expr::Return { val: None, pos: 0 },
-            gpa:        Default::default(),
-            code:       Default::default(),
-            temp:       Default::default(),
-            labels:     Default::default(),
+            path: std::path::Path::new(""),
+            ret: bt::VOID,
+            gpa: Default::default(),
+            code: Default::default(),
+            temp: Default::default(),
+            labels: Default::default(),
             stack_size: 0,
-            vars:       Default::default(),
-
+            vars: Default::default(),
             stack_relocs: Default::default(),
-            ret_relocs:   Default::default(),
-            loops:        Default::default(),
-            records:      Default::default(),
+            ret_relocs: Default::default(),
+            loops: Default::default(),
+            records: Default::default(),
+            pointers: Default::default(),
+            main: None,
         }
     }
 
@@ -271,17 +304,42 @@ impl<'a> Codegen<'a> {
         Ok(())
     }
 
-    fn loc_to_reg(&mut self, loc: Loc) -> Reg {
+    fn size_of(&self, ty: Type) -> u64 {
+        // TODO: proper alignment
+        match TypeKind::from_ty(ty) {
+            TypeKind::Pointer(_) | TypeKind::Builtin(bt::INT) => 8,
+            TypeKind::Builtin(bt::BOOL) => 1,
+            TypeKind::Builtin(_) => unreachable!(),
+            TypeKind::Struct(ty) => self.records[ty as usize]
+                .fields
+                .iter()
+                .map(|(_, ty)| self.size_of(*ty))
+                .sum(),
+        }
+    }
+
+    fn loc_to_reg(&mut self, loc: Loc) -> LinReg {
         match loc {
+            Loc::RegRef(rr) => {
+                let reg = self.gpa.allocate();
+                self.code.encode(instrs::cp(reg.0, rr));
+                reg
+            }
             Loc::Reg(reg) => reg,
+            Loc::Deref(dreg) => {
+                let reg = self.gpa.allocate();
+                self.code.encode(instrs::ld(reg.0, dreg.0, 0, 8));
+                self.gpa.free(dreg);
+                reg
+            }
             Loc::Imm(imm) => {
                 let reg = self.gpa.allocate();
-                self.code.encode(instrs::li64(reg, imm));
+                self.code.encode(instrs::li64(reg.0, imm));
                 reg
             }
             Loc::Stack(offset) => {
                 let reg = self.gpa.allocate();
-                self.load_stack(reg, offset, 8);
+                self.load_stack(reg.0, offset, 8);
                 reg
             }
         }
@@ -309,11 +367,11 @@ impl<'a> Codegen<'a> {
         self.code.encode(instrs::ld(reg, STACK_PTR, offset, size));
     }
 
-    fn reloc_stack(&mut self, stack_height: u64) {
+    fn reloc_stack(&mut self) {
         for reloc in self.stack_relocs.drain(..) {
             let dest = &mut self.code.code[reloc.offset as usize..][..reloc.size as usize];
             let value = u64::from_ne_bytes(dest.try_into().unwrap());
-            let offset = stack_height - value;
+            let offset = self.stack_size - value;
             dest.copy_from_slice(&offset.to_ne_bytes());
         }
     }
@@ -329,80 +387,149 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn expr(&mut self, expr: &'a parser::Expr<'a>, expeted: Option<Expr<'a>>) -> Option<Value<'a>> {
-        use {lexer::TokenKind as T, parser::Expr as E};
+    fn ty(&mut self, expr: &parser::Expr<'a>) -> Type {
         match *expr {
+            E::Ident { name: "int", .. } => bt::INT,
+            E::Ident { name: "bool", .. } => bt::BOOL,
+            expr => unimplemented!("type: {:#?}", expr),
+        }
+    }
+
+    fn expr(&mut self, expr: &'a parser::Expr<'a>, expeted: Option<Type>) -> Option<Value> {
+        match *expr {
+            E::UnOp {
+                op: T::Amp, val, ..
+            } => {
+                let val = self.expr(val, None).unwrap();
+                match val.loc {
+                    Loc::Stack(off) => {
+                        let reg = self.gpa.allocate();
+                        self.stack_relocs.push(StackReloc {
+                            offset: self.code.code.len() as u32 + 3,
+                            size:   8,
+                        });
+                        self.code.encode(instrs::addi64(reg.0, STACK_PTR, off));
+                        Some(Value {
+                            ty:  self.alloc_pointer(val.ty),
+                            loc: Loc::Reg(reg),
+                        })
+                    }
+                    l => panic!("cant take pointer of {:?}", l),
+                }
+            }
+            E::UnOp {
+                op: T::Star, val, ..
+            } => {
+                let val = self.expr(val, None).unwrap();
+                let reg = self.loc_to_reg(val.loc);
+                match TypeKind::from_ty(val.ty) {
+                    TypeKind::Pointer(ty) => Some(Value {
+                        ty:  self.pointers[ty as usize],
+                        loc: Loc::Deref(reg),
+                    }),
+                    _ => panic!("cant deref {:?}", val.ty),
+                }
+            }
             E::BinOp {
-                left: E::Ident { name, .. },
+                left: E::Ident { name, id, .. },
                 op: T::Decl,
                 right: E::Closure {
                     ret, body, args, ..
                 },
             } => {
-                let frame = self.add_label(name);
-                for (i, &(name, ty)) in args.iter().enumerate() {
+                log::dbg!("fn: {}", name);
+                let frame = self.add_label(*id);
+                if *name == "main" {
+                    self.main = Some(frame.label);
+                }
+                log::dbg!("fn-args");
+                for (i, arg) in args.iter().enumerate() {
                     let offset = self.alloc_stack(8);
-                    self.decl_var(name, offset, ty);
+                    let ty = self.ty(&arg.ty);
+                    self.vars.push(Variable {
+                        id:    arg.id,
+                        value: Value {
+                            ty,
+                            loc: Loc::Stack(offset),
+                        },
+                    });
                     self.store_stack(i as Reg + 2, offset, 8);
                 }
                 self.gpa.init_callee();
-                self.ret = **ret;
+                self.ret = self.ty(ret);
+                log::dbg!("fn-body");
                 self.expr(body, None);
                 self.vars.clear();
-                let stack = std::mem::take(&mut self.stack_size);
-                self.reloc_stack(stack);
+                log::dbg!("fn-relocs");
+                self.reloc_stack();
+                log::dbg!("fn-prelude");
                 self.write_fn_prelude(frame);
+                log::dbg!("fn-ret");
                 self.reloc_rets();
                 self.ret();
+                self.stack_size = 0;
+                self.vars.clear();
                 None
             }
             E::BinOp {
-                left: E::Ident { name, .. },
+                left: E::Ident { id, .. },
                 op: T::Decl,
                 right,
             } => {
                 let val = self.expr(right, None).unwrap();
                 let reg = self.loc_to_reg(val.loc);
                 let offset = self.alloc_stack(8);
-                self.decl_var(name, offset, val.ty);
-                self.store_stack(reg, offset, 8);
+                self.vars.push(Variable {
+                    id:    *id,
+                    value: Value {
+                        ty:  val.ty,
+                        loc: Loc::Stack(offset),
+                    },
+                });
+                self.store_stack(reg.0, offset, 8);
+                self.gpa.free(reg);
                 None
             }
             E::Call {
-                func: E::Ident { name, .. },
+                func: E::Ident { id, .. },
                 args,
             } => {
                 for (i, arg) in args.iter().enumerate() {
                     let arg = self.expr(arg, None).unwrap();
                     let reg = self.loc_to_reg(arg.loc);
-                    self.code.encode(instrs::cp(i as Reg + 2, reg));
+                    self.code.encode(instrs::cp(i as Reg + 2, reg.0));
+                    self.gpa.free(reg);
                 }
-                let func = self.get_or_reserve_label(name);
+                let func = self.get_or_reserve_label(*id);
                 self.code.call(func);
                 let reg = self.gpa.allocate();
-                self.code.encode(instrs::cp(reg, 1));
+                self.code.encode(instrs::cp(reg.0, 1));
                 Some(Value {
                     ty:  self.ret,
                     loc: Loc::Reg(reg),
                 })
             }
-            E::Ident { name, .. } => {
-                let var = self.vars.iter().find(|v| v.name.as_ref() == name).unwrap();
+            E::Ident { name, id, .. } => {
+                let var = self
+                    .vars
+                    .iter()
+                    .find(|v| v.id == id)
+                    .unwrap_or_else(|| panic!("variable not found: {:?}", name));
                 Some(Value {
-                    ty:  var.ty,
-                    loc: Loc::Stack(var.offset),
+                    ty:  var.value.ty,
+                    loc: var.value.loc.take_ref(),
                 })
             }
             E::Return { val, .. } => {
                 if let Some(val) = val {
                     let val = self.expr(val, Some(self.ret)).unwrap();
                     if val.ty != self.ret {
-                        //panic!("expected {:?}, got {:?}", self.ret, val.ty);
+                        panic!("expected {:?}, got {:?}", self.ret, val.ty);
                     }
                     self.assign(
                         Value {
                             ty:  self.ret,
-                            loc: Loc::Reg(1),
+                            loc: Loc::RegRef(1),
                         },
                         val,
                     );
@@ -417,39 +544,33 @@ impl<'a> Codegen<'a> {
             }
             E::Block { stmts, .. } => {
                 for stmt in stmts {
-                    self.expr(stmt, None);
+                    if let Some(Loc::Reg(reg)) = self.expr(stmt, None).map(|v| v.loc) {
+                        self.gpa.free(reg);
+                    }
                 }
                 None
             }
             E::Number { value, .. } => Some(Value {
-                ty:  expeted.unwrap_or(Expr::Ident {
-                    name: "int",
-                    pos:  0,
-                }),
+                ty:  expeted.unwrap_or(bt::INT),
                 loc: Loc::Imm(value),
             }),
             E::If {
                 cond, then, else_, ..
             } => {
-                let cond = self
-                    .expr(
-                        cond,
-                        Some(Expr::Ident {
-                            name: "bool",
-                            pos:  0,
-                        }),
-                    )
-                    .unwrap();
+                log::dbg!("if-cond");
+                let cond = self.expr(cond, Some(bt::BOOL)).unwrap();
                 let reg = self.loc_to_reg(cond.loc);
                 let jump_offset = self.code.code.len() as u32;
-                self.code.encode(instrs::jeq(reg, 0, 0));
+                self.code.encode(instrs::jeq(reg.0, 0, 0));
                 self.gpa.free(reg);
 
+                log::dbg!("if-then");
                 self.expr(then, None);
 
                 let jump;
 
                 if let Some(else_) = else_ {
+                    log::dbg!("if-else");
                     let else_jump_offset = self.code.code.len() as u32;
                     self.code.encode(instrs::jmp(0));
 
@@ -458,18 +579,21 @@ impl<'a> Codegen<'a> {
                     self.expr(else_, None);
 
                     let jump = self.code.code.len() as i32 - else_jump_offset as i32;
+                    log::dbg!("if-else-jump: {}", jump);
                     self.code.code[else_jump_offset as usize + 1..][..4]
                         .copy_from_slice(&jump.to_ne_bytes());
                 } else {
                     jump = self.code.code.len() as i16 - jump_offset as i16;
                 }
 
+                log::dbg!("if-then-jump: {}", jump);
                 self.code.code[jump_offset as usize + 3..][..2]
                     .copy_from_slice(&jump.to_ne_bytes());
 
                 None
             }
             E::Loop { body, .. } => {
+                log::dbg!("loop");
                 let loop_start = self.code.code.len() as u32;
                 self.loops.push(Loop {
                     offset: loop_start,
@@ -477,6 +601,7 @@ impl<'a> Codegen<'a> {
                 });
                 self.expr(body, None);
 
+                log::dbg!("loop-end");
                 let loop_end = self.code.code.len();
                 self.code
                     .encode(instrs::jmp(loop_start as i32 - loop_end as i32));
@@ -514,6 +639,9 @@ impl<'a> Codegen<'a> {
             E::BinOp { left, op, right } => {
                 let left = self.expr(left, expeted).unwrap();
                 let right = self.expr(right, Some(left.ty)).unwrap();
+                if op == T::Assign {
+                    return self.assign(left, right);
+                }
 
                 let lhs = self.loc_to_reg(left.loc);
                 let rhs = self.loc_to_reg(right.loc);
@@ -523,36 +651,29 @@ impl<'a> Codegen<'a> {
                     T::Minus => instrs::sub64,
                     T::Star => instrs::mul64,
                     T::Le => {
-                        self.code.encode(instrs::cmpu(lhs, lhs, rhs));
+                        self.code.encode(instrs::cmpu(lhs.0, lhs.0, rhs.0));
                         self.gpa.free(rhs);
-                        self.code.encode(instrs::cmpui(lhs, lhs, 1));
+                        self.code.encode(instrs::cmpui(lhs.0, lhs.0, 1));
                         return Some(Value {
-                            ty:  Expr::Ident {
-                                name: "bool",
-                                pos:  0,
-                            },
+                            ty:  bt::BOOL,
                             loc: Loc::Reg(lhs),
                         });
                     }
                     T::Eq => {
-                        self.code.encode(instrs::cmpu(lhs, lhs, rhs));
+                        self.code.encode(instrs::cmpu(lhs.0, lhs.0, rhs.0));
                         self.gpa.free(rhs);
-                        self.code.encode(instrs::cmpui(lhs, lhs, 0));
-                        self.code.encode(instrs::not(lhs, lhs));
+                        self.code.encode(instrs::cmpui(lhs.0, lhs.0, 0));
+                        self.code.encode(instrs::not(lhs.0, lhs.0));
                         return Some(Value {
-                            ty:  Expr::Ident {
-                                name: "bool",
-                                pos:  0,
-                            },
+                            ty:  bt::BOOL,
                             loc: Loc::Reg(lhs),
                         });
                     }
                     T::FSlash => |reg0, reg1, reg2| instrs::diru64(reg0, ZERO, reg1, reg2),
-                    T::Assign => return self.assign(left, right),
                     _ => unimplemented!("{:#?}", op),
                 };
 
-                self.code.encode(op(lhs, lhs, rhs));
+                self.code.encode(op(lhs.0, lhs.0, rhs.0));
                 self.gpa.free(rhs);
 
                 Some(Value {
@@ -564,32 +685,33 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn assign(&mut self, left: Value<'a>, right: Value<'a>) -> Option<Value<'a>> {
+    fn assign(&mut self, left: Value, right: Value) -> Option<Value> {
         let rhs = self.loc_to_reg(right.loc);
         match left.loc {
-            Loc::Reg(reg) => self.code.encode(instrs::cp(reg, rhs)),
-            Loc::Stack(offset) => self.store_stack(rhs, offset, 8),
+            Loc::Deref(reg) => {
+                self.code.encode(instrs::st(rhs.0, reg.0, 0, 8));
+                self.gpa.free(reg);
+            }
+            Loc::RegRef(reg) => self.code.encode(instrs::cp(reg, rhs.0)),
+            Loc::Stack(offset) => self.store_stack(rhs.0, offset, 8),
             _ => unimplemented!(),
         }
         self.gpa.free(rhs);
-        Some(left)
+        None
     }
 
-    fn get_or_reserve_label(&mut self, name: &str) -> LabelId {
-        if let Some(label) = self.labels.iter().position(|l| l.name.as_ref() == name) {
+    fn get_or_reserve_label(&mut self, name: Ident) -> LabelId {
+        if let Some(label) = self.labels.iter().position(|l| l.name == name) {
             label as u32
         } else {
-            self.labels.push(FnLabel {
-                offset: 0,
-                name:   name.into(),
-            });
+            self.labels.push(FnLabel { offset: 0, name });
             self.labels.len() as u32 - 1
         }
     }
 
-    fn add_label(&mut self, name: &str) -> Frame {
+    fn add_label(&mut self, name: Ident) -> Frame {
         let offset = self.code.code.len() as u32;
-        let label = if let Some(label) = self.labels.iter().position(|l| l.name.as_ref() == name) {
+        let label = if let Some(label) = self.labels.iter().position(|l| l.name == name) {
             self.labels[label].offset = offset;
             label as u32
         } else {
@@ -607,11 +729,8 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn get_label(&self, name: &str) -> LabelId {
-        self.labels
-            .iter()
-            .position(|l| l.name.as_ref() == name)
-            .unwrap() as _
+    fn get_label(&self, name: Ident) -> LabelId {
+        self.labels.iter().position(|l| l.name == name).unwrap() as _
     }
 
     fn write_fn_prelude(&mut self, frame: Frame) {
@@ -619,7 +738,7 @@ impl<'a> Codegen<'a> {
         for &reg in self.gpa.used.clone().iter() {
             self.temp.push(reg, 8);
         }
-        self.temp.subi64(STACK_PTR, STACK_PTR, self.stack_size as _);
+        self.temp.subi64(STACK_PTR, STACK_PTR, self.stack_size);
 
         for reloc in &mut self.code.relocs[frame.prev_relocs..] {
             reloc.offset += self.temp.code.len() as u32;
@@ -637,7 +756,7 @@ impl<'a> Codegen<'a> {
 
     fn ret(&mut self) {
         self.code
-            .encode(instrs::addi64(STACK_PTR, STACK_PTR, self.stack_size as _));
+            .encode(instrs::addi64(STACK_PTR, STACK_PTR, self.stack_size));
         for reg in self.gpa.used.clone().iter().rev() {
             self.code.pop(*reg, 8);
         }
@@ -645,7 +764,7 @@ impl<'a> Codegen<'a> {
     }
 
     pub fn dump(mut self, out: &mut impl std::io::Write) -> std::io::Result<()> {
-        self.temp.prelude(self.get_label("main"));
+        self.temp.prelude(self.main.unwrap());
         self.temp
             .relocate(&self.labels, self.temp.code.len() as i64);
 
@@ -654,25 +773,41 @@ impl<'a> Codegen<'a> {
         out.write_all(&self.code.code)
     }
 
-    fn decl_var(&mut self, name: &str, offset: u64, ty: Expr<'a>) {
-        self.vars.push(Variable {
-            name: name.into(),
-            offset,
-            ty,
-        });
+    fn alloc_pointer(&mut self, ty: Type) -> Type {
+        let ty = self
+            .pointers
+            .iter()
+            .position(|&p| p == ty)
+            .unwrap_or_else(|| {
+                self.pointers.push(ty);
+                self.pointers.len() - 1
+            });
+
+        TypeKind::Pointer(ty as Type).encode()
     }
 }
 
-pub struct Value<'a> {
-    ty:  Expr<'a>,
+pub struct Value {
+    ty:  Type,
     loc: Loc,
 }
 
-#[derive(Clone, Copy)]
-pub enum Loc {
-    Reg(Reg),
+#[derive(Debug)]
+enum Loc {
+    Reg(LinReg),
+    RegRef(Reg),
+    Deref(LinReg),
     Imm(u64),
     Stack(u64),
+}
+impl Loc {
+    fn take_ref(&self) -> Loc {
+        match self {
+            Self::Reg(reg) => Self::RegRef(reg.0),
+            Self::Stack(off) => Self::Stack(*off),
+            _ => unreachable!(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -738,8 +873,7 @@ mod tests {
     fn generate(input: &'static str, output: &mut String) {
         let path = std::path::Path::new("test");
         let arena = crate::parser::Arena::default();
-        let mut buffer = Vec::new();
-        let mut parser = super::parser::Parser::new(input, path, &arena, &mut buffer);
+        let mut parser = super::parser::Parser::new(input, path, &arena);
         let exprs = parser.file();
         let mut codegen = super::Codegen::new();
         codegen.file(path, &exprs).unwrap();
@@ -749,7 +883,7 @@ mod tests {
         std::fs::write("test.bin", &out).unwrap();
         use std::fmt::Write;
 
-        let mut stack = [0_u64; 1024];
+        let mut stack = [0_u64; 128];
 
         let mut vm = unsafe {
             hbvm::Vm::<TestMem, 0>::new(TestMem, hbvm::mem::Address::new(out.as_ptr() as u64))
@@ -779,5 +913,7 @@ mod tests {
         functions => include_str!("../examples/functions.hb");
         if_statements => include_str!("../examples/if_statement.hb");
         loops => include_str!("../examples/loops.hb");
+        fb_driver => include_str!("../examples/fb_driver.hb");
+        pointers => include_str!("../examples/pointers.hb");
     }
 }

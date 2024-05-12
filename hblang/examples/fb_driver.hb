@@ -1,33 +1,31 @@
-arm_fb_ptr := ||:int return 100;
-x86_fb_ptr := ||:int return 100;
+arm_fb_ptr := fn(): int return 100;
+x86_fb_ptr := fn(): int return 100;
 
 
-check_platform:= ||: int {
-
+check_platform := fn(): int {
     return x86_fb_ptr();
 }
 
-set_pixel := |x: int, y: int, r: u8, g: u8, b: u8|: int := {
+set_pixel := fn(x: int, y: int, width: int): int {
     pix_offset := y * width + x;
 
     return 0;
 }
 
-main := ||: int {
-	fb_ptr := check_platform();
-    
-    width := 1024;
-    height := 768;
+main := fn(): int {
+    fb_ptr := check_platform();
+    width := 100;
+    height := 30;
     x:= 0;
     y:= 0;
 
     loop {
         if x <= height + 1 {
-            set_pixel(x,y,100,100,100);
-            x= x + 1;
+            set_pixel(x,y,width);
+            x = x + 1;
         } else {
-            set_pixel(x,y,100,100,100);
-            x := 0;
+            set_pixel(x,y,width);
+            x = 0;
             y = y + 1;
         }
         if y == width {
