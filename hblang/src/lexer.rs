@@ -92,6 +92,7 @@ gen_token_kind! {
         Continue = b"continue",
         Fn       = b"fn",
         Struct   = b"struct",
+        True     = b"true",
         #[punkt]
         LParen = "(",
         RParen = ")",

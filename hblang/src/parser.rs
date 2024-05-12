@@ -96,6 +96,8 @@ impl<'a, 'b> Parser<'a, 'b> {
         Some(match name {
             "int" => bt::INT,
             "bool" => bt::BOOL,
+            "void" => bt::VOID,
+            "never" => bt::NEVER,
             _ => return None,
         })
     }
@@ -139,6 +141,10 @@ impl<'a, 'b> Parser<'a, 'b> {
         let frame = self.idents.len();
         let token = self.next();
         let mut expr = match token.kind {
+            T::True => E::Bool {
+                pos:   token.start,
+                value: true,
+            },
             T::Struct => E::Struct {
                 pos:    token.start,
                 fields: {
@@ -399,6 +405,10 @@ pub enum Expr<'a> {
         target: &'a Self,
         field:  &'a str,
     },
+    Bool {
+        pos:   u32,
+        value: bool,
+    },
 }
 
 impl<'a> std::fmt::Display for Expr<'a> {
@@ -488,6 +498,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 res
             }
             Self::Number { value, .. } => write!(f, "{}", value),
+            Self::Bool { value, .. } => write!(f, "{}", value),
             Self::BinOp { left, right, op } => {
                 let display_branch = |f: &mut std::fmt::Formatter, expr: &Self| {
                     if let Self::BinOp { op: lop, .. } = expr
