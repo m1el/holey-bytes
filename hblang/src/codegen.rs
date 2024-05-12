@@ -251,7 +251,7 @@ struct Loop {
 }
 
 struct Struct {
-    name:   Rc<str>,
+    id:     Ident,
     fields: Vec<(Rc<str>, Type)>,
 }
 
@@ -397,6 +397,18 @@ impl<'a> Codegen<'a> {
 
     fn expr(&mut self, expr: &'a parser::Expr<'a>, expeted: Option<Type>) -> Option<Value> {
         match *expr {
+            E::BinOp {
+                left: E::Ident { id, .. },
+                op: T::Decl,
+                right: E::Struct { fields, .. },
+            } => {
+                let fields = fields
+                    .iter()
+                    .map(|&(name, ty)| (name.into(), self.ty(&ty)))
+                    .collect();
+                self.records.push(Struct { id: *id, fields });
+                None
+            }
             E::UnOp {
                 op: T::Amp, val, ..
             } => {
