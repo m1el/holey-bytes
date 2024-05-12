@@ -15,7 +15,7 @@ struct ScopeIdent<'a> {
 }
 
 pub struct Parser<'a, 'b> {
-    path:   &'a std::path::Path,
+    path:   &'a str,
     lexer:  Lexer<'a>,
     arena:  &'b Arena<'a>,
     token:  Token,
@@ -23,7 +23,7 @@ pub struct Parser<'a, 'b> {
 }
 
 impl<'a, 'b> Parser<'a, 'b> {
-    pub fn new(input: &'a str, path: &'a std::path::Path, arena: &'b Arena<'a>) -> Self {
+    pub fn new(input: &'a str, path: &'a str, arena: &'b Arena<'a>) -> Self {
         let mut lexer = Lexer::new(input);
         let token = lexer.next();
         Self {
@@ -43,7 +43,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             let (line, col) = self.lexer.line_col(ident::pos(id.ident));
             eprintln!(
                 "{}:{}:{} => undeclared identifier: {}",
-                self.path.display(),
+                self.path,
                 line,
                 col,
                 self.lexer.slice(ident::range(id.ident))
@@ -327,7 +327,7 @@ impl<'a, 'b> Parser<'a, 'b> {
 
     fn report(&self, msg: impl std::fmt::Display) -> ! {
         let (line, col) = self.lexer.line_col(self.token.start);
-        eprintln!("{}:{}:{} => {}", self.path.display(), line, col, msg);
+        eprintln!("{}:{}:{} => {}", self.path, line, col, msg);
         unreachable!();
     }
 }
@@ -717,7 +717,7 @@ mod tests {
     fn parse(input: &'static str, output: &mut String) {
         use std::fmt::Write;
         let mut arena = super::Arena::default();
-        let mut parser = super::Parser::new(input, std::path::Path::new("test"), &arena);
+        let mut parser = super::Parser::new(input, "test", &arena);
         for expr in parser.file() {
             writeln!(output, "{}", expr).unwrap();
         }

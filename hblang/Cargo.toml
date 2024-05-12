@@ -3,6 +3,10 @@ name = "hblang"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "hbc"
+path = "src/main.rs"
+
 [dependencies]
 
 [dev-dependencies]

@@ -15,12 +15,12 @@ macro_rules! run_tests {
     )*};
 }
 
-mod codegen;
+pub mod codegen;
 mod ident;
 mod instrs;
 mod lexer;
 mod log;
-mod parser;
+pub mod parser;
 mod tests;
 mod typechk;
 

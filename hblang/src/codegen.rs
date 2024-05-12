@@ -307,8 +307,9 @@ impl<'a> std::fmt::Display for TypeDisplay<'a> {
     }
 }
 
+#[derive(Default)]
 pub struct Codegen<'a> {
-    path:       &'a std::path::Path,
+    path:       &'a str,
     input:      &'a [u8],
     ret:        Type,
     gpa:        RegAlloc,
@@ -325,31 +326,7 @@ pub struct Codegen<'a> {
 }
 
 impl<'a> Codegen<'a> {
-    pub fn new() -> Self {
-        Self {
-            path:       std::path::Path::new(""),
-            input:      &[],
-            ret:        bt::VOID,
-            gpa:        Default::default(),
-            code:       Default::default(),
-            temp:       Default::default(),
-            labels:     Default::default(),
-            stack_size: 0,
-            vars:       Default::default(),
-            ret_relocs: Default::default(),
-            loops:      Default::default(),
-            records:    Default::default(),
-            pointers:   Default::default(),
-            main:       None,
-        }
-    }
-
-    pub fn file(
-        &mut self,
-        path: &'a std::path::Path,
-        input: &'a [u8],
-        exprs: &'a [parser::Expr<'a>],
-    ) -> std::fmt::Result {
+    pub fn file(&mut self, path: &'a str, input: &'a [u8], exprs: &'a [parser::Expr<'a>]) {
         self.path = path;
         self.input = input;
 
@@ -442,7 +419,6 @@ impl<'a> Codegen<'a> {
                 _ => unreachable!(),
             }
         }
-        Ok(())
     }
 
     fn align_of(&self, ty: Type) -> u64 {
@@ -1168,7 +1144,7 @@ impl<'a> Codegen<'a> {
 
     fn report(&self, pos: parser::Pos, msg: impl std::fmt::Display) -> ! {
         let (line, col) = lexer::line_col(self.input, pos);
-        println!("{}:{}:{}: {}", self.path.display(), line, col, msg);
+        println!("{}:{}:{}: {}", self.path, line, col, msg);
         unreachable!();
     }
 }
@@ -1276,12 +1252,12 @@ mod tests {
     }
 
     fn generate(input: &'static str, output: &mut String) {
-        let path = std::path::Path::new("test");
+        let path = "test";
         let arena = crate::parser::Arena::default();
         let mut parser = super::parser::Parser::new(input, path, &arena);
         let exprs = parser.file();
-        let mut codegen = super::Codegen::new();
-        codegen.file(path, input.as_bytes(), &exprs).unwrap();
+        let mut codegen = super::Codegen::default();
+        codegen.file(path, input.as_bytes(), &exprs);
         let mut out = Vec::new();
         codegen.dump(&mut out).unwrap();
 
