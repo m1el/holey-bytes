@@ -1,2 +1,3 @@
+code size: 342
 ret: 0
 status: Ok(())

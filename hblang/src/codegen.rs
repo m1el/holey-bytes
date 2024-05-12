@@ -38,7 +38,7 @@ pub mod bt {
 
     macro_rules! builtin_type {
         ($($name:ident;)*) => {$(
-            pub const $name: Type = TypeKind::Builtin(${index(0)}).encode();
+            pub const $name: Type = ${index(0)} << 2;
         )*};
     }
 
@@ -46,6 +46,15 @@ pub mod bt {
         VOID;
         NEVER;
         INT;
+        I64;
+        I32;
+        I16;
+        I8;
+        UINT;
+        U64;
+        U32;
+        U16;
+        U8;
         BOOL;
     }
 }
@@ -61,7 +70,7 @@ impl TypeKind {
     const fn from_ty(ty: Type) -> Self {
         let (flag, index) = (ty & 0b11, ty >> 2);
         match flag {
-            0 => Self::Builtin(index),
+            0 => Self::Builtin(ty),
             1 => Self::Pointer(index),
             2 => Self::Struct(index),
             _ => unreachable!(),
@@ -70,7 +79,7 @@ impl TypeKind {
 
     const fn encode(self) -> Type {
         let (index, flag) = match self {
-            Self::Builtin(index) => (index, 0),
+            Self::Builtin(index) => return index,
             Self::Pointer(index) => (index, 1),
             Self::Struct(index) => (index, 2),
         };
@@ -136,13 +145,6 @@ impl Func {
         );
         self.code.extend_from_slice(&instr[..len]);
     }
-    // ---- 0  24 bottom
-    // | 3
-    // ---- 8  16
-    // | 2
-    // ---- 16 8
-    // | 1
-    // ---- 24 0  top
 
     fn push(&mut self, value: Reg, size: usize) {
         self.subi64(STACK_PTR, STACK_PTR, size as _);
@@ -164,7 +166,6 @@ impl Func {
     }
 
     fn ret(&mut self) {
-        self.pop(RET_ADDR, 8);
         self.encode(instrs::jala(ZERO, RET_ADDR, 0));
     }
 
@@ -206,27 +207,20 @@ impl Func {
 
 #[derive(Default)]
 pub struct RegAlloc {
-    free: Vec<Reg>,
-    // TODO:use 256 bit mask instead
-    used: Vec<Reg>,
+    free:     Vec<Reg>,
+    max_used: Reg,
 }
 
 impl RegAlloc {
     fn init_callee(&mut self) {
-        self.clear();
-        self.free.extend(32..=253);
-    }
-
-    fn clear(&mut self) {
         self.free.clear();
-        self.used.clear();
+        self.free.extend((32..=253).rev());
+        self.max_used = RET_ADDR;
     }
 
     fn allocate(&mut self) -> LinReg {
         let reg = self.free.pop().expect("TODO: we need to spill");
-        if self.used.binary_search_by_key(&!reg, |&r| !r).is_err() {
-            self.used.push(reg);
-        }
+        self.max_used = self.max_used.max(reg);
         LinReg(reg)
     }
 
@@ -235,15 +229,13 @@ impl RegAlloc {
         std::mem::forget(reg);
     }
 
-    fn prepare_call(&mut self) {
-        self.free.extend((2..=11).rev());
+    fn pushed_size(&self) -> usize {
+        (self.max_used as usize - RET_ADDR as usize + 1) * 8
     }
 }
 
 struct FnLabel {
     offset: u32,
-    // TODO: use different stile of identifier that does not allocate, eg. index + length into a
-    // file
     name:   Ident,
 }
 
@@ -264,8 +256,52 @@ struct Loop {
 }
 
 struct Struct {
+    name:   Rc<str>,
     id:     Ident,
     fields: Rc<[(Rc<str>, Type)]>,
+}
+
+struct TypeDisplay<'a> {
+    codegen: &'a Codegen<'a>,
+    ty:      Type,
+}
+
+impl<'a> TypeDisplay<'a> {
+    fn new(codegen: &'a Codegen<'a>, ty: Type) -> Self {
+        Self { codegen, ty }
+    }
+
+    fn rety(&self, ty: Type) -> Self {
+        Self::new(self.codegen, ty)
+    }
+}
+
+impl<'a> std::fmt::Display for TypeDisplay<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use TypeKind as TK;
+        let str = match TK::from_ty(self.ty) {
+            TK::Builtin(bt::VOID) => "void",
+            TK::Builtin(bt::NEVER) => "never",
+            TK::Builtin(bt::INT) => "int",
+            TK::Builtin(bt::I64) => "i64",
+            TK::Builtin(bt::I32) => "i32",
+            TK::Builtin(bt::I16) => "i16",
+            TK::Builtin(bt::I8) => "i8",
+            TK::Builtin(bt::UINT) => "uint",
+            TK::Builtin(bt::U64) => "u64",
+            TK::Builtin(bt::U32) => "u32",
+            TK::Builtin(bt::U16) => "u16",
+            TK::Builtin(bt::U8) => "u8",
+            TK::Builtin(bt::BOOL) => "bool",
+            TK::Builtin(_) => unreachable!(),
+            TK::Pointer(ty) => {
+                return write!(f, "*{}", self.rety(self.codegen.pointers[ty as usize]))
+            }
+            TK::Struct(idx) => return write!(f, "{}", self.codegen.records[idx as usize].name),
+        };
+
+        f.write_str(str)
+    }
 }
 
 pub struct Codegen<'a> {
@@ -315,20 +351,63 @@ impl<'a> Codegen<'a> {
         Ok(())
     }
 
-    fn size_of(&self, ty: Type) -> u64 {
-        match ty {
-            bt::INT => 8,
-            bt::BOOL => 1,
-            _ => match TypeKind::from_ty(ty) {
-                TypeKind::Pointer(_) => 8,
-                TypeKind::Builtin(e) => unreachable!("{:?}", e),
-                TypeKind::Struct(ty) => self.records[ty as usize]
-                    .fields
-                    .iter()
-                    .map(|(_, ty)| self.size_of(*ty))
-                    .sum(),
-            },
+    fn align_of(&self, ty: Type) -> u64 {
+        use TypeKind as TK;
+        match TypeKind::from_ty(ty) {
+            TK::Struct(t) => self.records[t as usize]
+                .fields
+                .iter()
+                .map(|&(_, ty)| self.align_of(ty))
+                .max()
+                .unwrap(),
+            _ => self.size_of(ty).max(1),
         }
+    }
+
+    fn size_of(&self, ty: Type) -> u64 {
+        use TypeKind as TK;
+        match TK::from_ty(ty) {
+            TK::Pointer(_) => 8,
+            TK::Builtin(bt::VOID) => 0,
+            TK::Builtin(bt::NEVER) => unreachable!(),
+            TK::Builtin(bt::INT | bt::I64 | bt::UINT | bt::U64) => 8,
+            TK::Builtin(bt::I32 | bt::U32) => 4,
+            TK::Builtin(bt::I16 | bt::U16) => 2,
+            TK::Builtin(bt::I8 | bt::U8 | bt::BOOL) => 1,
+            TK::Builtin(e) => unreachable!("{:?}", e),
+            TK::Struct(ty) => {
+                log::dbg!("size_of: {:?}", ty);
+                let mut offset = 0;
+                let record = &self.records[ty as usize];
+                for &(_, ty) in record.fields.iter() {
+                    let align = self.align_of(ty);
+                    offset = (offset + align - 1) & !(align - 1);
+                    offset += self.size_of(ty);
+                }
+                offset
+            }
+        }
+    }
+
+    fn display_ty(&self, ty: Type) -> TypeDisplay {
+        TypeDisplay::new(self, ty)
+    }
+
+    fn offset_of(&self, ty: Type, field: &str) -> (u64, Type) {
+        let TypeKind::Struct(idx) = TypeKind::from_ty(ty) else {
+            panic!("expected struct, got {}", self.display_ty(ty));
+        };
+        let record = &self.records[idx as usize];
+        let mut offset = 0;
+        for (name, ty) in record.fields.iter() {
+            if name.as_ref() == field {
+                return (offset, *ty);
+            }
+            let align = self.align_of(*ty);
+            offset = (offset + align - 1) & !(align - 1);
+            offset += self.size_of(*ty);
+        }
+        panic!("field not found: {:?}", field);
     }
 
     fn loc_to_reg(&mut self, loc: Loc) -> LinReg {
@@ -339,15 +418,15 @@ impl<'a> Codegen<'a> {
                 reg
             }
             Loc::Reg(reg) => reg,
-            Loc::Deref(dreg) => {
+            Loc::Deref(dreg, offset) => {
                 let reg = self.gpa.allocate();
-                self.code.encode(instrs::ld(reg.0, dreg.0, 0, 8));
+                self.code.encode(instrs::ld(reg.0, dreg.0, offset, 8));
                 self.gpa.free(dreg);
                 reg
             }
-            Loc::DerefRef(dreg) => {
+            Loc::DerefRef(dreg, offset) => {
                 let reg = self.gpa.allocate();
-                self.code.encode(instrs::ld(reg.0, dreg, 0, 8));
+                self.code.encode(instrs::ld(reg.0, dreg, offset, 8));
                 reg
             }
             Loc::Imm(imm) => {
@@ -395,14 +474,18 @@ impl<'a> Codegen<'a> {
             E::Ident { name: "bool", .. } => bt::BOOL,
             E::Ident { name: "void", .. } => bt::VOID,
             E::Ident { name: "never", .. } => bt::NEVER,
-            E::Ident { id, .. } => {
+            E::UnOp {
+                op: T::Star, val, ..
+            } => {
+                let ty = self.ty(val);
+                self.alloc_pointer(ty)
+            }
+            E::Ident { id, name, .. } => {
                 let index = self
                     .records
                     .iter()
                     .position(|r| r.id == id)
-                    .unwrap_or_else(|| {
-                        panic!("type not found: {:?}", id);
-                    });
+                    .unwrap_or_else(|| panic!("type not found: {name}"));
                 TypeKind::Struct(index as Type).encode()
             }
             expr => unimplemented!("type: {:#?}", expr),
@@ -418,7 +501,7 @@ impl<'a> Codegen<'a> {
             E::Ctor { ty, fields } => {
                 let ty = self.ty(&ty);
                 let TypeKind::Struct(idx) = TypeKind::from_ty(ty) else {
-                    panic!("expected struct, got {:?}", ty);
+                    panic!("expected struct, got {}", self.display_ty(ty));
                 };
 
                 let mut field_values = fields
@@ -438,7 +521,11 @@ impl<'a> Codegen<'a> {
                         .unwrap();
                     let (_, value) = field_values.remove(index);
                     if value.ty != *ty {
-                        panic!("expected {:?}, got {:?}", ty, value.ty);
+                        panic!(
+                            "expected {}, got {}",
+                            self.display_ty(*ty),
+                            self.display_ty(value.ty)
+                        );
                     }
                     log::dbg!("ctor: {} {} {:?}", stack, offset, value.loc);
                     self.assign(
@@ -456,42 +543,32 @@ impl<'a> Codegen<'a> {
                 })
             }
             E::Field { target, field } => {
-                let target = self.expr(target, None)?;
-                let TypeKind::Struct(idx) = TypeKind::from_ty(target.ty) else {
-                    panic!("expected struct, got {:?}", target.ty);
-                };
-                let decl_fields = self.records[idx as usize].fields.clone();
-                let index = decl_fields
-                    .iter()
-                    .position(|(name, _)| name.as_ref() == field)
-                    .unwrap();
-                let offset = decl_fields[..index]
-                    .iter()
-                    .map(|(_, ty)| self.size_of(*ty))
-                    .sum::<u64>();
-                let value = match target.loc {
-                    Loc::Reg(_) => todo!(),
-                    Loc::RegRef(_) => todo!(),
-                    Loc::Deref(r) => {
-                        self.code.encode(instrs::addi64(r.0, r.0, offset));
-                        Loc::Deref(r)
-                    }
-                    Loc::DerefRef(r) => {
-                        let reg = self.gpa.allocate();
-                        self.code.encode(instrs::addi64(reg.0, r, offset));
-                        Loc::Deref(reg)
-                    }
-                    Loc::Imm(_) => todo!(),
+                let mut target = self.expr(target, None)?;
+                if let TypeKind::Pointer(ty) = TypeKind::from_ty(target.ty) {
+                    target.ty = self.pointers[ty as usize];
+                    target.loc = match target.loc {
+                        Loc::Reg(r) => Loc::Deref(r, 0),
+                        Loc::RegRef(r) => Loc::DerefRef(r, 0),
+                        Loc::StackRef(stack) | Loc::Stack(stack) => {
+                            let reg = self.gpa.allocate();
+                            self.load_stack(reg.0, stack, 8);
+                            Loc::Deref(reg, 0)
+                        }
+                        l => panic!("cant get field of {:?}", l),
+                    };
+                }
+                let (offset, ty) = self.offset_of(target.ty, field);
+                let loc = match target.loc {
+                    Loc::Deref(r, off) => Loc::Deref(r, off + offset),
+                    Loc::DerefRef(r, off) => Loc::DerefRef(r, off + offset),
                     Loc::Stack(stack) => Loc::Stack(stack + offset),
                     Loc::StackRef(stack) => Loc::StackRef(stack + offset),
+                    l => todo!("cant get field of {:?}", l),
                 };
-                Some(Value {
-                    ty:  decl_fields[index].1,
-                    loc: value,
-                })
+                Some(Value { ty, loc })
             }
             E::BinOp {
-                left: E::Ident { id, .. },
+                left: E::Ident { id, name, .. },
                 op: T::Decl,
                 right: E::Struct { fields, .. },
             } => {
@@ -499,7 +576,11 @@ impl<'a> Codegen<'a> {
                     .iter()
                     .map(|&(name, ty)| (name.into(), self.ty(&ty)))
                     .collect();
-                self.records.push(Struct { id: *id, fields });
+                self.records.push(Struct {
+                    id: *id,
+                    name: (*name).into(),
+                    fields,
+                });
                 Some(Value::VOID)
             }
             E::UnOp {
@@ -515,7 +596,7 @@ impl<'a> Codegen<'a> {
                             loc: Loc::Reg(reg),
                         })
                     }
-                    l => panic!("cant take pointer of {:?}", l),
+                    l => panic!("cant take pointer of {} ({:?})", self.display_ty(val.ty), l),
                 }
             }
             E::UnOp {
@@ -526,9 +607,9 @@ impl<'a> Codegen<'a> {
                 match TypeKind::from_ty(val.ty) {
                     TypeKind::Pointer(ty) => Some(Value {
                         ty:  self.pointers[ty as usize],
-                        loc: Loc::Deref(reg),
+                        loc: Loc::Deref(reg, 0),
                     }),
-                    _ => panic!("cant deref {:?}", val.ty),
+                    _ => panic!("cant deref {}", self.display_ty(val.ty)),
                 }
             }
             E::BinOp {
@@ -612,7 +693,7 @@ impl<'a> Codegen<'a> {
                     .vars
                     .iter()
                     .find(|v| v.id == id)
-                    .unwrap_or_else(|| panic!("variable not found: {:?}", name));
+                    .unwrap_or_else(|| panic!("variable not found: {name}"));
                 Some(Value {
                     ty:  var.value.ty,
                     loc: var.value.loc.take_ref(),
@@ -622,7 +703,11 @@ impl<'a> Codegen<'a> {
                 if let Some(val) = val {
                     let val = self.expr(val, Some(self.ret))?;
                     if val.ty != self.ret {
-                        panic!("expected {:?}, got {:?}", self.ret, val.ty);
+                        panic!(
+                            "expected {}, got {}",
+                            self.display_ty(self.ret),
+                            self.display_ty(val.ty)
+                        );
                     }
                     self.assign(
                         Value {
@@ -805,8 +890,8 @@ impl<'a> Codegen<'a> {
             8 => {
                 let lhs = self.loc_to_reg(left.loc);
                 match right.loc {
-                    Loc::Deref(reg) => {
-                        self.code.encode(instrs::st(lhs.0, reg.0, 0, 8));
+                    Loc::Deref(reg, off) => {
+                        self.code.encode(instrs::st(lhs.0, reg.0, off, 8));
                         self.gpa.free(reg);
                     }
                     Loc::RegRef(reg) => self.code.encode(instrs::cp(reg, lhs.0)),
@@ -818,12 +903,12 @@ impl<'a> Codegen<'a> {
                 self.gpa.free(lhs);
             }
             16..=u64::MAX => {
-                let rhs = self.loc_to_ptr(right.loc);
-                let lhs = self.loc_to_ptr(left.loc);
+                let (rhs, roff) = self.loc_to_ptr(right.loc);
+                let (lhs, loff) = self.loc_to_ptr(left.loc);
                 let cp = self.gpa.allocate();
                 for offset in (0..size).step_by(8) {
-                    self.code.encode(instrs::ld(cp.0, lhs.0, offset, 8));
-                    self.code.encode(instrs::st(cp.0, rhs.0, offset, 8));
+                    self.code.encode(instrs::ld(cp.0, lhs.0, offset + loff, 8));
+                    self.code.encode(instrs::st(cp.0, rhs.0, offset + roff, 8));
                 }
                 self.gpa.free(rhs);
                 self.gpa.free(lhs);
@@ -835,18 +920,18 @@ impl<'a> Codegen<'a> {
         Some(Value::VOID)
     }
 
-    fn loc_to_ptr(&mut self, loc: Loc) -> LinReg {
+    fn loc_to_ptr(&mut self, loc: Loc) -> (LinReg, u64) {
         match loc {
-            Loc::Deref(reg) => reg,
-            Loc::DerefRef(reg) => {
+            Loc::Deref(reg, off) => (reg, off),
+            Loc::DerefRef(reg, off) => {
                 let dreg = self.gpa.allocate();
                 self.code.encode(instrs::cp(dreg.0, reg));
-                dreg
+                (dreg, off)
             }
             Loc::Stack(offset) | Loc::StackRef(offset) => {
                 let reg = self.gpa.allocate();
-                self.code.encode(instrs::addi64(reg.0, STACK_PTR, offset));
-                reg
+                self.code.encode(instrs::cp(reg.0, STACK_PTR));
+                (reg, offset)
             }
             l => panic!("expected stack location, got {:?}", l),
         }
@@ -886,10 +971,7 @@ impl<'a> Codegen<'a> {
     }
 
     fn write_fn_prelude(&mut self, frame: Frame) {
-        self.temp.push(RET_ADDR, 8);
-        for &reg in self.gpa.used.clone().iter() {
-            self.temp.push(reg, 8);
-        }
+        self.temp.push(RET_ADDR, self.gpa.pushed_size());
         self.temp.subi64(STACK_PTR, STACK_PTR, self.stack_size);
 
         for reloc in &mut self.code.relocs[frame.prev_relocs..] {
@@ -909,9 +991,7 @@ impl<'a> Codegen<'a> {
     fn ret(&mut self) {
         self.code
             .encode(instrs::addi64(STACK_PTR, STACK_PTR, self.stack_size));
-        for reg in self.gpa.used.clone().iter().rev() {
-            self.code.pop(*reg, 8);
-        }
+        self.code.pop(RET_ADDR, self.gpa.pushed_size());
         self.code.ret();
     }
 
@@ -988,12 +1068,12 @@ impl<'a> Codegen<'a> {
             Loc::RegRef(reg) => {
                 self.code.encode(instrs::cp(p, reg));
             }
-            Loc::Deref(reg) => {
-                self.code.encode(instrs::ld(p, reg.0, 0, size as _));
+            Loc::Deref(reg, off) => {
+                self.code.encode(instrs::ld(p, reg.0, off, size as _));
                 self.gpa.free(reg);
             }
-            Loc::DerefRef(reg) => {
-                self.code.encode(instrs::ld(p, reg, 0, size as _));
+            Loc::DerefRef(reg, off) => {
+                self.code.encode(instrs::ld(p, reg, off, size as _));
             }
             Loc::Imm(imm) => {
                 self.code.encode(instrs::li64(p, imm));
@@ -1029,7 +1109,7 @@ impl<'a> Codegen<'a> {
                     },
                     Value {
                         ty,
-                        loc: Loc::DerefRef(ptr),
+                        loc: Loc::DerefRef(ptr, 0),
                     },
                 );
                 Loc::Stack(stack)
@@ -1067,8 +1147,8 @@ impl Value {
 enum Loc {
     Reg(LinReg),
     RegRef(Reg),
-    Deref(LinReg),
-    DerefRef(Reg),
+    Deref(LinReg, u64),
+    DerefRef(Reg, u64),
     Imm(u64),
     Stack(u64),
     StackRef(u64),
@@ -1184,6 +1264,7 @@ mod tests {
             }
         };
 
+        writeln!(output, "code size: {}", out.len()).unwrap();
         writeln!(output, "ret: {:?}", vm.read_reg(1).0).unwrap();
         writeln!(output, "status: {:?}", stat).unwrap();
     }
