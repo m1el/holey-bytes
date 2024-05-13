@@ -388,7 +388,7 @@ impl<'a> Codegen<'a> {
                     let fn_label = self.labels[frame.label as usize].clone();
 
                     log::dbg!("fn-args");
-                    let mut parama = 2..12;
+                    let mut parama = 3..12;
                     for (arg, &ty) in args.iter().zip(fn_label.args.iter()) {
                         let loc = self.load_arg(ty, &mut parama);
                         self.vars.push(Variable {
@@ -694,18 +694,50 @@ impl<'a> Codegen<'a> {
             } => {
                 let func = self.get_label(*id);
                 let fn_label = self.labels[func as usize].clone();
-                let mut parama = 2..12;
+                let mut parama = 3..12;
                 for (earg, &ty) in args.iter().zip(fn_label.args.iter()) {
                     let arg = self.expr(earg, Some(ty))?;
                     self.assert_ty(earg.pos(), ty, arg.ty);
                     self.pass_arg(arg, &mut parama);
                 }
+
+                let size = self.size_of(fn_label.ret);
+                let loc = match size {
+                    0 => Loc::Imm(0),
+                    8 => Loc::RegRef(1),
+                    16 => {
+                        let stack = self.alloc_stack(16);
+                        Loc::Stack(stack)
+                    }
+                    24..=u64::MAX => {
+                        let stack = self.alloc_stack(size as u32);
+                        let reg = self.gpa.allocate();
+                        self.code
+                            .encode(instrs::addi64(reg.0, STACK_PTR, stack as u64));
+                        self.code.encode(instrs::cp(1, reg.0));
+                        self.gpa.free(reg);
+                        Loc::Stack(stack)
+                    }
+                    s => todo!("call return size: {}", s),
+                };
+
                 self.code.call(func);
-                let reg = self.gpa.allocate();
-                self.code.encode(instrs::cp(reg.0, 1));
+
+                match size {
+                    0 => {}
+                    8 => {}
+                    16 => {
+                        if let Loc::Stack(stack) = loc {
+                            self.store_stack(1, stack, 16);
+                        }
+                    }
+                    24..=u64::MAX => {}
+                    s => todo!("call return size: {}", s),
+                }
+
                 Some(Value {
-                    ty:  self.ret,
-                    loc: Loc::Reg(reg),
+                    ty: fn_label.ret,
+                    loc,
                 })
             }
             E::Ident { name, id, .. } => {
@@ -721,13 +753,27 @@ impl<'a> Codegen<'a> {
                 if let Some(val) = val {
                     let val = self.expr(val, Some(self.ret))?;
                     self.assert_ty(pos, self.ret, val.ty);
-                    self.assign(
-                        Value {
-                            ty:  self.ret,
-                            loc: Loc::RegRef(1),
-                        },
-                        val,
-                    );
+                    let size = self.size_of(val.ty);
+                    match size {
+                        8 => {
+                            let val = self.loc_to_reg(val.loc);
+                            self.code.encode(instrs::cp(1, val.0));
+                            self.gpa.free(val);
+                        }
+                        16 => {
+                            let (ptr, off) = self.loc_to_ptr(val.loc);
+                            self.code.encode(instrs::ld(1, ptr.0, off, 16));
+                            self.gpa.free(ptr);
+                        }
+                        24..=u64::MAX => {
+                            let (ptr, off) = self.loc_to_ptr(val.loc);
+                            self.code.encode(instrs::addi64(ptr.0, ptr.0, off));
+                            self.code
+                                .encode(instrs::bmc(ptr.0, 1, size.try_into().unwrap()));
+                            self.gpa.free(ptr);
+                        }
+                        s => todo!("return size: {}", s),
+                    };
                 }
                 self.ret_relocs.push(RetReloc {
                     offset:       self.code.code.len() as u32,
@@ -847,13 +893,15 @@ impl<'a> Codegen<'a> {
                 None
             }
             E::BinOp { left, op, right } => {
-                let left = self.expr(left, expeted)?;
-                let right = self.expr(right, Some(left.ty))?;
                 if op == T::Assign {
+                    let left = self.expr(left, expeted)?;
+                    let right = self.expr(right, Some(left.ty))?;
                     return self.assign(left, right);
                 }
 
+                let left = self.expr(left, expeted)?;
                 let lhs = self.loc_to_reg(left.loc);
+                let right = self.expr(right, Some(left.ty))?;
                 let rhs = self.loc_to_reg(right.loc);
 
                 let op = match op {
@@ -1062,6 +1110,7 @@ impl<'a> Codegen<'a> {
                 todo!("expected stack location, got {:?}", value.loc);
             };
             self.code.encode(instrs::addi64(p, STACK_PTR, stack));
+            return;
         }
 
         match value.loc {
@@ -1254,8 +1303,8 @@ mod tests {
     fn generate(input: &'static str, output: &mut String) {
         let path = "test";
         let arena = crate::parser::Arena::default();
-        let mut parser = super::parser::Parser::new(input, path, &arena);
-        let exprs = parser.file();
+        let mut parser = super::parser::Parser::new(&arena);
+        let exprs = parser.file(input, path);
         let mut codegen = super::Codegen::default();
         codegen.file(path, input.as_bytes(), &exprs);
         let mut out = Vec::new();

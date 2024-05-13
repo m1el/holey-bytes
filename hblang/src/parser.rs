@@ -23,19 +23,23 @@ pub struct Parser<'a, 'b> {
 }
 
 impl<'a, 'b> Parser<'a, 'b> {
-    pub fn new(input: &'a str, path: &'a str, arena: &'b Arena<'a>) -> Self {
-        let mut lexer = Lexer::new(input);
+    pub fn new(arena: &'b Arena<'a>) -> Self {
+        let mut lexer = Lexer::new("");
         let token = lexer.next();
         Self {
             lexer,
             token,
-            path,
+            path: "",
             arena,
             idents: Vec::new(),
         }
     }
 
-    pub fn file(&mut self) -> &'a [Expr<'a>] {
+    pub fn file(&mut self, input: &'a str, path: &'a str) -> &'a [Expr<'a>] {
+        self.path = path;
+        self.lexer = Lexer::new(input);
+        self.token = self.lexer.next();
+
         let f = self.collect(|s| (s.token.kind != TokenKind::Eof).then(|| s.expr()));
         self.pop_scope(0);
         let has_undeclared = !self.idents.is_empty();
@@ -717,8 +721,8 @@ mod tests {
     fn parse(input: &'static str, output: &mut String) {
         use std::fmt::Write;
         let mut arena = super::Arena::default();
-        let mut parser = super::Parser::new(input, "test", &arena);
-        for expr in parser.file() {
+        let mut parser = super::Parser::new(&arena);
+        for expr in parser.file(input, "test") {
             writeln!(output, "{}", expr).unwrap();
         }
         arena.clear();

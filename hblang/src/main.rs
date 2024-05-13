@@ -14,12 +14,12 @@ fn main() -> io::Result<()> {
         .skip(1)
         .map(|path| std::fs::read_to_string(&path).map(|src| (path, src)))
         .collect::<io::Result<Vec<_>>>()?;
-    let mut arena = parser::Arena::default();
+    let arena = parser::Arena::default();
+    let mut parser = parser::Parser::new(&arena);
     let mut codegen = codegen::Codegen::default();
     for (path, content) in files.iter() {
-        let file = parser::Parser::new(content, path, &arena).file();
+        let file = parser.file(&path, content.as_str());
         codegen.file(path, content.as_bytes(), file);
-        arena.clear();
     }
     codegen.dump(&mut std::io::stdout())
 }
