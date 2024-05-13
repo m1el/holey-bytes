@@ -98,6 +98,10 @@ pub mod bt {
         }
     }
 
+    pub fn is_pointer(ty: Type) -> bool {
+        matches!(TypeKind::from_ty(ty), TypeKind::Pointer(_))
+    }
+
     pub fn try_upcast(a: Type, b: Type) -> Option<Type> {
         Some(match (strip_pointer(a.min(b)), strip_pointer(a.max(b))) {
             _ if a == b => a,
@@ -959,7 +963,28 @@ impl<'a> Codegen<'a> {
                 let size = self.size_of(ty);
 
                 let signed = bt::is_signed(ty);
-                let index = size.ilog2() as usize;
+
+                let min_size = lsize.min(rsize);
+                if bt::is_signed(ty) && min_size < size {
+                    let operand = if lsize < rsize { lhs.0 } else { rhs.0 };
+                    let op = [i::sxt8, i::sxt16, i::sxt32][min_size.ilog2() as usize];
+                    self.code.encode(op(operand, operand));
+                }
+
+                if bt::is_pointer(left.ty) ^ bt::is_pointer(right.ty) {
+                    let (offset, ty) = if bt::is_pointer(left.ty) {
+                        (lhs.0, left.ty)
+                    } else {
+                        (rhs.0, right.ty)
+                    };
+
+                    let TypeKind::Pointer(ty) = TypeKind::from_ty(ty) else {
+                        unreachable!()
+                    };
+
+                    let size = self.size_of(self.pointers[ty as usize]);
+                    self.code.encode(i::mul64(offset, offset, size as _));
+                }
 
                 let ops = match op {
                     T::Plus => [i::add8, i::add16, i::add32, i::add64],
@@ -977,8 +1002,13 @@ impl<'a> Codegen<'a> {
                         |a, b, c| i::diru32(a, ZERO, b, c),
                         |a, b, c| i::diru64(a, ZERO, b, c),
                     ],
-                    T::Le | T::Ge => {
-                        let against = if op == T::Le { 1 } else { (-1i64) as _ };
+                    T::Le | T::Ge | T::Ne => {
+                        let against = match op {
+                            T::Le => 1,
+                            T::Ne => 0,
+                            T::Ge => (-1i64) as _,
+                            _ => unreachable!(),
+                        };
                         let op = if signed { i::cmps } else { i::cmpu };
                         self.code.encode(op(lhs.0, lhs.0, rhs.0));
                         self.gpa.free(rhs);
@@ -1008,14 +1038,9 @@ impl<'a> Codegen<'a> {
                     _ => unimplemented!("{:#?}", op),
                 };
 
-                self.code.encode(ops[index](lhs.0, lhs.0, rhs.0));
+                self.code
+                    .encode(ops[size.ilog2() as usize](lhs.0, lhs.0, rhs.0));
                 self.gpa.free(rhs);
-
-                let min_size = lsize.min(rsize);
-                if bt::is_signed(ty) && min_size < size {
-                    let op = [i::sxt8, i::sxt16, i::sxt32][min_size.ilog2() as usize];
-                    self.code.encode(op(lhs.0, lhs.0));
-                }
 
                 Some(Value {
                     ty,

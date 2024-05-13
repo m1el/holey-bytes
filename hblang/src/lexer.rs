@@ -113,6 +113,7 @@ gen_token_kind! {
         Lt = "<",
         Gt = ">",
         Eq = "==",
+        Ne = "!=",
         #[prec = 22]
         Amp = "&",
         #[prec = 23]
@@ -216,6 +217,7 @@ impl<'a> Iterator for Lexer<'a> {
                 b'.' if self.advance_if(b'{') => T::Ctor,
                 b'.' => T::Dot,
                 b';' => T::Semi,
+                b'!' if self.advance_if(b'=') => T::Ne,
                 b'=' if self.advance_if(b'=') => T::Eq,
                 b'=' => T::Assign,
                 b'<' if self.advance_if(b'=') => T::Le,

@@ -30,6 +30,10 @@ main := fn(): int {
 		},
 	};
 
+	if *(&pixel.color.r + 1) != 0 {
+		return 0;
+	}
+
 	return pixel.point.x + pixel.point.y + pixel.color.r
 		+ pixel.color.g + pixel.color.b + pixel.color.a;
 }
