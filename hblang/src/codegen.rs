@@ -965,14 +965,14 @@ impl<'a> Codegen<'a> {
             16..=u64::MAX => {
                 let (rhs, roff) = self.loc_to_ptr(right.loc);
                 let (lhs, loff) = self.loc_to_ptr(left.loc);
-                let cp = self.gpa.allocate();
-                for offset in (0..size).step_by(8) {
-                    self.code.encode(instrs::ld(cp.0, lhs.0, offset + loff, 8));
-                    self.code.encode(instrs::st(cp.0, rhs.0, offset + roff, 8));
-                }
+
+                self.code.encode(instrs::addi64(rhs.0, rhs.0, roff));
+                self.code.encode(instrs::addi64(lhs.0, lhs.0, loff));
+                self.code
+                    .encode(instrs::bmc(lhs.0, rhs.0, size.try_into().unwrap()));
+
                 self.gpa.free(rhs);
                 self.gpa.free(lhs);
-                self.gpa.free(cp);
             }
             s => unimplemented!("size: {}", s),
         }
