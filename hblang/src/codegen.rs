@@ -43,7 +43,7 @@ impl CowReg {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 enum Ctx {
     #[default]
     None,
@@ -70,17 +70,17 @@ pub mod bt {
     }
 
     builtin_type! {
-        VOID;
         NEVER;
-        I8;
-        I16;
-        I32;
-        INT;
+        VOID;
+        BOOL;
         U8;
         U16;
         U32;
         UINT;
-        BOOL;
+        I8;
+        I16;
+        I32;
+        INT;
     }
 
     pub fn is_signed(ty: Type) -> bool {
@@ -93,7 +93,7 @@ pub mod bt {
 
     pub fn strip_pointer(ty: Type) -> Type {
         match TypeKind::from_ty(ty) {
-            TypeKind::Pointer(_) => UINT,
+            TypeKind::Pointer(_) => INT,
             _ => ty,
         }
     }
@@ -102,11 +102,13 @@ pub mod bt {
         matches!(TypeKind::from_ty(ty), TypeKind::Pointer(_))
     }
 
-    pub fn try_upcast(a: Type, b: Type) -> Option<Type> {
-        Some(match (strip_pointer(a.min(b)), strip_pointer(a.max(b))) {
-            _ if a == b => a,
-            _ if is_signed(a) && is_signed(b) || is_unsigned(a) && is_unsigned(b) => a.max(b),
-            _ if is_unsigned(b) && is_signed(a) && b - U8 < a - I8 => a,
+    pub fn try_upcast(oa: Type, ob: Type) -> Option<Type> {
+        let (oa, ob) = (oa.min(ob), oa.max(ob));
+        let (a, b) = (strip_pointer(oa), strip_pointer(ob));
+        Some(match () {
+            _ if oa == ob => oa,
+            _ if is_signed(a) && is_signed(b) || is_unsigned(a) && is_unsigned(b) => ob,
+            _ if is_unsigned(a) && is_signed(b) && a - U8 < b - I8 => ob,
             _ => return None,
         })
     }
@@ -842,7 +844,7 @@ impl<'a> Codegen<'a> {
                 Some(Value::VOID)
             }
             E::Number { value, .. } => Some(Value {
-                ty:  ctx.ty().unwrap_or(bt::INT),
+                ty:  ctx.ty().map(bt::strip_pointer).unwrap_or(bt::INT),
                 loc: Loc::Imm(value),
             }),
             E::If {
@@ -942,16 +944,17 @@ impl<'a> Codegen<'a> {
                     .encode(instrs::jmp(loop_.offset as i32 - offset as i32));
                 None
             }
-            E::BinOp { left, op, right } => {
+            E::BinOp { left, op, right } => 'ops: {
                 use instrs as i;
 
+                log::dbg!("binop: {}", expr);
+                let left = self.expr(left)?;
+
                 if op == T::Assign {
-                    let left = self.expr(left)?;
-                    self.expr_ctx(right, Ctx::Dest(left))?;
+                    self.expr_ctx(right, Ctx::Dest(left)).unwrap();
                     return Some(Value::VOID);
                 }
 
-                let left = self.expr(left)?;
                 let lsize = self.size_of(left.ty);
                 let lhs = self.loc_to_reg(left.loc, lsize);
                 let right = self.expr_ctx(right, Ctx::Inferred(left.ty))?;
@@ -959,93 +962,93 @@ impl<'a> Codegen<'a> {
                 let rhs = self.loc_to_reg(right.loc, rsize);
 
                 let ty = self.assert_ty(expr.pos(), left.ty, right.ty);
-
                 let size = self.size_of(ty);
-
                 let signed = bt::is_signed(ty);
 
-                let min_size = lsize.min(rsize);
-                if bt::is_signed(ty) && min_size < size {
-                    let operand = if lsize < rsize { lhs.0 } else { rhs.0 };
-                    let op = [i::sxt8, i::sxt16, i::sxt32][min_size.ilog2() as usize];
-                    self.code.encode(op(operand, operand));
-                }
+                log::dbg!(
+                    "binop: {} {} {}",
+                    self.display_ty(ty),
+                    self.display_ty(left.ty),
+                    self.display_ty(right.ty)
+                );
 
-                if bt::is_pointer(left.ty) ^ bt::is_pointer(right.ty) {
-                    let (offset, ty) = if bt::is_pointer(left.ty) {
-                        (lhs.0, left.ty)
-                    } else {
-                        (rhs.0, right.ty)
-                    };
-
-                    let TypeKind::Pointer(ty) = TypeKind::from_ty(ty) else {
-                        unreachable!()
-                    };
-
-                    let size = self.size_of(self.pointers[ty as usize]);
-                    self.code.encode(i::mul64(offset, offset, size as _));
-                }
-
-                let ops = match op {
-                    T::Plus => [i::add8, i::add16, i::add32, i::add64],
-                    T::Minus => [i::sub8, i::sub16, i::sub32, i::sub64],
-                    T::Star => [i::mul8, i::mul16, i::mul32, i::mul64],
-                    T::FSlash if signed => [
-                        |a, b, c| i::dirs8(a, ZERO, b, c),
-                        |a, b, c| i::dirs16(a, ZERO, b, c),
-                        |a, b, c| i::dirs32(a, ZERO, b, c),
-                        |a, b, c| i::dirs64(a, ZERO, b, c),
-                    ],
-                    T::FSlash => [
-                        |a, b, c| i::diru8(a, ZERO, b, c),
-                        |a, b, c| i::diru16(a, ZERO, b, c),
-                        |a, b, c| i::diru32(a, ZERO, b, c),
-                        |a, b, c| i::diru64(a, ZERO, b, c),
-                    ],
-                    T::Le | T::Ge | T::Ne => {
-                        let against = match op {
-                            T::Le => 1,
-                            T::Ne => 0,
-                            T::Ge => (-1i64) as _,
-                            _ => unreachable!(),
-                        };
-                        let op = if signed { i::cmps } else { i::cmpu };
-                        self.code.encode(op(lhs.0, lhs.0, rhs.0));
-                        self.gpa.free(rhs);
-                        self.code.encode(instrs::cmpui(lhs.0, lhs.0, against));
-                        return Some(Value {
-                            ty:  bt::BOOL,
-                            loc: Loc::Reg(lhs),
-                        });
+                if matches!(op, T::Plus | T::Minus) {
+                    let min_size = lsize.min(rsize);
+                    if bt::is_signed(ty) && min_size < size {
+                        let operand = if lsize < rsize { lhs.0 } else { rhs.0 };
+                        let op = [i::sxt8, i::sxt16, i::sxt32][min_size.ilog2() as usize];
+                        self.code.encode(op(operand, operand));
                     }
-                    T::Eq | T::Lt | T::Gt => {
-                        let against = match op {
-                            T::Eq => 0,
-                            T::Lt => 1,
-                            T::Gt => (-1i64) as _,
-                            _ => unreachable!(),
+
+                    if bt::is_pointer(left.ty) ^ bt::is_pointer(right.ty) {
+                        let (offset, ty) = if bt::is_pointer(left.ty) {
+                            (rhs.0, left.ty)
+                        } else {
+                            (lhs.0, right.ty)
                         };
-                        let op = if signed { i::cmps } else { i::cmpu };
-                        self.code.encode(op(lhs.0, lhs.0, rhs.0));
-                        self.gpa.free(rhs);
-                        self.code.encode(instrs::cmpui(lhs.0, lhs.0, against));
+
+                        let TypeKind::Pointer(ty) = TypeKind::from_ty(ty) else {
+                            unreachable!()
+                        };
+
+                        let size = self.size_of(self.pointers[ty as usize]);
+                        self.code.encode(i::muli64(offset, offset, size as _));
+                    }
+                }
+
+                'math: {
+                    let ops = match op {
+                        T::Plus => [i::add8, i::add16, i::add32, i::add64],
+                        T::Minus => [i::sub8, i::sub16, i::sub32, i::sub64],
+                        T::Star => [i::mul8, i::mul16, i::mul32, i::mul64],
+                        T::FSlash if signed => [
+                            |a, b, c| i::dirs8(a, ZERO, b, c),
+                            |a, b, c| i::dirs16(a, ZERO, b, c),
+                            |a, b, c| i::dirs32(a, ZERO, b, c),
+                            |a, b, c| i::dirs64(a, ZERO, b, c),
+                        ],
+                        T::FSlash => [
+                            |a, b, c| i::diru8(a, ZERO, b, c),
+                            |a, b, c| i::diru16(a, ZERO, b, c),
+                            |a, b, c| i::diru32(a, ZERO, b, c),
+                            |a, b, c| i::diru64(a, ZERO, b, c),
+                        ],
+                        _ => break 'math,
+                    };
+
+                    self.code
+                        .encode(ops[size.ilog2() as usize](lhs.0, lhs.0, rhs.0));
+                    self.gpa.free(rhs);
+
+                    break 'ops Some(Value {
+                        ty,
+                        loc: Loc::Reg(lhs),
+                    });
+                }
+
+                'cmp: {
+                    let against = match op {
+                        T::Le | T::Lt => 1,
+                        T::Ne | T::Eq => 0,
+                        T::Ge | T::Gt => (-1i64) as _,
+                        _ => break 'cmp,
+                    };
+
+                    let op_fn = if signed { i::cmps } else { i::cmpu };
+                    self.code.encode(op_fn(lhs.0, lhs.0, rhs.0));
+                    self.gpa.free(rhs);
+                    self.code.encode(instrs::cmpui(lhs.0, lhs.0, against));
+                    if matches!(op, T::Eq | T::Lt | T::Gt) {
                         self.code.encode(instrs::not(lhs.0, lhs.0));
-                        return Some(Value {
-                            ty:  bt::BOOL,
-                            loc: Loc::Reg(lhs),
-                        });
                     }
-                    _ => unimplemented!("{:#?}", op),
-                };
 
-                self.code
-                    .encode(ops[size.ilog2() as usize](lhs.0, lhs.0, rhs.0));
-                self.gpa.free(rhs);
+                    break 'ops Some(Value {
+                        ty:  bt::BOOL,
+                        loc: Loc::Reg(lhs),
+                    });
+                }
 
-                Some(Value {
-                    ty,
-                    loc: Loc::Reg(lhs),
-                })
+                unimplemented!("{:#?}", op)
             }
             ast => unimplemented!("{:#?}", ast),
         }?;
@@ -1323,6 +1326,7 @@ impl<'a> Codegen<'a> {
     }
 }
 
+#[derive(Debug)]
 pub struct Value {
     ty:  Type,
     loc: Loc,
@@ -1350,6 +1354,7 @@ impl Loc {
     fn take_ref(&self) -> Loc {
         match self {
             Self::Reg(reg) => Self::RegRef(reg.0),
+            Self::Deref(reg, off) => Self::DerefRef(reg.0, *off),
             Self::Stack(off) => Self::StackRef(*off),
             un => unreachable!("{:?}", un),
         }

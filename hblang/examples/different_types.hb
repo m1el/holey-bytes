@@ -30,7 +30,7 @@ main := fn(): int {
 		},
 	};
 
-	if *(&pixel.color.r + 1) != 0 {
+	if *(&pixel.point.x + 1) != 2 {
 		return 0;
 	}
 
