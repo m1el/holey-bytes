@@ -80,7 +80,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 break;
             };
 
-            if prec < min_prec {
+            if prec <= min_prec {
                 break;
             }
 
@@ -100,7 +100,13 @@ impl<'a, 'b> Parser<'a, 'b> {
     fn try_resolve_builtin(name: &str) -> Option<Ident> {
         // FIXME: we actually do this the second time in the codegen
         Some(match name {
-            "int" => bt::INT,
+            "int" | "i64" => bt::INT,
+            "i8" => bt::I8,
+            "i16" => bt::I16,
+            "i32" => bt::I32,
+            "u8" => bt::U8,
+            "u16" => bt::U16,
+            "uint" | "u32" => bt::U32,
             "bool" => bt::BOOL,
             "void" => bt::VOID,
             "never" => bt::NEVER,

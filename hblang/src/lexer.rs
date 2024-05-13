@@ -109,6 +109,9 @@ gen_token_kind! {
         Assign = "=",
         #[prec = 21]
         Le = "<=",
+        Ge = ">=",
+        Lt = "<",
+        Gt = ">",
         Eq = "==",
         #[prec = 22]
         Amp = "&",
@@ -216,6 +219,9 @@ impl<'a> Iterator for Lexer<'a> {
                 b'=' if self.advance_if(b'=') => T::Eq,
                 b'=' => T::Assign,
                 b'<' if self.advance_if(b'=') => T::Le,
+                b'<' => T::Lt,
+                b'>' if self.advance_if(b'=') => T::Ge,
+                b'>' => T::Gt,
                 b'+' => T::Plus,
                 b'-' => T::Minus,
                 b'*' => T::Star,

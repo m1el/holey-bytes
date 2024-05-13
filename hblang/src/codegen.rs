@@ -1,6 +1,6 @@
 use std::ops::Range;
 
-use crate::ident::Ident;
+use crate::ident::{self, Ident};
 
 use {
     crate::{
@@ -17,7 +17,7 @@ type Reg = u8;
 type MaskElem = u64;
 type Type = u32;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct LinReg(Reg);
 
 #[cfg(debug_assertions)]
@@ -63,30 +63,48 @@ impl Ctx {
 pub mod bt {
     use super::*;
 
-    const fn builtin_type(id: u32) -> Type {
-        Type::MAX - id
-    }
-
     macro_rules! builtin_type {
         ($($name:ident;)*) => {$(
-            pub const $name: Type = ${index(0)} << 2;
+            pub const $name: Type = ${index(0)};
         )*};
     }
 
     builtin_type! {
         VOID;
         NEVER;
-        INT;
-        I64;
-        I32;
-        I16;
         I8;
-        UINT;
-        U64;
-        U32;
-        U16;
+        I16;
+        I32;
+        INT;
         U8;
+        U16;
+        U32;
+        UINT;
         BOOL;
+    }
+
+    pub fn is_signed(ty: Type) -> bool {
+        ty >= I8 && ty <= INT
+    }
+
+    pub fn is_unsigned(ty: Type) -> bool {
+        ty >= U8 && ty <= UINT
+    }
+
+    pub fn strip_pointer(ty: Type) -> Type {
+        match TypeKind::from_ty(ty) {
+            TypeKind::Pointer(_) => UINT,
+            _ => ty,
+        }
+    }
+
+    pub fn try_upcast(a: Type, b: Type) -> Option<Type> {
+        Some(match (strip_pointer(a.min(b)), strip_pointer(a.max(b))) {
+            _ if a == b => a,
+            _ if is_signed(a) && is_signed(b) || is_unsigned(a) && is_unsigned(b) => a.max(b),
+            _ if is_unsigned(b) && is_signed(a) && b - U8 < a - I8 => a,
+            _ => return None,
+        })
     }
 }
 
@@ -98,10 +116,14 @@ enum TypeKind {
 }
 
 impl TypeKind {
-    const fn from_ty(ty: Type) -> Self {
-        let (flag, index) = (ty & 0b11, ty >> 2);
+    const FLAG_BITS: u32 = 2;
+    const FLAG_OFFSET: u32 = std::mem::size_of::<Type>() as u32 * 8 - Self::FLAG_BITS;
+    const INDEX_MASK: u32 = (1 << (32 - Self::FLAG_BITS)) - 1;
+
+    fn from_ty(ty: Type) -> Self {
+        let (flag, index) = (ty >> Self::FLAG_OFFSET, ty & Self::INDEX_MASK);
         match flag {
-            0 => Self::Builtin(ty),
+            0 => Self::Builtin(index),
             1 => Self::Pointer(index),
             2 => Self::Struct(index),
             _ => unreachable!(),
@@ -110,11 +132,11 @@ impl TypeKind {
 
     const fn encode(self) -> Type {
         let (index, flag) = match self {
-            Self::Builtin(index) => return index,
+            Self::Builtin(index) => (index, 0),
             Self::Pointer(index) => (index, 1),
             Self::Struct(index) => (index, 2),
         };
-        index << 2 | flag
+        (flag << Self::FLAG_OFFSET) | index
     }
 }
 
@@ -187,8 +209,25 @@ impl Func {
         self.encode(instrs::addi64(STACK_PTR, STACK_PTR, size as _));
     }
 
+    fn short_cut_bin_op(&mut self, dest: Reg, src: Reg, imm: u64) -> bool {
+        if imm == 0 {
+            if dest != src {
+                self.encode(instrs::cp(dest, src));
+            }
+        }
+        imm != 0
+    }
+
     fn subi64(&mut self, dest: Reg, src: Reg, imm: u64) {
-        self.encode(instrs::addi64(dest, src, imm.wrapping_neg()));
+        if self.short_cut_bin_op(dest, src, imm) {
+            self.encode(instrs::addi64(dest, src, imm.wrapping_neg()));
+        }
+    }
+
+    fn addi64(&mut self, dest: Reg, src: Reg, imm: u64) {
+        if self.short_cut_bin_op(dest, src, imm) {
+            self.encode(instrs::addi64(dest, src, imm));
+        }
     }
 
     fn call(&mut self, func: LabelId) {
@@ -324,12 +363,10 @@ impl<'a> std::fmt::Display for TypeDisplay<'a> {
             TK::Builtin(bt::VOID) => "void",
             TK::Builtin(bt::NEVER) => "never",
             TK::Builtin(bt::INT) => "int",
-            TK::Builtin(bt::I64) => "i64",
             TK::Builtin(bt::I32) => "i32",
             TK::Builtin(bt::I16) => "i16",
             TK::Builtin(bt::I8) => "i8",
             TK::Builtin(bt::UINT) => "uint",
-            TK::Builtin(bt::U64) => "u64",
             TK::Builtin(bt::U32) => "u32",
             TK::Builtin(bt::U16) => "u16",
             TK::Builtin(bt::U8) => "u8",
@@ -478,7 +515,7 @@ impl<'a> Codegen<'a> {
             TK::Pointer(_) => 8,
             TK::Builtin(bt::VOID) => 0,
             TK::Builtin(bt::NEVER) => unreachable!(),
-            TK::Builtin(bt::INT | bt::I64 | bt::UINT | bt::U64) => 8,
+            TK::Builtin(bt::INT | bt::UINT) => 8,
             TK::Builtin(bt::I32 | bt::U32) => 4,
             TK::Builtin(bt::I16 | bt::U16) => 2,
             TK::Builtin(bt::I8 | bt::U8 | bt::BOOL) => 1,
@@ -521,7 +558,7 @@ impl<'a> Codegen<'a> {
         self.report(pos, format_args!("field not found: {}", field));
     }
 
-    fn loc_to_reg(&mut self, loc: Loc) -> LinReg {
+    fn loc_to_reg(&mut self, loc: Loc, size: u64) -> LinReg {
         match loc {
             Loc::RegRef(rr) => {
                 let reg = self.gpa.allocate();
@@ -532,13 +569,14 @@ impl<'a> Codegen<'a> {
             Loc::Reg(reg) => reg,
             Loc::Deref(dreg, offset) => {
                 let reg = self.gpa.allocate();
-                self.code.encode(instrs::ld(reg.0, dreg.0, offset, 8));
+                self.code
+                    .encode(instrs::ld(reg.0, dreg.0, offset, size as _));
                 self.gpa.free(dreg);
                 reg
             }
             Loc::DerefRef(dreg, offset) => {
                 let reg = self.gpa.allocate();
-                self.code.encode(instrs::ld(reg.0, dreg, offset, 8));
+                self.code.encode(instrs::ld(reg.0, dreg, offset, size as _));
                 reg
             }
             Loc::Imm(imm) => {
@@ -548,16 +586,16 @@ impl<'a> Codegen<'a> {
             }
             Loc::Stack(offset) | Loc::StackRef(offset) => {
                 let reg = self.gpa.allocate();
-                self.load_stack(reg.0, offset, 8);
+                self.load_stack(reg.0, offset, size as _);
                 reg
             }
         }
     }
 
-    fn alloc_stack(&mut self, size: u32) -> u64 {
+    fn alloc_stack(&mut self, size: u64) -> u64 {
         let offset = self.stack_size;
         log::dbg!("alloc_stack: {} {}", offset, size);
-        self.stack_size += size as u64;
+        self.stack_size += size;
         offset
     }
 
@@ -582,10 +620,7 @@ impl<'a> Codegen<'a> {
 
     fn ty(&mut self, expr: &parser::Expr<'a>) -> Type {
         match *expr {
-            E::Ident { name: "int", .. } => bt::INT,
-            E::Ident { name: "bool", .. } => bt::BOOL,
-            E::Ident { name: "void", .. } => bt::VOID,
-            E::Ident { name: "never", .. } => bt::NEVER,
+            E::Ident { id, .. } if ident::is_null(id) => id,
             E::UnOp {
                 op: T::Star, val, ..
             } => {
@@ -618,7 +653,7 @@ impl<'a> Codegen<'a> {
 
                 let loc = match ctx {
                     Ctx::Dest(dest) => dest.loc,
-                    _ => Loc::Stack(self.alloc_stack(size as u32)),
+                    _ => Loc::Stack(self.alloc_stack(size)),
                 };
 
                 for (name, field) in fields {
@@ -663,16 +698,16 @@ impl<'a> Codegen<'a> {
                 let loc = match val.loc {
                     Loc::StackRef(off) => {
                         let reg = self.gpa.allocate();
-                        self.code.encode(instrs::addi64(reg.0, STACK_PTR, off));
+                        self.code.addi64(reg.0, STACK_PTR, off);
                         Loc::Reg(reg)
                     }
                     Loc::Deref(r, off) => {
-                        self.code.encode(instrs::addi64(r.0, r.0, off));
+                        self.code.addi64(r.0, r.0, off);
                         Loc::Reg(r)
                     }
                     Loc::DerefRef(r, off) => {
                         let reg = self.gpa.allocate();
-                        self.code.encode(instrs::addi64(reg.0, r, off));
+                        self.code.addi64(reg.0, r, off);
                         Loc::Reg(reg)
                     }
                     l => self.report(
@@ -691,7 +726,7 @@ impl<'a> Codegen<'a> {
                 pos,
             } => {
                 let val = self.expr(val)?;
-                let reg = self.loc_to_reg(val.loc);
+                let reg = self.loc_to_reg(val.loc, self.size_of(val.ty));
                 match TypeKind::from_ty(val.ty) {
                     TypeKind::Pointer(ty) => Some(Value {
                         ty:  self.pointers[ty as usize],
@@ -726,43 +761,43 @@ impl<'a> Codegen<'a> {
                 let mut parama = 3..12;
                 for (earg, &ty) in args.iter().zip(fn_label.args.iter()) {
                     let arg = self.expr_ctx(earg, Ctx::Inferred(ty))?;
-                    self.assert_ty(earg.pos(), ty, arg.ty);
+                    _ = self.assert_ty(earg.pos(), ty, arg.ty);
                     self.pass_arg(arg, &mut parama);
                 }
 
                 let size = self.size_of(fn_label.ret);
                 let loc = match size {
                     0 => Loc::Imm(0),
-                    8 => Loc::RegRef(1),
-                    16 => match ctx {
+                    ..=8 => Loc::RegRef(1),
+                    ..=16 => match ctx {
                         Ctx::Dest(dest) => dest.loc,
-                        _ => Loc::Stack(self.alloc_stack(size as u32)),
+                        _ => Loc::Stack(self.alloc_stack(size)),
                     },
-                    24..=u64::MAX => {
+                    ..=u64::MAX => {
                         let val = match ctx {
                             Ctx::Dest(dest) => dest.loc,
-                            _ => Loc::Stack(self.alloc_stack(size as u32)),
+                            _ => Loc::Stack(self.alloc_stack(size)),
                         };
                         let (ptr, off) = val.ref_to_ptr(size);
                         self.code.encode(instrs::cp(1, ptr));
-                        self.code.encode(instrs::addi64(1, ptr, off));
+                        self.code.addi64(1, ptr, off);
                         val
                     }
-                    s => todo!("call return size: {}", s),
                 };
 
                 self.code.call(func);
 
                 match size {
                     0 => {}
-                    8 => {}
-                    16 => {
+                    ..=8 => {}
+                    ..=16 => {
                         if let Loc::Stack(stack) = loc {
                             self.store_stack(1, stack, 16);
+                        } else {
+                            unreachable!()
                         }
                     }
-                    24..=u64::MAX => {}
-                    s => todo!("call return size: {}", s),
+                    ..=u64::MAX => {}
                 }
 
                 return Some(Value {
@@ -782,7 +817,8 @@ impl<'a> Codegen<'a> {
             E::Return { val, pos } => {
                 if let Some(val) = val {
                     let val = self.expr_ctx(val, Ctx::Inferred(self.ret))?;
-                    self.assert_ty(pos, self.ret, val.ty);
+                    let ty = self.assert_ty(pos, self.ret, val.ty);
+                    let val = self.ensure_sign_extended(val, ty);
                     self.assign(self.ret, Loc::Return, val.loc);
                 }
                 self.ret_relocs.push(RetReloc {
@@ -810,7 +846,7 @@ impl<'a> Codegen<'a> {
             } => 'b: {
                 log::dbg!("if-cond");
                 let cond = self.expr_ctx(cond, Ctx::Inferred(bt::BOOL))?;
-                let reg = self.loc_to_reg(cond.loc);
+                let reg = self.loc_to_reg(cond.loc, 1);
                 let jump_offset = self.code.code.len() as u32;
                 self.code.encode(instrs::jeq(reg.0, 0, 0));
                 self.gpa.free(reg);
@@ -903,49 +939,86 @@ impl<'a> Codegen<'a> {
                 None
             }
             E::BinOp { left, op, right } => {
+                use instrs as i;
+
                 if op == T::Assign {
                     let left = self.expr(left)?;
-                    let right = self.expr_ctx(right, Ctx::Inferred(left.ty))?;
-                    return self.assign(left.ty, left.loc, right.loc);
+                    self.expr_ctx(right, Ctx::Dest(left))?;
+                    return Some(Value::VOID);
                 }
 
                 let left = self.expr(left)?;
-                let lhs = self.loc_to_reg(left.loc);
+                let lsize = self.size_of(left.ty);
+                let lhs = self.loc_to_reg(left.loc, lsize);
                 let right = self.expr_ctx(right, Ctx::Inferred(left.ty))?;
-                let rhs = self.loc_to_reg(right.loc);
+                let rsize = self.size_of(right.ty);
+                let rhs = self.loc_to_reg(right.loc, rsize);
 
-                let op = match op {
-                    T::Plus => instrs::add64,
-                    T::Minus => instrs::sub64,
-                    T::Star => instrs::mul64,
-                    T::Le => {
-                        self.code.encode(instrs::cmpu(lhs.0, lhs.0, rhs.0));
+                let ty = self.assert_ty(expr.pos(), left.ty, right.ty);
+
+                let size = self.size_of(ty);
+
+                let signed = bt::is_signed(ty);
+                let index = size.ilog2() as usize;
+
+                let ops = match op {
+                    T::Plus => [i::add8, i::add16, i::add32, i::add64],
+                    T::Minus => [i::sub8, i::sub16, i::sub32, i::sub64],
+                    T::Star => [i::mul8, i::mul16, i::mul32, i::mul64],
+                    T::FSlash if signed => [
+                        |a, b, c| i::dirs8(a, ZERO, b, c),
+                        |a, b, c| i::dirs16(a, ZERO, b, c),
+                        |a, b, c| i::dirs32(a, ZERO, b, c),
+                        |a, b, c| i::dirs64(a, ZERO, b, c),
+                    ],
+                    T::FSlash => [
+                        |a, b, c| i::diru8(a, ZERO, b, c),
+                        |a, b, c| i::diru16(a, ZERO, b, c),
+                        |a, b, c| i::diru32(a, ZERO, b, c),
+                        |a, b, c| i::diru64(a, ZERO, b, c),
+                    ],
+                    T::Le | T::Ge => {
+                        let against = if op == T::Le { 1 } else { (-1i64) as _ };
+                        let op = if signed { i::cmps } else { i::cmpu };
+                        self.code.encode(op(lhs.0, lhs.0, rhs.0));
                         self.gpa.free(rhs);
-                        self.code.encode(instrs::cmpui(lhs.0, lhs.0, 1));
+                        self.code.encode(instrs::cmpui(lhs.0, lhs.0, against));
                         return Some(Value {
                             ty:  bt::BOOL,
                             loc: Loc::Reg(lhs),
                         });
                     }
-                    T::Eq => {
-                        self.code.encode(instrs::cmpu(lhs.0, lhs.0, rhs.0));
+                    T::Eq | T::Lt | T::Gt => {
+                        let against = match op {
+                            T::Eq => 0,
+                            T::Lt => 1,
+                            T::Gt => (-1i64) as _,
+                            _ => unreachable!(),
+                        };
+                        let op = if signed { i::cmps } else { i::cmpu };
+                        self.code.encode(op(lhs.0, lhs.0, rhs.0));
                         self.gpa.free(rhs);
-                        self.code.encode(instrs::cmpui(lhs.0, lhs.0, 0));
+                        self.code.encode(instrs::cmpui(lhs.0, lhs.0, against));
                         self.code.encode(instrs::not(lhs.0, lhs.0));
                         return Some(Value {
                             ty:  bt::BOOL,
                             loc: Loc::Reg(lhs),
                         });
                     }
-                    T::FSlash => |reg0, reg1, reg2| instrs::diru64(reg0, ZERO, reg1, reg2),
                     _ => unimplemented!("{:#?}", op),
                 };
 
-                self.code.encode(op(lhs.0, lhs.0, rhs.0));
+                self.code.encode(ops[index](lhs.0, lhs.0, rhs.0));
                 self.gpa.free(rhs);
 
+                let min_size = lsize.min(rsize);
+                if bt::is_signed(ty) && min_size < size {
+                    let op = [i::sxt8, i::sxt16, i::sxt32][min_size.ilog2() as usize];
+                    self.code.encode(op(lhs.0, lhs.0));
+                }
+
                 Some(Value {
-                    ty:  left.ty,
+                    ty,
                     loc: Loc::Reg(lhs),
                 })
             }
@@ -960,45 +1033,68 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    fn ensure_sign_extended(&mut self, val: Value, ty: Type) -> Value {
+        let size = self.size_of(ty);
+        let lsize = self.size_of(val.ty);
+        if lsize < size {
+            let reg = self.loc_to_reg(val.loc, lsize);
+            let op = [instrs::sxt8, instrs::sxt16, instrs::sxt32][lsize.ilog2() as usize];
+            self.code.encode(op(reg.0, reg.0));
+            Value {
+                ty,
+                loc: Loc::Reg(reg),
+            }
+        } else {
+            val
+        }
+    }
+
     fn assign(&mut self, ty: Type, right: Loc, left: Loc) -> Option<Value> {
+        if left == right {
+            return Some(Value::VOID);
+        }
+
         let size = self.size_of(ty);
 
         match size {
-            8 => {
-                let lhs = self.loc_to_reg(left);
+            0 => {}
+            ..=8 => {
+                let lhs = self.loc_to_reg(left, size);
                 match right {
+                    Loc::RegRef(reg) => self.code.encode(instrs::cp(reg, lhs.0)),
+                    Loc::Return => self.code.encode(instrs::cp(1, lhs.0)),
                     Loc::Deref(reg, off) => {
-                        self.code.encode(instrs::st(lhs.0, reg.0, off, 8));
+                        self.code.encode(instrs::st(lhs.0, reg.0, off, size as _));
                         self.gpa.free(reg);
                     }
-                    Loc::RegRef(reg) => self.code.encode(instrs::cp(reg, lhs.0)),
-                    Loc::StackRef(offset) | Loc::Stack(offset) => {
-                        self.store_stack(lhs.0, offset, 8)
+                    Loc::DerefRef(reg, off) => {
+                        self.code.encode(instrs::st(lhs.0, reg, off, size as _));
                     }
-                    Loc::Return => self.code.encode(instrs::cp(1, lhs.0)),
+                    Loc::StackRef(offset) | Loc::Stack(offset) => {
+                        self.store_stack(lhs.0, offset, size as _)
+                    }
                     l => unimplemented!("{:?}", l),
                 }
                 self.gpa.free(lhs);
             }
-            16 if matches!(right, Loc::Return) => {
+            ..=16 if matches!(right, Loc::Return) => {
                 let (lhs, loff) = left.to_ptr(size);
                 self.code.encode(instrs::st(1, lhs.get(), loff, 16));
                 self.gpa.free_cow(lhs);
             }
-            16..=u64::MAX => {
+            ..=u64::MAX => {
                 let (rhs, roff) = right.to_ptr(size);
                 let (lhs, loff) = left.to_ptr(size);
                 let (rhs, lhs) = (self.to_owned(rhs), self.to_owned(lhs));
 
-                self.code.encode(instrs::addi64(rhs.0, rhs.0, roff));
-                self.code.encode(instrs::addi64(lhs.0, lhs.0, loff));
+                self.code.addi64(rhs.0, rhs.0, roff);
+                self.code.addi64(lhs.0, lhs.0, loff);
                 self.code
                     .encode(instrs::bmc(lhs.0, rhs.0, size.try_into().unwrap()));
 
                 self.gpa.free(rhs);
                 self.gpa.free(lhs);
             }
-            s => unimplemented!("size: {}", s),
         }
 
         Some(Value::VOID)
@@ -1102,7 +1198,7 @@ impl<'a> Codegen<'a> {
             }
             Loc::StackRef(off) => {
                 let size = self.size_of(ty);
-                let stack = self.alloc_stack(size as u32);
+                let stack = self.alloc_stack(size);
                 self.assign(ty, Loc::Stack(stack), Loc::StackRef(off));
                 Loc::Stack(stack)
             }
@@ -1118,7 +1214,7 @@ impl<'a> Codegen<'a> {
             let (Loc::Stack(stack) | Loc::StackRef(stack)) = value.loc else {
                 todo!("expected stack location, got {:?}", value.loc);
             };
-            self.code.encode(instrs::addi64(p, STACK_PTR, stack));
+            self.code.addi64(p, STACK_PTR, stack);
             return;
         }
 
@@ -1151,24 +1247,24 @@ impl<'a> Codegen<'a> {
     fn load_arg(&mut self, ty: Type, parama: &mut Range<u8>) -> Loc {
         let size = self.size_of(ty);
         match size {
-            8 => {
-                let stack = self.alloc_stack(8);
-                self.store_stack(parama.next().unwrap(), stack, 8);
+            0 => Loc::Imm(0),
+            ..=8 => {
+                let stack = self.alloc_stack(size as _);
+                self.store_stack(parama.next().unwrap(), stack, size as _);
                 Loc::Stack(stack)
             }
-            16 => {
-                let stack = self.alloc_stack(16);
-                self.store_stack(parama.next().unwrap(), stack, 8);
-                self.store_stack(parama.next().unwrap(), stack + 8, 8);
+            ..=16 => {
+                let stack = self.alloc_stack(size);
+                self.store_stack(parama.next().unwrap(), stack, size as _);
+                parama.next().unwrap();
                 Loc::Stack(stack)
             }
-            24..=u64::MAX => {
+            ..=u64::MAX => {
                 let ptr = parama.next().unwrap();
-                let stack = self.alloc_stack(size as u32);
+                let stack = self.alloc_stack(size);
                 self.assign(ty, Loc::StackRef(stack), Loc::DerefRef(ptr, 0));
                 Loc::Stack(stack)
             }
-            blah => todo!("{blah:?}"),
         }
     }
 
@@ -1184,8 +1280,11 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn assert_ty(&self, pos: parser::Pos, ty: Type, expected: Type) {
-        if ty != expected {
+    #[must_use]
+    fn assert_ty(&self, pos: parser::Pos, ty: Type, expected: Type) -> Type {
+        if let Some(res) = bt::try_upcast(ty, expected) {
+            res
+        } else {
             let ty = self.display_ty(ty);
             let expected = self.display_ty(expected);
             self.report(pos, format_args!("expected {ty}, got {expected}"));
@@ -1211,7 +1310,7 @@ impl Value {
     };
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum Loc {
     Reg(LinReg),
     RegRef(Reg),
@@ -1378,5 +1477,6 @@ mod tests {
         fb_driver => include_str!("../examples/fb_driver.hb");
         pointers => include_str!("../examples/pointers.hb");
         structs => include_str!("../examples/structs.hb");
+        different_types => include_str!("../examples/different_types.hb");
     }
 }
