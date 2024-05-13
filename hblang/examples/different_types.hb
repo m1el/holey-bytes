@@ -34,6 +34,10 @@ main := fn(): int {
 		return 0;
 	}
 
+	if *(&pixel.point.y - 1) != 0 {
+		return 64;
+	}
+
 	return pixel.point.x + pixel.point.y + pixel.color.r
 		+ pixel.color.g + pixel.color.b + pixel.color.a;
 }
