@@ -388,8 +388,9 @@ struct RetReloc {
 }
 
 struct Loop {
-    offset: u32,
-    relocs: Vec<RetReloc>,
+    var_count: usize,
+    offset:    u32,
+    relocs:    Vec<RetReloc>,
 }
 
 struct Struct {
@@ -637,7 +638,7 @@ impl<'a> Codegen<'a> {
                 let reg = self.gpa.allocate();
                 self.code
                     .encode(instrs::ld(reg.0, dreg.0, offset, size as _));
-                self.gpa.free(dreg);
+                self.free_reg(dreg);
                 reg
             }
             Loc::DerefRef(dreg, offset) => {
@@ -814,7 +815,7 @@ impl<'a> Codegen<'a> {
                         let size = self.size_of(val.ty);
                         let stack = self.sa.alloc(size);
                         self.store_stack(r.0, stack.offset, size as _);
-                        self.gpa.free(r);
+                        self.free_reg(r);
                         Loc::Stack(stack, 0)
                     }
                     l => l,
@@ -886,11 +887,14 @@ impl<'a> Codegen<'a> {
                 });
             }
             E::Ident { name, id, last } => {
-                let Some(var) = self.vars.iter_mut().find(|v| v.id == id) else {
+                let Some((index, var)) = self.vars.iter_mut().enumerate().find(|(_, v)| v.id == id)
+                else {
                     self.report(expr.pos(), format_args!("unknown variable: {}", name))
                 };
 
-                let loc = match last.is_some_and(Cell::get) {
+                let loc = match last.is_some_and(Cell::get)
+                    && !self.loops.last().is_some_and(|l| l.var_count > index)
+                {
                     true => std::mem::replace(&mut var.value.loc, Loc::Imm(0)),
                     false => var.value.loc.take_ref(),
                 };
@@ -921,7 +925,7 @@ impl<'a> Codegen<'a> {
             E::Block { stmts, .. } => {
                 for stmt in stmts {
                     if let Loc::Reg(reg) = self.expr(stmt)?.loc {
-                        self.gpa.free(reg);
+                        self.free_reg(reg);
                     }
                 }
                 Some(Value::VOID)
@@ -938,7 +942,7 @@ impl<'a> Codegen<'a> {
                 let reg = self.loc_to_reg(cond.loc, 1);
                 let jump_offset = self.code.code.len() as u32;
                 self.code.encode(instrs::jeq(reg.0, 0, 0));
-                self.gpa.free(reg);
+                self.free_reg(reg);
 
                 log::dbg!("if-then");
                 let then_unreachable = self.expr(then).is_none();
@@ -978,8 +982,9 @@ impl<'a> Codegen<'a> {
                 log::dbg!("loop");
                 let loop_start = self.code.code.len() as u32;
                 self.loops.push(Loop {
-                    offset: loop_start,
-                    relocs: Default::default(),
+                    var_count: self.vars.len() as _,
+                    offset:    loop_start,
+                    relocs:    Default::default(),
                 });
                 let body_unreachable = self.expr(body).is_none();
 
@@ -1000,6 +1005,14 @@ impl<'a> Codegen<'a> {
                         [..reloc.size as usize];
                     let offset = loop_end as i32 - reloc.offset as i32;
                     dest.copy_from_slice(&offset.to_ne_bytes());
+                }
+
+                for var in self
+                    .vars
+                    .drain(loop_.var_count as usize..)
+                    .collect::<Vec<_>>()
+                {
+                    self.free_loc(var.value.loc);
                 }
 
                 if is_unreachable {
@@ -1087,7 +1100,7 @@ impl<'a> Codegen<'a> {
 
                 if let Some(op) = Self::math_op(op, signed, size) {
                     self.code.encode(op(lhs.0, lhs.0, rhs.0));
-                    self.gpa.free(rhs);
+                    self.free_reg(rhs);
 
                     break 'ops Some(Value {
                         ty,
@@ -1105,7 +1118,7 @@ impl<'a> Codegen<'a> {
 
                     let op_fn = if signed { i::cmps } else { i::cmpu };
                     self.code.encode(op_fn(lhs.0, lhs.0, rhs.0));
-                    self.gpa.free(rhs);
+                    self.free_reg(rhs);
                     self.code.encode(instrs::cmpui(lhs.0, lhs.0, against));
                     if matches!(op, T::Eq | T::Lt | T::Gt) {
                         self.code.encode(instrs::not(lhs.0, lhs.0));
@@ -1128,6 +1141,10 @@ impl<'a> Codegen<'a> {
         } else {
             Some(value)
         }
+    }
+
+    fn free_reg(&mut self, reg: LinReg) {
+        self.gpa.free(reg);
     }
 
     fn math_op(
@@ -1160,8 +1177,8 @@ impl<'a> Codegen<'a> {
 
     fn free_loc(&mut self, loc: Loc) {
         match loc {
-            Loc::Reg(reg) => self.gpa.free(reg),
-            Loc::Deref(reg, ..) => self.gpa.free(reg),
+            Loc::Reg(reg) => self.free_reg(reg),
+            Loc::Deref(reg, ..) => self.free_reg(reg),
             Loc::Stack(stack, ..) => self.sa.free(stack),
             _ => {}
         }
@@ -1199,7 +1216,7 @@ impl<'a> Codegen<'a> {
 
         if let Some(op) = Self::math_op(op, signed, size) {
             self.code.encode(op(lhs, lhs, rhs.0));
-            self.gpa.free(rhs);
+            self.free_reg(rhs);
             return if let Ctx::Dest(dest) = ctx {
                 self.assign(dest.ty, dest.loc, owned.map_or(Loc::RegRef(lhs), Loc::Reg));
                 Some(Value::VOID)
@@ -1264,7 +1281,7 @@ impl<'a> Codegen<'a> {
                     Loc::RegRef(reg) => self.code.encode(instrs::cp(reg, lhs.0)),
                     Loc::Deref(reg, off) => {
                         self.code.encode(instrs::st(lhs.0, reg.0, off, size as _));
-                        self.gpa.free(reg);
+                        self.free_reg(reg);
                     }
                     Loc::DerefRef(reg, off) => {
                         self.code.encode(instrs::st(lhs.0, reg, off, size as _));
@@ -1275,7 +1292,7 @@ impl<'a> Codegen<'a> {
                     }
                     l => unimplemented!("{:?}", l),
                 }
-                self.gpa.free(lhs);
+                self.free_reg(lhs);
             }
             ..=16 if matches!(right, Loc::RegRef(1)) => {
                 let (lhs, loff) = left.ref_to_ptr();
@@ -1288,8 +1305,8 @@ impl<'a> Codegen<'a> {
                 self.code
                     .encode(instrs::bmc(lhs.0, rhs.0, size.try_into().unwrap()));
 
-                self.gpa.free(lhs);
-                self.gpa.free(rhs);
+                self.free_reg(lhs);
+                self.free_reg(rhs);
             }
         }
 
