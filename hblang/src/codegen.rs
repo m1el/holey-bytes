@@ -1,4 +1,4 @@
-use std::ops::Range;
+use std::{cell::Cell, ops::Range};
 
 use crate::ident::{self, Ident};
 
@@ -17,6 +17,10 @@ type Reg = u8;
 type MaskElem = u64;
 type Type = u32;
 
+fn align_up(value: u64, align: u64) -> u64 {
+    (value + align - 1) & !(align - 1)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 struct LinReg(Reg);
 
@@ -24,22 +28,75 @@ struct LinReg(Reg);
 impl Drop for LinReg {
     fn drop(&mut self) {
         if !std::thread::panicking() {
-            panic!("reg leaked");
+            panic!("reg leaked: {:x}", self.0);
         }
     }
 }
 
-enum CowReg {
-    Lin(LinReg),
-    Reg(Reg),
+#[derive(Debug, PartialEq, Eq)]
+struct LinStack {
+    offset: u64,
+    size:   u64,
 }
 
-impl CowReg {
-    fn get(&self) -> Reg {
-        match *self {
-            Self::Lin(LinReg(reg)) => reg,
-            Self::Reg(reg) => reg,
+impl Drop for LinStack {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            panic!("stack leaked: {:x} {:x}", self.offset, self.size);
         }
+    }
+}
+
+#[derive(Default)]
+struct StackAlloc {
+    ranges: Vec<Range<u64>>,
+    height: u64,
+}
+
+impl StackAlloc {
+    fn alloc(&mut self, size: u64) -> LinStack {
+        if let Some((index, range)) = self
+            .ranges
+            .iter_mut()
+            .enumerate()
+            .filter(|(_, range)| range.end - range.start >= size)
+            .min_by_key(|(_, range)| range.end - range.start)
+        {
+            let offset = range.start;
+            range.start += size;
+            if range.start == range.end {
+                self.ranges.swap_remove(index);
+            }
+            return LinStack { offset, size };
+        }
+
+        let offset = self.height;
+        self.height += size;
+        LinStack { offset, size }
+    }
+
+    fn free(&mut self, l @ LinStack { offset, size }: LinStack) {
+        std::mem::forget(l);
+
+        let range = offset..offset + size;
+        // FIXME: we do more wor then we need to, rather we keep the sequence sorted and only scan
+        // element before and after the modified range
+        self.ranges.push(range);
+        self.ranges.sort_by_key(|range| range.start);
+        self.ranges.dedup_by(|b, a| {
+            if a.end == b.start {
+                a.end = b.end;
+                true
+            } else {
+                false
+            }
+        });
+    }
+
+    fn clear(&mut self) {
+        assert!(self.ranges.len() <= 1, "{:?}", self.ranges);
+        self.ranges.clear();
+        self.height = 0;
     }
 }
 
@@ -50,6 +107,7 @@ enum Ctx {
     Inferred(Type),
     Dest(Value),
 }
+
 impl Ctx {
     fn ty(&self) -> Option<Type> {
         Some(match self {
@@ -305,13 +363,6 @@ impl RegAlloc {
         std::mem::forget(reg);
     }
 
-    fn free_cow(&mut self, reg: CowReg) {
-        match reg {
-            CowReg::Lin(reg) => self.free(reg),
-            CowReg::Reg(_) => {}
-        }
-    }
-
     fn pushed_size(&self) -> usize {
         (self.max_used as usize - RET_ADDR as usize + 1) * 8
     }
@@ -394,10 +445,10 @@ pub struct Codegen<'a> {
     input:      &'a [u8],
     ret:        Type,
     gpa:        RegAlloc,
+    sa:         StackAlloc,
     code:       Func,
     temp:       Func,
     labels:     Vec<FnLabel>,
-    stack_size: u64,
     vars:       Vec<Variable>,
     ret_relocs: Vec<RetReloc>,
     loops:      Vec<Loop>,
@@ -485,9 +536,11 @@ impl<'a> Codegen<'a> {
                     if self.expr(body).is_some() {
                         self.report(body.pos(), "expected all paths in the fucntion to return");
                     }
-                    self.vars.clear();
+                    for var in std::mem::take(&mut self.vars) {
+                        self.free_loc(var.value.loc);
+                    }
 
-                    log::dbg!("fn-prelude, stack: {:x}", self.stack_size);
+                    log::dbg!("fn-prelude, stack: {:x}", self.sa.height);
 
                     log::dbg!("fn-relocs");
                     self.write_fn_prelude(frame);
@@ -495,7 +548,7 @@ impl<'a> Codegen<'a> {
                     log::dbg!("fn-ret");
                     self.reloc_rets();
                     self.ret();
-                    self.stack_size = 0;
+                    self.sa.clear();
                 }
                 _ => unreachable!(),
             }
@@ -527,12 +580,11 @@ impl<'a> Codegen<'a> {
             TK::Builtin(bt::I8 | bt::U8 | bt::BOOL) => 1,
             TK::Builtin(e) => unreachable!("{:?}", e),
             TK::Struct(ty) => {
-                log::dbg!("size_of: {:?}", ty);
                 let mut offset = 0;
                 let record = &self.records[ty as usize];
                 for &(_, ty) in record.fields.iter() {
                     let align = self.align_of(ty);
-                    offset = (offset + align - 1) & !(align - 1);
+                    offset = align_up(offset, align);
                     offset += self.size_of(ty);
                 }
                 offset
@@ -544,24 +596,33 @@ impl<'a> Codegen<'a> {
         TypeDisplay::new(self, ty)
     }
 
-    fn offset_of(&self, pos: parser::Pos, ty: Type, field: &str) -> (u64, Type) {
-        let TypeKind::Struct(idx) = TypeKind::from_ty(ty) else {
-            self.report(
+    fn unwrap_struct(&self, ty: Type, pos: parser::Pos, context: impl std::fmt::Display) -> Type {
+        match TypeKind::from_ty(ty) {
+            TypeKind::Struct(idx) => idx,
+            _ => self.report(
                 pos,
-                format_args!("expected struct, got {}", self.display_ty(ty)),
-            );
-        };
+                format_args!("expected struct, got {} ({context})", self.display_ty(ty)),
+            ),
+        }
+    }
+
+    fn offset_of(&self, pos: parser::Pos, ty: Type, field: Result<&str, usize>) -> (u64, Type) {
+        let idx = self.unwrap_struct(ty, pos, "field access");
         let record = &self.records[idx as usize];
         let mut offset = 0;
-        for (name, ty) in record.fields.iter() {
-            if name.as_ref() == field {
+        for (i, (name, ty)) in record.fields.iter().enumerate() {
+            if Ok(name.as_ref()) == field || Err(i) == field {
                 return (offset, *ty);
             }
             let align = self.align_of(*ty);
-            offset = (offset + align - 1) & !(align - 1);
+            offset = align_up(offset, align);
             offset += self.size_of(*ty);
         }
-        self.report(pos, format_args!("field not found: {}", field));
+
+        match field {
+            Ok(i) => self.report(pos, format_args!("field not found: {i}")),
+            Err(field) => self.report(pos, format_args!("field not found: {field}")),
+        }
     }
 
     fn loc_to_reg(&mut self, loc: Loc, size: u64) -> LinReg {
@@ -571,7 +632,6 @@ impl<'a> Codegen<'a> {
                 self.code.encode(instrs::cp(reg.0, rr));
                 reg
             }
-            Loc::Return => todo!(),
             Loc::Reg(reg) => reg,
             Loc::Deref(dreg, offset) => {
                 let reg = self.gpa.allocate();
@@ -590,19 +650,13 @@ impl<'a> Codegen<'a> {
                 self.code.encode(instrs::li64(reg.0, imm));
                 reg
             }
-            Loc::Stack(offset) | Loc::StackRef(offset) => {
+            Loc::Stack(stack, off) => {
                 let reg = self.gpa.allocate();
-                self.load_stack(reg.0, offset, size as _);
+                self.load_stack(reg.0, stack.offset + off, size as _);
+                self.sa.free(stack);
                 reg
             }
         }
-    }
-
-    fn alloc_stack(&mut self, size: u64) -> u64 {
-        let offset = self.stack_size;
-        log::dbg!("alloc_stack: {} {}", offset, size);
-        self.stack_size += size;
-        offset
     }
 
     fn store_stack(&mut self, reg: Reg, offset: u64, size: u16) {
@@ -653,17 +707,30 @@ impl<'a> Codegen<'a> {
                 ty:  bt::BOOL,
                 loc: Loc::Imm(value as u64),
             }),
-            E::Ctor { ty, fields } => {
-                let ty = self.ty(&ty);
+            E::Ctor {
+                pos, ty, fields, ..
+            } => {
+                let Some(ty) = ty.map(|ty| self.ty(&ty)).or(ctx.ty()) else {
+                    self.report(pos, "expected type, (it cannot be inferred)");
+                };
                 let size = self.size_of(ty);
 
                 let loc = match ctx {
                     Ctx::Dest(dest) => dest.loc,
-                    _ => Loc::Stack(self.alloc_stack(size)),
+                    _ => Loc::Stack(self.sa.alloc(size), 0),
                 };
 
-                for (name, field) in fields {
-                    let (offset, ty) = self.offset_of(expr.pos(), ty, name);
+                let stuct = self.unwrap_struct(ty, pos, "struct literal");
+                let field_count = self.records[stuct as usize].fields.len();
+                if field_count != fields.len() {
+                    self.report(
+                        pos,
+                        format_args!("expected {} fields, got {}", field_count, fields.len()),
+                    );
+                }
+
+                for (i, (name, field)) in fields.iter().enumerate() {
+                    let (offset, ty) = self.offset_of(field.pos(), ty, name.ok_or(i));
                     let loc = loc.offset_ref(offset);
                     self.expr_ctx(field, Ctx::Dest(Value { ty, loc }))?;
                 }
@@ -677,22 +744,11 @@ impl<'a> Codegen<'a> {
                     tal.loc = match tal.loc {
                         Loc::Reg(r) => Loc::Deref(r, 0),
                         Loc::RegRef(r) => Loc::DerefRef(r, 0),
-                        Loc::StackRef(stack) | Loc::Stack(stack) => {
-                            let reg = self.gpa.allocate();
-                            self.load_stack(reg.0, stack, 8);
-                            Loc::Deref(reg, 0)
-                        }
-                        l => todo!("cant get field of {:?}", l),
+                        l => Loc::Deref(self.loc_to_reg(l, 8), 0),
                     };
                 }
-                let (offset, ty) = self.offset_of(target.pos(), tal.ty, field);
-                let loc = match tal.loc {
-                    Loc::Deref(r, off) => Loc::Deref(r, off + offset),
-                    Loc::DerefRef(r, off) => Loc::DerefRef(r, off + offset),
-                    Loc::Stack(stack) => Loc::Stack(stack + offset),
-                    Loc::StackRef(stack) => Loc::StackRef(stack + offset),
-                    l => todo!("cant get field of {:?}", l),
-                };
+                let (offset, ty) = self.offset_of(target.pos(), tal.ty, Ok(field));
+                let loc = tal.loc.offset(offset);
                 Some(Value { ty, loc })
             }
             E::UnOp {
@@ -702,11 +758,6 @@ impl<'a> Codegen<'a> {
             } => {
                 let val = self.expr(val)?;
                 let loc = match val.loc {
-                    Loc::StackRef(off) => {
-                        let reg = self.gpa.allocate();
-                        self.code.addi64(reg.0, STACK_PTR, off);
-                        Loc::Reg(reg)
-                    }
                     Loc::Deref(r, off) => {
                         self.code.addi64(r.0, r.0, off);
                         Loc::Reg(r)
@@ -714,6 +765,13 @@ impl<'a> Codegen<'a> {
                     Loc::DerefRef(r, off) => {
                         let reg = self.gpa.allocate();
                         self.code.addi64(reg.0, r, off);
+                        Loc::Reg(reg)
+                    }
+                    Loc::Stack(stack, off) => {
+                        let reg = self.gpa.allocate();
+                        self.code
+                            .encode(instrs::addi64(reg.0, STACK_PTR, stack.offset + off));
+                        std::mem::forget(stack); // TODO: we might be able to do better
                         Loc::Reg(reg)
                     }
                     l => self.report(
@@ -751,7 +809,16 @@ impl<'a> Codegen<'a> {
             } => {
                 let val = self.expr(right)?;
                 let loc = self.make_loc_owned(val.loc, val.ty);
-                let loc = self.ensure_spilled(loc);
+                let loc = match loc {
+                    Loc::Reg(r) => {
+                        let size = self.size_of(val.ty);
+                        let stack = self.sa.alloc(size);
+                        self.store_stack(r.0, stack.offset, size as _);
+                        self.gpa.free(r);
+                        Loc::Stack(stack, 0)
+                    }
+                    l => l,
+                };
                 self.vars.push(Variable {
                     id:    *id,
                     value: Value { ty: val.ty, loc },
@@ -764,11 +831,18 @@ impl<'a> Codegen<'a> {
             } => {
                 let func = self.get_label(*id);
                 let fn_label = self.labels[func as usize].clone();
+
                 let mut parama = 3..12;
+                let mut values = Vec::with_capacity(args.len());
                 for (earg, &ty) in args.iter().zip(fn_label.args.iter()) {
                     let arg = self.expr_ctx(earg, Ctx::Inferred(ty))?;
                     _ = self.assert_ty(earg.pos(), ty, arg.ty);
-                    self.pass_arg(arg, &mut parama);
+                    self.pass_arg(&arg, &mut parama);
+                    values.push(arg.loc);
+                }
+
+                for value in values {
+                    self.free_loc(value);
                 }
 
                 let size = self.size_of(fn_label.ret);
@@ -777,14 +851,14 @@ impl<'a> Codegen<'a> {
                     ..=8 => Loc::RegRef(1),
                     ..=16 => match ctx {
                         Ctx::Dest(dest) => dest.loc,
-                        _ => Loc::Stack(self.alloc_stack(size)),
+                        _ => Loc::Stack(self.sa.alloc(size), 0),
                     },
                     ..=u64::MAX => {
                         let val = match ctx {
                             Ctx::Dest(dest) => dest.loc,
-                            _ => Loc::Stack(self.alloc_stack(size)),
+                            _ => Loc::Stack(self.sa.alloc(size), 0),
                         };
-                        let (ptr, off) = val.ref_to_ptr(size);
+                        let (ptr, off) = val.ref_to_ptr();
                         self.code.encode(instrs::cp(1, ptr));
                         self.code.addi64(1, ptr, off);
                         val
@@ -797,8 +871,8 @@ impl<'a> Codegen<'a> {
                     0 => {}
                     ..=8 => {}
                     ..=16 => {
-                        if let Loc::Stack(stack) = loc {
-                            self.store_stack(1, stack, 16);
+                        if let Loc::Stack(ref stack, off) = loc {
+                            self.store_stack(1, stack.offset + off, 16);
                         } else {
                             unreachable!()
                         }
@@ -811,21 +885,30 @@ impl<'a> Codegen<'a> {
                     loc,
                 });
             }
-            E::Ident { name, id, .. } => {
-                let Some(var) = self.vars.iter().find(|v| v.id == id) else {
+            E::Ident { name, id, last } => {
+                let Some(var) = self.vars.iter_mut().find(|v| v.id == id) else {
                     self.report(expr.pos(), format_args!("unknown variable: {}", name))
                 };
+
+                let loc = match last.is_some_and(Cell::get) {
+                    true => std::mem::replace(&mut var.value.loc, Loc::Imm(0)),
+                    false => var.value.loc.take_ref(),
+                };
+
                 Some(Value {
-                    ty:  var.value.ty,
-                    loc: var.value.loc.take_ref(),
+                    ty: var.value.ty,
+                    loc,
                 })
             }
-            E::Return { val, pos } => {
+            E::Return { val, .. } => {
                 if let Some(val) = val {
-                    let val = self.expr_ctx(val, Ctx::Inferred(self.ret))?;
-                    let ty = self.assert_ty(pos, self.ret, val.ty);
-                    let val = self.ensure_sign_extended(val, ty);
-                    self.assign(self.ret, Loc::Return, val.loc);
+                    let size = self.size_of(self.ret);
+                    let loc = match size {
+                        0 => Loc::Imm(0),
+                        ..=16 => Loc::RegRef(1),
+                        _ => Loc::DerefRef(1, 0),
+                    };
+                    self.expr_ctx(val, Ctx::Dest(Value { loc, ty: self.ret }))?;
                 }
                 self.ret_relocs.push(RetReloc {
                     offset:       self.code.code.len() as u32,
@@ -955,6 +1038,12 @@ impl<'a> Codegen<'a> {
                     return Some(Value::VOID);
                 }
 
+                if let TypeKind::Struct(_) = TypeKind::from_ty(left.ty) {
+                    let right = self.expr_ctx(right, Ctx::Inferred(left.ty))?;
+                    _ = self.assert_ty(expr.pos(), left.ty, right.ty);
+                    return self.struct_op(op, left.ty, ctx, left.loc, right.loc);
+                }
+
                 let lsize = self.size_of(left.ty);
                 let lhs = self.loc_to_reg(left.loc, lsize);
                 let right = self.expr_ctx(right, Ctx::Inferred(left.ty))?;
@@ -996,28 +1085,8 @@ impl<'a> Codegen<'a> {
                     }
                 }
 
-                'math: {
-                    let ops = match op {
-                        T::Plus => [i::add8, i::add16, i::add32, i::add64],
-                        T::Minus => [i::sub8, i::sub16, i::sub32, i::sub64],
-                        T::Star => [i::mul8, i::mul16, i::mul32, i::mul64],
-                        T::FSlash if signed => [
-                            |a, b, c| i::dirs8(a, ZERO, b, c),
-                            |a, b, c| i::dirs16(a, ZERO, b, c),
-                            |a, b, c| i::dirs32(a, ZERO, b, c),
-                            |a, b, c| i::dirs64(a, ZERO, b, c),
-                        ],
-                        T::FSlash => [
-                            |a, b, c| i::diru8(a, ZERO, b, c),
-                            |a, b, c| i::diru16(a, ZERO, b, c),
-                            |a, b, c| i::diru32(a, ZERO, b, c),
-                            |a, b, c| i::diru64(a, ZERO, b, c),
-                        ],
-                        _ => break 'math,
-                    };
-
-                    self.code
-                        .encode(ops[size.ilog2() as usize](lhs.0, lhs.0, rhs.0));
+                if let Some(op) = Self::math_op(op, signed, size) {
+                    self.code.encode(op(lhs.0, lhs.0, rhs.0));
                     self.gpa.free(rhs);
 
                     break 'ops Some(Value {
@@ -1061,6 +1130,109 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    fn math_op(
+        op: T,
+        signed: bool,
+        size: u64,
+    ) -> Option<fn(u8, u8, u8) -> (usize, [u8; instrs::MAX_SIZE])> {
+        use instrs as i;
+        Some(
+            match op {
+                T::Plus => [i::add8, i::add16, i::add32, i::add64],
+                T::Minus => [i::sub8, i::sub16, i::sub32, i::sub64],
+                T::Star => [i::mul8, i::mul16, i::mul32, i::mul64],
+                T::FSlash if signed => [
+                    |a, b, c| i::dirs8(a, ZERO, b, c),
+                    |a, b, c| i::dirs16(a, ZERO, b, c),
+                    |a, b, c| i::dirs32(a, ZERO, b, c),
+                    |a, b, c| i::dirs64(a, ZERO, b, c),
+                ],
+                T::FSlash => [
+                    |a, b, c| i::diru8(a, ZERO, b, c),
+                    |a, b, c| i::diru16(a, ZERO, b, c),
+                    |a, b, c| i::diru32(a, ZERO, b, c),
+                    |a, b, c| i::diru64(a, ZERO, b, c),
+                ],
+                _ => return None,
+            }[size.ilog2() as usize],
+        )
+    }
+
+    fn free_loc(&mut self, loc: Loc) {
+        match loc {
+            Loc::Reg(reg) => self.gpa.free(reg),
+            Loc::Deref(reg, ..) => self.gpa.free(reg),
+            Loc::Stack(stack, ..) => self.sa.free(stack),
+            _ => {}
+        }
+    }
+
+    fn struct_op(&mut self, op: T, ty: Type, ctx: Ctx, left: Loc, right: Loc) -> Option<Value> {
+        if let TypeKind::Struct(stuct) = TypeKind::from_ty(ty) {
+            let dst = match ctx {
+                Ctx::Dest(dest) => dest.loc,
+                _ => Loc::Stack(self.sa.alloc(self.size_of(ty)), 0),
+            };
+            let mut offset = 0;
+            for &(_, ty) in self.records[stuct as usize].fields.clone().iter() {
+                let align = self.align_of(ty);
+                offset = align_up(offset, align);
+                let size = self.size_of(ty);
+                let ctx = Ctx::Dest(Value::new(ty, dst.offset_ref(offset)));
+                let left = left.offset_ref(offset);
+                let right = right.offset_ref(offset);
+                let value = self.struct_op(op, ty, ctx, left, right)?;
+                self.free_loc(value.loc);
+                offset += size;
+            }
+
+            self.free_loc(left);
+            self.free_loc(right);
+
+            return Some(Value { ty, loc: dst });
+        }
+
+        let size = self.size_of(ty);
+        let (lhs, owned) = self.loc_to_reg_ref(&left, size);
+        let rhs = self.loc_to_reg(right, size);
+        let signed = bt::is_signed(ty);
+
+        if let Some(op) = Self::math_op(op, signed, size) {
+            self.code.encode(op(lhs, lhs, rhs.0));
+            self.gpa.free(rhs);
+            return if let Ctx::Dest(dest) = ctx {
+                self.assign(dest.ty, dest.loc, owned.map_or(Loc::RegRef(lhs), Loc::Reg));
+                Some(Value::VOID)
+            } else {
+                Some(Value::new(ty, owned.map_or(Loc::RegRef(lhs), Loc::Reg)))
+            };
+        }
+
+        unimplemented!("{:#?}", op)
+    }
+
+    fn loc_to_reg_ref(&mut self, loc: &Loc, size: u64) -> (u8, Option<LinReg>) {
+        match *loc {
+            Loc::RegRef(reg) => (reg, None),
+            Loc::Reg(LinReg(reg)) => (reg, None),
+            Loc::Deref(LinReg(reg), off) | Loc::DerefRef(reg, off) => {
+                let new = self.gpa.allocate();
+                self.code.encode(instrs::ld(new.0, reg, off, size as _));
+                (new.0, Some(new))
+            }
+            Loc::Stack(ref stack, off) => {
+                let new = self.gpa.allocate();
+                self.load_stack(new.0, stack.offset + off, size as _);
+                (new.0, Some(new))
+            }
+            Loc::Imm(imm) => {
+                let new = self.gpa.allocate();
+                self.code.encode(instrs::li64(new.0, imm));
+                (new.0, Some(new))
+            }
+        }
+    }
+
     fn ensure_sign_extended(&mut self, val: Value, ty: Type) -> Value {
         let size = self.size_of(ty);
         let lsize = self.size_of(val.ty);
@@ -1090,7 +1262,6 @@ impl<'a> Codegen<'a> {
                 let lhs = self.loc_to_reg(left, size);
                 match right {
                     Loc::RegRef(reg) => self.code.encode(instrs::cp(reg, lhs.0)),
-                    Loc::Return => self.code.encode(instrs::cp(1, lhs.0)),
                     Loc::Deref(reg, off) => {
                         self.code.encode(instrs::st(lhs.0, reg.0, off, size as _));
                         self.gpa.free(reg);
@@ -1098,43 +1269,66 @@ impl<'a> Codegen<'a> {
                     Loc::DerefRef(reg, off) => {
                         self.code.encode(instrs::st(lhs.0, reg, off, size as _));
                     }
-                    Loc::StackRef(offset) | Loc::Stack(offset) => {
-                        self.store_stack(lhs.0, offset, size as _)
+                    Loc::Stack(stack, off) => {
+                        self.store_stack(lhs.0, stack.offset + off, size as _);
+                        self.sa.free(stack);
                     }
                     l => unimplemented!("{:?}", l),
                 }
                 self.gpa.free(lhs);
             }
-            ..=16 if matches!(right, Loc::Return) => {
-                let (lhs, loff) = left.to_ptr(size);
-                self.code.encode(instrs::st(1, lhs.get(), loff, 16));
-                self.gpa.free_cow(lhs);
+            ..=16 if matches!(right, Loc::RegRef(1)) => {
+                let (lhs, loff) = left.ref_to_ptr();
+                self.code.encode(instrs::st(1, lhs, loff, 16));
+                self.free_loc(left);
             }
             ..=u64::MAX => {
-                let (rhs, roff) = right.to_ptr(size);
-                let (lhs, loff) = left.to_ptr(size);
-                let (rhs, lhs) = (self.to_owned(rhs), self.to_owned(lhs));
-
-                self.code.addi64(rhs.0, rhs.0, roff);
-                self.code.addi64(lhs.0, lhs.0, loff);
+                let rhs = self.to_ptr(right);
+                let lhs = self.to_ptr(left);
                 self.code
                     .encode(instrs::bmc(lhs.0, rhs.0, size.try_into().unwrap()));
 
-                self.gpa.free(rhs);
                 self.gpa.free(lhs);
+                self.gpa.free(rhs);
             }
         }
 
         Some(Value::VOID)
     }
 
-    fn to_owned(&mut self, loc: CowReg) -> LinReg {
+    fn to_ptr(&mut self, loc: Loc) -> LinReg {
         match loc {
-            CowReg::Lin(reg) => reg,
-            CowReg::Reg(reg) => {
+            Loc::Deref(reg, off) => {
+                self.code.addi64(reg.0, reg.0, off);
+                reg
+            }
+            Loc::DerefRef(reg, off) => {
+                let new = self.gpa.allocate();
+                self.code.addi64(new.0, reg, off);
+                new
+            }
+            Loc::Stack(stack, off) => {
+                let reg = self.gpa.allocate();
+                self.code.addi64(reg.0, STACK_PTR, stack.offset + off);
+                self.sa.free(stack);
+                reg
+            }
+            l => unreachable!("{:?}", l),
+        }
+    }
+
+    fn ensure_owned(&mut self, loc: Loc, ty: Type) -> Loc {
+        match loc {
+            Loc::RegRef(reg) => {
                 let new = self.gpa.allocate();
                 self.code.encode(instrs::cp(new.0, reg));
-                new
+                Loc::Reg(new)
+            }
+            l => {
+                let size = self.size_of(ty);
+                let stack = self.sa.alloc(size);
+                self.assign(ty, Loc::DerefRef(STACK_PTR, stack.offset), l);
+                Loc::Stack(stack, 0)
             }
         }
     }
@@ -1166,7 +1360,7 @@ impl<'a> Codegen<'a> {
 
     fn write_fn_prelude(&mut self, frame: Frame) {
         self.temp.push(RET_ADDR, self.gpa.pushed_size());
-        self.temp.subi64(STACK_PTR, STACK_PTR, self.stack_size);
+        self.temp.subi64(STACK_PTR, STACK_PTR, self.sa.height);
 
         for reloc in &mut self.code.relocs[frame.prev_relocs..] {
             reloc.offset += self.temp.code.len() as u32;
@@ -1184,7 +1378,7 @@ impl<'a> Codegen<'a> {
 
     fn ret(&mut self) {
         self.code
-            .encode(instrs::addi64(STACK_PTR, STACK_PTR, self.stack_size));
+            .encode(instrs::addi64(STACK_PTR, STACK_PTR, self.sa.height));
         self.code.pop(RET_ADDR, self.gpa.pushed_size());
         self.code.ret();
     }
@@ -1224,40 +1418,35 @@ impl<'a> Codegen<'a> {
                 self.code.encode(instrs::li64(reg.0, imm));
                 Loc::Reg(reg)
             }
-            Loc::StackRef(off) => {
+            l @ (Loc::DerefRef(..) | Loc::Deref(..)) => {
                 let size = self.size_of(ty);
-                let stack = self.alloc_stack(size);
-                self.assign(ty, Loc::Stack(stack), Loc::StackRef(off));
-                Loc::Stack(stack)
+                let stack = self.sa.alloc(size);
+                self.assign(ty, Loc::DerefRef(STACK_PTR, stack.offset), l);
+                Loc::Stack(stack, 0)
             }
             l => l,
         }
     }
 
-    fn pass_arg(&mut self, value: Value, parama: &mut Range<u8>) {
+    fn pass_arg(&mut self, value: &Value, parama: &mut Range<u8>) {
         let size = self.size_of(value.ty);
         let p = parama.next().unwrap() as Reg;
 
         if size > 16 {
-            let (Loc::Stack(stack) | Loc::StackRef(stack)) = value.loc else {
-                todo!("expected stack location, got {:?}", value.loc);
-            };
-            self.code.addi64(p, STACK_PTR, stack);
+            let (ptr, off) = value.loc.ref_to_ptr();
+            self.code.addi64(p, ptr, off);
             return;
         }
 
         match value.loc {
-            Loc::Reg(reg) => {
+            Loc::Reg(ref reg) => {
                 self.code.encode(instrs::cp(p, reg.0));
-                self.gpa.free(reg);
             }
             Loc::RegRef(reg) => {
                 self.code.encode(instrs::cp(p, reg));
             }
-            Loc::Return => todo!(),
-            Loc::Deref(reg, off) => {
+            Loc::Deref(ref reg, off) => {
                 self.code.encode(instrs::ld(p, reg.0, off, size as _));
-                self.gpa.free(reg);
             }
             Loc::DerefRef(reg, off) => {
                 self.code.encode(instrs::ld(p, reg, off, size as _));
@@ -1265,9 +1454,9 @@ impl<'a> Codegen<'a> {
             Loc::Imm(imm) => {
                 self.code.encode(instrs::li64(p, imm));
             }
-            Loc::Stack(stack) | Loc::StackRef(stack) => {
-                self.load_stack(p, stack, size as _);
-                self.load_stack(parama.next().unwrap(), stack + 8, size as _);
+            Loc::Stack(ref stack, off) => {
+                self.load_stack(p, stack.offset + off, size as _);
+                self.load_stack(parama.next().unwrap(), stack.offset + off + 8, size as _);
             }
         }
     }
@@ -1277,34 +1466,26 @@ impl<'a> Codegen<'a> {
         match size {
             0 => Loc::Imm(0),
             ..=8 => {
-                let stack = self.alloc_stack(size as _);
-                self.store_stack(parama.next().unwrap(), stack, size as _);
-                Loc::Stack(stack)
+                let stack = self.sa.alloc(size as _);
+                self.store_stack(parama.next().unwrap(), stack.offset, size as _);
+                Loc::Stack(stack, 0)
             }
             ..=16 => {
-                let stack = self.alloc_stack(size);
-                self.store_stack(parama.next().unwrap(), stack, size as _);
+                let stack = self.sa.alloc(size);
+                self.store_stack(parama.next().unwrap(), stack.offset, size as _);
                 parama.next().unwrap();
-                Loc::Stack(stack)
+                Loc::Stack(stack, 0)
             }
             ..=u64::MAX => {
                 let ptr = parama.next().unwrap();
-                let stack = self.alloc_stack(size);
-                self.assign(ty, Loc::StackRef(stack), Loc::DerefRef(ptr, 0));
-                Loc::Stack(stack)
+                let stack = self.sa.alloc(size);
+                self.assign(
+                    ty,
+                    Loc::DerefRef(STACK_PTR, stack.offset),
+                    Loc::DerefRef(ptr, 0),
+                );
+                Loc::Stack(stack, 0)
             }
-        }
-    }
-
-    fn ensure_spilled(&mut self, loc: Loc) -> Loc {
-        match loc {
-            Loc::Reg(reg) => {
-                let stack = self.alloc_stack(8);
-                self.store_stack(reg.0, stack, 8);
-                self.gpa.free(reg);
-                Loc::Stack(stack)
-            }
-            l => l,
         }
     }
 
@@ -1337,56 +1518,50 @@ impl Value {
         ty:  bt::VOID,
         loc: Loc::Imm(0),
     };
+
+    fn new(ty: Type, loc: Loc) -> Self {
+        Self { ty, loc }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
 enum Loc {
     Reg(LinReg),
     RegRef(Reg),
-    Return,
     Deref(LinReg, u64),
     DerefRef(Reg, u64),
     Imm(u64),
-    Stack(u64),
-    StackRef(u64),
+    Stack(LinStack, u64),
 }
 impl Loc {
     fn take_ref(&self) -> Loc {
-        match self {
-            Self::Reg(reg) => Self::RegRef(reg.0),
-            Self::Deref(reg, off) => Self::DerefRef(reg.0, *off),
-            Self::Stack(off) => Self::StackRef(*off),
-            un => unreachable!("{:?}", un),
-        }
-    }
-
-    fn to_ptr(self, size: u64) -> (CowReg, u64) {
-        match self {
-            Loc::Return if size > 16 => (CowReg::Reg(1), 0),
-            Loc::Deref(reg, off) => (CowReg::Lin(reg), off),
-            Loc::DerefRef(reg, off) => (CowReg::Reg(reg), off),
-            Loc::Stack(offset) | Loc::StackRef(offset) => (CowReg::Reg(STACK_PTR), offset),
-            l => panic!("expected stack location, got {:?}", l),
-        }
-    }
-
-    fn ref_to_ptr(&self, size: u64) -> (Reg, u64) {
         match *self {
-            Loc::Return if size > 16 => (1, 0),
+            Self::Reg(LinReg(reg)) | Self::RegRef(reg) => Self::RegRef(reg),
+            Self::Deref(LinReg(reg), off) | Self::DerefRef(reg, off) => Self::DerefRef(reg, off),
+            Self::Stack(ref stack, off) => Self::DerefRef(STACK_PTR, stack.offset + off),
+            ref un => unreachable!("{:?}", un),
+        }
+    }
+
+    fn ref_to_ptr(&self) -> (Reg, u64) {
+        match *self {
             Loc::Deref(LinReg(reg), off) => (reg, off),
             Loc::DerefRef(reg, off) => (reg, off),
-            Loc::Stack(offset) | Loc::StackRef(offset) => (STACK_PTR, offset),
+            Loc::Stack(ref stack, off) => (STACK_PTR, stack.offset + off),
             ref l => panic!("expected stack location, got {:?}", l),
         }
     }
 
     fn offset_ref(&self, offset: u64) -> Loc {
-        match *self {
-            Self::Deref(LinReg(r), off) => Self::DerefRef(r, off + offset),
-            Self::DerefRef(r, off) => Self::DerefRef(r, off + offset),
-            Self::Stack(off) => Self::Stack(off + offset),
-            Self::StackRef(off) => Self::StackRef(off + offset),
-            ref un => unreachable!("{:?}", un),
+        self.take_ref().offset(offset)
+    }
+
+    fn offset(self, offset: u64) -> Loc {
+        match self {
+            Loc::Deref(r, off) => Loc::Deref(r, off + offset),
+            Loc::DerefRef(r, off) => Loc::DerefRef(r, off + offset),
+            Loc::Stack(s, off) => Loc::Stack(s, off + offset),
+            l => unreachable!("{:?}", l),
         }
     }
 }
@@ -1508,5 +1683,6 @@ mod tests {
         pointers => include_str!("../examples/pointers.hb");
         structs => include_str!("../examples/structs.hb");
         different_types => include_str!("../examples/different_types.hb");
+        struct_operators => include_str!("../examples/struct_operators.hb");
     }
 }

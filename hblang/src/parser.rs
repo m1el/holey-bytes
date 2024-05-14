@@ -237,24 +237,30 @@ impl<'a, 'b> Parser<'a, 'b> {
         };
 
         loop {
-            let token = self.token.kind;
-            if matches!(token, T::LParen | T::Ctor | T::Dot) {
+            let token = self.token;
+            if matches!(token.kind, T::LParen | T::Ctor | T::Dot | T::Tupl) {
                 self.next();
             }
 
-            expr = match token {
+            expr = match token.kind {
                 T::LParen => Expr::Call {
                     func: self.arena.alloc(expr),
                     args: self.collect_list(T::Comma, T::RParen, Self::expr),
                 },
                 T::Ctor => E::Ctor {
-                    ty:     self.arena.alloc(expr),
+                    pos:    token.start,
+                    ty:     Some(self.arena.alloc(expr)),
                     fields: self.collect_list(T::Comma, T::RBrace, |s| {
                         let name = s.expect_advance(T::Ident);
                         s.expect_advance(T::Colon);
                         let val = s.expr();
-                        (s.lexer.slice(name.range()), val)
+                        (Some(s.lexer.slice(name.range())), val)
                     }),
+                },
+                T::Tupl => E::Ctor {
+                    pos:    token.start,
+                    ty:     Some(self.arena.alloc(expr)),
+                    fields: self.collect_list(T::Comma, T::RParen, |s| (None, s.expr())),
                 },
                 T::Dot => E::Field {
                     target: self.arena.alloc(expr),
@@ -410,8 +416,9 @@ pub enum Expr<'a> {
         fields: &'a [(&'a str, Self)],
     },
     Ctor {
-        ty:     &'a Self,
-        fields: &'a [(&'a str, Self)],
+        pos:    Pos,
+        ty:     Option<&'a Self>,
+        fields: &'a [(Option<&'a str>, Self)],
     },
     Field {
         target: &'a Self,
@@ -426,22 +433,22 @@ pub enum Expr<'a> {
 impl<'a> Expr<'a> {
     pub fn pos(&self) -> Pos {
         match self {
-            Self::Break { pos } => *pos,
-            Self::Continue { pos } => *pos,
-            Self::Closure { pos, .. } => *pos,
             Self::Call { func, .. } => func.pos(),
-            Self::Return { pos, .. } => *pos,
             Self::Ident { id, .. } => ident::pos(*id),
-            Self::Block { pos, .. } => *pos,
-            Self::Number { pos, .. } => *pos,
+            Self::Break { pos }
+            | Self::Continue { pos }
+            | Self::Closure { pos, .. }
+            | Self::Block { pos, .. }
+            | Self::Number { pos, .. }
+            | Self::Return { pos, .. }
+            | Self::If { pos, .. }
+            | Self::Loop { pos, .. }
+            | Self::UnOp { pos, .. }
+            | Self::Struct { pos, .. }
+            | Self::Ctor { pos, .. }
+            | Self::Bool { pos, .. } => *pos,
             Self::BinOp { left, .. } => left.pos(),
-            Self::If { pos, .. } => *pos,
-            Self::Loop { pos, .. } => *pos,
-            Self::UnOp { pos, .. } => *pos,
-            Self::Struct { pos, .. } => *pos,
-            Self::Ctor { ty, .. } => ty.pos(),
             Self::Field { target, .. } => target.pos(),
-            Self::Bool { pos, .. } => *pos,
         }
     }
 }
@@ -465,16 +472,28 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 }
                 write!(f, "}}")
             }
-            Self::Ctor { ty, fields } => {
-                write!(f, "{} {{", ty)?;
+            Self::Ctor { ty, fields, .. } => {
+                let (left, rith) = if fields.iter().any(|(name, _)| name.is_some()) {
+                    ('{', '}')
+                } else {
+                    ('(', ')')
+                };
+
+                if let Some(ty) = ty {
+                    write!(f, "{ty}")?;
+                }
+                write!(f, ".{}", left)?;
                 let first = &mut true;
                 for (name, val) in fields {
                     if !std::mem::take(first) {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{}: {}", name, val)?;
+                    if let Some(name) = name {
+                        write!(f, "{name}: ")?;
+                    }
+                    write!(f, "{val}")?;
                 }
-                write!(f, "}}")
+                write!(f, "{rith}")
             }
             Self::UnOp { op, val, .. } => write!(f, "{}{}", op, val),
             Self::Break { .. } => write!(f, "break;"),

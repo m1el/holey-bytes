@@ -103,6 +103,7 @@ gen_token_kind! {
         Comma  = ",",
         Dot    = ".",
         Ctor   = ".{",
+        Tupl  = ".(",
         #[ops]
         #[prec = 1]
         Decl   = ":=",
@@ -215,6 +216,7 @@ impl<'a> Iterator for Lexer<'a> {
                 b':' => T::Colon,
                 b',' => T::Comma,
                 b'.' if self.advance_if(b'{') => T::Ctor,
+                b'.' if self.advance_if(b'(') => T::Tupl,
                 b'.' => T::Dot,
                 b';' => T::Semi,
                 b'!' if self.advance_if(b'=') => T::Ne,

@@ -13,6 +13,9 @@ fib := fn(n: int): int {
 		a = b;
 		b = c;
 		n = n - 1;
+
+		stack_reclamation_edge_case := 0;
+
 		continue;
 	}
 	return a;
