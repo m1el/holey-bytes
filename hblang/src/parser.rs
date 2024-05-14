@@ -153,6 +153,14 @@ impl<'a, 'b> Parser<'a, 'b> {
         let frame = self.idents.len();
         let token = self.next();
         let mut expr = match token.kind {
+            T::Driective => E::Directive {
+                pos:  token.start,
+                name: self.lexer.slice(token.range()),
+                args: {
+                    self.expect_advance(T::LParen);
+                    self.collect_list(T::Comma, T::RParen, Self::expr)
+                },
+            },
             T::True => E::Bool {
                 pos:   token.start,
                 value: true,
@@ -428,6 +436,11 @@ pub enum Expr<'a> {
         pos:   Pos,
         value: bool,
     },
+    Directive {
+        pos:  u32,
+        name: &'a str,
+        args: &'a [Self],
+    },
 }
 
 impl<'a> Expr<'a> {
@@ -436,6 +449,7 @@ impl<'a> Expr<'a> {
             Self::Call { func, .. } => func.pos(),
             Self::Ident { id, .. } => ident::pos(*id),
             Self::Break { pos }
+            | Self::Directive { pos, .. }
             | Self::Continue { pos }
             | Self::Closure { pos, .. }
             | Self::Block { pos, .. }
@@ -459,18 +473,31 @@ impl<'a> std::fmt::Display for Expr<'a> {
             static INDENT: Cell<usize> = Cell::new(0);
         }
 
+        fn fmt_list<'a, T>(
+            f: &mut std::fmt::Formatter,
+            end: &str,
+            list: &'a [T],
+            fmt: impl Fn(&T, &mut std::fmt::Formatter) -> std::fmt::Result,
+        ) -> std::fmt::Result {
+            let first = &mut true;
+            for expr in list {
+                if !std::mem::take(first) {
+                    write!(f, ", ")?;
+                }
+                fmt(expr, f)?;
+            }
+            write!(f, "{end}")
+        }
+
         match *self {
-            Self::Field { target, field } => write!(f, "{}.{}", target, field),
+            Self::Field { target, field } => write!(f, "{target}.{field}"),
+            Self::Directive { name, args, .. } => {
+                write!(f, "@{name}(")?;
+                fmt_list(f, ")", args, std::fmt::Display::fmt)
+            }
             Self::Struct { fields, .. } => {
                 write!(f, "struct {{")?;
-                let first = &mut true;
-                for (name, ty) in fields {
-                    if !std::mem::take(first) {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}: {}", name, ty)?;
-                }
-                write!(f, "}}")
+                fmt_list(f, "}", fields, |(name, val), f| write!(f, "{name}: {val}",))
             }
             Self::Ctor { ty, fields, .. } => {
                 let (left, rith) = if fields.iter().any(|(name, _)| name.is_some()) {
@@ -482,7 +509,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 if let Some(ty) = ty {
                     write!(f, "{ty}")?;
                 }
-                write!(f, ".{}", left)?;
+                write!(f, ".{left}")?;
                 let first = &mut true;
                 for (name, val) in fields {
                     if !std::mem::take(first) {
@@ -495,46 +522,33 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 }
                 write!(f, "{rith}")
             }
-            Self::UnOp { op, val, .. } => write!(f, "{}{}", op, val),
+            Self::UnOp { op, val, .. } => write!(f, "{op}{val}"),
             Self::Break { .. } => write!(f, "break;"),
             Self::Continue { .. } => write!(f, "continue;"),
             Self::If {
                 cond, then, else_, ..
             } => {
-                write!(f, "if {} {}", cond, then)?;
+                write!(f, "if {cond} {then}")?;
                 if let Some(else_) = else_ {
-                    write!(f, " else {}", else_)?;
+                    write!(f, " else {else_}")?;
                 }
                 Ok(())
             }
-            Self::Loop { body, .. } => write!(f, "loop {}", body),
+            Self::Loop { body, .. } => write!(f, "loop {body}"),
             Self::Closure {
                 ret, body, args, ..
             } => {
-                write!(f, "|")?;
-                let first = &mut true;
-                for arg in args {
-                    if !std::mem::take(first) {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}: {}", arg.name, arg.ty)?;
-                }
-                write!(f, "|: {} {}", ret, body)
+                write!(f, "fn(")?;
+                fmt_list(f, "", args, |arg, f| write!(f, "{}: {}", arg.name, arg.ty))?;
+                write!(f, "): {ret} {body}")
             }
             Self::Call { func, args } => {
-                write!(f, "{}(", func)?;
-                let first = &mut true;
-                for arg in args {
-                    if !std::mem::take(first) {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", arg)?;
-                }
-                write!(f, ")")
+                write!(f, "{func}(")?;
+                fmt_list(f, ")", args, std::fmt::Display::fmt)
             }
-            Self::Return { val: Some(val), .. } => write!(f, "return {};", val),
+            Self::Return { val: Some(val), .. } => write!(f, "return {val};"),
             Self::Return { val: None, .. } => write!(f, "return;"),
-            Self::Ident { name, .. } => write!(f, "{}", name),
+            Self::Ident { name, .. } => write!(f, "{name}"),
             Self::Block { stmts, .. } => {
                 writeln!(f, "{{")?;
                 INDENT.with(|i| i.set(i.get() + 1));
@@ -543,7 +557,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
                         for _ in 0..INDENT.with(|i| i.get()) {
                             write!(f, "    ")?;
                         }
-                        writeln!(f, "{}", stmt)?;
+                        writeln!(f, "{stmt}")?;
                     }
                     Ok(())
                 })();
@@ -551,21 +565,21 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 write!(f, "}}")?;
                 res
             }
-            Self::Number { value, .. } => write!(f, "{}", value),
-            Self::Bool { value, .. } => write!(f, "{}", value),
+            Self::Number { value, .. } => write!(f, "{value}"),
+            Self::Bool { value, .. } => write!(f, "{value}"),
             Self::BinOp { left, right, op } => {
                 let display_branch = |f: &mut std::fmt::Formatter, expr: &Self| {
                     if let Self::BinOp { op: lop, .. } = expr
                         && op.precedence() > lop.precedence()
                     {
-                        write!(f, "({})", expr)
+                        write!(f, "({expr})")
                     } else {
-                        write!(f, "{}", expr)
+                        write!(f, "{expr}")
                     }
                 };
 
                 display_branch(f, left)?;
-                write!(f, " {} ", op)?;
+                write!(f, " {op} ")?;
                 display_branch(f, right)
             }
         }

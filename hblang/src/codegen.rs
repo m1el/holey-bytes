@@ -129,6 +129,7 @@ enum Ctx {
     None,
     Inferred(Type),
     Dest(Value),
+    DestUntyped(Loc, u64),
 }
 
 impl Ctx {
@@ -136,6 +137,14 @@ impl Ctx {
         Some(match self {
             Self::Inferred(ty) => *ty,
             Self::Dest(Value { ty, .. }) => *ty,
+            _ => return None,
+        })
+    }
+
+    fn loc(self) -> Option<Loc> {
+        Some(match self {
+            Self::Dest(Value { loc, .. }) => loc,
+            Self::DestUntyped(loc, ..) => loc,
             _ => return None,
         })
     }
@@ -734,8 +743,129 @@ impl<'a> Codegen<'a> {
         self.expr_ctx(expr, Ctx::default())
     }
 
-    fn expr_ctx(&mut self, expr: &'a parser::Expr<'a>, ctx: Ctx) -> Option<Value> {
+    fn expr_ctx(&mut self, expr: &'a parser::Expr<'a>, mut ctx: Ctx) -> Option<Value> {
         let value = match *expr {
+            E::Directive {
+                name: "eca",
+                args: [ret_ty, args @ ..],
+                ..
+            } => {
+                let mut parama = 3..12;
+                let mut values = Vec::with_capacity(args.len());
+                for arg in args {
+                    let arg = self.expr(arg)?;
+                    self.pass_arg(&arg, &mut parama);
+                    values.push(arg.loc);
+                }
+                drop(values);
+
+                let ty = self.ty(ret_ty);
+                let loc = self.alloc_ret_loc(ty, ctx);
+
+                self.code.encode(instrs::eca());
+
+                self.post_process_ret_loc(ty, &loc);
+
+                return Some(Value { ty, loc });
+            }
+            E::Directive {
+                name: "sizeof",
+                args: [ty],
+                ..
+            } => {
+                let ty = self.ty(ty);
+                let loc = Loc::Imm(self.size_of(ty));
+                return Some(Value { ty: bt::UINT, loc });
+            }
+            E::Directive {
+                name: "alignof",
+                args: [ty],
+                ..
+            } => {
+                let ty = self.ty(ty);
+                let loc = Loc::Imm(self.align_of(ty));
+                return Some(Value { ty: bt::UINT, loc });
+            }
+            E::Directive {
+                name: "intcast",
+                args: [val],
+                ..
+            } => {
+                let Some(ty) = ctx.ty() else {
+                    self.report(
+                        expr.pos(),
+                        "type to cast to is unknown, use `@as(<type>, <expr>)`",
+                    );
+                };
+                let mut val = self.expr(val)?;
+
+                let from_size = self.size_of(val.ty);
+                let to_size = self.size_of(ty);
+
+                if from_size < to_size && bt::is_signed(val.ty) {
+                    let reg = self.loc_to_reg(val.loc, from_size);
+                    let op =
+                        [instrs::sxt8, instrs::sxt16, instrs::sxt32][from_size.ilog2() as usize];
+                    self.code.encode(op(reg.0, reg.0));
+                    val.loc = Loc::Reg(reg);
+                }
+
+                Some(Value { ty, loc: val.loc })
+            }
+            E::Directive {
+                name: "bitcast",
+                args: [val],
+                ..
+            } => {
+                let Some(ty) = ctx.ty() else {
+                    self.report(
+                        expr.pos(),
+                        "type to cast to is unknown, use `@as(<type>, <expr>)`",
+                    );
+                };
+
+                let size = self.size_of(ty);
+
+                ctx = match ctx {
+                    Ctx::Dest(Value { loc, .. }) | Ctx::DestUntyped(loc, ..) => {
+                        Ctx::DestUntyped(loc, size as _)
+                    }
+                    _ => Ctx::None,
+                };
+
+                let val = self.expr_ctx(val, ctx)?;
+
+                if self.size_of(val.ty) != size {
+                    self.report(
+                        expr.pos(),
+                        format_args!(
+                            "cannot bitcast {} to {} (different sizes: {} != {size})",
+                            self.display_ty(val.ty),
+                            self.display_ty(ty),
+                            self.size_of(val.ty),
+                        ),
+                    );
+                }
+
+                // TODO: maybe check align
+
+                return Some(Value { ty, loc: val.loc });
+            }
+            E::Directive {
+                name: "as",
+                args: [ty, val],
+                ..
+            } => {
+                let ty = self.ty(ty);
+                let ctx = match ctx {
+                    Ctx::Dest(dest) => Ctx::Dest(dest),
+                    Ctx::DestUntyped(loc, size) if self.size_of(ty) == size => {
+                        Ctx::Dest(Value { ty, loc })
+                    }
+                    _ => Ctx::Inferred(ty),
+                };
+                return self.expr_ctx(val, ctx);
+            }
             E::Bool { value, .. } => Some(Value {
                 ty:  bt::BOOL,
                 loc: Loc::Imm(value as u64),
@@ -748,8 +878,8 @@ impl<'a> Codegen<'a> {
                 };
                 let size = self.size_of(ty);
 
-                let loc = match ctx {
-                    Ctx::Dest(dest) => dest.loc,
+                let loc = match ctx.loc() {
+                    Some(loc) => loc,
                     _ => Loc::Stack(self.alloc_stack(size), 0),
                 };
 
@@ -878,40 +1008,11 @@ impl<'a> Codegen<'a> {
                 }
                 drop(values);
 
-                let size = self.size_of(fn_label.ret);
-                let loc = match size {
-                    0 => Loc::Imm(0),
-                    ..=8 => Loc::RegRef(1),
-                    ..=16 => match ctx {
-                        Ctx::Dest(dest) => dest.loc,
-                        _ => Loc::Stack(self.alloc_stack(size), 0),
-                    },
-                    ..=u64::MAX => {
-                        let val = match ctx {
-                            Ctx::Dest(dest) => dest.loc,
-                            _ => Loc::Stack(self.alloc_stack(size), 0),
-                        };
-                        let (ptr, off) = val.ref_to_ptr();
-                        self.code.encode(instrs::cp(1, ptr));
-                        self.code.addi64(1, ptr, off);
-                        val
-                    }
-                };
+                let loc = self.alloc_ret_loc(fn_label.ret, ctx);
 
                 self.code.call(func);
 
-                match size {
-                    0 => {}
-                    ..=8 => {}
-                    ..=16 => {
-                        if let Loc::Stack(ref stack, off) = loc {
-                            self.store_stack(1, stack.offset + off, 16);
-                        } else {
-                            unreachable!()
-                        }
-                    }
-                    ..=u64::MAX => {}
-                }
+                self.post_process_ret_loc(fn_label.ret, &loc);
 
                 return Some(Value {
                     ty: fn_label.ret,
@@ -1156,11 +1257,18 @@ impl<'a> Codegen<'a> {
             ast => unimplemented!("{:#?}", ast),
         }?;
 
-        if let Ctx::Dest(dest) = ctx {
-            self.assign(dest.ty, dest.loc, value.loc);
-            Some(Value::VOID)
-        } else {
-            Some(value)
+        match ctx {
+            Ctx::Dest(dest) => {
+                _ = self.assert_ty(expr.pos(), dest.ty, value.ty);
+                self.assign(dest.ty, dest.loc, value.loc)?;
+                Some(Value::VOID)
+            }
+            Ctx::DestUntyped(loc, size) => {
+                // Wo dont check since bitcast does
+                self.assign_opaque(size, loc, value.loc);
+                Some(Value::VOID)
+            }
+            _ => Some(value),
         }
     }
 
@@ -1269,12 +1377,10 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn assign(&mut self, ty: Type, right: Loc, left: Loc) -> Option<Value> {
+    fn assign_opaque(&mut self, size: u64, right: Loc, left: Loc) -> Option<Value> {
         if left == right {
             return Some(Value::VOID);
         }
-
-        let size = self.size_of(ty);
 
         match size {
             0 => {}
@@ -1307,6 +1413,10 @@ impl<'a> Codegen<'a> {
         }
 
         Some(Value::VOID)
+    }
+
+    fn assign(&mut self, ty: Type, right: Loc, left: Loc) -> Option<Value> {
+        self.assign_opaque(self.size_of(ty), right, left)
     }
 
     fn to_ptr(&mut self, loc: Loc) -> LinReg {
@@ -1521,6 +1631,44 @@ impl<'a> Codegen<'a> {
         println!("{}:{}:{}: {}", self.path, line, col, msg);
         unreachable!();
     }
+
+    fn alloc_ret_loc(&mut self, ret: Type, ctx: Ctx) -> Loc {
+        let size = self.size_of(ret);
+        match size {
+            0 => Loc::Imm(0),
+            ..=8 => Loc::RegRef(1),
+            ..=16 => match ctx {
+                Ctx::Dest(dest) => dest.loc,
+                _ => Loc::Stack(self.alloc_stack(size), 0),
+            },
+            ..=u64::MAX => {
+                let val = match ctx {
+                    Ctx::Dest(dest) => dest.loc,
+                    _ => Loc::Stack(self.alloc_stack(size), 0),
+                };
+                let (ptr, off) = val.ref_to_ptr();
+                self.code.encode(instrs::cp(1, ptr));
+                self.code.addi64(1, ptr, off);
+                val
+            }
+        }
+    }
+
+    fn post_process_ret_loc(&mut self, ty: Type, loc: &Loc) {
+        let size = self.size_of(ty);
+        match size {
+            0 => {}
+            ..=8 => {}
+            ..=16 => {
+                if let Loc::Stack(ref stack, off) = loc {
+                    self.store_stack(1, stack.offset + off, size as _);
+                } else {
+                    unreachable!()
+                }
+            }
+            ..=u64::MAX => {}
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1704,5 +1852,6 @@ mod tests {
         structs => include_str!("../examples/structs.hb");
         different_types => include_str!("../examples/different_types.hb");
         struct_operators => include_str!("../examples/struct_operators.hb");
+        directives => include_str!("../examples/directives.hb");
     }
 }

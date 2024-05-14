@@ -83,6 +83,7 @@ gen_token_kind! {
         Number,
         Eof,
         Error,
+        Driective,
         #[keywords]
         Return   = b"return",
         If       = b"if",
@@ -195,7 +196,7 @@ impl<'a> Iterator for Lexer<'a> {
     fn next(&mut self) -> Option<Self::Item> {
         use TokenKind as T;
         loop {
-            let start = self.pos;
+            let mut start = self.pos;
             let kind = match self.advance()? {
                 b'\n' | b'\r' | b'\t' | b' ' => continue,
                 b'0'..=b'9' => {
@@ -204,13 +205,18 @@ impl<'a> Iterator for Lexer<'a> {
                     }
                     T::Number
                 }
-                b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
+                c @ (b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'@') => {
                     while let Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_') = self.peek() {
                         self.advance();
                     }
 
-                    let ident = &self.bytes[start as usize..self.pos as usize];
-                    T::from_ident(ident)
+                    if c == b'@' {
+                        start += 1;
+                        T::Driective
+                    } else {
+                        let ident = &self.bytes[start as usize..self.pos as usize];
+                        T::from_ident(ident)
+                    }
                 }
                 b':' if self.advance_if(b'=') => T::Decl,
                 b':' => T::Colon,
