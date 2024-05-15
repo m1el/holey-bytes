@@ -1,4 +1,3 @@
-
 Type := struct {
 	brah: int,
 	blah: int,

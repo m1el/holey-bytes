@@ -724,7 +724,7 @@ impl<'a> Codegen<'a> {
         match *expr {
             E::Ident { id, .. } if ident::is_null(id) => id,
             E::UnOp {
-                op: T::Star, val, ..
+                op: T::Mul, val, ..
             } => {
                 let ty = self.ty(val);
                 self.alloc_pointer(ty)
@@ -918,7 +918,7 @@ impl<'a> Codegen<'a> {
                 Some(Value { ty, loc })
             }
             E::UnOp {
-                op: T::Amp,
+                op: T::Band,
                 val,
                 pos,
             } => {
@@ -953,7 +953,7 @@ impl<'a> Codegen<'a> {
                 })
             }
             E::UnOp {
-                op: T::Star,
+                op: T::Mul,
                 val,
                 pos,
             } => {
@@ -1198,7 +1198,7 @@ impl<'a> Codegen<'a> {
                     self.display_ty(right.ty)
                 );
 
-                if matches!(op, T::Plus | T::Minus) {
+                if matches!(op, T::Add | T::Sub) {
                     let min_size = lsize.min(rsize);
                     if bt::is_signed(ty) && min_size < size {
                         let operand = if lsize < rsize { lhs.0 } else { rhs.0 };
@@ -1280,16 +1280,16 @@ impl<'a> Codegen<'a> {
         use instrs as i;
         Some(
             match op {
-                T::Plus => [i::add8, i::add16, i::add32, i::add64],
-                T::Minus => [i::sub8, i::sub16, i::sub32, i::sub64],
-                T::Star => [i::mul8, i::mul16, i::mul32, i::mul64],
-                T::FSlash if signed => [
+                T::Add => [i::add8, i::add16, i::add32, i::add64],
+                T::Sub => [i::sub8, i::sub16, i::sub32, i::sub64],
+                T::Mul => [i::mul8, i::mul16, i::mul32, i::mul64],
+                T::Div if signed => [
                     |a, b, c| i::dirs8(a, ZERO, b, c),
                     |a, b, c| i::dirs16(a, ZERO, b, c),
                     |a, b, c| i::dirs32(a, ZERO, b, c),
                     |a, b, c| i::dirs64(a, ZERO, b, c),
                 ],
-                T::FSlash => [
+                T::Div => [
                     |a, b, c| i::diru8(a, ZERO, b, c),
                     |a, b, c| i::diru16(a, ZERO, b, c),
                     |a, b, c| i::diru32(a, ZERO, b, c),

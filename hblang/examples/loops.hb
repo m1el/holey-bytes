@@ -12,7 +12,7 @@ fib := fn(n: int): int {
 		c := a + b;
 		a = b;
 		b = c;
-		n = n - 1;
+		n -= 1;
 
 		stack_reclamation_edge_case := 0;
 

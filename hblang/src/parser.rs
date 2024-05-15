@@ -74,7 +74,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         self.bin_expr(left, 0)
     }
 
-    fn bin_expr(&mut self, mut left: Expr<'a>, min_prec: u8) -> Expr<'a> {
+    fn bin_expr(&mut self, mut fold: Expr<'a>, min_prec: u8) -> Expr<'a> {
         loop {
             let Some(prec) = self.token.kind.precedence() else {
                 break;
@@ -87,14 +87,22 @@ impl<'a, 'b> Parser<'a, 'b> {
             let op = self.next().kind;
             let right = self.unit_expr();
             let right = self.bin_expr(right, prec);
-            left = Expr::BinOp {
-                left: self.arena.alloc(left),
-                right: self.arena.alloc(right),
-                op,
-            };
+            let right = &*self.arena.alloc(right);
+            let left = &*self.arena.alloc(fold);
+
+            if let Some(op) = op.assign_op() {
+                let right = Expr::BinOp { left, op, right };
+                fold = Expr::BinOp {
+                    left,
+                    op: TokenKind::Assign,
+                    right: self.arena.alloc(right),
+                };
+            } else {
+                fold = Expr::BinOp { left, right, op };
+            }
         }
 
-        left
+        fold
     }
 
     fn try_resolve_builtin(name: &str) -> Option<Ident> {
@@ -220,7 +228,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 },
                 body: self.ptr_expr(),
             },
-            T::Amp | T::Star => E::UnOp {
+            T::Band | T::Mul => E::UnOp {
                 pos: token.start,
                 op:  token.kind,
                 val: self.ptr_unit_expr(),

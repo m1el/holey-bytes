@@ -29,8 +29,8 @@ macro_rules! gen_token_kind {
                 $punkt:ident = $punkt_lit:literal,
             )*
             #[ops] $(
-                #[prec = $prec:literal] $(
-                    $op:ident = $op_lit:literal,
+                #[$prec:ident] $(
+                    $op:ident = $op_lit:literal $(=> $assign:ident)?,
                 )*
             )*
         }
@@ -42,7 +42,8 @@ macro_rules! gen_token_kind {
 
                     $( Self::$keyword => stringify!($keyword_lit), )*
                     $( Self::$punkt   => stringify!($punkt_lit),   )*
-                    $($( Self::$op    => $op_lit,                )*)*
+                    $($( Self::$op    => $op_lit,
+                      $(Self::$assign => concat!($op_lit, "="),)?)*)*
                 };
                 f.write_str(s)
             }
@@ -52,9 +53,10 @@ macro_rules! gen_token_kind {
             #[inline(always)]
             pub fn precedence(&self) -> Option<u8> {
                 Some(match self {
-                    $($(Self::$op)|* => $prec,)*
+                    $($(Self::$op => ${ignore($prec)} ${index(1)},
+                      $(Self::$assign => 0,)?)*)*
                     _ => return None,
-                })
+                } + 1)
             }
 
             #[inline(always)]
@@ -64,6 +66,13 @@ macro_rules! gen_token_kind {
                     _ => Self::Ident,
                 }
             }
+
+            pub fn assign_op(&self) -> Option<Self> {
+                Some(match self {
+                    $($($(Self::$assign => Self::$op,)?)*)*
+                    _ => return None,
+                })
+            }
         }
 
         #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -71,7 +80,7 @@ macro_rules! gen_token_kind {
             $( $pattern, )*
             $( $keyword, )*
             $( $punkt,   )*
-            $($( $op,  )*)*
+            $($( $op, $($assign,)?  )*)*
         }
     };
 }
@@ -104,26 +113,39 @@ gen_token_kind! {
         Comma  = ",",
         Dot    = ".",
         Ctor   = ".{",
-        Tupl  = ".(",
+        Tupl   = ".(",
         #[ops]
-        #[prec = 1]
+        #[prec]
         Decl   = ":=",
         Assign = "=",
-        #[prec = 21]
+        #[prec]
+        Or = "||",
+        #[prec]
+        And = "&&",
+        #[prec]
+        Bor = "|" => BorAss,
+        #[prec]
+        Xor = "^" => XorAss,
+        #[prec]
+        Band = "&" => BandAss,
+        #[prec]
+        Eq = "==",
+        Ne = "!=",
+        #[prec]
         Le = "<=",
         Ge = ">=",
         Lt = "<",
         Gt = ">",
-        Eq = "==",
-        Ne = "!=",
-        #[prec = 22]
-        Amp = "&",
-        #[prec = 23]
-        Plus  = "+",
-        Minus = "-",
-        #[prec = 24]
-        Star   = "*",
-        FSlash = "/",
+        #[prec]
+        Shl = "<<" => ShlAss,
+        Shr = ">>" => ShrAss,
+        #[prec]
+        Add = "+" => AddAss,
+        Sub = "-" => SubAss,
+        #[prec]
+        Mul = "*" => MulAss,
+        Div = "/" => DivAss,
+        Mod = "%" => ModAss,
     }
 }
 
@@ -155,11 +177,92 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn next(&mut self) -> Token {
-        Iterator::next(self).unwrap_or(Token {
-            kind:  TokenKind::Eof,
-            start: self.pos,
-            end:   self.pos,
-        })
+        use TokenKind as T;
+        loop {
+            let mut start = self.pos;
+
+            let Some(c) = self.advance() else {
+                return Token {
+                    kind: T::Eof,
+                    start,
+                    end: self.pos,
+                };
+            };
+
+            let kind = match c {
+                b'\n' | b'\r' | b'\t' | b' ' => continue,
+                b'0'..=b'9' => {
+                    while let Some(b'0'..=b'9') = self.peek() {
+                        self.advance();
+                    }
+                    T::Number
+                }
+                c @ (b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'@') => {
+                    while let Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_') = self.peek() {
+                        self.advance();
+                    }
+
+                    if c == b'@' {
+                        start += 1;
+                        T::Driective
+                    } else {
+                        let ident = &self.bytes[start as usize..self.pos as usize];
+                        T::from_ident(ident)
+                    }
+                }
+                b':' if self.advance_if(b'=') => T::Decl,
+                b':' => T::Colon,
+                b',' => T::Comma,
+                b'.' if self.advance_if(b'{') => T::Ctor,
+                b'.' if self.advance_if(b'(') => T::Tupl,
+                b'.' => T::Dot,
+                b';' => T::Semi,
+                b'!' if self.advance_if(b'=') => T::Ne,
+                b'=' if self.advance_if(b'=') => T::Eq,
+                b'=' => T::Assign,
+                b'<' if self.advance_if(b'=') => T::Le,
+                b'<' if self.advance_if(b'<') => match self.advance_if(b'=') {
+                    true => T::ShlAss,
+                    false => T::Shl,
+                },
+                b'<' => T::Lt,
+                b'>' if self.advance_if(b'=') => T::Ge,
+                b'>' if self.advance_if(b'>') => match self.advance_if(b'=') {
+                    true => T::ShrAss,
+                    false => T::Shr,
+                },
+                b'>' => T::Gt,
+                b'+' if self.advance_if(b'=') => T::AddAss,
+                b'+' => T::Add,
+                b'-' if self.advance_if(b'=') => T::SubAss,
+                b'-' => T::Sub,
+                b'*' if self.advance_if(b'=') => T::MulAss,
+                b'*' => T::Mul,
+                b'/' if self.advance_if(b'=') => T::DivAss,
+                b'/' => T::Div,
+                b'%' if self.advance_if(b'=') => T::ModAss,
+                b'%' => T::Mod,
+                b'&' if self.advance_if(b'=') => T::BandAss,
+                b'&' if self.advance_if(b'&') => T::And,
+                b'&' => T::Band,
+                b'^' if self.advance_if(b'=') => T::XorAss,
+                b'^' => T::Xor,
+                b'|' if self.advance_if(b'=') => T::BorAss,
+                b'|' if self.advance_if(b'|') => T::Or,
+                b'|' => T::Bor,
+                b'(' => T::LParen,
+                b')' => T::RParen,
+                b'{' => T::LBrace,
+                b'}' => T::RBrace,
+                _ => T::Error,
+            };
+
+            return Token {
+                kind,
+                start,
+                end: self.pos,
+            };
+        }
     }
 
     fn advance_if(&mut self, arg: u8) -> bool {
@@ -232,11 +335,11 @@ impl<'a> Iterator for Lexer<'a> {
                 b'<' => T::Lt,
                 b'>' if self.advance_if(b'=') => T::Ge,
                 b'>' => T::Gt,
-                b'+' => T::Plus,
-                b'-' => T::Minus,
-                b'*' => T::Star,
-                b'/' => T::FSlash,
-                b'&' => T::Amp,
+                b'+' => T::Add,
+                b'-' => T::Sub,
+                b'*' => T::Mul,
+                b'/' => T::Div,
+                b'&' => T::Band,
                 b'(' => T::LParen,
                 b')' => T::RParen,
                 b'{' => T::LBrace,
