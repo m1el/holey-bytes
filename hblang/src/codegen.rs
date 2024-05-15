@@ -744,6 +744,7 @@ impl<'a> Codegen<'a> {
     }
 
     fn expr_ctx(&mut self, expr: &'a parser::Expr<'a>, mut ctx: Ctx) -> Option<Value> {
+        use instrs as i;
         let value = match *expr {
             E::Directive {
                 name: "eca",
@@ -762,7 +763,7 @@ impl<'a> Codegen<'a> {
                 let ty = self.ty(ret_ty);
                 let loc = self.alloc_ret_loc(ty, ctx);
 
-                self.code.encode(instrs::eca());
+                self.code.encode(i::eca());
 
                 self.post_process_ret_loc(ty, &loc);
 
@@ -804,8 +805,7 @@ impl<'a> Codegen<'a> {
 
                 if from_size < to_size && bt::is_signed(val.ty) {
                     let reg = self.loc_to_reg(val.loc, from_size);
-                    let op =
-                        [instrs::sxt8, instrs::sxt16, instrs::sxt32][from_size.ilog2() as usize];
+                    let op = [i::sxt8, i::sxt16, i::sxt32][from_size.ilog2() as usize];
                     self.code.encode(op(reg.0, reg.0));
                     val.loc = Loc::Reg(reg);
                 }
@@ -939,7 +939,7 @@ impl<'a> Codegen<'a> {
                         stack.leak();
                         let reg = self.alloc_reg();
                         self.code
-                            .encode(instrs::addi64(reg.0, STACK_PTR, stack.offset + off));
+                            .encode(i::addi64(reg.0, STACK_PTR, stack.offset + off));
                         Loc::Reg(reg)
                     }
                     l => self.report(
@@ -1052,7 +1052,7 @@ impl<'a> Codegen<'a> {
                     instr_offset: 1,
                     size:         4,
                 });
-                self.code.encode(instrs::jmp(0));
+                self.code.encode(i::jmp(0));
                 None
             }
             E::Block { stmts, .. } => {
@@ -1072,7 +1072,7 @@ impl<'a> Codegen<'a> {
                 let cond = self.expr_ctx(cond, Ctx::Inferred(bt::BOOL))?;
                 let reg = self.loc_to_reg(cond.loc, 1);
                 let jump_offset = self.code.code.len() as u32;
-                self.code.encode(instrs::jeq(reg.0, 0, 0));
+                self.code.encode(i::jeq(reg.0, 0, 0));
 
                 log::dbg!("if-then");
                 let then_unreachable = self.expr(then).is_none();
@@ -1084,7 +1084,7 @@ impl<'a> Codegen<'a> {
                     log::dbg!("if-else");
                     let else_jump_offset = self.code.code.len() as u32;
                     if !then_unreachable {
-                        self.code.encode(instrs::jmp(0));
+                        self.code.encode(i::jmp(0));
                         jump = self.code.code.len() as i16 - jump_offset as i16;
                     }
 
@@ -1122,7 +1122,7 @@ impl<'a> Codegen<'a> {
                 if !body_unreachable {
                     let loop_end = self.code.code.len();
                     self.code
-                        .encode(instrs::jmp(loop_start as i32 - loop_end as i32));
+                        .encode(i::jmp(loop_start as i32 - loop_end as i32));
                 }
 
                 let loop_end = self.code.code.len() as u32;
@@ -1149,7 +1149,7 @@ impl<'a> Codegen<'a> {
             E::Break { .. } => {
                 let loop_ = self.loops.last_mut().unwrap();
                 let offset = self.code.code.len() as u32;
-                self.code.encode(instrs::jmp(0));
+                self.code.encode(i::jmp(0));
                 loop_.relocs.push(RetReloc {
                     offset,
                     instr_offset: 1,
@@ -1161,13 +1161,34 @@ impl<'a> Codegen<'a> {
                 let loop_ = self.loops.last().unwrap();
                 let offset = self.code.code.len() as u32;
                 self.code
-                    .encode(instrs::jmp(loop_.offset as i32 - offset as i32));
+                    .encode(i::jmp(loop_.offset as i32 - offset as i32));
                 None
             }
-            E::BinOp { left, op, right } => 'ops: {
-                use instrs as i;
+            E::BinOp {
+                left,
+                op: op @ (T::And | T::Or),
+                right,
+            } => {
+                let lhs = self.expr_ctx(left, Ctx::Inferred(bt::BOOL))?;
+                let lhs = self.loc_to_reg(lhs.loc, 1);
+                let jump_offset = self.code.code.len() as u32 + 3;
+                let op = if op == T::And { i::jeq } else { i::jne };
+                self.code.encode(op(lhs.0, 0, 0));
 
-                log::dbg!("binop: {}", expr);
+                if let Some(rhs) = self.expr_ctx(right, Ctx::Inferred(bt::BOOL)) {
+                    let rhs = self.loc_to_reg(rhs.loc, 1);
+                    self.code.encode(i::cp(lhs.0, rhs.0));
+                }
+
+                let jump = self.code.code.len() as i16 - jump_offset as i16;
+                self.code.code[jump_offset as usize..][..2].copy_from_slice(&jump.to_ne_bytes());
+
+                Some(Value {
+                    ty:  bt::BOOL,
+                    loc: Loc::Reg(lhs),
+                })
+            }
+            E::BinOp { left, op, right } => 'ops: {
                 let left = self.expr(left)?;
 
                 if op == T::Assign {
@@ -1241,9 +1262,9 @@ impl<'a> Codegen<'a> {
 
                     let op_fn = if signed { i::cmps } else { i::cmpu };
                     self.code.encode(op_fn(lhs.0, lhs.0, rhs.0));
-                    self.code.encode(instrs::cmpui(lhs.0, lhs.0, against));
+                    self.code.encode(i::cmpui(lhs.0, lhs.0, against));
                     if matches!(op, T::Eq | T::Lt | T::Gt) {
-                        self.code.encode(instrs::not(lhs.0, lhs.0));
+                        self.code.encode(i::not(lhs.0, lhs.0));
                     }
 
                     break 'ops Some(Value {
@@ -1278,26 +1299,28 @@ impl<'a> Codegen<'a> {
         size: u64,
     ) -> Option<fn(u8, u8, u8) -> (usize, [u8; instrs::MAX_SIZE])> {
         use instrs as i;
-        Some(
-            match op {
-                T::Add => [i::add8, i::add16, i::add32, i::add64],
-                T::Sub => [i::sub8, i::sub16, i::sub32, i::sub64],
-                T::Mul => [i::mul8, i::mul16, i::mul32, i::mul64],
-                T::Div if signed => [
-                    |a, b, c| i::dirs8(a, ZERO, b, c),
-                    |a, b, c| i::dirs16(a, ZERO, b, c),
-                    |a, b, c| i::dirs32(a, ZERO, b, c),
-                    |a, b, c| i::dirs64(a, ZERO, b, c),
-                ],
-                T::Div => [
-                    |a, b, c| i::diru8(a, ZERO, b, c),
-                    |a, b, c| i::diru16(a, ZERO, b, c),
-                    |a, b, c| i::diru32(a, ZERO, b, c),
-                    |a, b, c| i::diru64(a, ZERO, b, c),
-                ],
-                _ => return None,
-            }[size.ilog2() as usize],
-        )
+
+        macro_rules! div { ($($op:ident),*) => {[$(|a, b, c| i::$op(a, ZERO, b, c)),*]}; }
+        macro_rules! rem { ($($op:ident),*) => {[$(|a, b, c| i::$op(ZERO, a, b, c)),*]}; }
+
+        let ops = match op {
+            T::Add => [i::add8, i::add16, i::add32, i::add64],
+            T::Sub => [i::sub8, i::sub16, i::sub32, i::sub64],
+            T::Mul => [i::mul8, i::mul16, i::mul32, i::mul64],
+            T::Div if signed => div!(dirs8, dirs16, dirs32, dirs64),
+            T::Div => div!(diru8, diru16, diru32, diru64),
+            T::Mod if signed => rem!(dirs8, dirs16, dirs32, dirs64),
+            T::Mod => rem!(diru8, diru16, diru32, diru64),
+            T::Band => return Some(i::and),
+            T::Bor => return Some(i::or),
+            T::Xor => return Some(i::xor),
+            T::Shl => [i::slu8, i::slu16, i::slu32, i::slu64],
+            T::Shr if signed => [i::srs8, i::srs16, i::srs32, i::srs64],
+            T::Shr => [i::sru8, i::sru16, i::sru32, i::sru64],
+            _ => return None,
+        };
+
+        Some(ops[size.ilog2() as usize])
     }
 
     fn struct_op(&mut self, op: T, ty: Type, ctx: Ctx, left: Loc, right: Loc) -> Option<Value> {
