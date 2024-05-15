@@ -2,7 +2,3 @@
 name = "hbbytecode"
 version = "0.1.0"
 edition = "2018"
-
-[dependencies]
-paste = "1.0.14"
-with_builtin_macros = "0.0.3"

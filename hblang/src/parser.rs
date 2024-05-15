@@ -497,8 +497,34 @@ impl<'a> std::fmt::Display for Expr<'a> {
             write!(f, "{end}")
         }
 
+        macro_rules! impl_parenter {
+            ($($name:ident => $pat:pat,)*) => {
+                $(
+                    struct $name<'a>(&'a Expr<'a>);
+
+                    impl<'a> std::fmt::Display for $name<'a> {
+                        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                            if matches!(self.0, $pat) {
+                                write!(f, "({})", self.0)
+                            } else {
+                                write!(f, "{}", self.0)
+                            }
+                        }
+                    }
+                )*
+            };
+        }
+
+        impl_parenter! {
+            Unary => Expr::BinOp { .. },
+            Postfix => Expr::UnOp { .. } | Expr::BinOp { .. },
+            Consecutive => Expr::UnOp { .. },
+        }
+
         match *self {
-            Self::Field { target, field } => write!(f, "{target}.{field}"),
+            Self::Field { target, field } => {
+                write!(f, "{}.{field}", Postfix(target))
+            }
             Self::Directive { name, args, .. } => {
                 write!(f, "@{name}(")?;
                 fmt_list(f, ")", args, std::fmt::Display::fmt)
@@ -515,7 +541,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 };
 
                 if let Some(ty) = ty {
-                    write!(f, "{ty}")?;
+                    write!(f, "{}", Unary(ty))?;
                 }
                 write!(f, ".{left}")?;
                 let first = &mut true;
@@ -530,13 +556,13 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 }
                 write!(f, "{rith}")
             }
-            Self::UnOp { op, val, .. } => write!(f, "{op}{val}"),
+            Self::UnOp { op, val, .. } => write!(f, "{op}{}", Unary(val)),
             Self::Break { .. } => write!(f, "break;"),
             Self::Continue { .. } => write!(f, "continue;"),
             Self::If {
                 cond, then, else_, ..
             } => {
-                write!(f, "if {cond} {then}")?;
+                write!(f, "if {cond} {}", Consecutive(then))?;
                 if let Some(else_) = else_ {
                     write!(f, " else {else_}")?;
                 }
@@ -551,7 +577,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 write!(f, "): {ret} {body}")
             }
             Self::Call { func, args } => {
-                write!(f, "{func}(")?;
+                write!(f, "{}(", Postfix(func))?;
                 fmt_list(f, ")", args, std::fmt::Display::fmt)
             }
             Self::Return { val: Some(val), .. } => write!(f, "return {val};"),

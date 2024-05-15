@@ -8,6 +8,4 @@ name = "hbc"
 path = "src/main.rs"
 
 [dependencies]
-
-[dev-dependencies]
 hbvm = { path = "../hbvm", features = ["nightly"] }

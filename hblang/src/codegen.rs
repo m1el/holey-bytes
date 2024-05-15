@@ -471,6 +471,12 @@ impl<'a> std::fmt::Display for TypeDisplay<'a> {
     }
 }
 
+struct Global {
+    id:     Ident,
+    offset: u64,
+    ty:     Type,
+}
+
 #[derive(Default)]
 pub struct Codegen<'a> {
     path:       &'a str,
@@ -486,6 +492,7 @@ pub struct Codegen<'a> {
     loops:      Vec<Loop>,
     records:    Vec<Struct>,
     pointers:   Vec<Type>,
+    globals:    Vec<Global>,
     main:       Option<LabelId>,
 }
 
@@ -495,28 +502,35 @@ impl<'a> Codegen<'a> {
         self.input = input;
 
         for expr in exprs {
-            match expr {
-                E::BinOp {
-                    left: E::Ident { id, .. },
-                    op: T::Decl,
-                    right: E::Closure { args, ret, .. },
-                } => {
+            let E::BinOp {
+                left: &E::Ident { id, name, .. },
+                op: T::Decl,
+                right,
+            } = expr
+            else {
+                self.report(expr.pos(), format_args!("expected declaration"));
+            };
+
+            match right {
+                E::Closure { args, ret, .. } => {
                     let args = args.iter().map(|arg| self.ty(&arg.ty)).collect::<Rc<[_]>>();
                     let ret = self.ty(ret);
-                    self.declare_fn_label(*id, args, ret);
+                    self.declare_fn_label(id, args, ret);
                 }
-                E::BinOp {
-                    left: E::Ident { id, name, .. },
-                    op: T::Decl,
-                    right: E::Struct { .. },
-                } => {
+                E::Struct { .. } => {
                     self.records.push(Struct {
-                        id:     *id,
-                        name:   (*name).into(),
+                        id,
+                        name: (*name).into(),
                         fields: Rc::from([]),
                     });
                 }
-                _ => self.report(expr.pos(), "expected declaration"),
+                _ => {
+                    self.globals.push(Global {
+                        id,
+                        offset: 0,
+                        ty: bt::NEVER,
+                    });
+                }
             }
         }
 
@@ -580,7 +594,7 @@ impl<'a> Codegen<'a> {
                     self.ret();
                     self.sa.borrow_mut().clear();
                 }
-                _ => unreachable!(),
+                value => todo!(),
             }
         }
     }

@@ -196,10 +196,6 @@ dependencies = [
 [[package]]
 name = "hbbytecode"
 version = "0.1.0"
-dependencies = [
- "paste",
- "with_builtin_macros",
-]
 
 [[package]]
 name = "hblang"
