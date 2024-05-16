@@ -984,14 +984,14 @@ impl<'a> Codegen<'a> {
                 }
             }
             E::BinOp {
-                left: E::Ident { id, .. },
+                left: E::Ident { id, last, .. },
                 op: T::Decl,
                 right,
             } => {
                 let val = self.expr(right)?;
                 let loc = self.make_loc_owned(val.loc, val.ty);
                 let loc = match loc {
-                    Loc::Reg(r) => {
+                    Loc::Reg(r) if last.is_some_and(|l| l.get() & parser::REFERENCED != 0) => {
                         let size = self.size_of(val.ty);
                         let stack = self.alloc_stack(size);
                         self.store_stack(r.0, stack.offset, size as _);
@@ -1033,14 +1033,20 @@ impl<'a> Codegen<'a> {
                     loc,
                 });
             }
-            E::Ident { name, id, last } => {
-                let Some((index, var)) = self.vars.iter_mut().enumerate().find(|(_, v)| v.id == id)
+            E::Ident {
+                name,
+                id,
+                last,
+                index,
+            } => {
+                let Some((var_index, var)) =
+                    self.vars.iter_mut().enumerate().find(|(_, v)| v.id == id)
                 else {
                     self.report(expr.pos(), format_args!("unknown variable: {}", name))
                 };
 
-                let loc = match last.is_some_and(Cell::get)
-                    && !self.loops.last().is_some_and(|l| l.var_count > index)
+                let loc = match last.is_some_and(|l| parser::ident_flag_index(l.get()) == index)
+                    && !self.loops.last().is_some_and(|l| l.var_count > var_index)
                 {
                     true => std::mem::replace(&mut var.value.loc, Loc::Imm(0)),
                     false => var.value.loc.take_ref(),

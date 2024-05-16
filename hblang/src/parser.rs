@@ -8,18 +8,28 @@ use crate::{
 
 pub type Pos = u32;
 
+pub type IdentFlags = u32;
+
+pub const MUTABLE: IdentFlags = 1 << std::mem::size_of::<IdentFlags>() * 8 - 1;
+pub const REFERENCED: IdentFlags = 1 << std::mem::size_of::<IdentFlags>() * 8 - 2;
+
+pub fn ident_flag_index(flag: IdentFlags) -> u32 {
+    flag & !(MUTABLE | REFERENCED)
+}
+
 struct ScopeIdent<'a> {
     ident:    Ident,
     declared: bool,
-    last:     &'a Cell<bool>,
+    last:     &'a Cell<IdentFlags>,
 }
 
 pub struct Parser<'a, 'b> {
-    path:   &'a str,
-    lexer:  Lexer<'a>,
-    arena:  &'b Arena<'a>,
-    token:  Token,
-    idents: Vec<ScopeIdent<'a>>,
+    path:       &'a str,
+    lexer:      Lexer<'a>,
+    arena:      &'b Arena<'a>,
+    token:      Token,
+    idents:     Vec<ScopeIdent<'a>>,
+    referening: bool,
 }
 
 impl<'a, 'b> Parser<'a, 'b> {
@@ -32,6 +42,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             path: "",
             arena,
             idents: Vec::new(),
+            referening: false,
         }
     }
 
@@ -91,6 +102,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             let left = &*self.arena.alloc(fold);
 
             if let Some(op) = op.assign_op() {
+                fold.mark_mut();
                 let right = Expr::BinOp { left, op, right };
                 fold = Expr::BinOp {
                     left,
@@ -99,6 +111,9 @@ impl<'a, 'b> Parser<'a, 'b> {
                 };
             } else {
                 fold = Expr::BinOp { left, right, op };
+                if op == TokenKind::Assign {
+                    fold.mark_mut();
+                }
             }
         }
 
@@ -122,14 +137,13 @@ impl<'a, 'b> Parser<'a, 'b> {
         })
     }
 
-    fn resolve_ident(&mut self, token: Token, decl: bool) -> (Ident, Option<&'a Cell<bool>>) {
+    fn resolve_ident(&mut self, token: Token, decl: bool) -> (Ident, Option<&'a Cell<IdentFlags>>) {
         let name = self.lexer.slice(token.range());
 
         if let Some(builtin) = Self::try_resolve_builtin(name) {
             return (builtin, None);
         }
 
-        let last = self.arena.alloc(Cell::new(false));
         let id = match self
             .idents
             .iter_mut()
@@ -138,8 +152,12 @@ impl<'a, 'b> Parser<'a, 'b> {
             Some(elem) if decl && elem.declared => {
                 self.report(format_args!("redeclaration of identifier: {name}"))
             }
-            Some(elem) => elem,
+            Some(elem) => {
+                elem.last.set(elem.last.get() + 1);
+                elem
+            }
             None => {
+                let last = self.arena.alloc(Cell::new(0));
                 let id = ident::new(token.start, name.len() as _);
                 self.idents.push(ScopeIdent {
                     ident: id,
@@ -150,10 +168,11 @@ impl<'a, 'b> Parser<'a, 'b> {
             }
         };
 
-        id.last = last;
         id.declared |= decl;
+        id.last
+            .set(id.last.get() | (REFERENCED * self.referening as u32));
 
-        (id.ident, Some(last))
+        (id.ident, Some(id.last))
     }
 
     fn unit_expr(&mut self) -> Expr<'a> {
@@ -187,8 +206,12 @@ impl<'a, 'b> Parser<'a, 'b> {
             },
             T::Ident => {
                 let (id, last) = self.resolve_ident(token, self.token.kind == T::Decl);
-                let name = self.lexer.slice(token.range());
-                E::Ident { name, id, last }
+                E::Ident {
+                    name: self.lexer.slice(token.range()),
+                    id,
+                    last,
+                    index: last.map_or(0, |l| ident_flag_index(l.get())),
+                }
             }
             T::If => E::If {
                 pos:   token.start,
@@ -231,7 +254,10 @@ impl<'a, 'b> Parser<'a, 'b> {
             T::Band | T::Mul => E::UnOp {
                 pos: token.start,
                 op:  token.kind,
-                val: self.ptr_unit_expr(),
+                val: match token.kind {
+                    T::Band => self.referenced(Self::ptr_unit_expr),
+                    _ => self.ptr_unit_expr(),
+                },
             },
             T::LBrace => E::Block {
                 pos:   token.start,
@@ -261,7 +287,9 @@ impl<'a, 'b> Parser<'a, 'b> {
             expr = match token.kind {
                 T::LParen => Expr::Call {
                     func: self.arena.alloc(expr),
-                    args: self.collect_list(T::Comma, T::RParen, Self::expr),
+                    args: self
+                        .calcel_ref()
+                        .collect_list(T::Comma, T::RParen, Self::expr),
                 },
                 T::Ctor => E::Ctor {
                     pos:    token.start,
@@ -300,6 +328,16 @@ impl<'a, 'b> Parser<'a, 'b> {
         expr
     }
 
+    fn referenced<T>(&mut self, f: impl Fn(&mut Self) -> T) -> T {
+        if self.referening {
+            self.report("cannot take reference of reference, (souwy)");
+        }
+        self.referening = true;
+        let expr = f(self);
+        self.referening = false;
+        expr
+    }
+
     fn pop_scope(&mut self, frame: usize) {
         let mut undeclared_count = frame;
         for i in frame..self.idents.len() {
@@ -309,9 +347,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             }
         }
 
-        for id in self.idents.drain(undeclared_count..) {
-            id.last.set(true);
-        }
+        self.idents.drain(undeclared_count..);
     }
 
     fn ptr_unit_expr(&mut self) -> &'a Expr<'a> {
@@ -362,13 +398,18 @@ impl<'a, 'b> Parser<'a, 'b> {
         eprintln!("{}:{}:{} => {}", self.path, line, col, msg);
         unreachable!();
     }
+
+    fn calcel_ref(&mut self) -> &mut Self {
+        self.referening = false;
+        self
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Arg<'a> {
     pub name: &'a str,
     pub id:   Ident,
-    pub last: Option<&'a Cell<bool>>,
+    pub last: Option<&'a Cell<IdentFlags>>,
     pub ty:   Expr<'a>,
 }
 
@@ -395,9 +436,10 @@ pub enum Expr<'a> {
         val: Option<&'a Self>,
     },
     Ident {
-        name: &'a str,
-        id:   Ident,
-        last: Option<&'a Cell<bool>>,
+        name:  &'a str,
+        id:    Ident,
+        index: u32,
+        last:  Option<&'a Cell<IdentFlags>>,
     },
     Block {
         pos:   Pos,
@@ -471,6 +513,14 @@ impl<'a> Expr<'a> {
             | Self::Bool { pos, .. } => *pos,
             Self::BinOp { left, .. } => left.pos(),
             Self::Field { target, .. } => target.pos(),
+        }
+    }
+
+    fn mark_mut(&self) {
+        match self {
+            Self::Ident { last, .. } => _ = last.map(|l| l.set(l.get() | MUTABLE)),
+            Self::Field { target, .. } => target.mark_mut(),
+            _ => {}
         }
     }
 }
