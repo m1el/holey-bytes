@@ -1248,13 +1248,13 @@ impl<'a> Codegen<'a> {
                 let signed = bt::is_signed(ty);
 
                 if let Loc::Imm(mut imm) = right.loc
-                    && let Some(oper) = Self::imm_math_op(op, signed, size, false)
+                    && let Some(oper) = Self::imm_math_op(op, signed, size)
                 {
-                    if matches!(op, T::Add | T::Sub) {
-                        if bt::is_pointer(left.ty) {
-                            let size = self.size_of(self.pointers[ty as usize]);
-                            imm *= size;
-                        }
+                    if matches!(op, T::Add | T::Sub)
+                        && let TypeKind::Pointer(ty) = TypeKind::from_ty(ty)
+                    {
+                        let size = self.size_of(self.pointers[ty as usize]);
+                        imm *= size;
                     }
 
                     self.code.encode(oper(lhs.0, lhs.0, imm));
@@ -1381,7 +1381,6 @@ impl<'a> Codegen<'a> {
         op: T,
         signed: bool,
         size: u64,
-        first_imm: bool,
     ) -> Option<fn(u8, u8, u64) -> (usize, [u8; instrs::MAX_SIZE])> {
         use instrs as i;
 
@@ -1402,14 +1401,14 @@ impl<'a> Codegen<'a> {
 
         let ops = match op {
             T::Add => basic_op!(addi8, addi16, addi32, addi64),
-            T::Sub if !first_imm => sub_op!(addi8, addi16, addi32, addi64),
+            T::Sub => sub_op!(addi8, addi16, addi32, addi64),
             T::Mul => basic_op!(muli8, muli16, muli32, muli64),
             T::Band => return Some(i::andi),
             T::Bor => return Some(i::ori),
             T::Xor => return Some(i::xori),
-            T::Shr if signed && !first_imm => basic_op!(srui8, srui16, srui32, srui64),
-            T::Shr if !first_imm => basic_op!(srui8, srui16, srui32, srui64),
-            T::Shl if !first_imm => basic_op!(slui8, slui16, slui32, slui64),
+            T::Shr if signed => basic_op!(srui8, srui16, srui32, srui64),
+            T::Shr => basic_op!(srui8, srui16, srui32, srui64),
+            T::Shl => basic_op!(slui8, slui16, slui32, slui64),
             _ => return None,
         };
 
@@ -1442,7 +1441,7 @@ impl<'a> Codegen<'a> {
         let (lhs, owned) = self.loc_to_reg_ref(&left, size);
 
         if let Loc::Imm(imm) = right
-            && let Some(op) = Self::imm_math_op(op, signed, size, false)
+            && let Some(op) = Self::imm_math_op(op, signed, size)
         {
             self.code.encode(op(lhs, lhs, imm));
             return if let Ctx::Dest(dest) = ctx {
