@@ -3,6 +3,8 @@ use std::{
     ops::Range,
 };
 
+use hbvm::Vm;
+
 use crate::ident::{self, Ident};
 
 use {
@@ -483,10 +485,63 @@ struct Global {
     ty:     Type,
 }
 
+struct CompileMem {
+    code: *mut u8,
+    mem:  Vec<u8>,
+}
+
+impl Default for CompileMem {
+    fn default() -> Self {
+        Self {
+            code: std::ptr::null_mut(),
+            mem:  Vec::new(),
+        }
+    }
+}
+
+impl hbvm::mem::Memory for CompileMem {
+    unsafe fn load(
+        &mut self,
+        addr: hbvm::mem::Address,
+        target: *mut u8,
+        count: usize,
+    ) -> Result<(), hbvm::mem::LoadError> {
+        let sub = self
+            .mem
+            .get(addr.get() as usize..addr.get() as usize + count)
+            .ok_or(hbvm::mem::LoadError(addr))?;
+
+        target.copy_from(sub.as_ptr(), count);
+
+        Ok(())
+    }
+
+    unsafe fn store(
+        &mut self,
+        addr: hbvm::mem::Address,
+        source: *const u8,
+        count: usize,
+    ) -> Result<(), hbvm::mem::StoreError> {
+        self.mem
+            .get_mut(addr.get() as usize..addr.get() as usize + count)
+            .ok_or(hbvm::mem::StoreError(addr))?
+            .as_mut_ptr()
+            .copy_from(source, count);
+
+        Ok(())
+    }
+
+    unsafe fn prog_read<T: Copy>(&mut self, addr: hbvm::mem::Address) -> T {
+        debug_assert!(std::mem::align_of::<T>() == 1);
+        *(self.code.add(addr.get() as usize) as *const T)
+    }
+}
+
 #[derive(Default)]
 pub struct Codegen<'a> {
-    path:       &'a str,
-    input:      &'a [u8],
+    path:  &'a str,
+    input: &'a [u8],
+
     ret:        Type,
     gpa:        Rc<RefCell<RegAlloc>>,
     sa:         Rc<RefCell<StackAlloc>>,
@@ -500,6 +555,8 @@ pub struct Codegen<'a> {
     pointers:   Vec<Type>,
     globals:    Vec<Global>,
     main:       Option<LabelId>,
+
+    vm: Vm<CompileMem, 0>,
 }
 
 impl<'a> Codegen<'a> {
@@ -573,9 +630,9 @@ impl<'a> Codegen<'a> {
                     self.gpa.borrow_mut().init_callee();
 
                     log::dbg!("fn-args");
-                    let mut parama = 3..12;
+                    let mut parama = self.param_alloc(fn_label.ret);
                     for (arg, &ty) in args.iter().zip(fn_label.args.iter()) {
-                        let refed = arg.last.is_some_and(|l| l.get() & parser::REFERENCED != 0);
+                        let refed = arg.last.map_or(0, Cell::get);
                         let loc = self.load_arg(refed, ty, &mut parama);
                         self.vars.push(Variable {
                             id:    arg.id,
@@ -772,7 +829,9 @@ impl<'a> Codegen<'a> {
                 args: [ret_ty, args @ ..],
                 ..
             } => {
-                let mut parama = 3..12;
+                let ty = self.ty(ret_ty);
+
+                let mut parama = self.param_alloc(ty);
                 let mut values = Vec::with_capacity(args.len());
                 for arg in args {
                     let arg = self.expr(arg)?;
@@ -781,7 +840,6 @@ impl<'a> Codegen<'a> {
                 }
                 drop(values);
 
-                let ty = self.ty(ret_ty);
                 let loc = self.alloc_ret_loc(ty, ctx);
 
                 self.code.encode(i::eca());
@@ -1019,7 +1077,7 @@ impl<'a> Codegen<'a> {
                 let func = self.get_label(*id);
                 let fn_label = self.labels[func as usize].clone();
 
-                let mut parama = 3..12;
+                let mut parama = self.param_alloc(fn_label.ret);
                 let mut values = Vec::with_capacity(args.len());
                 for (earg, &ty) in args.iter().zip(fn_label.args.iter()) {
                     let arg = self.expr_ctx(earg, Ctx::Inferred(ty))?;
@@ -1137,6 +1195,7 @@ impl<'a> Codegen<'a> {
             }
             E::Loop { body, .. } => 'a: {
                 log::dbg!("loop");
+
                 let loop_start = self.code.code.len() as u32;
                 self.loops.push(Loop {
                     var_count: self.vars.len() as _,
@@ -1715,11 +1774,11 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn load_arg(&mut self, referenced: bool, ty: Type, parama: &mut Range<u8>) -> Loc {
+    fn load_arg(&mut self, flags: parser::IdentFlags, ty: Type, parama: &mut Range<u8>) -> Loc {
         let size = self.size_of(ty);
         match size {
             0 => Loc::Imm(0),
-            ..=8 if !referenced => {
+            ..=8 if flags & parser::REFERENCED == 0 => {
                 let reg = self.alloc_reg();
                 self.code.encode(instrs::cp(reg.0, parama.next().unwrap()));
                 Loc::Reg(reg)
@@ -1735,7 +1794,13 @@ impl<'a> Codegen<'a> {
                 parama.next().unwrap();
                 Loc::Stack(stack, 0)
             }
-            ..=u64::MAX => {
+            _ if flags & (parser::MUTABLE | parser::REFERENCED) == 0 => {
+                let ptr = parama.next().unwrap();
+                let reg = self.alloc_reg();
+                self.code.encode(instrs::cp(reg.0, ptr));
+                Loc::Deref(reg, None, 0)
+            }
+            _ => {
                 let ptr = parama.next().unwrap();
                 let stack = self.alloc_stack(size);
                 self.assign(
@@ -1801,6 +1866,10 @@ impl<'a> Codegen<'a> {
             }
             ..=u64::MAX => {}
         }
+    }
+
+    fn param_alloc(&self, ret: Type) -> Range<u8> {
+        2 + (9..=16).contains(&self.size_of(ret)) as u8..12
     }
 }
 
@@ -1986,5 +2055,6 @@ mod tests {
         different_types => include_str!("../examples/different_types.hb");
         struct_operators => include_str!("../examples/struct_operators.hb");
         directives => include_str!("../examples/directives.hb");
+        global_variables => include_str!("../examples/global_variables.hb");
     }
 }

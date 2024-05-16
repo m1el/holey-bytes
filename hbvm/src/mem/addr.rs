@@ -6,7 +6,7 @@ use {
 };
 
 /// Memory address
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Address(u64);
 impl Address {
     /// A null address

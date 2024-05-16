@@ -195,6 +195,10 @@ name = "hbbytecode"
 version = "0.1.0"
 
 [[package]]
+name = "hbjit"
+version = "0.1.0"
+
+[[package]]
 name = "hblang"
 version = "0.1.0"
 dependencies = [

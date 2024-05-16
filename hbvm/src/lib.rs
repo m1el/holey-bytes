@@ -54,6 +54,18 @@ pub struct Vm<Mem, const TIMER_QUOTIENT: usize> {
     copier: Option<BlockCopier>,
 }
 
+impl<Mem: Default, const TIMER_QUOTIENT: usize> Default for Vm<Mem, TIMER_QUOTIENT> {
+    fn default() -> Self {
+        Self {
+            registers: [Value::from(0_u64); 256],
+            memory:    Mem::default(),
+            pc:        Address::default(),
+            timer:     0,
+            copier:    None,
+        }
+    }
+}
+
 impl<Mem, const TIMER_QUOTIENT: usize> Vm<Mem, TIMER_QUOTIENT>
 where
     Mem: Memory,

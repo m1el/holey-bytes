@@ -51,7 +51,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         self.lexer = Lexer::new(input);
         self.token = self.lexer.next();
 
-        let f = self.collect(|s| (s.token.kind != TokenKind::Eof).then(|| s.expr()));
+        let f = self.collect_list(TokenKind::Semi, TokenKind::Eof, Self::expr);
         self.pop_scope(0);
         let has_undeclared = !self.idents.is_empty();
         for id in self.idents.drain(..) {
