@@ -371,10 +371,16 @@ impl Func {
     }
 }
 
-#[derive(Default, PartialEq, Eq, Debug)]
+#[derive(Default, PartialEq, Eq)]
 pub struct RegAlloc {
     free:     Vec<Reg>,
     max_used: Reg,
+}
+
+impl std::fmt::Debug for RegAlloc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RegAlloc").finish()
+    }
 }
 
 impl RegAlloc {
@@ -564,18 +570,19 @@ impl<'a> Codegen<'a> {
                     }
 
                     let fn_label = self.labels[frame.label as usize].clone();
+                    self.gpa.borrow_mut().init_callee();
 
                     log::dbg!("fn-args");
                     let mut parama = 3..12;
                     for (arg, &ty) in args.iter().zip(fn_label.args.iter()) {
-                        let loc = self.load_arg(ty, &mut parama);
+                        let refed = arg.last.is_some_and(|l| l.get() & parser::REFERENCED != 0);
+                        let loc = self.load_arg(refed, ty, &mut parama);
                         self.vars.push(Variable {
                             id:    arg.id,
                             value: Value { ty, loc },
                         });
                     }
 
-                    self.gpa.borrow_mut().init_callee();
                     self.ret = fn_label.ret;
 
                     log::dbg!("fn-body");
@@ -1630,10 +1637,15 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn load_arg(&mut self, ty: Type, parama: &mut Range<u8>) -> Loc {
+    fn load_arg(&mut self, referenced: bool, ty: Type, parama: &mut Range<u8>) -> Loc {
         let size = self.size_of(ty);
         match size {
             0 => Loc::Imm(0),
+            ..=8 if !referenced => {
+                let reg = self.alloc_reg();
+                self.code.encode(instrs::cp(reg.0, parama.next().unwrap()));
+                Loc::Reg(reg)
+            }
             ..=8 => {
                 let stack = self.alloc_stack(size as _);
                 self.store_stack(parama.next().unwrap(), stack.offset, size as _);
