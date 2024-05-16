@@ -52,7 +52,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("[I] Image loaded at {:p}", mmap.as_ptr());
 
-    let mut vm = unsafe { Vm::<_, 0>::new(mem::HostMemory, Address::new(mmap.as_ptr() as u64)) };
+    let mut vm = unsafe {
+        Vm::<_, 0>::new(
+            mem::HostMemory,
+            Address::new(mmap.as_ptr().add(stack.len()) as u64),
+        )
+    };
     vm.write_reg(254, stack.as_mut_ptr() as u64);
 
     // Execute program
