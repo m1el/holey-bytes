@@ -25,12 +25,12 @@ fn align_up(value: u64, align: u64) -> u64 {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct LinReg(Reg, Rc<RefCell<RegAlloc>>);
+struct LinReg(Reg, Option<Rc<RefCell<RegAlloc>>>);
 
 #[cfg(debug_assertions)]
 impl Drop for LinReg {
     fn drop(&mut self) {
-        self.1.borrow_mut().free(self.0);
+        self.1.take().map(|b| b.borrow_mut().free(self.0));
     }
 }
 
@@ -677,7 +677,7 @@ impl<'a> Codegen<'a> {
     }
 
     fn alloc_reg(&mut self) -> LinReg {
-        LinReg(self.gpa.borrow_mut().allocate(), self.gpa.clone()).into()
+        LinReg(self.gpa.borrow_mut().allocate(), Some(self.gpa.clone())).into()
     }
 
     fn alloc_stack(&mut self, size: u64) -> Rc<Stack> {
@@ -1230,7 +1230,15 @@ impl<'a> Codegen<'a> {
                 }
 
                 let lsize = self.size_of(left.ty);
-                let lhs = self.loc_to_reg(left.loc, lsize);
+                let ty = ctx.ty().unwrap_or(left.ty);
+                let lhs = match std::mem::take(&mut ctx).loc() {
+                    Some(Loc::RegRef(reg)) if Loc::RegRef(reg) == left.loc => LinReg(reg, None),
+                    Some(loc) => {
+                        ctx = Ctx::Dest(Value { ty, loc });
+                        self.loc_to_reg(left.loc, lsize)
+                    }
+                    None => self.loc_to_reg(left.loc, lsize),
+                };
                 let right = self.expr_ctx(right, Ctx::Inferred(left.ty))?;
                 let rsize = self.size_of(right.ty);
                 let rhs = self.loc_to_reg(right.loc, rsize);
