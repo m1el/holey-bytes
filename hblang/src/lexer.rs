@@ -93,6 +93,7 @@ gen_token_kind! {
         Eof,
         Error,
         Driective,
+        String,
         #[keywords]
         Return   = b"return",
         If       = b"if",
@@ -209,6 +210,16 @@ impl<'a> Lexer<'a> {
                         let ident = &self.bytes[start as usize..self.pos as usize];
                         T::from_ident(ident)
                     }
+                }
+                b'"' => {
+                    while let Some(c) = self.advance() {
+                        match c {
+                            b'"' => break,
+                            b'\\' => _ = self.advance(),
+                            _ => {}
+                        }
+                    }
+                    T::String
                 }
                 b':' if self.advance_if(b'=') => T::Decl,
                 b':' => T::Colon,

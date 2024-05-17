@@ -1,57 +1,365 @@
-use std::{cell::Cell, ops::Not, ptr::NonNull};
+use std::{
+    cell::{Cell, UnsafeCell},
+    collections::{HashMap, HashSet},
+    io::{self, Read},
+    ops::Not,
+    path::{Path, PathBuf},
+    ptr::NonNull,
+    sync::{
+        atomic::{AtomicU32, AtomicUsize},
+        Mutex,
+    },
+};
 
 use crate::{
     codegen::bt,
     ident::{self, Ident},
     lexer::{Lexer, Token, TokenKind},
+    TaskQueue,
 };
 
 pub type Pos = u32;
-
 pub type IdentFlags = u32;
+pub type Symbols = Vec<Symbol>;
+pub type FileId = u32;
+pub type Loader<'a> = &'a (dyn Fn(&str, &str) -> io::Result<Option<FileId>> + 'a);
 
 pub const MUTABLE: IdentFlags = 1 << std::mem::size_of::<IdentFlags>() * 8 - 1;
 pub const REFERENCED: IdentFlags = 1 << std::mem::size_of::<IdentFlags>() * 8 - 2;
+const GIT_DEPS_DIR: &str = "git-deps";
+
+pub fn parse_all(root: &str, threads: usize) -> io::Result<Vec<Ast>> {
+    enum ImportPath<'a> {
+        Root {
+            path: &'a str,
+        },
+        Rel {
+            path: &'a str,
+        },
+        Git {
+            link:   &'a str,
+            path:   &'a str,
+            branch: Option<&'a str>,
+            tag:    Option<&'a str>,
+            rev:    Option<&'a str>,
+        },
+    }
+
+    impl<'a> TryFrom<&'a str> for ImportPath<'a> {
+        type Error = ParseImportError;
+
+        fn try_from(value: &'a str) -> Result<Self, Self::Error> {
+            let (prefix, path) = value.split_once(':').unwrap_or(("", value));
+
+            match prefix {
+                "" => Ok(Self::Root { path }),
+                "rel" => Ok(Self::Rel { path }),
+                "git" => {
+                    let (link, path) =
+                        path.split_once(':').ok_or(ParseImportError::ExpectedPath)?;
+                    let (link, params) = link.split_once('?').unwrap_or((link, ""));
+                    let [mut branch, mut tag, mut rev] = [None; 3];
+                    for (key, value) in params.split('&').filter_map(|s| s.split_once('=')) {
+                        match key {
+                            "branch" => branch = Some(value),
+                            "tag" => tag = Some(value),
+                            "rev" => rev = Some(value),
+                            _ => return Err(ParseImportError::UnexpectedParam),
+                        }
+                    }
+                    Ok(Self::Git {
+                        link,
+                        path,
+                        branch,
+                        tag,
+                        rev,
+                    })
+                }
+                _ => Err(ParseImportError::InvalidPrefix),
+            }
+        }
+    }
+
+    fn preprocess_git(link: &str) -> &str {
+        let link = link.strip_prefix("https://").unwrap_or(link);
+        link.strip_suffix(".git").unwrap_or(link)
+    }
+
+    impl<'a> ImportPath<'a> {
+        fn resolve(&self, from: &str, root: &str) -> Result<PathBuf, CantLoadFile> {
+            match self {
+                Self::Root { path } => Ok(PathBuf::from_iter([root, path])),
+                Self::Rel { path } => {
+                    let path = PathBuf::from_iter([from, path]);
+                    match path.canonicalize() {
+                        Ok(path) => Ok(path),
+                        Err(e) => Err(CantLoadFile(path, e)),
+                    }
+                }
+                Self::Git { path, link, .. } => {
+                    let link = preprocess_git(link);
+                    Ok(PathBuf::from_iter([root, GIT_DEPS_DIR, link, path]))
+                }
+            }
+        }
+    }
+
+    #[derive(Debug)]
+    enum ParseImportError {
+        ExpectedPath,
+        InvalidPrefix,
+        ExpectedGitAlias,
+        UnexpectedParam,
+    }
+
+    impl std::fmt::Display for ParseImportError {
+        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            match self {
+                Self::ExpectedPath => write!(f, "expected path"),
+                Self::InvalidPrefix => write!(
+                    f,
+                    "invalid prefix, expected one of rel, \
+                    git or none followed by colon"
+                ),
+                Self::ExpectedGitAlias => write!(f, "expected git alias as ':<alias>$'"),
+                Self::UnexpectedParam => {
+                    write!(f, "unexpected git param, expected branch, tag or rev")
+                }
+            }
+        }
+    }
+
+    impl std::error::Error for ParseImportError {}
+
+    impl From<ParseImportError> for io::Error {
+        fn from(e: ParseImportError) -> Self {
+            io::Error::new(io::ErrorKind::InvalidInput, e)
+        }
+    }
+
+    #[derive(Debug)]
+    struct CantLoadFile(PathBuf, io::Error);
+
+    impl std::fmt::Display for CantLoadFile {
+        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            write!(f, "can't load file: {}", self.0.display())
+        }
+    }
+
+    impl std::error::Error for CantLoadFile {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.1)
+        }
+    }
+
+    impl From<CantLoadFile> for io::Error {
+        fn from(e: CantLoadFile) -> Self {
+            io::Error::new(io::ErrorKind::InvalidData, e)
+        }
+    }
+
+    #[derive(Debug)]
+    struct InvalidFileData(std::str::Utf8Error);
+
+    impl std::fmt::Display for InvalidFileData {
+        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            write!(f, "invalid file data")
+        }
+    }
+
+    impl std::error::Error for InvalidFileData {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    impl From<InvalidFileData> for io::Error {
+        fn from(e: InvalidFileData) -> Self {
+            io::Error::new(io::ErrorKind::InvalidData, e)
+        }
+    }
+
+    enum Task {
+        LoadFile {
+            id: FileId,
+            physiscal_path: PathBuf,
+        },
+        FetchGit {
+            id: FileId,
+            physiscal_path: PathBuf,
+            command: std::process::Command,
+        },
+    }
+
+    let seen = Mutex::new(HashMap::<PathBuf, FileId>::new());
+    let tasks = TaskQueue::<Task>::new(threads);
+    let ast = Mutex::new(Vec::<io::Result<Ast>>::new());
+
+    let loader = |path: &str, from: &str| {
+        let path = ImportPath::try_from(path)?;
+
+        let physiscal_path = path.resolve(from, root)?;
+
+        let id = {
+            let mut seen = seen.lock().unwrap();
+            let len = seen.len();
+            match seen.entry(physiscal_path.clone()) {
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    return Ok(Some(*entry.get()));
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    entry.insert(len as _);
+                    len as FileId
+                }
+            }
+        };
+
+        if physiscal_path.exists() {
+            tasks.push(Task::LoadFile { id, physiscal_path });
+            return Ok(Some(id));
+        }
+
+        let ImportPath::Git {
+            link,
+            path,
+            branch,
+            rev,
+            tag,
+        } = path
+        else {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("can't find file: {}", physiscal_path.display()),
+            ));
+        };
+
+        let root = PathBuf::from_iter([root, GIT_DEPS_DIR, preprocess_git(link)]);
+
+        let mut command = std::process::Command::new("git");
+        command
+            .args(["clone", "--depth", "1"])
+            .args(branch.map(|b| ["--branch", b]).into_iter().flatten())
+            .args(tag.map(|t| ["--tag", t]).into_iter().flatten())
+            .args(rev.map(|r| ["--rev", r]).into_iter().flatten())
+            .arg(link)
+            .arg(root);
+
+        tasks.push(Task::FetchGit {
+            id,
+            physiscal_path,
+            command,
+        });
+
+        Ok(Some(id))
+    };
+
+    let load_from_path = |path: &Path, buffer: &mut Vec<u8>| -> io::Result<Ast> {
+        let path = path.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "path contains invalid characters",
+            )
+        })?;
+        let mut file = std::fs::File::open(&path)?;
+        file.read_to_end(buffer)?;
+        let src = std::str::from_utf8(buffer).map_err(InvalidFileData)?;
+        Ok(Ast::new(&path, src, &loader))
+    };
+
+    let execute_task = |task: Task, buffer: &mut Vec<u8>| match task {
+        Task::LoadFile { id, physiscal_path } => (id, load_from_path(&physiscal_path, buffer)),
+        Task::FetchGit {
+            id,
+            physiscal_path,
+            mut command,
+        } => {
+            let output = match command.output() {
+                Ok(output) => output,
+                Err(e) => return (id, Err(e)),
+            };
+            if !output.status.success() {
+                let msg = format!(
+                    "git command failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                return (id, Err(io::Error::new(io::ErrorKind::Other, msg)));
+            }
+            (id, load_from_path(&physiscal_path, buffer))
+        }
+    };
+
+    let thread = || {
+        let mut buffer = Vec::new();
+        while let Some(task) = tasks.pop() {
+            let (indx, res) = execute_task(task, &mut buffer);
+
+            let mut ast = ast.lock().unwrap();
+            let len = ast.len().max(indx as usize + 1);
+            ast.resize_with(len, || Err(io::ErrorKind::InvalidData.into()));
+            ast[indx as usize] = res;
+
+            buffer.clear();
+        }
+    };
+
+    std::thread::scope(|s| (0..threads).for_each(|_| _ = s.spawn(thread)));
+
+    ast.into_inner()
+        .unwrap()
+        .into_iter()
+        .collect::<io::Result<Vec<_>>>()
+}
 
 pub fn ident_flag_index(flag: IdentFlags) -> u32 {
     flag & !(MUTABLE | REFERENCED)
 }
 
-struct ScopeIdent<'a> {
+pub fn no_loader(_: &str, _: &str) -> io::Result<Option<FileId>> {
+    Ok(None)
+}
+
+pub struct Symbol {
+    pub name:  Ident,
+    pub flags: IdentFlags,
+}
+
+struct ScopeIdent {
     ident:    Ident,
     declared: bool,
-    last:     &'a Cell<IdentFlags>,
+    flags:    IdentFlags,
 }
 
 pub struct Parser<'a, 'b> {
-    path:       &'a str,
-    lexer:      Lexer<'a>,
-    arena:      &'b Arena<'a>,
-    token:      Token,
-    idents:     Vec<ScopeIdent<'a>>,
-    referening: bool,
+    path:    &'b str,
+    loader:  Loader<'b>,
+    lexer:   Lexer<'b>,
+    arena:   &'b Arena<'a>,
+    token:   Token,
+    idents:  Vec<ScopeIdent>,
+    symbols: &'b mut Symbols,
 }
 
 impl<'a, 'b> Parser<'a, 'b> {
-    pub fn new(arena: &'b Arena<'a>) -> Self {
+    pub fn new(arena: &'b Arena<'a>, symbols: &'b mut Symbols, loader: Loader<'b>) -> Self {
         let mut lexer = Lexer::new("");
-        let token = lexer.next();
         Self {
+            loader,
+            token: lexer.next(),
             lexer,
-            token,
             path: "",
             arena,
             idents: Vec::new(),
-            referening: false,
+            symbols,
         }
     }
 
-    pub fn file(&mut self, input: &'a str, path: &'a str) -> &'a [Expr<'a>] {
+    pub fn file(&mut self, input: &'b str, path: &'b str) -> &'a [Expr<'a>] {
         self.path = path;
         self.lexer = Lexer::new(input);
         self.token = self.lexer.next();
 
         let f = self.collect_list(TokenKind::Semi, TokenKind::Eof, Self::expr);
+
         self.pop_scope(0);
         let has_undeclared = !self.idents.is_empty();
         for id in self.idents.drain(..) {
@@ -66,6 +374,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
 
         if has_undeclared {
+            // TODO: we need error recovery
             unreachable!();
         }
 
@@ -102,7 +411,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             let left = &*self.arena.alloc(fold);
 
             if let Some(op) = op.assign_op() {
-                fold.mark_mut();
+                self.flag_idents(*left, MUTABLE);
                 let right = Expr::BinOp { left, op, right };
                 fold = Expr::BinOp {
                     left,
@@ -112,7 +421,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             } else {
                 fold = Expr::BinOp { left, right, op };
                 if op == TokenKind::Assign {
-                    fold.mark_mut();
+                    self.flag_idents(*left, MUTABLE);
                 }
             }
         }
@@ -137,11 +446,11 @@ impl<'a, 'b> Parser<'a, 'b> {
         })
     }
 
-    fn resolve_ident(&mut self, token: Token, decl: bool) -> (Ident, Option<&'a Cell<IdentFlags>>) {
+    fn resolve_ident(&mut self, token: Token, decl: bool) -> (Ident, u32) {
         let name = self.lexer.slice(token.range());
 
         if let Some(builtin) = Self::try_resolve_builtin(name) {
-            return (builtin, None);
+            return (builtin, 0);
         }
 
         let id = match self
@@ -153,26 +462,27 @@ impl<'a, 'b> Parser<'a, 'b> {
                 self.report(format_args!("redeclaration of identifier: {name}"))
             }
             Some(elem) => {
-                elem.last.set(elem.last.get() + 1);
+                elem.flags += 1;
                 elem
             }
             None => {
-                let last = self.arena.alloc(Cell::new(0));
                 let id = ident::new(token.start, name.len() as _);
                 self.idents.push(ScopeIdent {
-                    ident: id,
+                    ident:    id,
                     declared: false,
-                    last,
+                    flags:    0,
                 });
                 self.idents.last_mut().unwrap()
             }
         };
 
         id.declared |= decl;
-        id.last
-            .set(id.last.get() | (REFERENCED * self.referening as u32));
 
-        (id.ident, Some(id.last))
+        (id.ident, ident_flag_index(id.flags))
+    }
+
+    fn move_str(&mut self, range: Token) -> &'a str {
+        self.arena.alloc_str(self.lexer.slice(range.range()))
     }
 
     fn unit_expr(&mut self) -> Expr<'a> {
@@ -182,7 +492,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         let mut expr = match token.kind {
             T::Driective => E::Directive {
                 pos:  token.start,
-                name: self.lexer.slice(token.range()),
+                name: self.move_str(token),
                 args: {
                     self.expect_advance(T::LParen);
                     self.collect_list(T::Comma, T::RParen, Self::expr)
@@ -200,18 +510,14 @@ impl<'a, 'b> Parser<'a, 'b> {
                         let name = s.expect_advance(T::Ident);
                         s.expect_advance(T::Colon);
                         let ty = s.expr();
-                        (s.lexer.slice(name.range()), ty)
+                        (s.move_str(name), ty)
                     })
                 },
             },
             T::Ident => {
-                let (id, last) = self.resolve_ident(token, self.token.kind == T::Decl);
-                E::Ident {
-                    name: self.lexer.slice(token.range()),
-                    id,
-                    last,
-                    index: last.map_or(0, |l| ident_flag_index(l.get())),
-                }
+                let (id, index) = self.resolve_ident(token, self.token.kind == T::Decl);
+                let name = self.move_str(token);
+                E::Ident { name, id, index }
             }
             T::If => E::If {
                 pos:   token.start,
@@ -235,12 +541,12 @@ impl<'a, 'b> Parser<'a, 'b> {
                     self.expect_advance(T::LParen);
                     self.collect_list(T::Comma, T::RParen, |s| {
                         let name = s.expect_advance(T::Ident);
-                        let (id, last) = s.resolve_ident(name, true);
+                        let (id, index) = s.resolve_ident(name, true);
                         s.expect_advance(T::Colon);
                         Arg {
-                            name: s.lexer.slice(name.range()),
+                            name: s.move_str(name),
                             id,
-                            last,
+                            index,
                             ty: s.expr(),
                         }
                     })
@@ -254,9 +560,10 @@ impl<'a, 'b> Parser<'a, 'b> {
             T::Band | T::Mul => E::UnOp {
                 pos: token.start,
                 op:  token.kind,
-                val: match token.kind {
-                    T::Band => self.referenced(Self::ptr_unit_expr),
-                    _ => self.ptr_unit_expr(),
+                val: {
+                    let expr = self.ptr_unit_expr();
+                    self.flag_idents(*expr, REFERENCED);
+                    expr
                 },
             },
             T::LBrace => E::Block {
@@ -287,9 +594,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             expr = match token.kind {
                 T::LParen => Expr::Call {
                     func: self.arena.alloc(expr),
-                    args: self
-                        .calcel_ref()
-                        .collect_list(T::Comma, T::RParen, Self::expr),
+                    args: self.collect_list(T::Comma, T::RParen, Self::expr),
                 },
                 T::Ctor => E::Ctor {
                     pos:    token.start,
@@ -298,7 +603,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                         let name = s.expect_advance(T::Ident);
                         s.expect_advance(T::Colon);
                         let val = s.expr();
-                        (Some(s.lexer.slice(name.range())), val)
+                        (Some(s.move_str(name)), val)
                     }),
                 },
                 T::Tupl => E::Ctor {
@@ -310,7 +615,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                     target: self.arena.alloc(expr),
                     field:  {
                         let token = self.expect_advance(T::Ident);
-                        self.lexer.slice(token.range())
+                        self.move_str(token)
                     },
                 },
                 _ => break,
@@ -328,16 +633,6 @@ impl<'a, 'b> Parser<'a, 'b> {
         expr
     }
 
-    fn referenced<T>(&mut self, f: impl Fn(&mut Self) -> T) -> T {
-        if self.referening {
-            self.report("cannot take reference of reference, (souwy)");
-        }
-        self.referening = true;
-        let expr = f(self);
-        self.referening = false;
-        expr
-    }
-
     fn pop_scope(&mut self, frame: usize) {
         let mut undeclared_count = frame;
         for i in frame..self.idents.len() {
@@ -347,7 +642,13 @@ impl<'a, 'b> Parser<'a, 'b> {
             }
         }
 
-        self.idents.drain(undeclared_count..);
+        self.idents
+            .drain(undeclared_count..)
+            .map(|ident| Symbol {
+                name:  ident.ident,
+                flags: ident.flags,
+            })
+            .collect_into(self.symbols);
     }
 
     fn ptr_unit_expr(&mut self) -> &'a Expr<'a> {
@@ -399,18 +700,35 @@ impl<'a, 'b> Parser<'a, 'b> {
         unreachable!();
     }
 
-    fn calcel_ref(&mut self) -> &mut Self {
-        self.referening = false;
-        self
+    fn flag_idents(&mut self, e: Expr<'a>, flags: IdentFlags) {
+        match e {
+            Expr::Ident { id, .. } => find_ident(&mut self.idents, id).flags |= flags,
+            Expr::Field { target, .. } => self.flag_idents(*target, flags),
+            _ => {}
+        }
     }
+}
+
+fn find_ident(idents: &mut [ScopeIdent], id: Ident) -> &mut ScopeIdent {
+    idents
+        .binary_search_by_key(&id, |si| si.ident)
+        .map(|i| &mut idents[i])
+        .unwrap()
+}
+
+pub fn find_symbol(symbols: &[Symbol], id: Ident) -> &Symbol {
+    symbols
+        .binary_search_by_key(&id, |s| s.name)
+        .map(|i| &symbols[i])
+        .unwrap()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Arg<'a> {
-    pub name: &'a str,
-    pub id:   Ident,
-    pub last: Option<&'a Cell<IdentFlags>>,
-    pub ty:   Expr<'a>,
+    pub name:  &'a str,
+    pub id:    Ident,
+    pub index: u32,
+    pub ty:    Expr<'a>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -439,7 +757,6 @@ pub enum Expr<'a> {
         name:  &'a str,
         id:    Ident,
         index: u32,
-        last:  Option<&'a Cell<IdentFlags>>,
     },
     Block {
         pos:   Pos,
@@ -513,14 +830,6 @@ impl<'a> Expr<'a> {
             | Self::Bool { pos, .. } => *pos,
             Self::BinOp { left, .. } => left.pos(),
             Self::Field { target, .. } => target.pos(),
-        }
-    }
-
-    fn mark_mut(&self) {
-        match self {
-            Self::Ident { last, .. } => _ = last.map(|l| l.set(l.get() | MUTABLE)),
-            Self::Field { target, .. } => target.mark_mut(),
-            _ => {}
         }
     }
 }
@@ -670,9 +979,109 @@ impl<'a> std::fmt::Display for Expr<'a> {
     }
 }
 
+#[repr(C)]
+struct AstInner<T: ?Sized> {
+    ref_count: AtomicUsize,
+    mem:       ArenaChunk,
+    exprs:     *const [Expr<'static>],
+    path:      String,
+    symbols:   T,
+}
+
+impl AstInner<[Symbol]> {
+    fn layout(syms: usize) -> std::alloc::Layout {
+        std::alloc::Layout::new::<AstInner<()>>()
+            .extend(std::alloc::Layout::array::<Symbol>(syms).unwrap())
+            .unwrap()
+            .0
+    }
+
+    fn new(content: &str, path: &str, loader: Loader) -> NonNull<Self> {
+        let arena = Arena::default();
+        let mut syms = Vec::new();
+        let mut parser = Parser::new(&arena, &mut syms, loader);
+        let exprs = parser.file(content, path) as *const [Expr<'static>];
+
+        syms.sort_unstable_by_key(|s| s.name);
+
+        let layout = Self::layout(syms.len());
+
+        let ptr = unsafe { std::alloc::alloc(layout) };
+        let inner: *mut Self = std::ptr::from_raw_parts_mut(ptr as *mut _, syms.len());
+        unsafe {
+            *(inner as *mut AstInner<()>) = AstInner {
+                ref_count: AtomicUsize::new(1),
+                mem: ArenaChunk::default(),
+                exprs,
+                path: path.to_owned(),
+                symbols: (),
+            };
+            std::ptr::addr_of_mut!((*inner).symbols)
+                .as_mut_ptr()
+                .copy_from_nonoverlapping(syms.as_ptr(), syms.len());
+            NonNull::new_unchecked(inner)
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, Hash)]
+pub struct Ast(NonNull<AstInner<[Symbol]>>);
+
+impl Ast {
+    pub fn new(path: &str, content: &str, loader: Loader) -> Self {
+        Self(AstInner::new(content, path, loader))
+    }
+
+    pub fn exprs(&self) -> &[Expr] {
+        unsafe { &*self.inner().exprs }
+    }
+
+    pub fn symbols(&self) -> &[Symbol] {
+        &self.inner().symbols
+    }
+
+    pub fn path(&self) -> &str {
+        &self.inner().path
+    }
+
+    fn inner(&self) -> &AstInner<[Symbol]> {
+        unsafe { self.0.as_ref() }
+    }
+}
+
+unsafe impl Send for Ast {}
+unsafe impl Sync for Ast {}
+
+impl Clone for Ast {
+    fn clone(&self) -> Self {
+        unsafe { self.0.as_ref() }
+            .ref_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self(self.0)
+    }
+}
+
+impl Drop for Ast {
+    fn drop(&mut self) {
+        let inner = unsafe { self.0.as_ref() };
+        if inner
+            .ref_count
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
+            == 1
+        {
+            unsafe { std::ptr::drop_in_place(self.0.as_ptr()) };
+
+            let layout = AstInner::layout(inner.symbols.len());
+            unsafe {
+                std::alloc::dealloc(self.0.as_ptr() as _, layout);
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Arena<'a> {
-    chunk: Cell<ArenaChunk>,
+    chunk: UnsafeCell<ArenaChunk>,
     ph:    std::marker::PhantomData<&'a ()>,
 }
 
@@ -717,54 +1126,26 @@ impl<'a> Arena<'a> {
         chunk.end = unsafe { chunk.base.add(ArenaChunk::PREV_OFFSET) };
     }
 
-    fn with_chunk<R>(&self, f: impl FnOnce(&mut ArenaChunk) -> R) -> R {
-        let mut chunk = self.chunk.get();
-        let r = f(&mut chunk);
-        self.chunk.set(chunk);
-        r
-    }
-
     fn alloc_low(&self, layout: std::alloc::Layout) -> NonNull<u8> {
         assert!(layout.align() <= ArenaChunk::ALIGN);
         assert!(layout.size() <= ArenaChunk::CHUNK_SIZE);
-        self.with_chunk(|chunk| {
-            if let Some(ptr) = chunk.alloc(layout) {
-                return ptr;
-            }
 
-            if let Some(prev) = ArenaChunk::reset(ArenaChunk::prev(chunk.base)) {
-                *chunk = prev;
-            } else {
-                *chunk = ArenaChunk::new(chunk.base);
-            }
+        let chunk = unsafe { &mut *self.chunk.get() };
 
-            chunk.alloc(layout).unwrap()
-        })
+        if let Some(ptr) = chunk.alloc(layout) {
+            return ptr;
+        }
+
+        if let Some(prev) = ArenaChunk::reset(ArenaChunk::prev(chunk.base)) {
+            *chunk = prev;
+        } else {
+            *chunk = ArenaChunk::new(chunk.base);
+        }
+
+        chunk.alloc(layout).unwrap()
     }
 }
 
-impl<'a> Drop for Arena<'a> {
-    fn drop(&mut self) {
-        use ArenaChunk as AC;
-
-        let mut current = self.chunk.get().base;
-
-        let mut prev = AC::prev(current);
-        while !prev.is_null() {
-            let next = AC::next(prev);
-            unsafe { std::alloc::dealloc(prev, AC::LAYOUT) };
-            prev = next;
-        }
-
-        while !current.is_null() {
-            let next = AC::next(current);
-            unsafe { std::alloc::dealloc(current, AC::LAYOUT) };
-            current = next;
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
 struct ArenaChunk {
     base: *mut u8,
     end:  *mut u8,
@@ -839,12 +1220,33 @@ impl ArenaChunk {
     }
 }
 
+impl Drop for ArenaChunk {
+    fn drop(&mut self) {
+        let mut current = self.base;
+
+        let mut prev = Self::prev(current);
+        while !prev.is_null() {
+            let next = Self::prev(prev);
+            unsafe { std::alloc::dealloc(prev, Self::LAYOUT) };
+            prev = next;
+        }
+
+        while !current.is_null() {
+            let next = Self::next(current);
+            unsafe { std::alloc::dealloc(current, Self::LAYOUT) };
+            current = next;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
     fn parse(input: &'static str, output: &mut String) {
         use std::fmt::Write;
         let mut arena = super::Arena::default();
-        let mut parser = super::Parser::new(&arena);
+        let mut symbols = Vec::new();
+        let mut parser = super::Parser::new(&arena, &mut symbols, &super::no_loader);
         for expr in parser.file(input, "test") {
             writeln!(output, "{}", expr).unwrap();
         }

@@ -5,7 +5,10 @@ use std::{
 
 use hbvm::Vm;
 
-use crate::ident::{self, Ident};
+use crate::{
+    ident::{self, Ident},
+    parser::Symbols,
+};
 
 use {
     crate::{
@@ -556,6 +559,8 @@ pub struct Codegen<'a> {
     globals:    Vec<Global>,
     main:       Option<LabelId>,
 
+    pub symbols: Symbols,
+
     vm: Vm<CompileMem, 0>,
 }
 
@@ -632,8 +637,8 @@ impl<'a> Codegen<'a> {
                     log::dbg!("fn-args");
                     let mut parama = self.param_alloc(fn_label.ret);
                     for (arg, &ty) in args.iter().zip(fn_label.args.iter()) {
-                        let refed = arg.last.map_or(0, Cell::get);
-                        let loc = self.load_arg(refed, ty, &mut parama);
+                        let sym = parser::find_symbol(&self.symbols, arg.id);
+                        let loc = self.load_arg(sym.flags, ty, &mut parama);
                         self.vars.push(Variable {
                             id:    arg.id,
                             value: Value { ty, loc },
@@ -1049,14 +1054,15 @@ impl<'a> Codegen<'a> {
                 }
             }
             E::BinOp {
-                left: E::Ident { id, last, .. },
+                left: E::Ident { id, .. },
                 op: T::Decl,
                 right,
             } => {
                 let val = self.expr(right)?;
                 let loc = self.make_loc_owned(val.loc, val.ty);
+                let sym = parser::find_symbol(&self.symbols, *id);
                 let loc = match loc {
-                    Loc::Reg(r) if last.is_some_and(|l| l.get() & parser::REFERENCED != 0) => {
+                    Loc::Reg(r) if sym.flags & parser::REFERENCED == 0 => {
                         let size = self.size_of(val.ty);
                         let stack = self.alloc_stack(size);
                         self.store_stack(r.0, stack.offset, size as _);
@@ -1098,19 +1104,16 @@ impl<'a> Codegen<'a> {
                     loc,
                 });
             }
-            E::Ident {
-                name,
-                id,
-                last,
-                index,
-            } => {
+            E::Ident { name, id, index } => {
                 let Some((var_index, var)) =
                     self.vars.iter_mut().enumerate().find(|(_, v)| v.id == id)
                 else {
                     self.report(expr.pos(), format_args!("unknown variable: {}", name))
                 };
 
-                let loc = match last.is_some_and(|l| parser::ident_flag_index(l.get()) == index)
+                let sym = parser::find_symbol(&self.symbols, id);
+
+                let loc = match parser::ident_flag_index(sym.flags) == index
                     && !self.loops.last().is_some_and(|l| l.var_count > var_index)
                 {
                     true => std::mem::replace(&mut var.value.loc, Loc::Imm(0)),
@@ -1940,6 +1943,8 @@ impl Loc {
 mod tests {
     use crate::{instrs, log};
 
+    use super::parser;
+
     struct TestMem;
 
     impl hbvm::mem::Memory for TestMem {
@@ -2009,7 +2014,8 @@ mod tests {
     fn generate(input: &'static str, output: &mut String) {
         let path = "test";
         let arena = crate::parser::Arena::default();
-        let mut parser = super::parser::Parser::new(&arena);
+        let mut symbols = crate::parser::Symbols::new();
+        let mut parser = parser::Parser::new(&arena, &mut symbols, &parser::no_loader);
         let exprs = parser.file(input, path);
         let mut codegen = super::Codegen::default();
         codegen.file(path, input.as_bytes(), &exprs);
