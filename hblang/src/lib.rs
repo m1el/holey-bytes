@@ -1,4 +1,6 @@
+#![feature(if_let_guard)]
 #![feature(noop_waker)]
+#![feature(portable_simd)]
 #![feature(iter_collect_into)]
 #![feature(macro_metavar_expr)]
 #![feature(let_chains)]
@@ -7,11 +9,7 @@
 #![feature(slice_ptr_get)]
 #![allow(dead_code)]
 
-use std::{
-    collections::{HashSet, VecDeque},
-    io,
-    sync::{mpsc, Arc, Mutex},
-};
+use std::{collections::VecDeque, sync::Mutex};
 
 #[macro_export]
 macro_rules! run_tests {

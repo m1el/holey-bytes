@@ -1,20 +1,17 @@
 use std::{
     cell::{Cell, UnsafeCell},
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     io::{self, Read},
-    ops::Not,
+    ops::{Deref, Not},
     path::{Path, PathBuf},
     ptr::NonNull,
-    sync::{
-        atomic::{AtomicU32, AtomicUsize},
-        Mutex,
-    },
+    sync::{atomic::AtomicUsize, Mutex},
 };
 
 use crate::{
     codegen::bt,
     ident::{self, Ident},
-    lexer::{Lexer, Token, TokenKind},
+    lexer::{Lexer, LineMap, Token, TokenKind},
     TaskQueue,
 };
 
@@ -22,13 +19,13 @@ pub type Pos = u32;
 pub type IdentFlags = u32;
 pub type Symbols = Vec<Symbol>;
 pub type FileId = u32;
-pub type Loader<'a> = &'a (dyn Fn(&str, &str) -> io::Result<Option<FileId>> + 'a);
+pub type Loader<'a> = &'a (dyn Fn(&str, &str) -> io::Result<FileId> + 'a);
 
-pub const MUTABLE: IdentFlags = 1 << std::mem::size_of::<IdentFlags>() * 8 - 1;
-pub const REFERENCED: IdentFlags = 1 << std::mem::size_of::<IdentFlags>() * 8 - 2;
+pub const MUTABLE: IdentFlags = 1 << (std::mem::size_of::<IdentFlags>() * 8 - 1);
+pub const REFERENCED: IdentFlags = 1 << (std::mem::size_of::<IdentFlags>() * 8 - 2);
 const GIT_DEPS_DIR: &str = "git-deps";
 
-pub fn parse_all(root: &str, threads: usize) -> io::Result<Vec<Ast>> {
+pub fn parse_all(threads: usize) -> io::Result<Vec<Ast>> {
     enum ImportPath<'a> {
         Root {
             path: &'a str,
@@ -86,9 +83,9 @@ pub fn parse_all(root: &str, threads: usize) -> io::Result<Vec<Ast>> {
     }
 
     impl<'a> ImportPath<'a> {
-        fn resolve(&self, from: &str, root: &str) -> Result<PathBuf, CantLoadFile> {
+        fn resolve(&self, from: &str) -> Result<PathBuf, CantLoadFile> {
             match self {
-                Self::Root { path } => Ok(PathBuf::from_iter([root, path])),
+                Self::Root { path } => Ok(Path::new(path).to_owned()),
                 Self::Rel { path } => {
                     let path = PathBuf::from_iter([from, path]);
                     match path.canonicalize() {
@@ -98,7 +95,7 @@ pub fn parse_all(root: &str, threads: usize) -> io::Result<Vec<Ast>> {
                 }
                 Self::Git { path, link, .. } => {
                     let link = preprocess_git(link);
-                    Ok(PathBuf::from_iter([root, GIT_DEPS_DIR, link, path]))
+                    Ok(PathBuf::from_iter([GIT_DEPS_DIR, link, path]))
                 }
             }
         }
@@ -179,17 +176,7 @@ pub fn parse_all(root: &str, threads: usize) -> io::Result<Vec<Ast>> {
         }
     }
 
-    enum Task {
-        LoadFile {
-            id: FileId,
-            physiscal_path: PathBuf,
-        },
-        FetchGit {
-            id: FileId,
-            physiscal_path: PathBuf,
-            command: std::process::Command,
-        },
-    }
+    type Task = (FileId, PathBuf, Option<std::process::Command>);
 
     let seen = Mutex::new(HashMap::<PathBuf, FileId>::new());
     let tasks = TaskQueue::<Task>::new(threads);
@@ -198,14 +185,14 @@ pub fn parse_all(root: &str, threads: usize) -> io::Result<Vec<Ast>> {
     let loader = |path: &str, from: &str| {
         let path = ImportPath::try_from(path)?;
 
-        let physiscal_path = path.resolve(from, root)?;
+        let physiscal_path = path.resolve(from)?;
 
         let id = {
             let mut seen = seen.lock().unwrap();
             let len = seen.len();
             match seen.entry(physiscal_path.clone()) {
                 std::collections::hash_map::Entry::Occupied(entry) => {
-                    return Ok(Some(*entry.get()));
+                    return Ok(*entry.get());
                 }
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     entry.insert(len as _);
@@ -214,91 +201,74 @@ pub fn parse_all(root: &str, threads: usize) -> io::Result<Vec<Ast>> {
             }
         };
 
-        if physiscal_path.exists() {
-            tasks.push(Task::LoadFile { id, physiscal_path });
-            return Ok(Some(id));
-        }
+        let command = if !physiscal_path.exists() {
+            let ImportPath::Git {
+                link,
+                branch,
+                rev,
+                tag,
+                ..
+            } = path
+            else {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("can't find file: {}", physiscal_path.display()),
+                ));
+            };
 
-        let ImportPath::Git {
-            link,
-            path,
-            branch,
-            rev,
-            tag,
-        } = path
-        else {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("can't find file: {}", physiscal_path.display()),
-            ));
+            let root = PathBuf::from_iter([GIT_DEPS_DIR, preprocess_git(link)]);
+
+            let mut command = std::process::Command::new("git");
+            command
+                .args(["clone", "--depth", "1"])
+                .args(branch.map(|b| ["--branch", b]).into_iter().flatten())
+                .args(tag.map(|t| ["--tag", t]).into_iter().flatten())
+                .args(rev.map(|r| ["--rev", r]).into_iter().flatten())
+                .arg(link)
+                .arg(root);
+            Some(command)
+        } else {
+            None
         };
 
-        let root = PathBuf::from_iter([root, GIT_DEPS_DIR, preprocess_git(link)]);
-
-        let mut command = std::process::Command::new("git");
-        command
-            .args(["clone", "--depth", "1"])
-            .args(branch.map(|b| ["--branch", b]).into_iter().flatten())
-            .args(tag.map(|t| ["--tag", t]).into_iter().flatten())
-            .args(rev.map(|r| ["--rev", r]).into_iter().flatten())
-            .arg(link)
-            .arg(root);
-
-        tasks.push(Task::FetchGit {
-            id,
-            physiscal_path,
-            command,
-        });
-
-        Ok(Some(id))
+        tasks.push((id, physiscal_path, command));
+        Ok(id)
     };
 
-    let load_from_path = |path: &Path, buffer: &mut Vec<u8>| -> io::Result<Ast> {
-        let path = path.to_str().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "path contains invalid characters",
-            )
-        })?;
-        let mut file = std::fs::File::open(&path)?;
-        file.read_to_end(buffer)?;
-        let src = std::str::from_utf8(buffer).map_err(InvalidFileData)?;
-        Ok(Ast::new(&path, src, &loader))
-    };
-
-    let execute_task = |task: Task, buffer: &mut Vec<u8>| match task {
-        Task::LoadFile { id, physiscal_path } => (id, load_from_path(&physiscal_path, buffer)),
-        Task::FetchGit {
-            id,
-            physiscal_path,
-            mut command,
-        } => {
-            let output = match command.output() {
-                Ok(output) => output,
-                Err(e) => return (id, Err(e)),
-            };
+    let execute_task = |(_, path, command): Task, buffer: &mut Vec<u8>| {
+        if let Some(mut command) = command {
+            let output = command.output()?;
             if !output.status.success() {
                 let msg = format!(
                     "git command failed: {}",
                     String::from_utf8_lossy(&output.stderr)
                 );
-                return (id, Err(io::Error::new(io::ErrorKind::Other, msg)));
+                return Err(io::Error::new(io::ErrorKind::Other, msg));
             }
-            (id, load_from_path(&physiscal_path, buffer))
         }
+
+        let path = path.to_str().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("path contains invalid characters: {}", path.display()),
+            )
+        })?;
+        let mut file = std::fs::File::open(path)?;
+        file.read_to_end(buffer)?;
+        let src = std::str::from_utf8(buffer).map_err(InvalidFileData)?;
+        Ok(Ast::new(path, src, &loader))
     };
 
     let thread = || {
         let mut buffer = Vec::new();
-        while let Some(task) = tasks.pop() {
-            let (indx, res) = execute_task(task, &mut buffer);
+        while let Some(task @ (indx, ..)) = tasks.pop() {
+            let res = execute_task(task, &mut buffer);
+            buffer.clear();
 
             let mut ast = ast.lock().unwrap();
             let len = ast.len().max(indx as usize + 1);
             ast.resize_with(len, || Err(io::ErrorKind::InvalidData.into()));
             ast[indx as usize] = res;
-
-            buffer.clear();
         }
     };
 
@@ -314,10 +284,11 @@ pub fn ident_flag_index(flag: IdentFlags) -> u32 {
     flag & !(MUTABLE | REFERENCED)
 }
 
-pub fn no_loader(_: &str, _: &str) -> io::Result<Option<FileId>> {
-    Ok(None)
+pub fn no_loader(_: &str, _: &str) -> io::Result<FileId> {
+    Err(io::ErrorKind::NotFound.into())
 }
 
+#[derive(Debug)]
 pub struct Symbol {
     pub name:  Ident,
     pub flags: IdentFlags,
@@ -490,6 +461,21 @@ impl<'a, 'b> Parser<'a, 'b> {
         let frame = self.idents.len();
         let token = self.next();
         let mut expr = match token.kind {
+            T::Driective if self.lexer.slice(token.range()) == "use" => {
+                self.expect_advance(TokenKind::LParen);
+                let str = self.expect_advance(TokenKind::String);
+                self.expect_advance(TokenKind::RParen);
+                let path = self.lexer.slice(str.range()).trim_matches('"');
+
+                E::Mod {
+                    pos:  token.start,
+                    path: self.arena.alloc_str(path),
+                    id:   match (self.loader)(path, self.path) {
+                        Ok(id) => id,
+                        Err(e) => self.report(format_args!("error loading dependency: {e:#?}")),
+                    },
+                }
+            }
             T::Driective => E::Directive {
                 pos:  token.start,
                 name: self.move_str(token),
@@ -562,7 +548,9 @@ impl<'a, 'b> Parser<'a, 'b> {
                 op:  token.kind,
                 val: {
                     let expr = self.ptr_unit_expr();
-                    self.flag_idents(*expr, REFERENCED);
+                    if token.kind == T::Band {
+                        self.flag_idents(*expr, REFERENCED);
+                    }
                     expr
                 },
             },
@@ -808,6 +796,11 @@ pub enum Expr<'a> {
         name: &'a str,
         args: &'a [Self],
     },
+    Mod {
+        pos:  Pos,
+        id:   FileId,
+        path: &'a str,
+    },
 }
 
 impl<'a> Expr<'a> {
@@ -816,6 +809,7 @@ impl<'a> Expr<'a> {
             Self::Call { func, .. } => func.pos(),
             Self::Ident { id, .. } => ident::pos(*id),
             Self::Break { pos }
+            | Self::Mod { pos, .. }
             | Self::Directive { pos, .. }
             | Self::Continue { pos }
             | Self::Closure { pos, .. }
@@ -837,13 +831,13 @@ impl<'a> Expr<'a> {
 impl<'a> std::fmt::Display for Expr<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         thread_local! {
-            static INDENT: Cell<usize> = Cell::new(0);
+            static INDENT: Cell<usize> = const { Cell::new(0) };
         }
 
-        fn fmt_list<'a, T>(
+        fn fmt_list<T>(
             f: &mut std::fmt::Formatter,
             end: &str,
-            list: &'a [T],
+            list: &[T],
             fmt: impl Fn(&T, &mut std::fmt::Formatter) -> std::fmt::Result,
         ) -> std::fmt::Result {
             let first = &mut true;
@@ -881,9 +875,8 @@ impl<'a> std::fmt::Display for Expr<'a> {
         }
 
         match *self {
-            Self::Field { target, field } => {
-                write!(f, "{}.{field}", Postfix(target))
-            }
+            Self::Mod { path, .. } => write!(f, "@mod(\"{path}\")"),
+            Self::Field { target, field } => write!(f, "{}.{field}", Postfix(target)),
             Self::Directive { name, args, .. } => {
                 write!(f, "@{name}(")?;
                 fmt_list(f, ")", args, std::fmt::Display::fmt)
@@ -980,12 +973,14 @@ impl<'a> std::fmt::Display for Expr<'a> {
 }
 
 #[repr(C)]
-struct AstInner<T: ?Sized> {
+pub struct AstInner<T: ?Sized> {
     ref_count: AtomicUsize,
     mem:       ArenaChunk,
     exprs:     *const [Expr<'static>],
-    path:      String,
-    symbols:   T,
+
+    pub path:    Box<str>,
+    pub nlines:  LineMap,
+    pub symbols: T,
 }
 
 impl AstInner<[Symbol]> {
@@ -1006,19 +1001,25 @@ impl AstInner<[Symbol]> {
 
         let layout = Self::layout(syms.len());
 
-        let ptr = unsafe { std::alloc::alloc(layout) };
-        let inner: *mut Self = std::ptr::from_raw_parts_mut(ptr as *mut _, syms.len());
         unsafe {
-            *(inner as *mut AstInner<()>) = AstInner {
-                ref_count: AtomicUsize::new(1),
-                mem: ArenaChunk::default(),
-                exprs,
-                path: path.to_owned(),
-                symbols: (),
-            };
+            let ptr = std::alloc::alloc(layout);
+            let inner: *mut Self = std::ptr::from_raw_parts_mut(ptr as *mut _, syms.len());
+
+            std::ptr::write(
+                inner as *mut AstInner<()>,
+                AstInner {
+                    ref_count: AtomicUsize::new(1),
+                    mem: arena.chunk.into_inner(),
+                    exprs,
+                    path: path.into(),
+                    nlines: LineMap::new(content),
+                    symbols: (),
+                },
+            );
             std::ptr::addr_of_mut!((*inner).symbols)
                 .as_mut_ptr()
                 .copy_from_nonoverlapping(syms.as_ptr(), syms.len());
+
             NonNull::new_unchecked(inner)
         }
     }
@@ -1036,16 +1037,43 @@ impl Ast {
         unsafe { &*self.inner().exprs }
     }
 
-    pub fn symbols(&self) -> &[Symbol] {
-        &self.inner().symbols
-    }
-
-    pub fn path(&self) -> &str {
-        &self.inner().path
-    }
-
     fn inner(&self) -> &AstInner<[Symbol]> {
         unsafe { self.0.as_ref() }
+    }
+
+    pub fn find_decl(&self, id: Result<Ident, &str>) -> Option<&Expr> {
+        self.exprs().iter().find_map(|expr| match expr {
+            Expr::BinOp {
+                left: &Expr::Ident { id: iden, name, .. },
+                op: TokenKind::Decl,
+                ..
+            } if Ok(iden) == id || Err(name) == id => Some(expr),
+            _ => None,
+        })
+    }
+}
+
+impl Default for Ast {
+    fn default() -> Self {
+        Self(AstInner::new("", "", &no_loader))
+    }
+}
+
+#[derive(Clone, Copy)]
+#[repr(packed)]
+pub struct ExprRef(NonNull<Expr<'static>>);
+
+impl ExprRef {
+    pub fn new(expr: &Expr) -> Self {
+        Self(NonNull::from(expr).cast())
+    }
+
+    pub fn get<'a>(&self, from: &'a Ast) -> Option<&'a Expr<'a>> {
+        // SAFETY: the pointer is or was a valid reference in the past, if it points within one of
+        // arenas regions, it muts be walid, since arena does not give invalid pointers to its
+        // allocations
+        ArenaChunk::contains(from.mem.base, self.0.as_ptr() as _)
+            .then(|| unsafe { { self.0 }.as_ref() })
     }
 }
 
@@ -1079,6 +1107,14 @@ impl Drop for Ast {
     }
 }
 
+impl Deref for Ast {
+    type Target = AstInner<[Symbol]>;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner()
+    }
+}
+
 #[derive(Default)]
 pub struct Arena<'a> {
     chunk: UnsafeCell<ArenaChunk>,
@@ -1092,6 +1128,10 @@ impl<'a> Arena<'a> {
     }
 
     pub fn alloc<T>(&self, value: T) -> &'a mut T {
+        if std::mem::size_of::<T>() == 0 {
+            return unsafe { NonNull::dangling().as_mut() };
+        }
+
         let layout = std::alloc::Layout::new::<T>();
         let ptr = self.alloc_low(layout);
         unsafe { ptr.cast::<T>().write(value) };
@@ -1099,6 +1139,10 @@ impl<'a> Arena<'a> {
     }
 
     pub fn alloc_slice<T: Copy>(&self, slice: &[T]) -> &'a mut [T] {
+        if slice.is_empty() || std::mem::size_of::<T>() == 0 {
+            return &mut [];
+        }
+
         let layout = std::alloc::Layout::array::<T>(slice.len()).unwrap();
         let ptr = self.alloc_low(layout);
         unsafe {
@@ -1107,23 +1151,6 @@ impl<'a> Arena<'a> {
                 .copy_from_nonoverlapping(slice.as_ptr(), slice.len())
         };
         unsafe { std::slice::from_raw_parts_mut(ptr.as_ptr() as _, slice.len()) }
-    }
-
-    pub fn clear(&mut self) {
-        let chunk = self.chunk.get_mut();
-        if chunk.base.is_null() {
-            return;
-        }
-
-        loop {
-            let prev = ArenaChunk::prev(chunk.base);
-            if prev.is_null() {
-                break;
-            }
-            chunk.base = prev;
-        }
-
-        chunk.end = unsafe { chunk.base.add(ArenaChunk::PREV_OFFSET) };
     }
 
     fn alloc_low(&self, layout: std::alloc::Layout) -> NonNull<u8> {
@@ -1136,10 +1163,8 @@ impl<'a> Arena<'a> {
             return ptr;
         }
 
-        if let Some(prev) = ArenaChunk::reset(ArenaChunk::prev(chunk.base)) {
-            *chunk = prev;
-        } else {
-            *chunk = ArenaChunk::new(chunk.base);
+        unsafe {
+            std::ptr::write(chunk, ArenaChunk::new(chunk.base));
         }
 
         chunk.alloc(layout).unwrap()
@@ -1164,18 +1189,13 @@ impl ArenaChunk {
     const CHUNK_SIZE: usize = 1 << 16;
     const ALIGN: usize = std::mem::align_of::<Self>();
     const NEXT_OFFSET: usize = Self::CHUNK_SIZE - std::mem::size_of::<*mut u8>();
-    const PREV_OFFSET: usize = Self::NEXT_OFFSET - std::mem::size_of::<*mut u8>();
     const LAYOUT: std::alloc::Layout =
         unsafe { std::alloc::Layout::from_size_align_unchecked(Self::CHUNK_SIZE, Self::ALIGN) };
 
     fn new(next: *mut u8) -> Self {
         let base = unsafe { std::alloc::alloc(Self::LAYOUT) };
-        let end = unsafe { base.add(Self::PREV_OFFSET) };
-        if !next.is_null() {
-            Self::set_prev(next, base);
-        }
+        let end = unsafe { base.add(Self::NEXT_OFFSET) };
         Self::set_next(base, next);
-        Self::set_prev(base, std::ptr::null_mut());
         Self { base, end }
     }
 
@@ -1183,19 +1203,8 @@ impl ArenaChunk {
         unsafe { std::ptr::write(curr.add(Self::NEXT_OFFSET) as *mut _, next) };
     }
 
-    fn set_prev(curr: *mut u8, prev: *mut u8) {
-        unsafe { std::ptr::write(curr.add(Self::PREV_OFFSET) as *mut _, prev) };
-    }
-
     fn next(curr: *mut u8) -> *mut u8 {
         unsafe { std::ptr::read(curr.add(Self::NEXT_OFFSET) as *mut _) }
-    }
-
-    fn prev(curr: *mut u8) -> *mut u8 {
-        if curr.is_null() {
-            return std::ptr::null_mut();
-        }
-        unsafe { std::ptr::read(curr.add(Self::PREV_OFFSET) as *mut _) }
     }
 
     fn reset(prev: *mut u8) -> Option<Self> {
@@ -1218,19 +1227,17 @@ impl ArenaChunk {
         unsafe { self.end = self.end.sub(size) };
         unsafe { Some(NonNull::new_unchecked(self.end)) }
     }
+
+    fn contains(base: *mut u8, arg: *mut u8) -> bool {
+        !base.is_null()
+            && ((unsafe { base.add(Self::CHUNK_SIZE) } > arg && base <= arg)
+                || Self::contains(Self::next(base), arg))
+    }
 }
 
 impl Drop for ArenaChunk {
     fn drop(&mut self) {
         let mut current = self.base;
-
-        let mut prev = Self::prev(current);
-        while !prev.is_null() {
-            let next = Self::prev(prev);
-            unsafe { std::alloc::dealloc(prev, Self::LAYOUT) };
-            prev = next;
-        }
-
         while !current.is_null() {
             let next = Self::next(current);
             unsafe { std::alloc::dealloc(current, Self::LAYOUT) };
@@ -1241,16 +1248,14 @@ impl Drop for ArenaChunk {
 
 #[cfg(test)]
 mod tests {
-
     fn parse(input: &'static str, output: &mut String) {
         use std::fmt::Write;
-        let mut arena = super::Arena::default();
+        let arena = super::Arena::default();
         let mut symbols = Vec::new();
         let mut parser = super::Parser::new(&arena, &mut symbols, &super::no_loader);
         for expr in parser.file(input, "test") {
             writeln!(output, "{}", expr).unwrap();
         }
-        arena.clear();
     }
 
     crate::run_tests! { parse:

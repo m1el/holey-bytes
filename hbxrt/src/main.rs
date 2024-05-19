@@ -54,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut vm = unsafe {
         Vm::<_, 0>::new(
-            mem::HostMemory,
+            hbvm::mem::HostMemory,
             Address::new(mmap.as_ptr().add(stack.len()) as u64),
         )
     };

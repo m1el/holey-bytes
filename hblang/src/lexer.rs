@@ -1,3 +1,5 @@
+use std::simd::cmp::SimdPartialEq;
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Token {
     pub kind:  TokenKind,
@@ -290,85 +292,117 @@ impl<'a> Lexer<'a> {
     }
 }
 
-pub fn line_col(bytes: &[u8], mut start: u32) -> (usize, usize) {
-    bytes
+pub fn line_col(bytes: &[u8], pos: u32) -> (usize, usize) {
+    bytes[..pos as usize]
         .split(|&b| b == b'\n')
+        .map(<[u8]>::len)
         .enumerate()
-        .find_map(|(i, line)| {
-            if start < line.len() as u32 {
-                return Some((i + 1, start as usize + 1));
-            }
-            start -= line.len() as u32 + 1;
-            None
-        })
+        .last()
+        .map(|(line, col)| (line + 1, col + 1))
         .unwrap_or((1, 1))
 }
 
-impl<'a> Iterator for Lexer<'a> {
-    type Item = Token;
+pub struct LineMap {
+    lines: Box<[u8]>,
+}
 
-    fn next(&mut self) -> Option<Self::Item> {
-        use TokenKind as T;
-        loop {
-            let mut start = self.pos;
-            let kind = match self.advance()? {
-                b'\n' | b'\r' | b'\t' | b' ' => continue,
-                b'0'..=b'9' => {
-                    while let Some(b'0'..=b'9') = self.peek() {
-                        self.advance();
-                    }
-                    T::Number
+impl LineMap {
+    pub fn line_col(&self, mut pos: u32) -> (usize, usize) {
+        let mut line = 1;
+
+        let mut iter = self.lines.iter().copied();
+
+        while let Some(mut len) = iter.next() {
+            let mut acc = 0;
+            while len & 0x80 != 0 {
+                acc = (acc << 7) | (len & 0x7F) as u32;
+                len = iter.next().unwrap();
+            }
+            acc += len as u32;
+
+            if pos < acc {
+                break;
+            }
+            pos = pos.saturating_sub(acc);
+            line += 1;
+        }
+
+        (line, pos as usize + 1)
+    }
+
+    pub fn new(input: &str) -> Self {
+        let bytes = input.as_bytes();
+        let (start, simd_mid, end) = bytes.as_simd::<16>();
+
+        let query = std::simd::u8x16::splat(b'\n');
+
+        let nl_count = start.iter().map(|&b| (b == b'\n') as usize).sum::<usize>()
+            + simd_mid
+                .iter()
+                .map(|s| s.simd_eq(query).to_bitmask().count_ones())
+                .sum::<u32>() as usize
+            + end.iter().map(|&b| (b == b'\n') as usize).sum::<usize>();
+
+        let mut lines = Vec::with_capacity(nl_count);
+        let mut last_nl = 0;
+
+        let handle_rem = |offset: usize, bytes: &[u8], last_nl: &mut usize, lines: &mut Vec<u8>| {
+            bytes
+                .iter()
+                .copied()
+                .enumerate()
+                .filter_map(|(i, b)| (b == b'\n').then_some(i + offset))
+                .for_each(|i| {
+                    lines.push((i - *last_nl + 1) as u8);
+                    *last_nl = i + 1;
+                });
+        };
+
+        handle_rem(0, start, &mut last_nl, &mut lines);
+
+        for (i, simd) in simd_mid.iter().enumerate() {
+            let mask = simd.simd_eq(query);
+            let mut mask = mask.to_bitmask();
+            while mask != 0 {
+                let idx = mask.trailing_zeros() as usize + i * 16 + start.len();
+                let mut len = idx - last_nl + 1;
+                while len >= 0x80 {
+                    lines.push((0x80 | (len & 0x7F)) as u8);
+                    len >>= 7;
                 }
-                c @ (b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'@') => {
-                    while let Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_') = self.peek() {
-                        self.advance();
-                    }
+                lines.push(len as u8);
+                last_nl = idx + 1;
+                mask &= mask - 1;
+            }
+        }
 
-                    if c == b'@' {
-                        start += 1;
-                        T::Driective
-                    } else {
-                        let ident = &self.bytes[start as usize..self.pos as usize];
-                        T::from_ident(ident)
-                    }
-                }
-                b':' if self.advance_if(b'=') => T::Decl,
-                b':' => T::Colon,
-                b',' => T::Comma,
-                b'.' if self.advance_if(b'{') => T::Ctor,
-                b'.' if self.advance_if(b'(') => T::Tupl,
-                b'.' => T::Dot,
-                b';' => T::Semi,
-                b'!' if self.advance_if(b'=') => T::Ne,
-                b'=' if self.advance_if(b'=') => T::Eq,
-                b'=' => T::Assign,
-                b'<' if self.advance_if(b'=') => T::Le,
-                b'<' => T::Lt,
-                b'>' if self.advance_if(b'=') => T::Ge,
-                b'>' => T::Gt,
-                b'+' => T::Add,
-                b'-' => T::Sub,
-                b'*' => T::Mul,
-                b'/' => T::Div,
-                b'&' => T::Band,
-                b'(' => T::LParen,
-                b')' => T::RParen,
-                b'{' => T::LBrace,
-                b'}' => T::RBrace,
-                _ => T::Error,
-            };
+        handle_rem(bytes.len() - end.len(), end, &mut last_nl, &mut lines);
 
-            return Some(Token {
-                kind,
-                start,
-                end: self.pos,
-            });
+        Self {
+            lines: Box::from(lines),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    fn map_lines(input: &'static str, _: &mut String) {
+        let line_map = super::LineMap::new(input);
+        for i in 0..input.len() {
+            assert_eq!(
+                line_map.line_col(i as u32),
+                //line_map.line_col(i as u32),
+                super::line_col(input.as_bytes(), i as u32)
+            );
+        }
+    }
+
+    crate::run_tests! { map_lines:
+        empty_file => "";
+        log_line => " ".repeat(1000).leak();
+        this_file => &include_str!("parser.rs")[..1000];
+    }
+
     fn lex(input: &'static str, output: &mut String) {
         use {
             super::{Lexer, TokenKind as T},
