@@ -17,7 +17,7 @@ main := fn(): int {
 	return 0;
 }
 
-pass := fn(t: *Ty): int {
+pass := fn(t: ^Ty): int {
 	return t.a - t.b;
 }
 

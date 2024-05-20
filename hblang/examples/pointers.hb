@@ -7,7 +7,7 @@ main := fn(): int {
 	return *b - 2;
 }
 
-modify := fn(a: *int): void {
+modify := fn(a: ^int): void {
 	*a = 2;
 	return;
 }

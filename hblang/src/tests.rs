@@ -11,7 +11,10 @@ pub fn run_test(name: &'static str, input: &'static str, test: fn(&'static str, 
     let mut output = String::new();
     test(input, &mut output);
 
-    let mut root = PathBuf::from(std::env::var("PT_TEST_ROOT").unwrap_or("tests".to_string()));
+    let mut root = PathBuf::from(
+        std::env::var("PT_TEST_ROOT")
+            .unwrap_or(concat!(env!("CARGO_MANIFEST_DIR"), "/tests").to_string()),
+    );
     root.push(
         name.replace("::", "_")
             .replace(concat!(env!("CARGO_PKG_NAME"), "_"), ""),

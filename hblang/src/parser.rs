@@ -1,18 +1,15 @@
 use std::{
     cell::{Cell, UnsafeCell},
-    collections::HashMap,
-    io::{self, Read},
+    io,
     ops::{Deref, Not},
-    path::{Path, PathBuf},
     ptr::NonNull,
-    sync::{atomic::AtomicUsize, Mutex},
+    sync::atomic::AtomicUsize,
 };
 
 use crate::{
     codegen::bt,
     ident::{self, Ident},
     lexer::{Lexer, LineMap, Token, TokenKind},
-    TaskQueue,
 };
 
 pub type Pos = u32;
@@ -21,267 +18,25 @@ pub type Symbols = Vec<Symbol>;
 pub type FileId = u32;
 pub type Loader<'a> = &'a (dyn Fn(&str, &str) -> io::Result<FileId> + 'a);
 
-pub const MUTABLE: IdentFlags = 1 << (std::mem::size_of::<IdentFlags>() * 8 - 1);
-pub const REFERENCED: IdentFlags = 1 << (std::mem::size_of::<IdentFlags>() * 8 - 2);
-const GIT_DEPS_DIR: &str = "git-deps";
+pub mod idfl {
+    use super::*;
 
-pub fn parse_all(threads: usize) -> io::Result<Vec<Ast>> {
-    enum ImportPath<'a> {
-        Root {
-            path: &'a str,
-        },
-        Rel {
-            path: &'a str,
-        },
-        Git {
-            link:   &'a str,
-            path:   &'a str,
-            branch: Option<&'a str>,
-            tag:    Option<&'a str>,
-            rev:    Option<&'a str>,
-        },
-    }
-
-    impl<'a> TryFrom<&'a str> for ImportPath<'a> {
-        type Error = ParseImportError;
-
-        fn try_from(value: &'a str) -> Result<Self, Self::Error> {
-            let (prefix, path) = value.split_once(':').unwrap_or(("", value));
-
-            match prefix {
-                "" => Ok(Self::Root { path }),
-                "rel" => Ok(Self::Rel { path }),
-                "git" => {
-                    let (link, path) =
-                        path.split_once(':').ok_or(ParseImportError::ExpectedPath)?;
-                    let (link, params) = link.split_once('?').unwrap_or((link, ""));
-                    let [mut branch, mut tag, mut rev] = [None; 3];
-                    for (key, value) in params.split('&').filter_map(|s| s.split_once('=')) {
-                        match key {
-                            "branch" => branch = Some(value),
-                            "tag" => tag = Some(value),
-                            "rev" => rev = Some(value),
-                            _ => return Err(ParseImportError::UnexpectedParam),
-                        }
-                    }
-                    Ok(Self::Git {
-                        link,
-                        path,
-                        branch,
-                        tag,
-                        rev,
-                    })
-                }
-                _ => Err(ParseImportError::InvalidPrefix),
-            }
-        }
-    }
-
-    fn preprocess_git(link: &str) -> &str {
-        let link = link.strip_prefix("https://").unwrap_or(link);
-        link.strip_suffix(".git").unwrap_or(link)
-    }
-
-    impl<'a> ImportPath<'a> {
-        fn resolve(&self, from: &str) -> Result<PathBuf, CantLoadFile> {
-            match self {
-                Self::Root { path } => Ok(Path::new(path).to_owned()),
-                Self::Rel { path } => {
-                    let path = PathBuf::from_iter([from, path]);
-                    match path.canonicalize() {
-                        Ok(path) => Ok(path),
-                        Err(e) => Err(CantLoadFile(path, e)),
-                    }
-                }
-                Self::Git { path, link, .. } => {
-                    let link = preprocess_git(link);
-                    Ok(PathBuf::from_iter([GIT_DEPS_DIR, link, path]))
-                }
-            }
-        }
-    }
-
-    #[derive(Debug)]
-    enum ParseImportError {
-        ExpectedPath,
-        InvalidPrefix,
-        ExpectedGitAlias,
-        UnexpectedParam,
-    }
-
-    impl std::fmt::Display for ParseImportError {
-        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            match self {
-                Self::ExpectedPath => write!(f, "expected path"),
-                Self::InvalidPrefix => write!(
-                    f,
-                    "invalid prefix, expected one of rel, \
-                    git or none followed by colon"
-                ),
-                Self::ExpectedGitAlias => write!(f, "expected git alias as ':<alias>$'"),
-                Self::UnexpectedParam => {
-                    write!(f, "unexpected git param, expected branch, tag or rev")
-                }
-            }
-        }
-    }
-
-    impl std::error::Error for ParseImportError {}
-
-    impl From<ParseImportError> for io::Error {
-        fn from(e: ParseImportError) -> Self {
-            io::Error::new(io::ErrorKind::InvalidInput, e)
-        }
-    }
-
-    #[derive(Debug)]
-    struct CantLoadFile(PathBuf, io::Error);
-
-    impl std::fmt::Display for CantLoadFile {
-        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            write!(f, "can't load file: {}", self.0.display())
-        }
-    }
-
-    impl std::error::Error for CantLoadFile {
-        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-            Some(&self.1)
-        }
-    }
-
-    impl From<CantLoadFile> for io::Error {
-        fn from(e: CantLoadFile) -> Self {
-            io::Error::new(io::ErrorKind::InvalidData, e)
-        }
-    }
-
-    #[derive(Debug)]
-    struct InvalidFileData(std::str::Utf8Error);
-
-    impl std::fmt::Display for InvalidFileData {
-        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            write!(f, "invalid file data")
-        }
-    }
-
-    impl std::error::Error for InvalidFileData {
-        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-            Some(&self.0)
-        }
-    }
-
-    impl From<InvalidFileData> for io::Error {
-        fn from(e: InvalidFileData) -> Self {
-            io::Error::new(io::ErrorKind::InvalidData, e)
-        }
-    }
-
-    type Task = (FileId, PathBuf, Option<std::process::Command>);
-
-    let seen = Mutex::new(HashMap::<PathBuf, FileId>::new());
-    let tasks = TaskQueue::<Task>::new(threads);
-    let ast = Mutex::new(Vec::<io::Result<Ast>>::new());
-
-    let loader = |path: &str, from: &str| {
-        let path = ImportPath::try_from(path)?;
-
-        let physiscal_path = path.resolve(from)?;
-
-        let id = {
-            let mut seen = seen.lock().unwrap();
-            let len = seen.len();
-            match seen.entry(physiscal_path.clone()) {
-                std::collections::hash_map::Entry::Occupied(entry) => {
-                    return Ok(*entry.get());
-                }
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(len as _);
-                    len as FileId
-                }
-            }
+    macro_rules! flags {
+        ($($name:ident,)*) => {
+            $(pub const $name: IdentFlags = 1 << (std::mem::size_of::<IdentFlags>() * 8 - 1 - ${index(0)});)*
+            pub const ALL: IdentFlags = 0 $(| $name)*;
         };
+    }
 
-        let command = if !physiscal_path.exists() {
-            let ImportPath::Git {
-                link,
-                branch,
-                rev,
-                tag,
-                ..
-            } = path
-            else {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("can't find file: {}", physiscal_path.display()),
-                ));
-            };
+    flags! {
+        MUTABLE,
+        REFERENCED,
+        CAPTURED,
+    }
 
-            let root = PathBuf::from_iter([GIT_DEPS_DIR, preprocess_git(link)]);
-
-            let mut command = std::process::Command::new("git");
-            command
-                .args(["clone", "--depth", "1"])
-                .args(branch.map(|b| ["--branch", b]).into_iter().flatten())
-                .args(tag.map(|t| ["--tag", t]).into_iter().flatten())
-                .args(rev.map(|r| ["--rev", r]).into_iter().flatten())
-                .arg(link)
-                .arg(root);
-            Some(command)
-        } else {
-            None
-        };
-
-        tasks.push((id, physiscal_path, command));
-        Ok(id)
-    };
-
-    let execute_task = |(_, path, command): Task, buffer: &mut Vec<u8>| {
-        if let Some(mut command) = command {
-            let output = command.output()?;
-            if !output.status.success() {
-                let msg = format!(
-                    "git command failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-                return Err(io::Error::new(io::ErrorKind::Other, msg));
-            }
-        }
-
-        let path = path.to_str().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("path contains invalid characters: {}", path.display()),
-            )
-        })?;
-        let mut file = std::fs::File::open(path)?;
-        file.read_to_end(buffer)?;
-        let src = std::str::from_utf8(buffer).map_err(InvalidFileData)?;
-        Ok(Ast::new(path, src, &loader))
-    };
-
-    let thread = || {
-        let mut buffer = Vec::new();
-        while let Some(task @ (indx, ..)) = tasks.pop() {
-            let res = execute_task(task, &mut buffer);
-            buffer.clear();
-
-            let mut ast = ast.lock().unwrap();
-            let len = ast.len().max(indx as usize + 1);
-            ast.resize_with(len, || Err(io::ErrorKind::InvalidData.into()));
-            ast[indx as usize] = res;
-        }
-    };
-
-    std::thread::scope(|s| (0..threads).for_each(|_| _ = s.spawn(thread)));
-
-    ast.into_inner()
-        .unwrap()
-        .into_iter()
-        .collect::<io::Result<Vec<_>>>()
-}
-
-pub fn ident_flag_index(flag: IdentFlags) -> u32 {
-    flag & !(MUTABLE | REFERENCED)
+    pub fn index(i: IdentFlags) -> u32 {
+        i & !ALL
+    }
 }
 
 pub fn no_loader(_: &str, _: &str) -> io::Result<FileId> {
@@ -301,13 +56,15 @@ struct ScopeIdent {
 }
 
 pub struct Parser<'a, 'b> {
-    path:    &'b str,
-    loader:  Loader<'b>,
-    lexer:   Lexer<'b>,
-    arena:   &'b Arena<'a>,
-    token:   Token,
-    idents:  Vec<ScopeIdent>,
-    symbols: &'b mut Symbols,
+    path:     &'b str,
+    loader:   Loader<'b>,
+    lexer:    Lexer<'b>,
+    arena:    &'b Arena<'a>,
+    token:    Token,
+    idents:   Vec<ScopeIdent>,
+    symbols:  &'b mut Symbols,
+    ns_bound: usize,
+    captured: Vec<Ident>,
 }
 
 impl<'a, 'b> Parser<'a, 'b> {
@@ -321,6 +78,8 @@ impl<'a, 'b> Parser<'a, 'b> {
             arena,
             idents: Vec::new(),
             symbols,
+            ns_bound: 0,
+            captured: Vec::new(),
         }
     }
 
@@ -382,7 +141,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             let left = &*self.arena.alloc(fold);
 
             if let Some(op) = op.assign_op() {
-                self.flag_idents(*left, MUTABLE);
+                self.flag_idents(*left, idfl::MUTABLE);
                 let right = Expr::BinOp { left, op, right };
                 fold = Expr::BinOp {
                     left,
@@ -392,7 +151,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             } else {
                 fold = Expr::BinOp { left, right, op };
                 if op == TokenKind::Assign {
-                    self.flag_idents(*left, MUTABLE);
+                    self.flag_idents(*left, idfl::MUTABLE);
                 }
             }
         }
@@ -400,41 +159,25 @@ impl<'a, 'b> Parser<'a, 'b> {
         fold
     }
 
-    fn try_resolve_builtin(name: &str) -> Option<Ident> {
-        // FIXME: we actually do this the second time in the codegen
-        Some(match name {
-            "int" | "i64" => bt::INT,
-            "i8" => bt::I8,
-            "i16" => bt::I16,
-            "i32" => bt::I32,
-            "u8" => bt::U8,
-            "u16" => bt::U16,
-            "uint" | "u32" => bt::U32,
-            "bool" => bt::BOOL,
-            "void" => bt::VOID,
-            "never" => bt::NEVER,
-            _ => return None,
-        })
-    }
-
     fn resolve_ident(&mut self, token: Token, decl: bool) -> (Ident, u32) {
         let name = self.lexer.slice(token.range());
 
-        if let Some(builtin) = Self::try_resolve_builtin(name) {
+        if let Some(builtin) = bt::from_str(name) {
             return (builtin, 0);
         }
 
-        let id = match self
+        let (i, id) = match self
             .idents
             .iter_mut()
-            .rfind(|elem| self.lexer.slice(ident::range(elem.ident)) == name)
+            .enumerate()
+            .rfind(|(_, elem)| self.lexer.slice(ident::range(elem.ident)) == name)
         {
-            Some(elem) if decl && elem.declared => {
+            Some((_, elem)) if decl && elem.declared => {
                 self.report(format_args!("redeclaration of identifier: {name}"))
             }
-            Some(elem) => {
+            Some((i, elem)) => {
                 elem.flags += 1;
-                elem
+                (i, elem)
             }
             None => {
                 let id = ident::new(token.start, name.len() as _);
@@ -443,13 +186,17 @@ impl<'a, 'b> Parser<'a, 'b> {
                     declared: false,
                     flags:    0,
                 });
-                self.idents.last_mut().unwrap()
+                (self.idents.len() - 1, self.idents.last_mut().unwrap())
             }
         };
 
         id.declared |= decl;
+        if self.ns_bound > i && id.declared {
+            id.flags |= idfl::CAPTURED;
+            self.captured.push(id.ident);
+        }
 
-        (id.ident, ident_flag_index(id.flags))
+        (id.ident, idfl::index(id.flags))
     }
 
     fn move_str(&mut self, range: Token) -> &'a str {
@@ -460,6 +207,8 @@ impl<'a, 'b> Parser<'a, 'b> {
         use {Expr as E, TokenKind as T};
         let frame = self.idents.len();
         let token = self.next();
+        let prev_boundary = self.ns_bound;
+        let prev_captured = self.captured.len();
         let mut expr = match token.kind {
             T::Driective if self.lexer.slice(token.range()) == "use" => {
                 self.expect_advance(TokenKind::LParen);
@@ -489,8 +238,8 @@ impl<'a, 'b> Parser<'a, 'b> {
                 value: true,
             },
             T::Struct => E::Struct {
-                pos:    token.start,
-                fields: {
+                fields:   {
+                    self.ns_bound = self.idents.len();
                     self.expect_advance(T::LBrace);
                     self.collect_list(T::Comma, T::RBrace, |s| {
                         let name = s.expect_advance(T::Ident);
@@ -498,6 +247,20 @@ impl<'a, 'b> Parser<'a, 'b> {
                         let ty = s.expr();
                         (s.move_str(name), ty)
                     })
+                },
+                captured: {
+                    self.ns_bound = prev_boundary;
+                    self.captured[prev_captured..].sort_unstable();
+                    let preserved = self.captured[prev_captured..].partition_dedup().0.len();
+                    self.captured.truncate(prev_captured + preserved);
+                    self.arena.alloc_slice(&self.captured[prev_captured..])
+                },
+                pos:      {
+                    if self.ns_bound == 0 {
+                        // we might save some memory
+                        self.captured.clear();
+                    }
+                    token.start
                 },
             },
             T::Ident => {
@@ -543,13 +306,13 @@ impl<'a, 'b> Parser<'a, 'b> {
                 },
                 body: self.ptr_expr(),
             },
-            T::Band | T::Mul => E::UnOp {
+            T::Band | T::Mul | T::Xor => E::UnOp {
                 pos: token.start,
                 op:  token.kind,
                 val: {
                     let expr = self.ptr_unit_expr();
                     if token.kind == T::Band {
-                        self.flag_idents(*expr, REFERENCED);
+                        self.flag_idents(*expr, idfl::REFERENCED);
                     }
                     expr
                 },
@@ -775,8 +538,9 @@ pub enum Expr<'a> {
         val: &'a Self,
     },
     Struct {
-        pos:    Pos,
-        fields: &'a [(&'a str, Self)],
+        pos:      Pos,
+        fields:   &'a [(&'a str, Self)],
+        captured: &'a [Ident],
     },
     Ctor {
         pos:    Pos,
@@ -1041,13 +805,13 @@ impl Ast {
         unsafe { self.0.as_ref() }
     }
 
-    pub fn find_decl(&self, id: Result<Ident, &str>) -> Option<&Expr> {
+    pub fn find_decl(&self, id: Result<Ident, &str>) -> Option<(&Expr, Ident)> {
         self.exprs().iter().find_map(|expr| match expr {
             Expr::BinOp {
                 left: &Expr::Ident { id: iden, name, .. },
                 op: TokenKind::Decl,
                 ..
-            } if Ok(iden) == id || Err(name) == id => Some(expr),
+            } if Ok(iden) == id || Err(name) == id => Some((expr, iden)),
             _ => None,
         })
     }
@@ -1205,17 +969,6 @@ impl ArenaChunk {
 
     fn next(curr: *mut u8) -> *mut u8 {
         unsafe { std::ptr::read(curr.add(Self::NEXT_OFFSET) as *mut _) }
-    }
-
-    fn reset(prev: *mut u8) -> Option<Self> {
-        if prev.is_null() {
-            return None;
-        }
-
-        Some(Self {
-            base: prev,
-            end:  unsafe { prev.add(Self::CHUNK_SIZE) },
-        })
     }
 
     fn alloc(&mut self, layout: std::alloc::Layout) -> Option<NonNull<u8>> {

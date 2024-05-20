@@ -7,6 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut generated = String::new();
 
+    writeln!(generated, "#![allow(dead_code)]")?;
     gen_max_size(&mut generated)?;
     gen_encodes(&mut generated)?;
     gen_structs(&mut generated)?;

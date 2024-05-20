@@ -11,10 +11,6 @@ impl Token {
     pub fn range(&self) -> std::ops::Range<usize> {
         self.start as usize..self.end as usize
     }
-
-    pub fn len(&self) -> u32 {
-        self.end - self.start
-    }
 }
 
 macro_rules! gen_token_kind {
