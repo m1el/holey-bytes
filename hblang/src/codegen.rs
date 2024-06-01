@@ -7,7 +7,7 @@ use hbvm::Vm;
 
 use crate::{
     ident::{self, Ident},
-    parser::{idfl, ExprRef},
+    parser::{idfl, ExprRef, FileId, Pos},
     HashMap,
 };
 
@@ -33,7 +33,7 @@ fn align_up(value: u64, align: u64) -> u64 {
 }
 
 struct ItemId {
-    file: parser::FileId,
+    file: FileId,
     expr: parser::ExprRef,
     id:   u32,
 }
@@ -299,6 +299,7 @@ type_kind! {
         Pointer,
         Func,
         Global,
+        Module,
     }
 }
 
@@ -508,6 +509,7 @@ impl<'a> std::fmt::Display for TypeDisplay<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use TypeKind as TK;
         match TK::from_ty(self.ty) {
+            TK::Module(idx) => write!(f, "module{}", idx),
             TK::Builtin(ty) => write!(f, "{}", bt::to_str(ty)),
             TK::Pointer(ty) => {
                 write!(f, "^{}", self.rety(self.codegen.pointers[ty as usize]))
@@ -561,13 +563,13 @@ struct Linked {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct SymKey {
     id:   Ident,
-    file: parser::FileId,
+    file: FileId,
 }
 
 #[derive(Default)]
 pub struct Codegen {
     cf:    parser::Ast,
-    cf_id: parser::FileId,
+    cf_id: FileId,
 
     ret:      Type,
     ret_reg:  Option<Reg>,
@@ -634,7 +636,7 @@ impl Codegen {
 
     pub fn generate(&mut self) {
         self.lazy_init();
-        self.find_and_declare(0, Err("main"));
+        self.find_and_declare(0, 0, Err("main"));
         self.code.prelude();
         self.complete_call_graph();
     }
@@ -750,7 +752,7 @@ impl Codegen {
         TypeDisplay::new(self, ty)
     }
 
-    fn unwrap_struct(&self, ty: Type, pos: parser::Pos, context: impl std::fmt::Display) -> Type {
+    fn unwrap_struct(&self, ty: Type, pos: Pos, context: impl std::fmt::Display) -> Type {
         match TypeKind::from_ty(ty) {
             TypeKind::Struct(idx) => idx,
             _ => self.report(
@@ -760,8 +762,7 @@ impl Codegen {
         }
     }
 
-    fn offset_of(&self, pos: parser::Pos, ty: Type, field: Result<&str, usize>) -> (u64, Type) {
-        let idx = self.unwrap_struct(ty, pos, "field access");
+    fn offset_of(&self, pos: Pos, idx: u32, field: Result<&str, usize>) -> (u64, Type) {
         let record = &self.structs[idx as usize];
         let mut offset = 0;
         for (i, &(ref name, ty)) in record.fields.iter().enumerate() {
@@ -897,7 +898,11 @@ impl Codegen {
 
         match value.loc {
             Loc::RegRef(reg) | Loc::Reg(LinReg(reg, ..)) => self.vm.read_reg(reg).0 as _,
-            _ => unreachable!(),
+            Loc::Deref(LinReg(reg, ..), .., off) | Loc::DerefRef(reg, .., off) => {
+                let ptr = unsafe { (self.vm.read_reg(reg).0 as *const u8).add(off as _) };
+                unsafe { std::ptr::read(ptr as *const Type) }
+            }
+            v => unreachable!("{v:?}"),
         }
     }
 
@@ -992,6 +997,7 @@ impl Codegen {
         use instrs as i;
 
         let value = match *expr {
+            E::Mod { id, .. } => Some(Value::ty(TypeKind::Module(id).encode())),
             E::Struct {
                 fields, captured, ..
             } => {
@@ -1010,7 +1016,7 @@ impl Codegen {
                         .map(|&id| E::Ident {
                             id,
                             name: "booodab",
-                            index: u32::MAX,
+                            index: u16::MAX,
                         })
                         .map(|expr| self.expr(&expr))
                         .collect::<Option<Vec<_>>>()?;
@@ -1217,7 +1223,7 @@ impl Codegen {
                 }
 
                 for (i, (name, field)) in fields.iter().enumerate() {
-                    let (offset, ty) = self.offset_of(field.pos(), ty, name.ok_or(i));
+                    let (offset, ty) = self.offset_of(field.pos(), stuct, name.ok_or(i));
                     let loc = loc.offset_ref(offset);
                     self.expr_ctx(field, Ctx::Dest(Value { ty, loc }))?;
                 }
@@ -1225,6 +1231,7 @@ impl Codegen {
                 return Some(Value { ty, loc });
             }
             E::Field { target, field } => {
+                let checkpoint = self.code.code.len();
                 let mut tal = self.expr(target)?;
                 if let TypeKind::Pointer(ty) = TypeKind::from_ty(tal.ty) {
                     tal.ty = self.pointers[ty as usize];
@@ -1237,9 +1244,28 @@ impl Codegen {
                         }
                     };
                 }
-                let (offset, ty) = self.offset_of(target.pos(), tal.ty, Ok(field));
-                let loc = tal.loc.offset(offset);
-                Some(Value { ty, loc })
+
+                match TypeKind::from_ty(tal.ty) {
+                    TypeKind::Struct(idx) => {
+                        let (offset, ty) = self.offset_of(target.pos(), idx, Ok(field));
+                        let loc = tal.loc.offset(offset);
+                        Some(Value { ty, loc })
+                    }
+                    TypeKind::Builtin(bt::TYPE) => {
+                        self.code.code.truncate(checkpoint);
+                        match TypeKind::from_ty(self.ty(target)) {
+                            TypeKind::Module(idx) => Some(Value::ty(
+                                self.find_and_declare(target.pos(), idx, Err(field))
+                                    .encode(),
+                            )),
+                            _ => todo!(),
+                        }
+                    }
+                    smh => self.report(
+                        target.pos(),
+                        format_args!("the field operation is not supported: {smh:?}"),
+                    ),
+                }
             }
             E::UnOp {
                 op: T::Band,
@@ -1370,10 +1396,13 @@ impl Codegen {
             }
             E::Ident { id, .. } => match self
                 .symbols
-                .get(&SymKey { id, file: 0 })
+                .get(&SymKey {
+                    id,
+                    file: self.cf_id,
+                })
                 .copied()
                 .map(TypeKind::from_ty)
-                .unwrap_or_else(|| self.find_and_declare(0, Ok(id)))
+                .unwrap_or_else(|| self.find_and_declare(ident::pos(id), self.cf_id, Ok(id)))
             {
                 TypeKind::Global(id) => self.handle_global(id),
                 tk => Some(Value::ty(tk.encode())),
@@ -1637,7 +1666,7 @@ impl Codegen {
 
         match ctx {
             Ctx::Dest(dest) => {
-                _ = self.assert_ty(expr.pos(), dest.ty, value.ty);
+                _ = self.assert_ty(expr.pos(), value.ty, dest.ty);
                 self.assign(dest.ty, dest.loc, value.loc)?;
                 Some(Value {
                     ty:  dest.ty,
@@ -1805,6 +1834,11 @@ impl Codegen {
 
         match size {
             0 => {}
+            ..=8 if let Loc::Imm(imm) = left
+                && let Loc::RegRef(reg) = right =>
+            {
+                self.code.encode(instrs::li64(reg, imm))
+            }
             ..=8 => {
                 let lhs = self.loc_to_reg(left, size);
                 match right {
@@ -1860,9 +1894,21 @@ impl Codegen {
         }
     }
 
-    fn find_and_declare(&mut self, file: parser::FileId, name: Result<Ident, &str>) -> TypeKind {
+    fn find_and_declare(&mut self, pos: Pos, file: FileId, name: Result<Ident, &str>) -> TypeKind {
         let f = self.files[file as usize].clone();
-        let (expr, id) = f.find_decl(name).expect("TODO: error");
+        let Some((expr, id)) = f.find_decl(name) else {
+            self.report(
+                pos,
+                match name {
+                    Ok(_) => format!("undefined indentifier"),
+                    Err("main") => {
+                        format!("compilation root is missing main function: {f}")
+                    }
+                    Err(name) => todo!("somehow we did not handle: {name:?}"),
+                },
+            );
+        };
+
         let sym = match expr {
             E::BinOp {
                 left: &E::Ident { .. },
@@ -2126,7 +2172,7 @@ impl Codegen {
     }
 
     #[must_use]
-    fn assert_ty(&self, pos: parser::Pos, ty: Type, expected: Type) -> Type {
+    fn assert_ty(&self, pos: Pos, ty: Type, expected: Type) -> Type {
         if let Some(res) = bt::try_upcast(ty, expected) {
             res
         } else {
@@ -2136,7 +2182,7 @@ impl Codegen {
         }
     }
 
-    fn report(&self, pos: parser::Pos, msg: impl std::fmt::Display) -> ! {
+    fn report(&self, pos: Pos, msg: impl std::fmt::Display) -> ! {
         let (line, col) = self.cf.nlines.line_col(pos);
         println!("{}:{}:{}: {}", self.cf.path, line, col, msg);
         unreachable!();
@@ -2316,7 +2362,7 @@ impl hbvm::mem::Memory for LoggedMem {
 
 #[cfg(test)]
 mod tests {
-    use crate::codegen::LoggedMem;
+    use crate::{codegen::LoggedMem, log};
 
     use super::parser;
 
@@ -2355,6 +2401,7 @@ mod tests {
         writeln!(output, "code size: {}", out.len()).unwrap();
         writeln!(output, "ret: {:?}", vm.read_reg(1).0).unwrap();
         writeln!(output, "status: {:?}", stat).unwrap();
+        log::inf!("input lenght: {}", input.len());
     }
 
     crate::run_tests! { generate:

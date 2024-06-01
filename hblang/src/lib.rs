@@ -1,3 +1,4 @@
+#![feature(vec_pop_if)]
 #![feature(if_let_guard)]
 #![feature(slice_partition_dedup)]
 #![feature(noop_waker)]
@@ -137,7 +138,7 @@ impl<T> TaskQueueInner<T> {
     }
 }
 
-pub fn parse_all(threads: usize) -> io::Result<Vec<Ast>> {
+pub fn parse_all(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     const GIT_DEPS_DIR: &str = "git-deps";
 
     enum ImportPath<'a> {
@@ -198,20 +199,15 @@ pub fn parse_all(threads: usize) -> io::Result<Vec<Ast>> {
 
     impl<'a> ImportPath<'a> {
         fn resolve(&self, from: &str) -> Result<PathBuf, CantLoadFile> {
-            match self {
-                Self::Root { path } => Ok(Path::new(path).to_owned()),
-                Self::Rel { path } => {
-                    let path = PathBuf::from_iter([from, path]);
-                    match path.canonicalize() {
-                        Ok(path) => Ok(path),
-                        Err(e) => Err(CantLoadFile(path, e)),
-                    }
-                }
+            let path = match self {
+                Self::Root { path } => PathBuf::from(path),
+                Self::Rel { path } => PathBuf::from_iter([from, path]),
                 Self::Git { path, link, .. } => {
                     let link = preprocess_git(link);
-                    Ok(PathBuf::from_iter([GIT_DEPS_DIR, link, path]))
+                    PathBuf::from_iter([GIT_DEPS_DIR, link, path])
                 }
-            }
+            };
+            path.canonicalize().map_err(|e| CantLoadFile(path, e))
         }
     }
 
@@ -348,6 +344,7 @@ pub fn parse_all(threads: usize) -> io::Result<Vec<Ast>> {
     };
 
     let execute_task = |(_, path, command): Task, buffer: &mut Vec<u8>| {
+        log::dbg!("{path:?}");
         if let Some(mut command) = command {
             let output = command.output()?;
             if !output.status.success() {
@@ -383,6 +380,10 @@ pub fn parse_all(threads: usize) -> io::Result<Vec<Ast>> {
             ast[indx as usize] = res;
         }
     };
+
+    let path = Path::new(root).canonicalize()?;
+    seen.lock().unwrap().insert(path.clone(), 0);
+    tasks.push((0, path, None));
 
     std::thread::scope(|s| (0..threads).for_each(|_| _ = s.spawn(thread)));
 

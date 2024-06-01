@@ -1,4 +1,4 @@
-Vec := fn(Elem: type): type {
+Vec := fn($Elem: type): type {
 	return struct {
 		data: ^Elem,
 		len: uint,

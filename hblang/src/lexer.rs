@@ -86,6 +86,7 @@ macro_rules! gen_token_kind {
 gen_token_kind! {
     pub enum TokenKind {
         #[patterns]
+        CtIdent,
         Ident,
         Number,
         Eof,
@@ -188,6 +189,12 @@ impl<'a> Lexer<'a> {
                 };
             };
 
+            let advance_ident = |s: &mut Self| {
+                while let Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_') = s.peek() {
+                    s.advance();
+                }
+            };
+
             let kind = match c {
                 b'\n' | b'\r' | b'\t' | b' ' => continue,
                 b'0'..=b'9' => {
@@ -196,18 +203,20 @@ impl<'a> Lexer<'a> {
                     }
                     T::Number
                 }
-                c @ (b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'@') => {
-                    while let Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_') = self.peek() {
-                        self.advance();
-                    }
-
-                    if c == b'@' {
-                        start += 1;
-                        T::Driective
-                    } else {
-                        let ident = &self.bytes[start as usize..self.pos as usize];
-                        T::from_ident(ident)
-                    }
+                b'@' => {
+                    start += 1;
+                    advance_ident(self);
+                    T::Driective
+                }
+                b'$' => {
+                    start += 1;
+                    advance_ident(self);
+                    T::CtIdent
+                }
+                b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
+                    advance_ident(self);
+                    let ident = &self.bytes[start as usize..self.pos as usize];
+                    T::from_ident(ident)
                 }
                 b'"' => {
                     while let Some(c) = self.advance() {

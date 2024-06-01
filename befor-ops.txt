@@ -1,0 +1,46 @@
+Dbg: dropping chunk of size: 0
+Dbg: dropping chunk of size: 936
+Dbg: deallocating full chunk
+Dbg: dropping chunk of size: 0
+Dbg: dropping chunk of size: 4040
+Dbg: deallocating full chunk
+Dbg: dropping chunk of size: 0
+Dbg: dropping chunk of size: 1112
+Dbg: deallocating full chunk
+Dbg: dropping chunk of size: 0
+Dbg: dropping chunk of size: 296
+Dbg: deallocating full chunk
+Dbg: dropping chunk of size: 0
+Dbg: dropping chunk of size: 4328
+Dbg: deallocating full chunk
+Dbg: dropping chunk of size: 0
+Dbg: dropping chunk of size: 1464
+Dbg: deallocating full chunk
+Dbg: dropping chunk of size: 0
+Dbg: dropping chunk of size: 1616
+Dbg: deallocating full chunk
+Dbg: dropping chunk of size: 0
+Dbg: dropping chunk of size: 1864
+Dbg: deallocating full chunk
+Dbg: dropping chunk of size: 0
+Dbg: dropping chunk of size: 1504
+Dbg: deallocating full chunk
+Dbg: dropping chunk of size: 0
+Dbg: dropping chunk of size: 2160
+Dbg: deallocating full chunk
+Dbg: dropping chunk of size: 0
+Dbg: dropping chunk of size: 2000
+Dbg: deallocating full chunk
+Dbg: dropping chunk of size: 0
+Dbg: dropping chunk of size: 3048
+Dbg: deallocating full chunk
+Dbg: dropping chunk of size: 0
+Dbg: dropping chunk of size: 2960
+Dbg: deallocating full chunk
+Dbg: dropping chunk of size: 0
+Dbg: dropping chunk of size: 848
+Dbg: deallocating full chunk
+test parser::tests::arithmetic ... Dbg: dropping chunk of size: 936
+Dbg: deallocating full chunk
+test parser::tests::example ... Dbg: dropping chunk of size: 296
+Dbg: deallocating full chunk
