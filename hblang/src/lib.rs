@@ -32,6 +32,7 @@ macro_rules! run_tests {
 }
 
 pub mod codegen;
+pub mod codegen2;
 mod ident;
 mod instrs;
 mod lexer;

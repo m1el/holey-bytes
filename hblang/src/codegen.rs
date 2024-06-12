@@ -2271,6 +2271,7 @@ enum Loc {
     Imm(u64),
     Stack(Rc<Stack>, u64),
 }
+
 impl Loc {
     fn take_ref(&self) -> Loc {
         match *self {
