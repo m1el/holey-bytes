@@ -2,6 +2,20 @@
 
 ### Examples
 
+Examples are also used in tests, to and an example that runs during testing add:
+<pre>
+    #### <name>
+
+    ```hb
+    <example>
+    ```
+</pre>
+and also:
+```rs
+<name> => README;
+```
+to the `run_tests` macro at the bottom of the `src/codegen.rs`.
+
 #### directives
 ```hb
 Type := struct {
