@@ -1,5 +1,7 @@
 # HERE SHALL THE DOCUMENTATION RESIDE
 
+### Examples
+
 #### directives
 ```hb
 Type := struct {
