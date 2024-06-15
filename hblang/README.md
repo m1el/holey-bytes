@@ -4,11 +4,10 @@
 
 Examples are also used in tests, to and an example that runs during testing add:
 <pre>
-    #### <name>
-
-    ```hb
-    <example>
-    ```
+#### &ls;name&gt
+```hb
+&lt;example&gt
+```
 </pre>
 and also:
 ```rs
