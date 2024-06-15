@@ -4,7 +4,7 @@
 
 Examples are also used in tests, to and an example that runs during testing add:
 <pre>
-#### &ls;name&gt
+#### &lt;name&gt
 ```hb
 &lt;example&gt
 ```
