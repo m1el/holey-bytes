@@ -2366,7 +2366,34 @@ mod tests {
 
     use super::parser;
 
-    fn generate(input: &'static str, output: &mut String) {
+    const README: &str = include_str!("../README.md");
+
+    fn generate(ident: &'static str, input: &'static str, output: &mut String) {
+        fn find_block(mut input: &'static str, test_name: &'static str) -> &'static str {
+            const CASE_PREFIX: &str = "#### ";
+            const CASE_SUFFIX: &str = "\n```hb";
+            loop {
+                let Some(pos) = input.find(CASE_PREFIX) else {
+                    unreachable!("test {test_name} not found");
+                };
+
+                input = unsafe { input.get_unchecked(pos + CASE_PREFIX.len()..) };
+                if !input.starts_with(test_name) {
+                    continue;
+                }
+                input = unsafe { input.get_unchecked(test_name.len()..) };
+                if !input.starts_with(CASE_SUFFIX) {
+                    continue;
+                }
+                input = unsafe { input.get_unchecked(CASE_SUFFIX.len()..) };
+
+                let end = input.find("```").unwrap_or(input.len());
+                break unsafe { input.get_unchecked(..end) };
+            }
+        }
+
+        let input = find_block(input, ident);
+
         let path = "test";
         let mut codegen = super::Codegen::default();
         codegen.files = vec![parser::Ast::new(path, input, &parser::no_loader)];
@@ -2405,19 +2432,18 @@ mod tests {
     }
 
     crate::run_tests! { generate:
-        example => include_str!("../examples/main_fn.hb");
-        arithmetic => include_str!("../examples/arithmetic.hb");
-        variables => include_str!("../examples/variables.hb");
-        functions => include_str!("../examples/functions.hb");
-        if_statements => include_str!("../examples/if_statement.hb");
-        loops => include_str!("../examples/loops.hb");
-        fb_driver => include_str!("../examples/fb_driver.hb");
-        pointers => include_str!("../examples/pointers.hb");
-        structs => include_str!("../examples/structs.hb");
-        different_types => include_str!("../examples/different_types.hb");
-        struct_operators => include_str!("../examples/struct_operators.hb");
-        directives => include_str!("../examples/directives.hb");
-        global_variables => include_str!("../examples/global_variables.hb");
-        geneic_types => include_str!("../examples/generic_types.hb");
+        arithmetic => README;
+        variables => README;
+        functions => README;
+        if_statements => README;
+        loops => README;
+        fb_driver => README;
+        pointers => README;
+        structs => README;
+        different_types => README;
+        struct_operators => README;
+        directives => README;
+        global_variables => README;
+        generic_types => README;
     }
 }

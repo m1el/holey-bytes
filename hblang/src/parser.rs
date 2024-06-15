@@ -1077,21 +1077,3 @@ impl Drop for ArenaChunk {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    fn parse(input: &'static str, output: &mut String) {
-        use std::fmt::Write;
-        let arena = super::Arena::default();
-        let mut symbols = Vec::new();
-        let mut parser = super::Parser::new(&arena, &mut symbols, &super::no_loader);
-        for expr in parser.file(input, "test") {
-            writeln!(output, "{}", expr).unwrap();
-        }
-    }
-
-    crate::run_tests! { parse:
-        example => include_str!("../examples/main_fn.hb");
-        arithmetic => include_str!("../examples/arithmetic.hb");
-    }
-}

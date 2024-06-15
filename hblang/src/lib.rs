@@ -1,4 +1,5 @@
 #![feature(vec_pop_if)]
+#![feature(pattern)]
 #![feature(if_let_guard)]
 #![feature(slice_partition_dedup)]
 #![feature(noop_waker)]
@@ -26,7 +27,7 @@ macro_rules! run_tests {
     ($runner:path: $($name:ident => $input:expr;)*) => {$(
         #[test]
         fn $name() {
-            $crate::tests::run_test(std::any::type_name_of_val(&$name), $input, $runner);
+            $crate::tests::run_test(std::any::type_name_of_val(&$name), stringify!($name), $input, $runner);
         }
     )*};
 }

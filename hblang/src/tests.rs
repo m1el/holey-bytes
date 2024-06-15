@@ -1,6 +1,11 @@
 #![cfg(test)]
 
-pub fn run_test(name: &'static str, input: &'static str, test: fn(&'static str, &mut String)) {
+pub fn run_test(
+    name: &'static str,
+    ident: &'static str,
+    input: &'static str,
+    test: fn(&'static str, &'static str, &mut String),
+) {
     use std::{io::Write, path::PathBuf};
 
     let filter = std::env::var("PT_FILTER").unwrap_or_default();
@@ -9,7 +14,7 @@ pub fn run_test(name: &'static str, input: &'static str, test: fn(&'static str, 
     }
 
     let mut output = String::new();
-    test(input, &mut output);
+    test(ident, input, &mut output);
 
     let mut root = PathBuf::from(
         std::env::var("PT_TEST_ROOT")
