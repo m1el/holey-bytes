@@ -1,3 +1,0 @@
-code size: 82
-ret: 1
-status: Ok(())
