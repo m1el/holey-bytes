@@ -101,7 +101,7 @@ impl Memory for HostMemory {
         count: usize,
     ) -> Result<(), StoreError> {
         debug_assert!(addr.get() != 0);
-        debug_assert!(source != core::ptr::null());
+        debug_assert!(!source.is_null());
         unsafe { core::ptr::copy(source, addr.get() as *mut u8, count) }
         Ok(())
     }

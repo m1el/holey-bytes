@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+#![allow(clippy::all)]
 use std::{
     cell::{Cell, RefCell},
     ops::Range,

@@ -533,6 +533,7 @@ macro_rules! generate_expr {
            pub fn used_bytes(&self) -> usize {
                match self {$(
                    Self::$variant { $($field,)* } => {
+                        #[allow(clippy::size_of_ref)]
                         let fields = [$(($field as *const _ as usize - self as *const _ as usize, std::mem::size_of_val($field)),)*];
                         let (last, size) = fields.iter().copied().max().unwrap();
                         last + size
@@ -905,11 +906,11 @@ impl ExprRef {
     }
 
     pub fn get<'a>(&self, from: &'a Ast) -> Option<&'a Expr<'a>> {
+        ArenaChunk::contains(from.mem.base, self.0.as_ptr() as _).then_some(())?;
         // SAFETY: the pointer is or was a valid reference in the past, if it points within one of
         // arenas regions, it muts be walid, since arena does not give invalid pointers to its
         // allocations
-        ArenaChunk::contains(from.mem.base, self.0.as_ptr() as _)
-            .then(|| unsafe { { self.0 }.as_ref() })
+        Some(unsafe { { self.0 }.as_ref() })
     }
 }
 

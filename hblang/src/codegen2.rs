@@ -1,12 +1,17 @@
 #![allow(dead_code)]
 
-use std::{collections::hash_map, rc::Rc};
+use std::{ops::Range, rc::Rc};
 
 use crate::{
-    ident::Ident,
-    parser::{self, FileId},
+    ident::{self, Ident},
+    instrs::{self, *},
+    lexer::TokenKind,
+    log,
+    parser::{self, idfl, Expr, ExprRef, FileId, Pos},
     HashMap,
 };
+
+use self::reg::{RET_ADDR, STACK_PTR, ZERO};
 
 type Offset = u32;
 type Size = u32;
@@ -16,11 +21,16 @@ mod stack {
 
     use super::{Offset, Size};
 
+    #[derive(Debug, PartialEq, Eq)]
     pub struct Id(NonZeroU32);
 
     impl Id {
         fn index(&self) -> usize {
             self.0.get() as usize - 1
+        }
+
+        pub fn repr(&self) -> u32 {
+            self.0.get()
         }
     }
 
@@ -41,13 +51,13 @@ mod stack {
 
     #[derive(Default)]
     pub struct Alloc {
-        height:     Size,
-        max_height: Size,
-        meta:       Vec<Meta>,
+        height: Size,
+        pub max_height: Size,
+        meta: Vec<Meta>,
     }
 
     impl Alloc {
-        pub fn alloc(&mut self, size: Size) -> Id {
+        pub fn allocate(&mut self, size: Size) -> Id {
             self.meta.push(Meta {
                 size,
                 offset: 0,
@@ -98,20 +108,29 @@ mod stack {
 mod reg {
     pub const STACK_PTR: Reg = 254;
     pub const ZERO: Reg = 0;
+    pub const RET: Reg = 1;
     pub const RET_ADDR: Reg = 31;
 
     type Reg = u8;
 
-    #[derive(Default)]
+    #[derive(Default, Debug, PartialEq, Eq)]
     pub struct Id(Reg, bool);
 
     impl Id {
-        pub fn reg(self) -> Reg {
+        pub const RET: Self = Id(RET, false);
+
+        pub fn get(&self) -> Reg {
             self.0
         }
 
         pub fn as_ref(&self) -> Self {
             Self(self.0, false)
+        }
+    }
+
+    impl From<u8> for Id {
+        fn from(value: u8) -> Self {
+            Self(value, false)
         }
     }
 
@@ -130,33 +149,34 @@ mod reg {
     }
 
     impl Alloc {
-        fn init(&mut self) {
+        pub fn init(&mut self) {
             self.free.clear();
             self.free.extend((32..=253).rev());
             self.max_used = RET_ADDR;
         }
 
-        fn allocate(&mut self) -> Id {
+        pub fn allocate(&mut self) -> Id {
             let reg = self.free.pop().expect("TODO: we need to spill");
             self.max_used = self.max_used.max(reg);
             Id(reg, true)
         }
 
-        fn free(&mut self, reg: Id) {
+        pub fn free(&mut self, reg: Id) {
             assert!(reg.1);
             self.free.push(reg.0);
             std::mem::forget(reg);
         }
 
-        fn pushed_size(&self) -> usize {
+        pub fn pushed_size(&self) -> usize {
             ((self.max_used as usize).saturating_sub(RET_ADDR as usize) + 1) * 8
         }
     }
 }
 
 mod ty {
+    use std::num::NonZeroU32;
+
     use crate::{
-        ident,
         lexer::TokenKind,
         parser::{self, Expr},
     };
@@ -168,21 +188,56 @@ mod ty {
     pub type Global = u32;
     pub type Module = u32;
 
-    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
-    pub struct Id(pub u32);
+    #[derive(Clone, Copy)]
+    pub struct Tuple(pub u32);
+
+    impl Tuple {
+        const LEN_BITS: u32 = 5;
+        const MAX_LEN: usize = 1 << Self::LEN_BITS;
+        const LEN_MASK: usize = Self::MAX_LEN - 1;
+
+        pub fn new(pos: usize, len: usize) -> Option<Self> {
+            if len >= Self::MAX_LEN {
+                return None;
+            }
+
+            Some(Self((pos << Self::LEN_BITS | len) as u32))
+        }
+
+        pub fn view(self, slice: &[Id]) -> &[Id] {
+            &slice[self.0 as usize >> Self::LEN_BITS..][..self.0 as usize & Self::LEN_MASK]
+        }
+
+        pub fn len(self) -> usize {
+            self.0 as usize & Self::LEN_MASK
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct Id(NonZeroU32);
+
+    impl Default for Id {
+        fn default() -> Self {
+            Self(unsafe { NonZeroU32::new_unchecked(UNDECLARED) })
+        }
+    }
 
     impl Id {
+        pub const fn from_bt(bt: u32) -> Self {
+            Self(unsafe { NonZeroU32::new_unchecked(bt) })
+        }
+
         pub fn is_signed(self) -> bool {
-            (I8..=INT).contains(&self.0)
+            (I8..=INT).contains(&self.repr())
         }
 
         pub fn is_unsigned(self) -> bool {
-            (U8..=UINT).contains(&self.0)
+            (U8..=UINT).contains(&self.repr())
         }
 
-        fn strip_pointer(self) -> Self {
+        pub fn strip_pointer(self) -> Self {
             match self.expand() {
-                Kind::Ptr(_) => Id(INT),
+                Kind::Ptr(_) => Id::from(INT),
                 _ => self,
             }
         }
@@ -197,13 +252,23 @@ mod ty {
             Some(match () {
                 _ if oa == ob => oa,
                 _ if a.is_signed() && b.is_signed() || a.is_unsigned() && b.is_unsigned() => ob,
-                _ if a.is_unsigned() && b.is_signed() && a.0 - U8 < b.0 - I8 => ob,
+                _ if a.is_unsigned() && b.is_signed() && a.repr() - U8 < b.repr() - I8 => ob,
                 _ => return None,
             })
         }
 
         pub fn expand(self) -> Kind {
             Kind::from_ty(self)
+        }
+
+        pub const fn repr(self) -> u32 {
+            self.0.get()
+        }
+    }
+
+    impl From<u32> for Id {
+        fn from(id: u32) -> Self {
+            Self(unsafe { NonZeroU32::new_unchecked(id) })
         }
     }
 
@@ -220,7 +285,7 @@ mod ty {
 
     macro_rules! builtin_type {
         ($($name:ident;)*) => {
-            $(pub const $name: Builtin = ${index(0)};)*
+            $(pub const $name: Builtin = ${index(0)} + 1;)*
 
             mod __lc_names {
                 use super::*;
@@ -237,7 +302,7 @@ mod ty {
 
             pub fn to_str(ty: Builtin) -> &'static str {
                 match ty {
-                    $(${index(0)} => unsafe { std::str::from_utf8_unchecked(__lc_names::$name) },)*
+                    $($name => unsafe { std::str::from_utf8_unchecked(__lc_names::$name) },)*
                     v => unreachable!("invalid type: {}", v),
                 }
             }
@@ -273,7 +338,7 @@ mod ty {
                 const INDEX_MASK: u32 = (1 << (32 - Self::FLAG_BITS)) - 1;
 
                 $vis const fn from_ty(ty: Id) -> Self {
-                    let (flag, index) = (ty.0 >> Self::FLAG_OFFSET, ty.0 & Self::INDEX_MASK);
+                    let (flag, index) = (ty.repr() >> Self::FLAG_OFFSET, ty.repr() & Self::INDEX_MASK);
                     match flag {
                         $(${index(0)} => Self::$variant(index),)*
                         _ => unreachable!(),
@@ -284,7 +349,13 @@ mod ty {
                     let (index, flag) = match self {
                         $(Self::$variant(index) => (index, ${index(0)}),)*
                     };
-                   Id((flag << Self::FLAG_OFFSET) | index)
+                   Id(unsafe { NonZeroU32::new_unchecked((flag << Self::FLAG_OFFSET) | index) })
+                }
+
+                $vis const fn inner(self) -> u32 {
+                    match self {
+                        $(Self::$variant(index) => index,)*
+                    }
                 }
             }
         };
@@ -331,13 +402,13 @@ mod ty {
                 TK::Module(idx) => write!(f, "module{}", idx),
                 TK::Builtin(ty) => write!(f, "{}", to_str(ty)),
                 TK::Ptr(ty) => {
-                    write!(f, "^{}", self.rety(self.tys.pointers[ty as usize].base))
+                    write!(f, "^{}", self.rety(self.tys.ptrs[ty as usize].base))
                 }
                 _ if let Some((key, _)) = self
                     .tys
-                    .symbols
+                    .syms
                     .iter()
-                    .find(|(sym, &ty)| sym.file != u32::MAX && ty == self.ty.0)
+                    .find(|(sym, &ty)| sym.file != u32::MAX && ty == self.ty)
                     && let Some(name) = self.files[key.file as usize].exprs().iter().find_map(
                         |expr| match expr {
                             Expr::BinOp {
@@ -354,11 +425,10 @@ mod ty {
                 TK::Struct(idx) => {
                     let record = &self.tys.structs[idx as usize];
                     write!(f, "{{")?;
-                    for (i, &super::Field { name, ty }) in record.fields.iter().enumerate() {
+                    for (i, &super::Field { ref name, ty }) in record.fields.iter().enumerate() {
                         if i != 0 {
                             write!(f, ", ")?;
                         }
-                        let name = &self.tys.names[ident::range(name)];
                         write!(f, "{name}: {}", self.rety(ty))?;
                     }
                     write!(f, "}}")
@@ -370,6 +440,7 @@ mod ty {
     }
 }
 
+#[derive(Clone, Copy)]
 struct Reloc {
     code_offset: Offset,
     /// code_offset - sub_offset = instr_offset
@@ -410,11 +481,139 @@ struct Value {
     loc: Loc,
 }
 
-struct Loc {
-    reg:     reg::Id,
-    derefed: bool,
-    stack:   Option<stack::Id>,
-    offset:  Offset,
+impl Value {
+    fn void() -> Self {
+        Self {
+            ty:  ty::VOID.into(),
+            loc: Loc::imm(0),
+        }
+    }
+
+    fn imm(value: u64) -> Self {
+        Self {
+            ty:  ty::UINT.into(),
+            loc: Loc::imm(value),
+        }
+    }
+
+    fn ty(ty: ty::Id) -> Self {
+        Self {
+            ty:  ty::TYPE.into(),
+            loc: Loc::Ct {
+                value: (ty.repr() as u64).to_ne_bytes(),
+            },
+        }
+    }
+
+    fn dup_ct(&self) -> Option<Self> {
+        Some(Self {
+            ty:  self.ty,
+            loc: self.loc.dup_ct()?,
+        })
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Loc {
+    Rt {
+        derefed: bool,
+        reg:     reg::Id,
+        stack:   Option<stack::Id>,
+        offset:  Offset,
+    },
+    Ct {
+        value: [u8; 8],
+    },
+}
+
+impl Loc {
+    fn stack(stack: stack::Id) -> Self {
+        Self::Rt {
+            stack:   Some(stack),
+            reg:     reg::STACK_PTR.into(),
+            derefed: true,
+            offset:  0,
+        }
+    }
+
+    fn dup_ct(&self) -> Option<Self> {
+        match *self {
+            Self::Rt { .. } => None,
+            Self::Ct { value } => Some(Self::Ct { value }),
+        }
+    }
+
+    fn reg(reg: impl Into<reg::Id>) -> Self {
+        Self::Rt {
+            derefed: false,
+            reg:     reg.into(),
+            stack:   None,
+            offset:  0,
+        }
+    }
+
+    fn ptr(reg: impl Into<reg::Id>) -> Self {
+        Self::Rt {
+            derefed: true,
+            reg:     reg.into(),
+            stack:   None,
+            offset:  0,
+        }
+    }
+
+    fn imm(value: u64) -> Self {
+        Self::Ct {
+            value: value.to_ne_bytes(),
+        }
+    }
+
+    fn ty(ty: ty::Id) -> Self {
+        Self::imm(ty.repr() as _)
+    }
+
+    fn offset_ref(&self, offset: u32) -> Self {
+        match *self {
+            Self::Rt {
+                derefed,
+                ref reg,
+                offset: off,
+                ..
+            } => Self::Rt {
+                derefed,
+                reg: reg.as_ref(),
+                offset: off + offset,
+                stack: None,
+            },
+            Self::Ct { .. } => unreachable!("offseting constant"),
+        }
+    }
+
+    fn offset(mut self, offset: u32) -> Self {
+        match &mut self {
+            Self::Rt { offset: off, .. } => *off += offset,
+            Self::Ct { .. } => unreachable!("offseting constant"),
+        }
+        self
+    }
+
+    fn into_derefed(mut self) -> Self {
+        match &mut self {
+            Self::Rt { derefed, .. } => *derefed = true,
+            _ => unreachable!(),
+        }
+        self
+    }
+}
+
+impl Default for Loc {
+    fn default() -> Self {
+        Self::Rt {
+            derefed: false,
+            reg:     reg::Id::default(),
+            stack:   None,
+            offset:  0,
+        }
+    }
 }
 
 struct Loop {
@@ -428,11 +627,24 @@ struct Variable {
     value: Value,
 }
 
+impl Variable {
+    fn dup_ct(&self) -> Option<Self> {
+        Some(Self {
+            id:    self.id,
+            value: self.value.dup_ct()?,
+        })
+    }
+}
+
 #[derive(Default)]
 struct ItemCtx {
+    file:    FileId,
     id:      ty::Kind,
     ret:     ty::Id,
     ret_reg: reg::Id,
+
+    task_base: usize,
+    snap:      Snapshot,
 
     stack: stack::Alloc,
     regs:  reg::Alloc,
@@ -441,41 +653,97 @@ struct ItemCtx {
     ret_relocs:   Vec<Reloc>,
     loop_relocs:  Vec<Reloc>,
     loops:        Vec<Loop>,
-    variables:    Vec<Variable>,
+    vars:         Vec<Variable>,
 }
 
 impl ItemCtx {
     pub fn dup_loc(&mut self, loc: &Loc) -> Loc {
-        Loc {
-            reg:     loc.reg.as_ref(),
-            derefed: loc.derefed,
-            stack:   loc.stack.as_ref().map(|s| self.stack.dup_id(s)),
-            offset:  loc.offset,
+        match *loc {
+            Loc::Rt {
+                derefed,
+                ref reg,
+                ref stack,
+                offset,
+            } => Loc::Rt {
+                reg: reg.as_ref(),
+                derefed,
+                stack: stack.as_ref().map(|s| self.stack.dup_id(s)),
+                offset,
+            },
+            Loc::Ct { value } => Loc::Ct { value },
         }
     }
+
+    fn finalize(&mut self, output: &mut Output) {
+        self.stack.finalize_leaked();
+        for rel in self.stack_relocs.drain(..) {
+            rel.apply_stack_offset(&mut output.code, &self.stack)
+        }
+
+        let ret_offset = output.code.len() as _;
+        for rel in self.ret_relocs.drain(..) {
+            rel.apply_jump(&mut output.code, ret_offset);
+        }
+
+        self.finalize_frame(output);
+        self.stack.clear();
+
+        debug_assert!(self.loops.is_empty());
+        debug_assert!(self.loop_relocs.is_empty());
+        debug_assert!(self.vars.is_empty());
+    }
+
+    fn finalize_frame(&mut self, output: &mut Output) {
+        let mut cursor = self.snap.code;
+        let mut allocate = |size| (cursor += size, cursor).1;
+
+        let pushed = self.regs.pushed_size() as i64;
+        let stack = self.stack.max_height as i64;
+
+        write_reloc(&mut output.code, allocate(3), -(pushed + stack), 8);
+        write_reloc(&mut output.code, allocate(8 + 3), stack, 8);
+        write_reloc(&mut output.code, allocate(8), pushed, 2);
+
+        output.emit(instrs::ld(RET_ADDR, STACK_PTR, stack as _, pushed as _));
+        output.emit(instrs::addi64(STACK_PTR, STACK_PTR, (pushed + stack) as _));
+    }
+}
+
+fn write_reloc(doce: &mut [u8], offset: usize, value: i64, size: u16) {
+    let value = value.to_ne_bytes();
+    doce[offset..offset + size as usize].copy_from_slice(&value[..size as usize]);
 }
 
 #[derive(PartialEq, Eq, Hash)]
 struct SymKey {
-    file:  FileId,
-    ident: Ident,
+    file:  u32,
+    ident: u32,
 }
 
+impl SymKey {
+    pub fn pointer_to(ty: ty::Id) -> Self {
+        Self {
+            file:  u32::MAX,
+            ident: ty.repr(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 struct Func {
+    // if the most significant bit is 1, its considered to be an task id
     offset: Offset,
-    args:   Rc<[ty::Id]>,
+    args:   ty::Tuple,
     ret:    ty::Id,
 }
 
 struct Global {
-    code:   Offset,
     offset: Offset,
-    dep:    ty::Global,
     ty:     ty::Id,
 }
 
 struct Field {
-    name: Ident,
+    name: Rc<str>,
     ty:   ty::Id,
 }
 
@@ -488,52 +756,1745 @@ struct Ptr {
     base: ty::Id,
 }
 
+struct ParamAlloc(Range<u8>);
+
+impl ParamAlloc {
+    pub fn next(&mut self) -> u8 {
+        self.0.next().expect("too many paramteters")
+    }
+
+    fn next_wide(&mut self) -> u8 {
+        (self.next(), self.next()).0
+    }
+}
+
 #[derive(Default)]
 struct Types {
-    symbols: HashMap<SymKey, u32>,
-    names:   String,
+    syms:  HashMap<SymKey, ty::Id>,
+    names: String,
 
-    funcs:    Vec<Func>,
-    globals:  Vec<Global>,
-    structs:  Vec<Struct>,
-    pointers: Vec<Ptr>,
+    funcs:   Vec<Func>,
+    args:    Vec<ty::Id>,
+    globals: Vec<Global>,
+    structs: Vec<Struct>,
+    ptrs:    Vec<Ptr>,
 }
 
 impl Types {
-    pub fn make_ptr(&mut self, base: ty::Id) -> ty::Ptr {
-        let id = SymKey {
-            file:  u32::MAX,
-            ident: base.0,
+    fn parama(&self, ret: ty::Id) -> ParamAlloc {
+        ParamAlloc(2 + (9..=16).contains(&self.size_of(ret)) as u8..12)
+    }
+
+    fn offset_of(&self, idx: ty::Struct, field: Result<&str, usize>) -> Option<(Offset, ty::Id)> {
+        let record = &self.structs[idx as usize];
+        let until = match field {
+            Ok(str) => record.fields.iter().position(|f| f.name.as_ref() == str)?,
+            Err(i) => i,
         };
 
-        match self.symbols.entry(id) {
-            hash_map::Entry::Occupied(occ) => *occ.get(),
-            hash_map::Entry::Vacant(vac) => {
-                self.pointers.push(Ptr { base });
-                *vac.insert(self.pointers.len() as u32 - 1)
+        let mut offset = 0;
+        for &Field { ty, .. } in &record.fields[..until] {
+            offset = Self::align_up(offset, self.align_of(ty));
+            offset += self.size_of(ty);
+        }
+
+        Some((offset, record.fields[until].ty))
+    }
+
+    fn make_ptr(&mut self, base: ty::Id) -> ty::Id {
+        ty::Kind::Ptr(self.make_ptr_low(base)).compress()
+    }
+
+    fn make_ptr_low(&mut self, base: ty::Id) -> ty::Ptr {
+        let id = SymKey {
+            file:  u32::MAX,
+            ident: base.repr(),
+        };
+
+        self.syms
+            .entry(id)
+            .or_insert_with(|| {
+                self.ptrs.push(Ptr { base });
+                ty::Kind::Ptr(self.ptrs.len() as u32 - 1).compress()
+            })
+            .expand()
+            .inner()
+    }
+
+    fn align_up(value: Size, align: Size) -> Size {
+        (value + align - 1) & !(align - 1)
+    }
+
+    fn size_of(&self, ty: ty::Id) -> Size {
+        match ty.expand() {
+            ty::Kind::Ptr(_) => 8,
+            ty::Kind::Builtin(ty::VOID) => 0,
+            ty::Kind::Builtin(ty::NEVER) => unreachable!(),
+            ty::Kind::Builtin(ty::INT | ty::UINT) => 8,
+            ty::Kind::Builtin(ty::I32 | ty::U32 | ty::TYPE) => 4,
+            ty::Kind::Builtin(ty::I16 | ty::U16) => 2,
+            ty::Kind::Builtin(ty::I8 | ty::U8 | ty::BOOL) => 1,
+            ty::Kind::Struct(ty) => {
+                let mut offset = 0u32;
+                let record = &self.structs[ty as usize];
+                for &Field { ty, .. } in record.fields.iter() {
+                    let align = self.align_of(ty);
+                    offset = Self::align_up(offset, align);
+                    offset += self.size_of(ty);
+                }
+                offset
             }
+            ty => unimplemented!("size_of: {:?}", ty),
+        }
+    }
+
+    fn align_of(&self, ty: ty::Id) -> Size {
+        match ty.expand() {
+            ty::Kind::Struct(t) => self.structs[t as usize]
+                .fields
+                .iter()
+                .map(|&Field { ty, .. }| self.align_of(ty))
+                .max()
+                .unwrap(),
+            _ => self.size_of(ty).max(1),
+        }
+    }
+}
+
+mod task {
+    use super::Offset;
+
+    pub fn unpack(offset: Offset) -> Result<Offset, usize> {
+        if offset >> 31 != 0 {
+            Err((offset & (offset - 1)) as usize)
+        } else {
+            Ok(offset)
+        }
+    }
+
+    pub fn id(index: usize) -> Offset {
+        1 << 31 | index as u32
+    }
+}
+
+struct FTask {
+    file: FileId,
+    expr: ExprRef,
+    id:   ty::Func,
+}
+
+#[derive(Default)]
+pub struct Snapshot {
+    code:    usize,
+    funcs:   usize,
+    globals: usize,
+}
+
+#[derive(Default)]
+struct Output {
+    code:    Vec<u8>,
+    funcs:   Vec<(ty::Func, Reloc)>,
+    globals: Vec<(ty::Global, Reloc)>,
+}
+
+impl Output {
+    fn emit_addi(&mut self, op: &reg::Id, delta: u64) {
+        self.emit_addi_low(op.get(), op.get(), delta)
+    }
+
+    fn emit_addi_low(&mut self, dest: u8, op: u8, delta: u64) {
+        if delta == 0 {
+            if dest != op {
+                self.emit(cp(dest, op));
+            }
+            return;
+        }
+
+        #[allow(overflowing_literals)]
+        self.emit(match delta as i64 {
+            -0x80..=0x7F => addi8(dest, op, delta as _),
+            -0x8000..=0x7FFF => addi16(dest, op, delta as _),
+            -0x80000000..=0x7FFFFFFF => addi32(dest, op, delta as _),
+            0x8000000000000000..=0x7FFFFFFFFFFFFFFF => addi64(dest, op, delta),
+        });
+    }
+
+    fn emit(&mut self, (len, instr): (usize, [u8; instrs::MAX_SIZE])) {
+        let name = instrs::NAMES[instr[0] as usize];
+        log::dbg!(
+            "{:08x}: {}: {}",
+            self.code.len(),
+            name,
+            instr
+                .iter()
+                .take(len)
+                .skip(1)
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>()
+        );
+        self.code.extend_from_slice(&instr[..len]);
+    }
+
+    fn emit_prelude(&mut self) {
+        self.emit(instrs::addi64(STACK_PTR, STACK_PTR, 0));
+        self.emit(instrs::st(RET_ADDR, STACK_PTR, 0, 0));
+    }
+
+    fn emit_entry_prelude(&mut self) {
+        self.emit(jal(RET_ADDR, reg::ZERO, 0));
+        self.emit(tx());
+    }
+
+    fn append(&mut self, val: &mut Self) {
+        for (_, rel) in val.globals.iter_mut().chain(&mut val.funcs) {
+            rel.code_offset += val.code.len() as Offset;
+        }
+
+        self.code.append(&mut val.code);
+        self.funcs.append(&mut val.funcs);
+        self.globals.append(&mut val.globals);
+    }
+
+    fn pop(&mut self, stash: &mut Self, snap: &Snapshot) {
+        for (_, rel) in self.globals[snap.globals..]
+            .iter_mut()
+            .chain(&mut self.funcs[snap.funcs..])
+        {
+            rel.code_offset -= snap.code as Offset;
+            rel.code_offset += stash.code.len() as Offset;
+        }
+
+        stash.code.extend(self.code.drain(snap.code..));
+        stash.funcs.extend(self.funcs.drain(snap.funcs..));
+        stash.globals.extend(self.globals.drain(snap.globals..));
+    }
+
+    fn trunc(&mut self, snap: &Snapshot) {
+        self.code.truncate(snap.code);
+        self.globals.truncate(snap.globals);
+        self.funcs.truncate(snap.funcs);
+    }
+
+    fn write_trap(&mut self, trap: Trap) {
+        let len = self.code.len();
+        self.code.resize(len + std::mem::size_of::<Trap>(), 0);
+        unsafe { std::ptr::write_unaligned(self.code.as_mut_ptr().add(len) as _, trap) }
+    }
+
+    fn snap(&mut self) -> Snapshot {
+        Snapshot {
+            code:    self.code.len(),
+            funcs:   self.funcs.len(),
+            globals: self.globals.len(),
+        }
+    }
+
+    fn emit_call(&mut self, func_id: ty::Func) {
+        let reloc = Reloc {
+            code_offset: self.code.len() as _,
+            sub_offset:  3,
+            width:       4,
+        };
+        self.funcs.push((func_id, reloc));
+        self.emit(instrs::jal(RET_ADDR, ZERO, 0));
+    }
+}
+
+#[derive(Default)]
+struct Ctx {
+    loc: Option<Loc>,
+    ty:  Option<ty::Id>,
+}
+
+impl Ctx {
+    const INFERRED_BOOL: Self = Self {
+        ty:  Some(ty::Id::from_bt(ty::BOOL)),
+        loc: None,
+    };
+
+    pub fn with_loc(self, loc: Loc) -> Self {
+        Self {
+            loc: Some(loc),
+            ..self
+        }
+    }
+
+    pub fn with_ty(self, ty: impl Into<ty::Id>) -> Self {
+        Self {
+            ty: Some(ty.into()),
+            ..self
+        }
+    }
+
+    fn into_value(self) -> Option<Value> {
+        Some(Value {
+            ty:  self.ty?,
+            loc: self.loc?,
+        })
+    }
+}
+
+impl From<Value> for Ctx {
+    fn from(value: Value) -> Self {
+        Self {
+            loc: Some(value.loc),
+            ty:  Some(value.ty),
         }
     }
 }
 
 #[derive(Default)]
-struct Output {
-    code: Vec<u8>,
-    func_relocs: Vec<(ty::Func, Reloc)>,
-    global_relocs: Vec<(ty::Global, Reloc)>,
-    tasks: Vec<ty::Func>,
+struct Pool {
+    cis:     Vec<ItemCtx>,
+    outputs: Vec<Output>,
+}
+
+#[derive(Default)]
+pub struct LoggedMem {
+    pub mem: hbvm::mem::HostMemory,
+}
+
+impl hbvm::mem::Memory for LoggedMem {
+    unsafe fn load(
+        &mut self,
+        addr: hbvm::mem::Address,
+        target: *mut u8,
+        count: usize,
+    ) -> Result<(), hbvm::mem::LoadError> {
+        log::dbg!(
+            "load: {:x} {:?}",
+            addr.get(),
+            core::slice::from_raw_parts(addr.get() as *const u8, count)
+        );
+        self.mem.load(addr, target, count)
+    }
+
+    unsafe fn store(
+        &mut self,
+        addr: hbvm::mem::Address,
+        source: *const u8,
+        count: usize,
+    ) -> Result<(), hbvm::mem::StoreError> {
+        log::dbg!(
+            "store: {:x} {:?}",
+            addr.get(),
+            core::slice::from_raw_parts(source, count)
+        );
+        self.mem.store(addr, source, count)
+    }
+
+    unsafe fn prog_read<T: Copy>(&mut self, addr: hbvm::mem::Address) -> T {
+        log::dbg!(
+            "read-typed: {:x} {} {:?}",
+            addr.get(),
+            std::any::type_name::<T>(),
+            if core::mem::size_of::<T>() == 1 {
+                instrs::NAMES[std::ptr::read(addr.get() as *const u8) as usize].to_string()
+            } else {
+                core::slice::from_raw_parts(addr.get() as *const u8, core::mem::size_of::<T>())
+                    .iter()
+                    .map(|&b| format!("{:02x}", b))
+                    .collect::<String>()
+            }
+        );
+        self.mem.prog_read(addr)
+    }
+}
+
+const VM_STACK_SIZE: usize = 1024 * 1024 * 2;
+
+struct Comptime {
+    vm:    hbvm::Vm<LoggedMem, 0>,
+    stack: Box<[u8; VM_STACK_SIZE]>,
+}
+
+impl Default for Comptime {
+    fn default() -> Self {
+        let mut stack = Box::new([0; VM_STACK_SIZE]);
+        let vm = unsafe {
+            hbvm::Vm::new(
+                LoggedMem::default(),
+                hbvm::mem::Address::new(stack.as_mut_ptr().add(VM_STACK_SIZE) as _),
+            )
+        };
+        Self { vm, stack }
+    }
+}
+
+mod traps {
+    pub const MAKE_STRUCT: u64 = 0;
+}
+
+pub enum Trap {
+    MakeStruct {
+        file:        FileId,
+        struct_expr: ExprRef,
+    },
 }
 
 #[derive(Default)]
 pub struct Codegen {
     pub files: Vec<parser::Ast>,
-    tys:       Types,
-    ci:        ItemCtx,
-    output:    Output,
+    tasks:     Vec<Option<FTask>>,
+
+    tys:    Types,
+    ci:     ItemCtx,
+    output: Output,
+    pool:   Pool,
+    ct:     Comptime,
 }
 
 impl Codegen {
+    pub fn generate(&mut self) {
+        self.find_or_declare(0, 0, Err("main"));
+        self.output.emit_entry_prelude();
+        self.complete_call_graph();
+        self.link();
+    }
+
+    fn expr(&mut self, expr: &Expr) -> Option<Value> {
+        self.expr_ctx(expr, Ctx::default())
+    }
+
+    fn expr_ctx(&mut self, expr: &Expr, mut ctx: Ctx) -> Option<Value> {
+        use {Expr as E, TokenKind as T};
+        let value = match *expr {
+            E::Mod { id, .. } => Some(Value::ty(ty::Kind::Module(id).compress())),
+            E::Struct {
+                fields, captured, ..
+            } => {
+                if captured.is_empty() {
+                    let fields = fields
+                        .iter()
+                        .map(|&(name, ty)| Field {
+                            name: name.into(),
+                            ty:   self.ty(&ty),
+                        })
+                        .collect();
+                    self.tys.structs.push(Struct {
+                        fields,
+                        ast: ExprRef::new(expr),
+                    });
+                    Some(Value::ty(
+                        ty::Kind::Struct(self.tys.structs.len() as u32 - 1).compress(),
+                    ))
+                } else {
+                    let values = captured
+                        .iter()
+                        .map(|&id| E::Ident {
+                            id,
+                            name: "booodab",
+                            index: u16::MAX,
+                        })
+                        .map(|expr| self.expr(&expr))
+                        .collect::<Option<Vec<_>>>()?;
+                    let values_size = values
+                        .iter()
+                        .map(|value| 4 + self.tys.size_of(value.ty))
+                        .sum::<Size>();
+
+                    let stack = self.ci.stack.allocate(values_size);
+                    let ptr = Loc::stack(stack);
+                    let mut offset = 0;
+                    for value in values {
+                        self.store_typed(
+                            &Loc::ty(value.ty),
+                            &ptr.offset_ref(offset),
+                            ty::TYPE.into(),
+                        );
+                        offset += 4;
+                        self.store_typed(&ptr.offset_ref(offset), &value.loc, value.ty);
+                        offset += self.tys.size_of(value.ty);
+                    }
+
+                    Some(self.eca(
+                        [],
+                        Trap::MakeStruct {
+                            file:        self.ci.file,
+                            struct_expr: ExprRef::new(expr),
+                        },
+                        ty::TYPE,
+                    ))
+                }
+            }
+            E::UnOp {
+                op: T::Xor, val, ..
+            } => {
+                let val = self.ty(val);
+                Some(Value::ty(self.tys.make_ptr(val)))
+            }
+            E::Directive {
+                name: "TypeOf",
+                args: [expr],
+                ..
+            } => {
+                let snap = self.output.snap();
+                let ty = self.expr(expr).unwrap().ty;
+                self.output.trunc(&snap);
+                Some(Value::ty(ty))
+            }
+            E::Directive {
+                name: "eca",
+                args: [ret_ty, args @ ..],
+                ..
+            } => {
+                let ty = self.ty(ret_ty);
+
+                let mut parama = self.tys.parama(ty);
+                // TODO: reuse a stack for this
+                let mut values = Vec::with_capacity(args.len());
+                for arg in args {
+                    let arg = self.expr(arg)?;
+                    self.pass_arg(&arg, &mut parama);
+                    values.push(arg.loc);
+                }
+                drop(values);
+
+                let loc = self.alloc_ret(ty, ctx);
+
+                self.output.emit(eca());
+
+                self.load_ret(ty, &loc);
+
+                return Some(Value { ty, loc });
+            }
+            E::Directive {
+                name: "sizeof",
+                args: [ty],
+                ..
+            } => {
+                let ty = self.ty(ty);
+                return Some(Value::imm(self.tys.size_of(ty) as _));
+            }
+            E::Directive {
+                name: "alignof",
+                args: [ty],
+                ..
+            } => {
+                let ty = self.ty(ty);
+                return Some(Value::imm(self.tys.align_of(ty) as _));
+            }
+            E::Directive {
+                name: "intcast",
+                args: [val],
+                ..
+            } => {
+                let Some(ty) = ctx.ty else {
+                    self.report(
+                        expr.pos(),
+                        "type to cast to is unknown, use `@as(<type>, <expr>)`",
+                    );
+                };
+                let mut val = self.expr(val)?;
+
+                let from_size = self.tys.size_of(val.ty);
+                let to_size = self.tys.size_of(ty);
+
+                if from_size < to_size && val.ty.is_signed() {
+                    let reg = self.loc_to_reg(&val.loc, from_size);
+                    let op = [sxt8, sxt16, sxt32][from_size.ilog2() as usize];
+                    self.output.emit(op(reg.get(), reg.get()));
+                    val.loc = Loc::reg(reg);
+                }
+
+                Some(Value { ty, loc: val.loc })
+            }
+            E::Directive {
+                name: "bitcast",
+                args: [val],
+                ..
+            } => {
+                let Some(ty) = ctx.ty else {
+                    self.report(
+                        expr.pos(),
+                        "type to cast to is unknown, use `@as(<type>, <expr>)`",
+                    );
+                };
+
+                let size = self.tys.size_of(ty);
+
+                ctx.ty = None;
+
+                let val = self.expr_ctx(val, ctx)?;
+
+                if self.tys.size_of(val.ty) != size {
+                    self.report(
+                        expr.pos(),
+                        format_args!(
+                            "cannot bitcast {} to {} (different sizes: {} != {size})",
+                            self.ty_display(val.ty),
+                            self.ty_display(ty),
+                            self.tys.size_of(val.ty),
+                        ),
+                    );
+                }
+
+                // TODO: maybe check align
+
+                return Some(Value { ty, loc: val.loc });
+            }
+            E::Directive {
+                name: "as",
+                args: [ty, val],
+                ..
+            } => {
+                let ty = self.ty(ty);
+                ctx.ty = Some(ty);
+                return self.expr_ctx(val, ctx);
+            }
+            E::Bool { value, .. } => Some(Value {
+                ty:  ty::BOOL.into(),
+                loc: Loc::imm(value as u64),
+            }),
+            E::Ctor {
+                pos, ty, fields, ..
+            } => {
+                let Some(ty) = ty.map(|ty| self.ty(ty)).or(ctx.ty) else {
+                    self.report(pos, "expected type, (it cannot be inferred)");
+                };
+                let size = self.tys.size_of(ty);
+
+                let loc = ctx
+                    .loc
+                    .unwrap_or_else(|| Loc::stack(self.ci.stack.allocate(size)));
+                let ty::Kind::Struct(stuct) = ty.expand() else {
+                    self.report(pos, "expected expression to evaluate to struct")
+                };
+                let field_count = self.tys.structs[stuct as usize].fields.len();
+                if field_count != fields.len() {
+                    self.report(
+                        pos,
+                        format_args!("expected {} fields, got {}", field_count, fields.len()),
+                    );
+                }
+
+                for (i, (name, field)) in fields.iter().enumerate() {
+                    let Some((offset, ty)) = self.tys.offset_of(stuct, name.ok_or(i)) else {
+                        self.report(pos, format_args!("field not found: {name:?}"));
+                    };
+                    let loc = loc.offset_ref(offset);
+                    self.expr_ctx(field, Ctx::default().with_loc(loc).with_ty(ty))?;
+                }
+
+                return Some(Value { ty, loc });
+            }
+            E::Field { target, field } => {
+                let checkpoint = self.output.code.len();
+                let mut tal = self.expr(target)?;
+
+                if let ty::Kind::Ptr(ty) = tal.ty.expand() {
+                    tal.ty = self.tys.ptrs[ty as usize].base;
+                    tal.loc = tal.loc.into_derefed();
+                }
+
+                match tal.ty.expand() {
+                    ty::Kind::Struct(idx) => {
+                        let Some((offset, ty)) = self.tys.offset_of(idx, Ok(field)) else {
+                            self.report(target.pos(), format_args!("field not found: {field:?}"));
+                        };
+                        let loc = tal.loc.offset_ref(offset);
+                        Some(Value { ty, loc })
+                    }
+                    ty::Kind::Builtin(ty::TYPE) => {
+                        self.output.code.truncate(checkpoint);
+                        match ty::Kind::from_ty(self.ty(target)) {
+                            ty::Kind::Module(idx) => Some(Value::ty(
+                                self.find_or_declare(target.pos(), idx, Err(field))
+                                    .compress(),
+                            )),
+                            _ => unimplemented!(),
+                        }
+                    }
+                    smh => self.report(
+                        target.pos(),
+                        format_args!("the field operation is not supported: {smh:?}"),
+                    ),
+                }
+            }
+            E::UnOp {
+                op: T::Band,
+                val,
+                pos,
+            } => {
+                let mut val = self.expr(val)?;
+                let Loc::Rt {
+                    derefed: drfd @ true,
+                    ..
+                } = &mut val.loc
+                else {
+                    self.report(
+                        pos,
+                        format_args!(
+                            "cant take pointer of {} ({:?})",
+                            self.ty_display(val.ty),
+                            val.loc
+                        ),
+                    );
+                };
+
+                *drfd = false;
+
+                Some(Value {
+                    ty:  self.tys.make_ptr(val.ty),
+                    loc: val.loc,
+                })
+            }
+            E::UnOp {
+                op: T::Mul,
+                val,
+                pos,
+            } => {
+                let val = self.expr(val)?;
+                match val.ty.expand() {
+                    ty::Kind::Ptr(ty) => Some(Value {
+                        ty:  self.tys.ptrs[ty as usize].base,
+                        loc: Loc::reg(self.loc_to_reg(&val.loc, self.tys.size_of(val.ty)))
+                            .into_derefed(),
+                    }),
+                    _ => self.report(
+                        pos,
+                        format_args!("expected pointer, got {}", self.ty_display(val.ty)),
+                    ),
+                }
+            }
+            E::BinOp {
+                left: &E::Ident { id, .. },
+                op: T::Decl,
+                right,
+            } => {
+                let val = self.expr(right)?;
+                let mut loc = self.make_loc_owned(val.loc, val.ty);
+                let sym = parser::find_symbol(&self.cfile().symbols, id);
+                if sym.flags & idfl::REFERENCED != 0 {
+                    loc = self.spill(&loc, self.tys.size_of(val.ty));
+                }
+                self.ci.vars.push(Variable {
+                    id,
+                    value: Value { ty: val.ty, loc },
+                });
+                Some(Value::void())
+            }
+            E::Call { func, args } => {
+                let func_ty = self.ty(func);
+                let ty::Kind::Func(func_id) = func_ty.expand() else {
+                    self.report(func.pos(), "can't call this, maybe in the future");
+                };
+
+                let func = self.tys.funcs[func_id as usize];
+
+                let mut parama = self.tys.parama(func.ret);
+                let mut values = Vec::with_capacity(args.len());
+                for (earg, ty) in args.iter().zip(func.args.view(&self.tys.args).to_vec()) {
+                    let arg = self.expr_ctx(earg, Ctx::default().with_ty(ty))?;
+                    _ = self.assert_ty(earg.pos(), ty, arg.ty);
+                    self.pass_arg(&arg, &mut parama);
+                    values.push(arg.loc);
+                }
+                drop(values);
+
+                let loc = self.alloc_ret(func.ret, ctx);
+                self.output.emit_call(func_id);
+                self.load_ret(func.ret, &loc);
+
+                return Some(Value { ty: func.ret, loc });
+            }
+            E::Ident { id, .. } if ident::is_null(id) => Some(Value::ty(id.into())),
+            E::Ident { id, index, .. }
+                if let Some((var_index, var)) = self
+                    .ci
+                    .vars
+                    .iter_mut()
+                    .enumerate()
+                    .find(|(_, v)| v.id == id) =>
+            {
+                let sym = parser::find_symbol(&self.files[self.ci.file as usize].symbols, id);
+                let owned = std::mem::take(&mut var.value.loc);
+
+                let loc = match idfl::index(sym.flags) == index
+                    && !self
+                        .ci
+                        .loops
+                        .last()
+                        .is_some_and(|l| l.var_count > var_index as u32)
+                {
+                    true => std::mem::take(&mut var.value.loc),
+                    false => self.ci.dup_loc(&owned),
+                };
+
+                self.ci.vars[var_index].value.loc = owned;
+
+                Some(Value {
+                    ty: self.ci.vars[var_index].value.ty,
+                    loc,
+                })
+            }
+            E::Ident { id, .. } => match self
+                .tys
+                .syms
+                .get(&SymKey {
+                    ident: id,
+                    file:  self.ci.file,
+                })
+                .copied()
+                .map(ty::Kind::from_ty)
+                .unwrap_or_else(|| self.find_or_declare(ident::pos(id), self.ci.file, Ok(id)))
+            {
+                ty::Kind::Global(id) => self.handle_global(id),
+                tk => Some(Value::ty(tk.compress())),
+            },
+            E::Return { val, .. } => {
+                if let Some(val) = val {
+                    let size = self.tys.size_of(self.ci.ret);
+                    let loc = match size {
+                        0 => Loc::default(),
+                        1..=16 => Loc::reg(1),
+                        _ => Loc::reg(self.ci.ret_reg.as_ref()).into_derefed(),
+                    };
+                    self.expr_ctx(val, Ctx::default().with_ty(self.ci.ret).with_loc(loc))?;
+                }
+                self.ci.ret_relocs.push(Reloc {
+                    code_offset: self.output.code.len() as u32 + 1,
+                    sub_offset:  1,
+                    width:       4,
+                });
+                self.output.emit(jmp(0));
+                None
+            }
+            E::Block { stmts, .. } => {
+                for stmt in stmts {
+                    self.expr(stmt)?;
+                }
+                Some(Value::void())
+            }
+            E::Number { value, .. } => Some(Value {
+                ty:  ctx.ty.map(ty::Id::strip_pointer).unwrap_or(ty::INT.into()),
+                loc: Loc::imm(value),
+            }),
+            E::If {
+                cond, then, else_, ..
+            } => 'b: {
+                log::dbg!("if-cond");
+                let cond = self.expr_ctx(cond, Ctx::default().with_ty(ty::BOOL))?;
+                let reg = self.loc_to_reg(&cond.loc, 1);
+                let jump_offset = self.output.code.len() as u32;
+                self.output.emit(jeq(reg.get(), 0, 0));
+
+                log::dbg!("if-then");
+                let then_unreachable = self.expr(then).is_none();
+                let mut else_unreachable = false;
+
+                let mut jump = self.output.code.len() as i64 - jump_offset as i64;
+
+                if let Some(else_) = else_ {
+                    log::dbg!("if-else");
+                    let else_jump_offset = self.output.code.len() as u32;
+                    if !then_unreachable {
+                        self.output.emit(jmp(0));
+                        jump = self.output.code.len() as i64 - jump_offset as i64;
+                    }
+
+                    else_unreachable = self.expr(else_).is_none();
+
+                    if !then_unreachable {
+                        let jump = self.output.code.len() as i64 - else_jump_offset as i64;
+                        log::dbg!("if-else-jump: {}", jump);
+                        write_reloc(
+                            &mut self.output.code,
+                            else_jump_offset as usize + 1,
+                            jump,
+                            4,
+                        );
+                    }
+                }
+
+                log::dbg!("if-then-jump: {}", jump);
+                write_reloc(&mut self.output.code, jump_offset as usize + 3, jump, 2);
+
+                if then_unreachable && else_unreachable {
+                    break 'b None;
+                }
+
+                Some(Value::void())
+            }
+            E::Loop { body, .. } => 'a: {
+                log::dbg!("loop");
+
+                let loop_start = self.output.code.len() as u32;
+                self.ci.loops.push(Loop {
+                    var_count:  self.ci.vars.len() as _,
+                    offset:     loop_start,
+                    reloc_base: self.ci.loop_relocs.len() as u32,
+                });
+                let body_unreachable = self.expr(body).is_none();
+
+                log::dbg!("loop-end");
+                if !body_unreachable {
+                    let loop_end = self.output.code.len();
+                    self.output.emit(jmp(loop_start as i32 - loop_end as i32));
+                }
+
+                let loop_end = self.output.code.len() as u32;
+
+                let loopa = self.ci.loops.pop().unwrap();
+                let is_unreachable = loopa.reloc_base == self.ci.loop_relocs.len() as u32;
+                for reloc in self.ci.loop_relocs.drain(loopa.reloc_base as usize..) {
+                    reloc.apply_jump(&mut self.output.code, loop_end);
+                }
+
+                self.ci.vars.drain(loopa.var_count as usize..);
+
+                if is_unreachable {
+                    log::dbg!("infinite loop");
+                    break 'a None;
+                }
+
+                Some(Value::void())
+            }
+            E::Break { .. } => {
+                let offset = self.output.code.len() as u32;
+                self.output.emit(jmp(0));
+                self.ci.loop_relocs.push(Reloc {
+                    code_offset: offset + 1,
+                    sub_offset:  1,
+                    width:       4,
+                });
+                None
+            }
+            E::Continue { .. } => {
+                let loop_ = self.ci.loops.last().unwrap();
+                let offset = self.output.code.len() as u32;
+                self.output.emit(jmp(loop_.offset as i32 - offset as i32));
+                None
+            }
+            E::BinOp {
+                left,
+                op: op @ (T::And | T::Or),
+                right,
+            } => {
+                let lhs = self.expr_ctx(left, Ctx::default().with_ty(ty::BOOL))?;
+                let lhs = self.loc_to_reg(&lhs.loc, 1);
+                let jump_offset = self.output.code.len() + 3;
+                let op = if op == T::And { jeq } else { jne };
+                self.output.emit(op(lhs.get(), 0, 0));
+
+                if let Some(rhs) = self.expr_ctx(right, Ctx::default().with_ty(ty::BOOL)) {
+                    let rhs = self.loc_to_reg(&rhs.loc, 1);
+                    self.output.emit(cp(lhs.get(), rhs.get()));
+                }
+
+                let jump = self.output.code.len() as i64 - jump_offset as i64;
+                write_reloc(&mut self.output.code, jump_offset, jump, 2);
+
+                Some(Value {
+                    ty:  ty::BOOL.into(),
+                    loc: Loc::reg(lhs),
+                })
+            }
+            E::BinOp { left, op, right } => 'ops: {
+                let left = self.expr(left)?;
+
+                if op == T::Assign {
+                    self.expr_ctx(right, Ctx::from(left)).unwrap();
+                    return Some(Value::void());
+                }
+
+                if let ty::Kind::Struct(_) = left.ty.expand() {
+                    let right = self.expr_ctx(right, Ctx::default().with_ty(left.ty))?;
+                    _ = self.assert_ty(expr.pos(), left.ty, right.ty);
+                    return self.struct_op(op, left.ty, ctx, left.loc, right.loc);
+                }
+
+                let lsize = self.tys.size_of(left.ty);
+                let ty = ctx.ty.unwrap_or(left.ty);
+
+                let lhs = match ctx.loc.take() {
+                    Some(Loc::Rt { reg, .. })
+                        if matches!(&left.loc, Loc::Rt { reg: r, ..} if *r != reg)
+                            && reg.get() != 1 =>
+                    {
+                        reg
+                    }
+                    Some(loc) => {
+                        ctx = Ctx::from(Value { ty, loc });
+                        self.loc_to_reg(&left.loc, lsize)
+                    }
+                    None => self.loc_to_reg(&left.loc, lsize),
+                };
+                let right = self.expr_ctx(right, Ctx::default().with_ty(left.ty))?;
+                let rsize = self.tys.size_of(right.ty);
+
+                let ty = self.assert_ty(expr.pos(), left.ty, right.ty);
+                let size = self.tys.size_of(ty);
+                let signed = ty.is_signed();
+
+                if let Loc::Ct { value } = right.loc
+                    && let Some(oper) = Self::imm_math_op(op, signed, size)
+                {
+                    let mut imm = u64::from_ne_bytes(value);
+                    if matches!(op, T::Add | T::Sub)
+                        && let ty::Kind::Ptr(ty) = ty::Kind::from_ty(ty)
+                    {
+                        let size = self.tys.size_of(self.tys.ptrs[ty as usize].base);
+                        imm *= size as u64;
+                    }
+
+                    self.output.emit(oper(lhs.get(), lhs.get(), imm));
+                    break 'ops Some(Value {
+                        ty,
+                        loc: Loc::reg(lhs),
+                    });
+                }
+
+                let rhs = self.loc_to_reg(&right.loc, rsize);
+
+                if matches!(op, T::Add | T::Sub) {
+                    let min_size = lsize.min(rsize);
+                    if ty.is_signed() && min_size < size {
+                        let operand = if lsize < rsize { lhs.get() } else { rhs.get() };
+                        let op = [sxt8, sxt16, sxt32][min_size.ilog2() as usize];
+                        self.output.emit(op(operand, operand));
+                    }
+
+                    if left.ty.is_pointer() ^ right.ty.is_pointer() {
+                        let (offset, ty) = if left.ty.is_pointer() {
+                            (rhs.get(), left.ty)
+                        } else {
+                            (lhs.get(), right.ty)
+                        };
+
+                        let ty::Kind::Ptr(ty) = ty.expand() else {
+                            unreachable!()
+                        };
+
+                        let size = self.tys.size_of(self.tys.ptrs[ty as usize].base);
+                        self.output.emit(muli64(offset, offset, size as _));
+                    }
+                }
+
+                if let Some(op) = Self::math_op(op, signed, size) {
+                    self.output.emit(op(lhs.get(), lhs.get(), rhs.get()));
+                    break 'ops Some(Value {
+                        ty,
+                        loc: Loc::reg(lhs),
+                    });
+                }
+
+                'cmp: {
+                    let against = match op {
+                        T::Le | T::Gt => 1,
+                        T::Ne | T::Eq => 0,
+                        T::Ge | T::Lt => (-1i64) as _,
+                        _ => break 'cmp,
+                    };
+
+                    let op_fn = if signed { cmps } else { cmpu };
+                    self.output.emit(op_fn(lhs.get(), lhs.get(), rhs.get()));
+                    self.output.emit(cmpui(lhs.get(), lhs.get(), against));
+                    if matches!(op, T::Eq | T::Lt | T::Gt) {
+                        self.output.emit(not(lhs.get(), lhs.get()));
+                    }
+
+                    break 'ops Some(Value {
+                        ty:  ty::BOOL.into(),
+                        loc: Loc::reg(lhs),
+                    });
+                }
+
+                unimplemented!("{:#?}", op)
+            }
+            ast => unimplemented!("{:#?}", ast),
+        }?;
+
+        if let Some(ty) = ctx.ty {
+            _ = self.assert_ty(expr.pos(), value.ty, ty);
+        }
+
+        Some(match ctx.loc {
+            Some(dest) => {
+                let ty = ctx.ty.unwrap_or(value.ty);
+                self.store_typed(&value.loc, &dest, ty);
+                Value {
+                    ty,
+                    loc: Loc::imm(0),
+                }
+            }
+            None => value,
+        })
+    }
+
+    fn struct_op(
+        &mut self,
+        op: TokenKind,
+        ty: ty::Id,
+        ctx: Ctx,
+        left: Loc,
+        right: Loc,
+    ) -> Option<Value> {
+        if let ty::Kind::Struct(stuct) = ty.expand() {
+            let dst = ctx
+                .loc
+                .unwrap_or_else(|| Loc::stack(self.ci.stack.allocate(self.tys.size_of(ty))));
+            let mut offset = 0;
+            for &Field { ty, .. } in self.tys.structs[stuct as usize].fields.clone().iter() {
+                offset = Types::align_up(offset, self.tys.align_of(ty));
+                let size = self.tys.size_of(ty);
+                let ctx = Ctx::from(Value {
+                    ty,
+                    loc: dst.offset_ref(offset),
+                });
+                let left = left.offset_ref(offset);
+                let right = right.offset_ref(offset);
+                self.struct_op(op, ty, ctx, left, right)?;
+                offset += size;
+            }
+
+            return Some(Value { ty, loc: dst });
+        }
+
+        let size = self.tys.size_of(ty);
+        let signed = ty.is_signed();
+        let lhs = self.loc_to_reg(&left, size);
+
+        if let Loc::Ct { value } = right
+            && let Some(op) = Self::imm_math_op(op, signed, size)
+        {
+            self.output
+                .emit(op(lhs.get(), lhs.get(), u64::from_ne_bytes(value)));
+            return Some(if let Some(value) = ctx.into_value() {
+                self.store_typed(&Loc::reg(lhs.as_ref()), &value.loc, value.ty);
+                Value::void()
+            } else {
+                Value {
+                    ty,
+                    loc: Loc::reg(lhs),
+                }
+            });
+        }
+
+        let rhs = self.loc_to_reg(&right, size);
+
+        if let Some(op) = Self::math_op(op, signed, size) {
+            self.output.emit(op(lhs.get(), lhs.get(), rhs.get()));
+            return if let Some(value) = ctx.into_value() {
+                self.store_typed(&Loc::reg(lhs.as_ref()), &value.loc, value.ty);
+                Some(Value::void())
+            } else {
+                Some(Value {
+                    ty,
+                    loc: Loc::reg(lhs),
+                })
+            };
+        }
+
+        unimplemented!("{:#?}", op)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn math_op(
+        op: TokenKind,
+        signed: bool,
+        size: u32,
+    ) -> Option<fn(u8, u8, u8) -> (usize, [u8; instrs::MAX_SIZE])> {
+        use TokenKind as T;
+
+        macro_rules! div { ($($op:ident),*) => {[$(|a, b, c| $op(a, ZERO, b, c)),*]}; }
+        macro_rules! rem { ($($op:ident),*) => {[$(|a, b, c| $op(ZERO, a, b, c)),*]}; }
+
+        let ops = match op {
+            T::Add => [add8, add16, add32, add64],
+            T::Sub => [sub8, sub16, sub32, sub64],
+            T::Mul => [mul8, mul16, mul32, mul64],
+            T::Div if signed => div!(dirs8, dirs16, dirs32, dirs64),
+            T::Div => div!(diru8, diru16, diru32, diru64),
+            T::Mod if signed => rem!(dirs8, dirs16, dirs32, dirs64),
+            T::Mod => rem!(diru8, diru16, diru32, diru64),
+            T::Band => return Some(and),
+            T::Bor => return Some(or),
+            T::Xor => return Some(xor),
+            T::Shl => [slu8, slu16, slu32, slu64],
+            T::Shr if signed => [srs8, srs16, srs32, srs64],
+            T::Shr => [sru8, sru16, sru32, sru64],
+            _ => return None,
+        };
+
+        Some(ops[size.ilog2() as usize])
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn imm_math_op(
+        op: TokenKind,
+        signed: bool,
+        size: u32,
+    ) -> Option<fn(u8, u8, u64) -> (usize, [u8; instrs::MAX_SIZE])> {
+        use TokenKind as T;
+
+        macro_rules! def_op {
+            ($name:ident |$a:ident, $b:ident, $c:ident| $($tt:tt)*) => {
+                macro_rules! $name {
+                    ($$($$op:ident),*) => {
+                        [$$(
+                            |$a, $b, $c: u64| $$op($($tt)*),
+                        )*]
+                    }
+                }
+            };
+        }
+
+        def_op!(basic_op | a, b, c | a, b, c as _);
+        def_op!(sub_op | a, b, c | b, a, c.wrapping_neg() as _);
+
+        let ops = match op {
+            T::Add => basic_op!(addi8, addi16, addi32, addi64),
+            T::Sub => sub_op!(addi8, addi16, addi32, addi64),
+            T::Mul => basic_op!(muli8, muli16, muli32, muli64),
+            T::Band => return Some(andi),
+            T::Bor => return Some(ori),
+            T::Xor => return Some(xori),
+            T::Shr if signed => basic_op!(srui8, srui16, srui32, srui64),
+            T::Shr => basic_op!(srui8, srui16, srui32, srui64),
+            T::Shl => basic_op!(slui8, slui16, slui32, slui64),
+            _ => return None,
+        };
+
+        Some(ops[size.ilog2() as usize])
+    }
+
+    fn handle_global(&mut self, id: ty::Global) -> Option<Value> {
+        let ptr = self.ci.regs.allocate();
+
+        let global = &mut self.tys.globals[id as usize];
+
+        let reloc = Reloc {
+            code_offset: self.output.code.len() as u32 + 3,
+            sub_offset:  3,
+            width:       4,
+        };
+        self.output.globals.push((id, reloc));
+        self.output.emit(instrs::lra(ptr.get(), 0, 0));
+
+        Some(Value {
+            ty:  global.ty,
+            loc: Loc::reg(ptr).into_derefed(),
+        })
+    }
+
+    fn spill(&mut self, loc: &Loc, size: Size) -> Loc {
+        let stack = Loc::stack(self.ci.stack.allocate(size));
+        self.store_sized(loc, &stack, size);
+        stack
+    }
+
+    fn make_loc_owned(&mut self, loc: Loc, ty: ty::Id) -> Loc {
+        let size = self.tys.size_of(ty);
+        match size {
+            0 => Loc::default(),
+            1..=8 => Loc::reg(self.loc_to_reg(&loc, size)),
+            _ => {
+                let loc = Loc::stack(self.ci.stack.allocate(size));
+                self.store_sized(&loc, &loc, size);
+                loc
+            }
+        }
+    }
+
+    fn complete_call_graph(&mut self) {
+        while self.ci.task_base < self.tasks.len()
+            && let Some(task_slot) = self.tasks.pop()
+        {
+            let Some(task) = task_slot else { continue };
+            self.handle_task(task);
+        }
+    }
+
+    fn handle_task(&mut self, FTask { file, expr, id }: FTask) {
+        let ast = self.files[file as usize].clone();
+        let expr = expr.get(&ast).unwrap();
+        let mut func = self.tys.funcs[id as usize];
+
+        let repl = ItemCtx {
+            file,
+            id: ty::Kind::Func(id),
+            ret: func.ret,
+            ..self.pool.cis.pop().unwrap_or_default()
+        };
+        let prev_ci = std::mem::replace(&mut self.ci, repl);
+        self.ci.regs.init();
+        self.take_snapshot();
+
+        let Expr::BinOp {
+            left: Expr::Ident { name, .. },
+            op: TokenKind::Decl,
+            right: &Expr::Closure { body, args, .. },
+        } = expr
+        else {
+            unreachable!("{expr}")
+        };
+
+        log::dbg!("fn: {}", name);
+
+        func.offset = self.ci.snap.code as Offset;
+
+        self.output.emit_prelude();
+
+        log::dbg!("fn-args");
+        let mut parama = self.tys.parama(func.ret);
+        // TODO: dont allocate da vec
+        for (arg, ty) in args.iter().zip(func.args.view(&self.tys.args).to_vec()) {
+            let sym = parser::find_symbol(&ast.symbols, arg.id);
+            let loc = self.load_arg(sym.flags, ty, &mut parama);
+            self.ci.vars.push(Variable {
+                id:    arg.id,
+                value: Value { ty, loc },
+            });
+        }
+
+        if self.tys.size_of(func.ret) > 16 {
+            let reg = self.ci.regs.allocate();
+            self.output.emit(instrs::cp(reg.get(), 1));
+            self.ci.ret_reg = reg;
+        } else {
+            self.ci.ret_reg = reg::Id::RET;
+        }
+
+        log::dbg!("fn-body");
+        if self.expr(body).is_some() {
+            self.report(body.pos(), "expected all paths in the fucntion to return");
+        }
+
+        log::dbg!("fn-prelude, stack: {:x}", self.ci.stack.max_height);
+
+        log::dbg!("fn-relocs");
+        self.ci.finalize(&mut self.output);
+        self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
+    }
+
+    fn load_arg(&mut self, flags: parser::IdentFlags, ty: ty::Id, parama: &mut ParamAlloc) -> Loc {
+        let size = self.tys.size_of(ty) as Size;
+        let (src, dst) = match size {
+            0 => (Loc::default(), Loc::default()),
+            ..=8 if flags & idfl::REFERENCED == 0 => {
+                (Loc::reg(parama.next()), Loc::reg(self.ci.regs.allocate()))
+            }
+            1..=8 => (
+                Loc::reg(parama.next()),
+                Loc::stack(self.ci.stack.allocate(size)),
+            ),
+            9..=16 => (
+                Loc::reg(parama.next_wide()),
+                Loc::stack(self.ci.stack.allocate(size)),
+            ),
+            _ if flags & (idfl::MUTABLE | idfl::REFERENCED) == 0 => {
+                let ptr = parama.next();
+                let reg = self.ci.regs.allocate();
+                self.output.emit(instrs::cp(reg.get(), ptr));
+                return Loc::ptr(reg);
+            }
+            _ => (
+                Loc::ptr(parama.next()),
+                Loc::stack(self.ci.stack.allocate(size)),
+            ),
+        };
+
+        self.store_sized(&src, &dst, size);
+        dst
+    }
+
+    fn eca(
+        &mut self,
+        args: impl IntoIterator<Item = Value>,
+        trap: Trap,
+        ret: impl Into<ty::Id>,
+    ) -> Value {
+        let ret = ret.into();
+        let mut parama = self.tys.parama(ret);
+        for value in args {
+            self.pass_arg(&value, &mut parama)
+        }
+        self.output.emit(eca());
+        self.output.write_trap(trap);
+        Value {
+            ty:  ret,
+            loc: Loc::reg(1),
+        }
+    }
+
+    fn alloc_ret(&mut self, ret: ty::Id, ctx: Ctx) -> Loc {
+        let size = self.tys.size_of(ret);
+        match size {
+            0 => Loc::default(),
+            1..=8 => Loc::reg(1),
+            9..=16 => ctx
+                .loc
+                .unwrap_or_else(|| Loc::stack(self.ci.stack.allocate(size))),
+            _ => {
+                let val = ctx
+                    .loc
+                    .unwrap_or_else(|| Loc::stack(self.ci.stack.allocate(size)));
+                let Loc::Rt {
+                    ref reg, offset, ..
+                } = val
+                else {
+                    unreachable!()
+                };
+                self.output.emit_addi_low(1, reg.get(), offset as _);
+                val
+            }
+        }
+    }
+
+    fn loc_to_reg(&mut self, loc: &Loc, size: Size) -> reg::Id {
+        match *loc {
+            Loc::Rt {
+                derefed: false,
+                ref reg,
+                offset,
+                ..
+            } => {
+                assert_eq!(offset, 0, "TODO");
+                reg.as_ref()
+            }
+            Loc::Rt { .. } => {
+                let reg = self.ci.regs.allocate();
+                self.store_sized(loc, &Loc::reg(reg.as_ref()), size);
+                reg
+            }
+            Loc::Ct { value } => {
+                let reg = self.ci.regs.allocate();
+                self.output.emit(li64(reg.get(), u64::from_ne_bytes(value)));
+                reg
+            }
+        }
+    }
+
+    fn load_ret(&mut self, ty: ty::Id, loc: &Loc) {
+        let size = self.tys.size_of(ty);
+        if let 9..=16 = size {
+            self.store_sized(&Loc::reg(1), loc, size);
+        }
+    }
+
+    fn pass_arg(&mut self, value: &Value, parama: &mut ParamAlloc) {
+        let size = self.tys.size_of(value.ty);
+        let p = parama.next();
+
+        if size > 16
+            && let Loc::Rt {
+                ref reg, offset, ..
+            } = value.loc
+        {
+            self.output.emit_addi_low(p, reg.get(), offset as _);
+            return;
+        }
+
+        let dst = match size {
+            0 => return,
+            9..=16 => Loc::reg(parama.next_wide()),
+            _ => Loc::reg(parama.next()),
+        };
+
+        self.store_sized(&value.loc, &dst, size);
+    }
+
+    fn store_typed(&mut self, src: &Loc, dst: &Loc, ty: ty::Id) {
+        self.store_sized(src, dst, self.tys.size_of(ty) as _)
+    }
+
+    fn store_sized(&mut self, src: &Loc, dst: &Loc, size: Size) {
+        macro_rules! lpat {
+            ($der:literal, $reg:ident, $off:pat) => {
+                &Loc::Rt { derefed: $der, reg: ref $reg, offset: $off, .. }
+            };
+        }
+
+        match (src, dst) {
+            (&Loc::Ct { value }, lpat!(true, reg, off)) => {
+                let ct = self.ci.regs.allocate();
+                self.output.emit(li64(ct.get(), u64::from_ne_bytes(value)));
+                self.output
+                    .emit(st(ct.get(), reg.get(), off as _, size as _));
+            }
+            (&Loc::Ct { value }, lpat!(false, reg, 0)) => {
+                self.output.emit(li64(reg.get(), u64::from_ne_bytes(value)))
+            }
+            (lpat!(true, src, soff), lpat!(true, dst, doff)) => {
+                self.output.emit_addi(src, soff as _);
+                self.output.emit_addi(dst, doff as _);
+                self.output.emit(bmc(src.get(), dst.get(), size as _));
+                self.output.emit_addi(src, -(soff as i64) as _);
+                self.output.emit_addi(dst, -(doff as i64) as _);
+            }
+            (lpat!(false, src, 0), lpat!(false, dst, 0)) => {
+                self.output.emit(cp(dst.get(), src.get()));
+            }
+            (lpat!(true, src, soff), lpat!(false, dst, 0)) => {
+                self.output
+                    .emit(ld(dst.get(), src.get(), soff as _, size as _));
+            }
+            (lpat!(false, src, 0), lpat!(true, dst, doff)) => {
+                self.output
+                    .emit(st(src.get(), dst.get(), doff as _, size as _))
+            }
+            (a, b) => unreachable!("{a:?} {b:?}"),
+        }
+    }
+
+    fn link(&mut self) {
+        self.output.funcs.retain(|&(f, rel)| {
+            task::unpack(self.tys.funcs[f as usize].offset)
+                .map(|off| rel.apply_jump(&mut self.output.code, off))
+                .is_err()
+        });
+
+        self.output.globals.retain(|&(g, rel)| {
+            task::unpack(self.tys.globals[g as usize].offset)
+                .map(|off| rel.apply_jump(&mut self.output.code, off))
+                .is_err()
+        })
+    }
+
+    // TODO: sometimes ists better to do this in bulk
+    fn ty(&mut self, expr: &Expr) -> ty::Id {
+        let mut stash = self.pool.outputs.pop().unwrap_or_default();
+        self.output.pop(&mut stash, &self.ci.snap);
+
+        let mut repl = ItemCtx {
+            file: self.ci.file,
+            id: self.ci.id,
+            ..self.pool.cis.pop().unwrap_or_default()
+        };
+        repl.regs.init();
+        repl.vars
+            .extend(self.ci.vars.iter().filter_map(Variable::dup_ct));
+        let prev_ci = std::mem::replace(&mut self.ci, repl);
+        self.take_snapshot();
+
+        let ctx = Ctx::default().with_loc(Loc::reg(reg::RET));
+        let ret = self.expr_ctx(expr, ctx).unwrap();
+        _ = self.assert_ty(expr.pos(), ret.ty, ty::TYPE.into());
+        let ty = match ret.loc {
+            Loc::Ct { value } => ty::Id::from(u64::from_ne_bytes(value) as u32),
+            Loc::Rt { .. } => {
+                self.output.emit(tx());
+
+                let mut ty_stash = self.pool.outputs.pop().unwrap_or_default();
+                self.output.pop(&mut ty_stash, &self.ci.snap);
+
+                self.complete_call_graph();
+                self.link();
+                self.take_snapshot();
+
+                self.output.append(&mut ty_stash);
+                self.pool.outputs.push(ty_stash);
+
+                self.ci.vars.clear();
+                self.ci.finalize(&mut self.output);
+
+                self.run_vm(self.ci.snap.code);
+
+                ty::Id::from(self.ct.vm.read_reg(1).0 as u32)
+            }
+        };
+
+        self.output.trunc(&self.ci.snap);
+        self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
+        self.output.append(&mut stash);
+        self.pool.outputs.push(stash);
+
+        ty
+    }
+
+    fn run_vm(&mut self, entry: usize) {
+        self.ct.vm.pc = hbvm::mem::Address::new(&mut self.output.code[entry] as *mut _ as _);
+        loop {
+            match self.ct.vm.run().unwrap() {
+                hbvm::VmRunOk::End => break,
+                hbvm::VmRunOk::Timer => unreachable!(),
+                hbvm::VmRunOk::Ecall => {}
+                hbvm::VmRunOk::Breakpoint => unreachable!(),
+            }
+        }
+    }
+
+    fn find_or_declare(&mut self, pos: Pos, file: FileId, name: Result<Ident, &str>) -> ty::Kind {
+        let f = self.files[file as usize].clone();
+        let Some((expr, ident)) = f.find_decl(name) else {
+            match name {
+                Ok(_) => self.report(pos, "undefined indentifier"),
+                Err("main") => self.report(pos, format_args!("missing main function: {f}")),
+                Err(name) => unimplemented!("somehow we did not handle: {name:?}"),
+            }
+        };
+
+        if let Some(existing) = self.tys.syms.get(&SymKey { file, ident }) {
+            if let ty::Kind::Func(id) = existing.expand()
+                && let func = &mut self.tys.funcs[id as usize]
+                && let Err(idx) = task::unpack(func.offset)
+            {
+                func.offset = task::id(self.tasks.len());
+                let task = self.tasks[idx].take();
+                self.tasks.push(task);
+            }
+            return existing.expand();
+        }
+
+        let sym = match expr {
+            Expr::BinOp {
+                left: &Expr::Ident { .. },
+                op: TokenKind::Decl,
+                right: &Expr::Closure { pos, args, ret, .. },
+            } => {
+                let id = self.tys.funcs.len() as _;
+                let func = Func {
+                    offset: task::id(self.tasks.len()),
+                    args:   {
+                        let start = self.tys.args.len();
+                        for arg in args {
+                            let ty = self.ty(&arg.ty);
+                            self.tys.args.push(ty);
+                        }
+                        let needle = &self.tys.args[start..];
+                        // TODO: maybe later when this becomes a bottleneck we use more
+                        // efficient search (SIMD?, indexing?)
+                        let sp = self
+                            .tys
+                            .args
+                            .windows(needle.len())
+                            .position(|val| val == needle)
+                            .unwrap();
+                        self.tys.args.truncate((sp + needle.len()).max(start));
+                        ty::Tuple::new(sp, args.len()).unwrap_or_else(|| {
+                            self.report(pos, "amount of arguments not supported")
+                        })
+                    },
+                    ret:    self.ty(ret),
+                };
+                self.tys.funcs.push(func);
+                self.tasks.push(Some(FTask {
+                    file,
+                    expr: ExprRef::new(expr),
+                    id,
+                }));
+                ty::Kind::Func(id)
+            }
+            Expr::BinOp {
+                left: &Expr::Ident { .. },
+                op: TokenKind::Decl,
+                right: Expr::Struct { fields, .. },
+            } => {
+                let stru = Struct {
+                    fields: fields
+                        .iter()
+                        .map(|&(name, ty)| Field {
+                            name: name.into(),
+                            ty:   self.ty(&ty),
+                        })
+                        .collect(),
+                    ast:    ExprRef::new(expr),
+                };
+                self.tys.structs.push(stru);
+                ty::Kind::Struct(self.tys.structs.len() as u32 - 1)
+            }
+            Expr::BinOp {
+                left: &Expr::Ident { .. },
+                op: TokenKind::Decl,
+                right,
+            } => {
+                let gid = self.tys.globals.len() as ty::Global;
+
+                let mut stash = self.pool.outputs.pop().unwrap_or_default();
+                self.output.pop(&mut stash, &self.ci.snap);
+
+                let prev_ci = std::mem::replace(
+                    &mut self.ci,
+                    ItemCtx {
+                        file,
+                        id: ty::Kind::Global(gid),
+                        ..self.pool.cis.pop().unwrap_or_default()
+                    },
+                );
+                self.take_snapshot();
+                self.ci.regs.init();
+
+                self.tys.globals.push(Global {
+                    offset: u32::MAX,
+                    ty:     Default::default(),
+                });
+
+                self.output.emit_prelude();
+
+                let ret = self.ci.regs.allocate();
+                self.output.emit(instrs::cp(ret.get(), 1));
+
+                let ret = self
+                    .expr_ctx(right, Ctx::default().with_loc(Loc::reg(ret)))
+                    .expect("TODO: unreachable constant/global");
+                self.output.emit(tx());
+
+                let mut global_stash = self.pool.outputs.pop().unwrap_or_default();
+                self.output.pop(&mut global_stash, &self.ci.snap);
+
+                self.complete_call_graph();
+                self.link();
+                self.take_snapshot();
+
+                self.ci.snap.code += self.tys.size_of(ret.ty) as usize;
+                self.output.code.resize(self.ci.snap.code, 0);
+
+                self.output.append(&mut global_stash);
+                self.pool.outputs.push(global_stash);
+
+                self.ci.finalize(&mut self.output);
+
+                let ret_loc = unsafe { self.output.code.as_mut_ptr().add(self.ci.snap.code) };
+                self.ct.vm.write_reg(1, ret_loc as u64);
+
+                self.run_vm(self.ci.snap.code);
+
+                self.tys.globals[gid as usize] = Global {
+                    ty:     ret.ty,
+                    offset: self.ci.snap.code as Offset,
+                };
+
+                self.output.trunc(&self.ci.snap);
+                self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
+                self.output.append(&mut stash);
+                self.pool.outputs.push(stash);
+
+                ty::Kind::Global(gid)
+            }
+            e => unimplemented!("{e:#?}"),
+        };
+        self.tys.syms.insert(SymKey { ident, file }, sym.compress());
+        sym
+    }
+
     fn ty_display(&self, ty: ty::Id) -> ty::Display {
         ty::Display::new(&self.tys, &self.files, ty)
+    }
+
+    #[must_use]
+    fn assert_ty(&self, pos: Pos, ty: ty::Id, expected: ty::Id) -> ty::Id {
+        if let Some(res) = ty.try_upcast(expected) {
+            res
+        } else {
+            let ty = self.ty_display(ty);
+            let expected = self.ty_display(expected);
+            self.report(pos, format_args!("expected {ty}, got {expected}"));
+        }
+    }
+
+    fn report(&self, pos: Pos, msg: impl std::fmt::Display) -> ! {
+        let (line, col) = self.cfile().nlines.line_col(pos);
+        println!("{}:{}:{}: {}", self.cfile().path, line, col, msg);
+        unreachable!();
+    }
+
+    fn cfile(&self) -> &parser::Ast {
+        &self.files[self.ci.file as usize]
+    }
+
+    fn take_snapshot(&mut self) {
+        self.ci.task_base = self.tasks.len();
+        self.ci.snap = self.output.snap();
     }
 }

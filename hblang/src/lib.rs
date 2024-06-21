@@ -1,4 +1,5 @@
 #![feature(vec_pop_if)]
+#![feature(inline_const_pat)]
 #![feature(pattern)]
 #![feature(if_let_guard)]
 #![feature(slice_partition_dedup)]
@@ -10,6 +11,7 @@
 #![feature(ptr_metadata)]
 #![feature(const_mut_refs)]
 #![feature(slice_ptr_get)]
+#![allow(clippy::format_collect)]
 
 use std::{
     collections::VecDeque,
@@ -19,8 +21,6 @@ use std::{
 };
 
 use parser::Ast;
-
-use crate::parser::FileId;
 
 #[macro_export]
 macro_rules! run_tests {
@@ -286,9 +286,9 @@ pub fn parse_all(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
         }
     }
 
-    type Task = (FileId, PathBuf, Option<std::process::Command>);
+    type Task = (u32, PathBuf, Option<std::process::Command>);
 
-    let seen = Mutex::new(HashMap::<PathBuf, FileId>::default());
+    let seen = Mutex::new(HashMap::<PathBuf, u32>::default());
     let tasks = TaskQueue::<Task>::new(threads);
     let ast = Mutex::new(Vec::<io::Result<Ast>>::new());
 
@@ -306,7 +306,7 @@ pub fn parse_all(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
                 }
                 std::collections::hash_map::Entry::Vacant(entry) => {
                     entry.insert(len as _);
-                    len as FileId
+                    len as u32
                 }
             }
         };

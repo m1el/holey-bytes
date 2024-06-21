@@ -7,7 +7,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut generated = String::new();
 
-    writeln!(generated, "#![allow(dead_code)]")?;
+    writeln!(
+        generated,
+        "#![allow(dead_code)] #![allow(clippy::upper_case_acronyms)]"
+    )?;
     gen_max_size(&mut generated)?;
     gen_encodes(&mut generated)?;
     gen_structs(&mut generated)?;
