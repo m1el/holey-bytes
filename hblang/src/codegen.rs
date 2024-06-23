@@ -956,11 +956,7 @@ struct Output {
 }
 
 impl Output {
-    fn emit_addi(&mut self, op: &reg::Id, delta: u64) {
-        self.emit_addi_low(op.get(), op.get(), delta)
-    }
-
-    fn emit_addi_low(&mut self, dest: u8, op: u8, delta: u64) {
+    fn emit_addi(&mut self, dest: u8, op: u8, delta: u64) {
         if delta == 0 {
             if dest != op {
                 self.emit(cp(dest, op));
@@ -968,13 +964,7 @@ impl Output {
             return;
         }
 
-        #[allow(overflowing_literals)]
-        self.emit(match delta as i64 {
-            //  -0x80..=0x7F => addi8(dest, op, delta as _),
-            //  -0x8000..=0x7FFF => addi16(dest, op, delta as _),
-            //  -0x80000000..=0x7FFFFFFF => addi32(dest, op, delta as _),
-            0x8000000000000000..=0x7FFFFFFFFFFFFFFF => addi64(dest, op, delta),
-        });
+        self.emit(addi64(dest, op, delta));
     }
 
     fn emit(&mut self, (len, instr): (usize, [u8; instrs::MAX_SIZE])) {
@@ -1269,7 +1259,7 @@ impl Codegen {
                         ptr = ptr.offset(size);
                     }
 
-                    self.stack_offset_low(2, STACK_PTR, Some(&stack), 0);
+                    self.stack_offset(2, STACK_PTR, Some(&stack), 0);
                     let val = self.eca(
                         Trap::MakeStruct {
                             file:        self.ci.file,
@@ -1508,10 +1498,10 @@ impl Codegen {
                 let offset = std::mem::take(offset) as _;
                 if reg.is_ref() {
                     let new_reg = self.ci.regs.allocate();
-                    self.stack_offset_low(new_reg.get(), reg.get(), stack.as_ref(), offset);
+                    self.stack_offset(new_reg.get(), reg.get(), stack.as_ref(), offset);
                     *reg = new_reg;
                 } else {
-                    self.stack_offset_low(reg.get(), reg.get(), stack.as_ref(), offset);
+                    self.stack_offset(reg.get(), reg.get(), stack.as_ref(), offset);
                 }
 
                 // FIXME: we might be able to track this but it will be pain
@@ -1657,10 +1647,10 @@ impl Codegen {
             } => 'b: {
                 log::dbg!("if-cond");
                 let cond = self.expr_ctx(cond, Ctx::default().with_ty(ty::BOOL))?;
-                let reg = self.loc_to_reg(cond.loc, 1);
+                let reg = self.loc_to_reg(&cond.loc, 1);
                 let jump_offset = self.output.code.len() as u32;
                 self.output.emit(jeq(reg.get(), 0, 0));
-                self.ci.regs.free(reg);
+                self.ci.free_loc(cond.loc);
 
                 log::dbg!("if-then");
                 let then_unreachable = self.expr(then).is_none();
@@ -1794,11 +1784,7 @@ impl Codegen {
 
                 let lsize = self.tys.size_of(left.ty);
 
-                let lhs = if left.loc.is_ref() && matches!(right, E::Number { .. }) {
-                    self.loc_to_reg(&left.loc, lsize)
-                } else {
-                    self.loc_to_reg(left.loc, lsize)
-                };
+                let lhs = self.loc_to_reg(left.loc, lsize);
                 let right = self.expr_ctx(right, Ctx::default().with_ty(left.ty))?;
                 let rsize = self.tys.size_of(right.ty);
 
@@ -2201,7 +2187,7 @@ impl Codegen {
             9..=16 => Loc::stack(self.ci.stack.allocate(size)),
             _ => {
                 let stack = self.ci.stack.allocate(size);
-                self.stack_offset_low(1, STACK_PTR, Some(&stack), 0);
+                self.stack_offset(1, STACK_PTR, Some(&stack), 0);
                 Loc::stack(stack)
             }
         }
@@ -2234,14 +2220,9 @@ impl Codegen {
                 assert_eq!(offset, 0, "TODO");
                 reg.as_ref()
             }
-            loc @ (LocCow::Ref(Loc::Rt { .. }) | LocCow::Owned(Loc::Rt { .. })) => {
+            loc => {
                 let reg = self.ci.regs.allocate();
                 self.store_sized(loc, Loc::reg(reg.as_ref()), size);
-                reg
-            }
-            LocCow::Ref(&Loc::Ct { value }) | LocCow::Owned(Loc::Ct { value }) => {
-                let reg = self.ci.regs.allocate();
-                self.output.emit(li64(reg.get(), u64::from_ne_bytes(value)));
                 reg
             }
         }
@@ -2266,7 +2247,7 @@ impl Codegen {
             else {
                 unreachable!()
             };
-            self.stack_offset_low(parama.next(), reg.get(), stack.as_ref(), *offset as _);
+            self.stack_offset(parama.next(), reg.get(), stack.as_ref(), *offset as _);
             return;
         }
 
@@ -2312,8 +2293,8 @@ impl Codegen {
                 // TODO: some oportuinies to ellit more optimal code
                 let src_off = self.ci.regs.allocate();
                 let dst_off = self.ci.regs.allocate();
-                self.stack_offset_low(src_off.get(), src.get(), ssta.as_ref(), soff);
-                self.stack_offset_low(dst_off.get(), dst.get(), dsta.as_ref(), doff);
+                self.stack_offset(src_off.get(), src.get(), ssta.as_ref(), soff);
+                self.stack_offset(dst_off.get(), dst.get(), dsta.as_ref(), doff);
                 self.output
                     .emit(bmc(src_off.get(), dst_off.get(), size as _));
                 self.ci.regs.free(src_off);
@@ -2342,9 +2323,9 @@ impl Codegen {
         self.ci.free_loc(dst);
     }
 
-    fn stack_offset_low(&mut self, dst: u8, op: u8, stack: Option<&stack::Id>, off: Offset) {
+    fn stack_offset(&mut self, dst: u8, op: u8, stack: Option<&stack::Id>, off: Offset) {
         let Some(stack) = stack else {
-            self.output.emit_addi_low(dst, op, off as _);
+            self.output.emit_addi(dst, op, off as _);
             return;
         };
 

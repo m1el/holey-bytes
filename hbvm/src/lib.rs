@@ -10,7 +10,7 @@
 // - Instructions have to be valid as specified (values and sizes)
 // - Mapped pages should be at least 4 KiB
 
-//#![no_std]
+#![no_std]
 #![cfg_attr(feature = "nightly", feature(fn_align))]
 #![deny(unsafe_op_in_unsafe_fn)]
 

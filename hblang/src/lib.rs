@@ -29,20 +29,95 @@ macro_rules! run_tests {
     ($runner:path: $($name:ident => $input:expr;)*) => {$(
         #[test]
         fn $name() {
-            $crate::tests::run_test(std::any::type_name_of_val(&$name), stringify!($name), $input, $runner);
+            $crate::run_test(std::any::type_name_of_val(&$name), stringify!($name), $input, $runner);
         }
     )*};
 }
 
 pub mod codegen;
-pub mod codegen2;
-mod ident;
+pub mod parser;
+
 mod instrs;
 mod lexer;
-mod log;
-pub mod parser;
-mod tests;
-mod typechk;
+
+mod ident {
+    pub type Ident = u32;
+
+    const LEN_BITS: u32 = 6;
+
+    pub fn len(ident: u32) -> u32 {
+        ident & ((1 << LEN_BITS) - 1)
+    }
+
+    pub fn is_null(ident: u32) -> bool {
+        (ident >> LEN_BITS) == 0
+    }
+
+    pub fn pos(ident: u32) -> u32 {
+        (ident >> LEN_BITS).saturating_sub(1)
+    }
+
+    pub fn new(pos: u32, len: u32) -> u32 {
+        debug_assert!(len < (1 << LEN_BITS));
+        ((pos + 1) << LEN_BITS) | len
+    }
+
+    pub fn range(ident: u32) -> std::ops::Range<usize> {
+        let (len, pos) = (len(ident) as usize, pos(ident) as usize);
+        pos..pos + len
+    }
+}
+
+mod log {
+    #![allow(unused_macros)]
+
+    #[derive(PartialOrd, PartialEq, Ord, Eq, Debug)]
+    pub enum Level {
+        Err,
+        Wrn,
+        Inf,
+        Dbg,
+    }
+
+    pub const LOG_LEVEL: Level = match option_env!("LOG_LEVEL") {
+        Some(val) => match val.as_bytes()[0] {
+            b'e' => Level::Err,
+            b'w' => Level::Wrn,
+            b'i' => Level::Inf,
+            b'd' => Level::Dbg,
+            _ => panic!("Invalid log level."),
+        },
+        None => {
+            if cfg!(debug_assertions) {
+                Level::Dbg
+            } else {
+                Level::Err
+            }
+        }
+    };
+
+    macro_rules! log {
+        ($level:expr, $fmt:literal $($expr:tt)*) => {
+            if $level <= $crate::log::LOG_LEVEL {
+                eprintln!("{:?}: {}", $level, format_args!($fmt $($expr)*));
+            }
+        };
+
+        ($level:expr, $($arg:expr),*) => {
+            if $level <= $crate::log::LOG_LEVEL {
+                $(eprintln!("[{}{}{}][{:?}]: {} = {:?}", line!(), column!(), file!(), $level, stringify!($arg), $arg);)*
+            }
+        };
+    }
+
+    macro_rules! err { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Err, $($arg)*) }; }
+    macro_rules! wrn { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Wrn, $($arg)*) }; }
+    macro_rules! inf { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Inf, $($arg)*) }; }
+    macro_rules! dbg { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Dbg, $($arg)*) }; }
+
+    #[allow(unused_imports)]
+    pub(crate) use {dbg, err, inf, log, wrn};
+}
 
 #[inline]
 unsafe fn encode<T>(instr: T) -> (usize, [u8; instrs::MAX_SIZE]) {
@@ -422,6 +497,70 @@ impl Default for FnvHasher {
     fn default() -> Self {
         Self(0xCBF29CE484222325)
     }
+}
+
+#[cfg(test)]
+pub fn run_test(
+    name: &'static str,
+    ident: &'static str,
+    input: &'static str,
+    test: fn(&'static str, &'static str, &mut String),
+) {
+    use std::{io::Write, path::PathBuf};
+
+    let filter = std::env::var("PT_FILTER").unwrap_or_default();
+    if !filter.is_empty() && !name.contains(&filter) {
+        return;
+    }
+
+    let mut output = String::new();
+    test(ident, input, &mut output);
+
+    let mut root = PathBuf::from(
+        std::env::var("PT_TEST_ROOT")
+            .unwrap_or(concat!(env!("CARGO_MANIFEST_DIR"), "/tests").to_string()),
+    );
+    root.push(
+        name.replace("::", "_")
+            .replace(concat!(env!("CARGO_PKG_NAME"), "_"), ""),
+    );
+    root.set_extension("txt");
+
+    let expected = std::fs::read_to_string(&root).unwrap_or_default();
+
+    if output == expected {
+        return;
+    }
+
+    if std::env::var("PT_UPDATE").is_ok() {
+        std::fs::write(&root, output).unwrap();
+        return;
+    }
+
+    if !root.exists() {
+        std::fs::create_dir_all(root.parent().unwrap()).unwrap();
+        std::fs::write(&root, vec![]).unwrap();
+    }
+
+    let mut proc = std::process::Command::new("diff")
+        .arg("-u")
+        .arg("--color")
+        .arg(&root)
+        .arg("-")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::inherit())
+        .spawn()
+        .unwrap();
+
+    proc.stdin
+        .as_mut()
+        .unwrap()
+        .write_all(output.as_bytes())
+        .unwrap();
+
+    proc.wait().unwrap();
+
+    panic!("test failed");
 }
 
 #[cfg(test)]
