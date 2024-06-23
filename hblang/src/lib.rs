@@ -1,4 +1,6 @@
 #![feature(vec_pop_if)]
+#![feature(new_uninit)]
+#![feature(anonymous_lifetime_in_impl_trait)]
 #![feature(inline_const_pat)]
 #![feature(pattern)]
 #![feature(if_let_guard)]

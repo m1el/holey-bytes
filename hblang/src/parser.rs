@@ -7,7 +7,7 @@ use std::{
 };
 
 use crate::{
-    codegen::bt,
+    codegen,
     ident::{self, Ident},
     lexer::{Lexer, LineMap, Token, TokenKind},
     log,
@@ -166,7 +166,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         let is_ct = self.token.kind == TokenKind::CtIdent;
         let name = self.lexer.slice(token.range());
 
-        if let Some(builtin) = bt::from_str(name) {
+        if let Some(builtin) = codegen::ty::from_str(name) {
             return (builtin, 0);
         }
 

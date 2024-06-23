@@ -1,184 +1,300 @@
-#![allow(dead_code)]
-#![allow(clippy::all)]
-use std::{
-    cell::{Cell, RefCell},
-    ops::Range,
-};
-
-use hbvm::Vm;
+use std::{ops::Range, rc::Rc};
 
 use crate::{
     ident::{self, Ident},
-    parser::{idfl, ExprRef, FileId, Pos},
+    instrs::{self, *},
+    lexer::TokenKind,
+    log,
+    parser::{self, idfl, Expr, ExprRef, FileId, Pos},
     HashMap,
 };
 
-use {
-    crate::{
-        instrs, lexer, log,
-        parser::{self},
-    },
-    std::rc::Rc,
-};
+use self::reg::{RET_ADDR, STACK_PTR, ZERO};
 
-use {lexer::TokenKind as T, parser::Expr as E};
+type Offset = u32;
+type Size = u32;
 
-type FuncId = u32;
-type Reg = u8;
-type Type = u32;
-type GlobalId = u32;
+mod stack {
+    use std::num::NonZeroU32;
 
-const VM_STACK_SIZE: usize = 1024 * 1024 * 2;
+    use super::{Offset, Size};
 
-fn align_up(value: u64, align: u64) -> u64 {
-    (value + align - 1) & !(align - 1)
-}
+    #[derive(Debug, PartialEq, Eq)]
+    pub struct Id(NonZeroU32);
 
-struct ItemId {
-    file: FileId,
-    expr: parser::ExprRef,
-    id:   u32,
-}
+    impl Id {
+        fn index(&self) -> usize {
+            (self.0.get() as usize - 1) & !(1 << 31)
+        }
 
-#[derive(Debug, PartialEq, Eq)]
-struct LinReg(Reg, Rc<RefCell<RegAlloc>>);
+        pub fn repr(&self) -> u32 {
+            self.0.get()
+        }
 
-#[cfg(debug_assertions)]
-impl Drop for LinReg {
-    fn drop(&mut self) {
-        self.1.borrow_mut().free(self.0)
+        pub fn as_ref(&self) -> Self {
+            Self(unsafe { NonZeroU32::new_unchecked(self.0.get() | 1 << 31) })
+        }
+
+        pub fn is_ref(&self) -> bool {
+            self.0.get() & (1 << 31) != 0
+        }
     }
-}
 
-struct Stack {
-    offset: u64,
-    size:   u64,
-    alloc:  Cell<Option<Rc<RefCell<StackAlloc>>>>,
-}
-
-impl std::fmt::Debug for Stack {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Stack")
-            .field("offset", &self.offset)
-            .field("size", &self.size)
-            .finish()
+    impl Drop for Id {
+        fn drop(&mut self) {
+            if !std::thread::panicking() && !self.is_ref() {
+                unreachable!("stack id leaked: {:?}", self.0);
+            }
+        }
     }
-}
 
-impl PartialEq for Stack {
-    fn eq(&self, other: &Self) -> bool {
-        self.offset == other.offset && self.size == other.size
+    #[derive(PartialEq)]
+    struct Meta {
+        size:   Size,
+        offset: Offset,
+        rc:     u32,
     }
-}
 
-impl Eq for Stack {}
-
-impl Stack {
-    fn leak(&self) {
-        self.alloc.set(None);
+    #[derive(Default)]
+    pub struct Alloc {
+        height: Size,
+        pub max_height: Size,
+        meta: Vec<Meta>,
     }
-}
 
-impl Drop for Stack {
-    fn drop(&mut self) {
-        if let Some(f) = self.alloc.get_mut().as_mut() {
-            f.borrow_mut().free(self.offset, self.size)
+    impl Alloc {
+        pub fn integriy_check(&self) {
+            for meta in self.meta.iter() {
+                assert!(meta.offset <= self.max_height);
+            }
+        }
+
+        pub fn allocate(&mut self, size: Size) -> Id {
+            self.meta.push(Meta {
+                size,
+                offset: 0,
+                rc: 1,
+            });
+
+            self.height += size;
+            self.max_height = self.max_height.max(self.height);
+
+            Id(unsafe { NonZeroU32::new_unchecked(self.meta.len() as u32) })
+        }
+
+        pub fn free(&mut self, id: Id) {
+            if id.is_ref() {
+                return;
+            }
+            let meta = &mut self.meta[id.index()];
+            std::mem::forget(id);
+            meta.rc -= 1;
+            if meta.rc != 0 {
+                return;
+            }
+            meta.offset = self.height;
+            self.height -= meta.size;
+        }
+
+        pub fn finalize_leaked(&mut self) {
+            for meta in self.meta.iter_mut().filter(|m| m.rc > 0) {
+                meta.offset = self.height;
+                self.height -= meta.size;
+            }
+        }
+
+        pub fn clear(&mut self) {
+            self.height = 0;
+            self.max_height = 0;
+            self.meta.clear();
+        }
+
+        pub fn final_offset(&self, id: u32, extra_offset: Offset) -> Offset {
+            debug_assert_ne!(id, 0);
+            (self.max_height - self.meta[(id as usize - 1) & !(1 << 31)].offset) + extra_offset
         }
     }
 }
 
-#[derive(Default, PartialEq, Eq, Debug)]
-struct StackAlloc {
-    ranges: Vec<Range<u64>>,
-    height: u64,
-}
+mod reg {
+    pub const STACK_PTR: Reg = 254;
+    pub const ZERO: Reg = 0;
+    pub const RET: Reg = 1;
+    pub const RET_ADDR: Reg = 31;
 
-impl StackAlloc {
-    fn alloc(&mut self, size: u64) -> (u64, u64) {
-        if let Some((index, range)) = self
-            .ranges
-            .iter_mut()
-            .enumerate()
-            .filter(|(_, range)| range.end - range.start >= size)
-            .min_by_key(|(_, range)| range.end - range.start)
-        {
-            let offset = range.start;
-            range.start += size;
-            if range.start == range.end {
-                self.ranges.swap_remove(index);
-            }
-            return (offset, size);
+    type Reg = u8;
+
+    #[derive(Default, Debug, PartialEq, Eq)]
+    pub struct Id(Reg, bool);
+
+    impl Id {
+        pub const RET: Self = Id(RET, false);
+
+        pub fn get(&self) -> Reg {
+            self.0
         }
 
-        let offset = self.height;
-        self.height += size;
-        (offset, size)
+        pub fn as_ref(&self) -> Self {
+            Self(self.0, false)
+        }
+
+        pub fn is_ref(&self) -> bool {
+            !self.1
+        }
     }
 
-    fn free(&mut self, offset: u64, size: u64) {
-        let range = offset..offset + size;
-        // FIXME: we do more wor then we need to, rather we keep the sequence sorted and only scan
-        // element before and after the modified range
-        self.ranges.push(range);
-        self.ranges.sort_by_key(|range| range.start);
-        self.ranges.dedup_by(|b, a| {
-            if a.end == b.start {
-                a.end = b.end;
-                true
-            } else {
-                false
+    impl From<u8> for Id {
+        fn from(value: u8) -> Self {
+            Self(value, false)
+        }
+    }
+
+    impl Drop for Id {
+        fn drop(&mut self) {
+            if !std::thread::panicking() && self.1 {
+                unreachable!("reg id leaked: {:?}", self.0);
             }
-        });
+        }
     }
 
-    fn clear(&mut self) {
-        assert!(self.ranges.len() <= 1, "{:?}", self.ranges);
-        self.ranges.clear();
-        self.height = 0;
-    }
-}
-
-#[derive(Default, Debug)]
-enum Ctx {
-    #[default]
-    None,
-    Inferred(Type),
-    Dest(Value),
-    DestUntyped(Loc),
-}
-
-impl Ctx {
-    fn ty(&self) -> Option<Type> {
-        Some(match self {
-            Self::Inferred(ty) => *ty,
-            Self::Dest(Value { ty, .. }) => *ty,
-            _ => return None,
-        })
+    #[derive(Default, PartialEq, Eq)]
+    pub struct Alloc {
+        free:     Vec<Reg>,
+        max_used: Reg,
     }
 
-    fn loc(self) -> Option<Loc> {
-        Some(match self {
-            Self::Dest(Value { loc, .. }) => loc,
-            Self::DestUntyped(loc, ..) => loc,
-            _ => return None,
-        })
+    impl Alloc {
+        pub fn init(&mut self) {
+            self.free.clear();
+            self.free.extend((32..=253).rev());
+            self.max_used = RET_ADDR;
+        }
+
+        pub fn allocate(&mut self) -> Id {
+            let reg = self.free.pop().expect("TODO: we need to spill");
+            self.max_used = self.max_used.max(reg);
+            Id(reg, true)
+        }
+
+        pub fn free(&mut self, reg: Id) {
+            if reg.1 {
+                self.free.push(reg.0);
+                std::mem::forget(reg);
+            }
+        }
+
+        pub fn pushed_size(&self) -> usize {
+            ((self.max_used as usize).saturating_sub(RET_ADDR as usize) + 1) * 8
+        }
     }
 }
 
-mod traps {
-    macro_rules! traps {
-        ($($name:ident;)*) => {$(
-            pub const $name: u64 = ${index(0)};
-        )*};
+pub mod ty {
+    use std::num::NonZeroU32;
+
+    use crate::{
+        lexer::TokenKind,
+        parser::{self, Expr},
+    };
+
+    pub type Builtin = u32;
+    pub type Struct = u32;
+    pub type Ptr = u32;
+    pub type Func = u32;
+    pub type Global = u32;
+    pub type Module = u32;
+
+    #[derive(Clone, Copy)]
+    pub struct Tuple(pub u32);
+
+    impl Tuple {
+        const LEN_BITS: u32 = 5;
+        const MAX_LEN: usize = 1 << Self::LEN_BITS;
+        const LEN_MASK: usize = Self::MAX_LEN - 1;
+
+        pub fn new(pos: usize, len: usize) -> Option<Self> {
+            if len >= Self::MAX_LEN {
+                return None;
+            }
+
+            Some(Self((pos << Self::LEN_BITS | len) as u32))
+        }
+
+        pub fn view(self, slice: &[Id]) -> &[Id] {
+            &slice[self.0 as usize >> Self::LEN_BITS..][..self.0 as usize & Self::LEN_MASK]
+        }
+
+        pub fn len(self) -> usize {
+            self.0 as usize & Self::LEN_MASK
+        }
+
+        pub fn is_empty(self) -> bool {
+            self.0 == 0
+        }
+
+        pub fn empty() -> Self {
+            Self(0)
+        }
     }
 
-    traps! {
-        MAKE_STRUCT;
-    }
-}
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+    pub struct Id(NonZeroU32);
 
-pub mod bt {
-    use super::*;
+    impl Default for Id {
+        fn default() -> Self {
+            Self(unsafe { NonZeroU32::new_unchecked(UNDECLARED) })
+        }
+    }
+
+    impl Id {
+        pub const fn from_bt(bt: u32) -> Self {
+            Self(unsafe { NonZeroU32::new_unchecked(bt) })
+        }
+
+        pub fn is_signed(self) -> bool {
+            (I8..=INT).contains(&self.repr())
+        }
+
+        pub fn is_unsigned(self) -> bool {
+            (U8..=UINT).contains(&self.repr())
+        }
+
+        pub fn strip_pointer(self) -> Self {
+            match self.expand() {
+                Kind::Ptr(_) => Id::from(INT),
+                _ => self,
+            }
+        }
+
+        pub fn is_pointer(self) -> bool {
+            matches!(Kind::from_ty(self), Kind::Ptr(_))
+        }
+
+        pub fn try_upcast(self, ob: Self) -> Option<Self> {
+            let (oa, ob) = (Self(self.0.min(ob.0)), Self(self.0.max(ob.0)));
+            let (a, b) = (oa.strip_pointer(), ob.strip_pointer());
+            Some(match () {
+                _ if oa == ob => oa,
+                _ if a.is_signed() && b.is_signed() || a.is_unsigned() && b.is_unsigned() => ob,
+                _ if a.is_unsigned() && b.is_signed() && a.repr() - U8 < b.repr() - I8 => ob,
+                _ => return None,
+            })
+        }
+
+        pub fn expand(self) -> Kind {
+            Kind::from_ty(self)
+        }
+
+        pub const fn repr(self) -> u32 {
+            self.0.get()
+        }
+    }
+
+    impl From<u32> for Id {
+        fn from(id: u32) -> Self {
+            Self(unsafe { NonZeroU32::new_unchecked(id) })
+        }
+    }
 
     const fn array_to_lower_case<const N: usize>(array: [u8; N]) -> [u8; N] {
         let mut result = [0; N];
@@ -193,7 +309,7 @@ pub mod bt {
 
     macro_rules! builtin_type {
         ($($name:ident;)*) => {
-            $(pub const $name: Type = ${index(0)};)*
+            $(pub const $name: Builtin = ${index(0)} + 1;)*
 
             mod __lc_names {
                 use super::*;
@@ -201,16 +317,16 @@ pub mod bt {
                     *(stringify!($name).as_ptr() as *const [u8; stringify!($name).len()]) });)*
             }
 
-            pub fn from_str(name: &str) -> Option<Type> {
+            pub fn from_str(name: &str) -> Option<Builtin> {
                 match name.as_bytes() {
                     $(__lc_names::$name => Some($name),)*
                     _ => None,
                 }
             }
 
-            pub fn to_str(ty: Type) -> &'static str {
+            pub fn to_str(ty: Builtin) -> &'static str {
                 match ty {
-                    $(${index(0)} => unsafe { std::str::from_utf8_unchecked(__lc_names::$name) },)*
+                    $($name => unsafe { std::str::from_utf8_unchecked(__lc_names::$name) },)*
                     v => unreachable!("invalid type: {}", v),
                 }
             }
@@ -233,116 +349,635 @@ pub mod bt {
         INT;
     }
 
-    pub fn is_signed(ty: Type) -> bool {
-        (I8..=INT).contains(&ty)
-    }
+    macro_rules! type_kind {
+        ($(#[$meta:meta])* $vis:vis enum $name:ident {$( $variant:ident, )*}) => {
+            $(#[$meta])*
+            $vis enum $name {
+                $($variant($variant),)*
+            }
 
-    pub fn is_unsigned(ty: Type) -> bool {
-        (U8..=UINT).contains(&ty)
-    }
+            impl $name {
+                const FLAG_BITS: u32 = (${count($variant)} as u32).next_power_of_two().ilog2();
+                const FLAG_OFFSET: u32 = std::mem::size_of::<Id>() as u32 * 8 - Self::FLAG_BITS;
+                const INDEX_MASK: u32 = (1 << (32 - Self::FLAG_BITS)) - 1;
 
-    pub fn strip_pointer(ty: Type) -> Type {
-        match TypeKind::from_ty(ty) {
-            TypeKind::Pointer(_) => INT,
-            _ => ty,
-        }
-    }
+                $vis const fn from_ty(ty: Id) -> Self {
+                    let (flag, index) = (ty.repr() >> Self::FLAG_OFFSET, ty.repr() & Self::INDEX_MASK);
+                    match flag {
+                        $(${index(0)} => Self::$variant(index),)*
+                        _ => unreachable!(),
+                    }
+                }
 
-    pub fn is_pointer(ty: Type) -> bool {
-        matches!(TypeKind::from_ty(ty), TypeKind::Pointer(_))
-    }
+                $vis const fn compress(self) -> Id {
+                    let (index, flag) = match self {
+                        $(Self::$variant(index) => (index, ${index(0)}),)*
+                    };
+                   Id(unsafe { NonZeroU32::new_unchecked((flag << Self::FLAG_OFFSET) | index) })
+                }
 
-    pub fn try_upcast(oa: Type, ob: Type) -> Option<Type> {
-        let (oa, ob) = (oa.min(ob), oa.max(ob));
-        let (a, b) = (strip_pointer(oa), strip_pointer(ob));
-        Some(match () {
-            _ if oa == ob => oa,
-            _ if is_signed(a) && is_signed(b) || is_unsigned(a) && is_unsigned(b) => ob,
-            _ if is_unsigned(a) && is_signed(b) && a - U8 < b - I8 => ob,
-            _ => return None,
-        })
-    }
-}
-
-macro_rules! type_kind {
-    ($name:ident {$( $variant:ident, )*}) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        enum $name {
-            $($variant(Type),)*
-        }
-
-        impl $name {
-            const FLAG_BITS: u32 = (${count($variant)} as u32).next_power_of_two().ilog2();
-            const FLAG_OFFSET: u32 = std::mem::size_of::<Type>() as u32 * 8 - Self::FLAG_BITS;
-            const INDEX_MASK: u32 = (1 << (32 - Self::FLAG_BITS)) - 1;
-
-            fn from_ty(ty: Type) -> Self {
-                let (flag, index) = (ty >> Self::FLAG_OFFSET, ty & Self::INDEX_MASK);
-                match flag {
-                    $(${index(0)} => Self::$variant(index),)*
-                    _ => unreachable!(),
+                $vis const fn inner(self) -> u32 {
+                    match self {
+                        $(Self::$variant(index) => index,)*
+                    }
                 }
             }
+        };
+    }
 
-            const fn encode(self) -> Type {
-                let (index, flag) = match self {
-                    $(Self::$variant(index) => (index, ${index(0)}),)*
-                };
-                (flag << Self::FLAG_OFFSET) | index
+    type_kind! {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Kind {
+            Builtin,
+            Struct,
+            Ptr,
+            Func,
+            Global,
+            Module,
+        }
+    }
+
+    impl Default for Kind {
+        fn default() -> Self {
+            Self::Builtin(UNDECLARED)
+        }
+    }
+
+    pub struct Display<'a> {
+        tys:   &'a super::Types,
+        files: &'a [parser::Ast],
+        ty:    Id,
+    }
+
+    impl<'a> Display<'a> {
+        pub(super) fn new(tys: &'a super::Types, files: &'a [parser::Ast], ty: Id) -> Self {
+            Self { tys, files, ty }
+        }
+
+        fn rety(&self, ty: Id) -> Self {
+            Self::new(self.tys, self.files, ty)
+        }
+    }
+
+    impl<'a> std::fmt::Display for Display<'a> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            use Kind as TK;
+            match TK::from_ty(self.ty) {
+                TK::Module(idx) => write!(f, "module{}", idx),
+                TK::Builtin(ty) => write!(f, "{}", to_str(ty)),
+                TK::Ptr(ty) => {
+                    write!(f, "^{}", self.rety(self.tys.ptrs[ty as usize].base))
+                }
+                _ if let Some((key, _)) = self
+                    .tys
+                    .syms
+                    .iter()
+                    .find(|(sym, &ty)| sym.file != u32::MAX && ty == self.ty)
+                    && let Some(name) = self.files[key.file as usize].exprs().iter().find_map(
+                        |expr| match expr {
+                            Expr::BinOp {
+                                left: &Expr::Ident { name, id, .. },
+                                op: TokenKind::Decl,
+                                ..
+                            } if id == key.ident => Some(name),
+                            _ => None,
+                        },
+                    ) =>
+                {
+                    write!(f, "{name}")
+                }
+                TK::Struct(idx) => {
+                    let record = &self.tys.structs[idx as usize];
+                    write!(f, "{{")?;
+                    for (i, &super::Field { ref name, ty }) in record.fields.iter().enumerate() {
+                        if i != 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{name}: {}", self.rety(ty))?;
+                    }
+                    write!(f, "}}")
+                }
+                TK::Func(idx) => write!(f, "fn{idx}"),
+                TK::Global(idx) => write!(f, "global{idx}"),
             }
         }
-    };
-}
-
-type_kind! {
-    TypeKind {
-        Builtin,
-        Struct,
-        Pointer,
-        Func,
-        Global,
-        Module,
     }
 }
 
-impl Default for TypeKind {
-    fn default() -> Self {
-        Self::Builtin(bt::UNDECLARED)
-    }
-}
-
-const STACK_PTR: Reg = 254;
-const ZERO: Reg = 0;
-const RET_ADDR: Reg = 31;
-
+#[derive(Clone, Copy, Debug)]
 struct Reloc {
-    id: Type,
-    offset: u32,
-    instr_offset: u16,
-    size: u16,
+    offset:     Offset,
+    /// code_offset - sub_offset = instr_offset
+    sub_offset: u8,
+    width:      u8,
+}
+
+impl Reloc {
+    fn new(offset: u32, sub_offset: u8, width: u8) -> Self {
+        Self {
+            offset,
+            sub_offset,
+            width,
+        }
+    }
+
+    fn apply_stack_offset(&self, code: &mut [u8], stack: &stack::Alloc) {
+        log::err!("faaah: {:x}", self.offset);
+        log::err!("{:x?} {}", &code[self.offset as usize..], self.sub_offset);
+        let bytes = &code[self.offset as usize..][..self.width as usize];
+        let (id, off) = Self::unpack_srel(u64::from_ne_bytes(bytes.try_into().unwrap()));
+        self.write_offset(code, stack.final_offset(id, off) as i64);
+    }
+
+    fn pack_srel(id: &stack::Id, off: u32) -> u64 {
+        ((id.repr() as u64) << 32) | (off as u64)
+    }
+
+    fn unpack_srel(id: u64) -> (u32, u32) {
+        ((id >> 32) as u32, id as u32)
+    }
+
+    fn apply_jump(&self, code: &mut [u8], to: u32) {
+        let offset = to as i64 - self.offset as i64;
+        self.write_offset(code, offset);
+    }
+
+    fn write_offset(&self, code: &mut [u8], offset: i64) {
+        let bytes = offset.to_ne_bytes();
+        let slice =
+            &mut code[self.offset as usize + self.sub_offset as usize..][..self.width as usize];
+        slice.copy_from_slice(&bytes[..self.width as usize]);
+    }
+}
+
+struct Value {
+    ty:  ty::Id,
+    loc: Loc,
+}
+
+impl Value {
+    fn new(ty: impl Into<ty::Id>, loc: impl Into<Loc>) -> Self {
+        Self {
+            ty:  ty.into(),
+            loc: loc.into(),
+        }
+    }
+
+    fn void() -> Self {
+        Self {
+            ty:  ty::VOID.into(),
+            loc: Loc::imm(0),
+        }
+    }
+
+    fn imm(value: u64) -> Self {
+        Self {
+            ty:  ty::UINT.into(),
+            loc: Loc::imm(value),
+        }
+    }
+
+    fn ty(ty: ty::Id) -> Self {
+        Self {
+            ty:  ty::TYPE.into(),
+            loc: Loc::Ct {
+                value: (ty.repr() as u64).to_ne_bytes(),
+            },
+        }
+    }
+}
+
+enum LocCow<'a> {
+    Ref(&'a Loc),
+    Owned(Loc),
+}
+
+impl<'a> LocCow<'a> {
+    fn as_ref(&self) -> &Loc {
+        match self {
+            Self::Ref(value) => value,
+            Self::Owned(value) => value,
+        }
+    }
+}
+
+impl<'a> From<&'a Loc> for LocCow<'a> {
+    fn from(value: &'a Loc) -> Self {
+        Self::Ref(value)
+    }
+}
+
+impl<'a> From<Loc> for LocCow<'a> {
+    fn from(value: Loc) -> Self {
+        Self::Owned(value)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Loc {
+    Rt {
+        derefed: bool,
+        reg:     reg::Id,
+        stack:   Option<stack::Id>,
+        offset:  Offset,
+    },
+    Ct {
+        value: [u8; 8],
+    },
+}
+
+impl Loc {
+    fn stack(stack: stack::Id) -> Self {
+        Self::Rt {
+            stack:   Some(stack),
+            reg:     reg::STACK_PTR.into(),
+            derefed: true,
+            offset:  0,
+        }
+    }
+
+    fn reg(reg: impl Into<reg::Id>) -> Self {
+        let reg = reg.into();
+        assert!(reg.get() != 0);
+        Self::Rt {
+            derefed: false,
+            reg,
+            stack: None,
+            offset: 0,
+        }
+    }
+
+    fn imm(value: u64) -> Self {
+        Self::Ct {
+            value: value.to_ne_bytes(),
+        }
+    }
+
+    fn ty(ty: ty::Id) -> Self {
+        Self::imm(ty.repr() as _)
+    }
+
+    fn offset(mut self, offset: u32) -> Self {
+        match &mut self {
+            Self::Rt { offset: off, .. } => *off += offset,
+            _ => unreachable!("offseting constant"),
+        }
+        self
+    }
+
+    fn as_ref(&self) -> Self {
+        match *self {
+            Loc::Rt {
+                derefed,
+                ref reg,
+                ref stack,
+                offset,
+            } => Loc::Rt {
+                derefed,
+                reg: reg.as_ref(),
+                stack: stack.as_ref().map(stack::Id::as_ref),
+                offset,
+            },
+            Loc::Ct { value } => Self::Ct { value },
+        }
+    }
+
+    fn into_derefed(mut self) -> Self {
+        match &mut self {
+            Self::Rt { derefed, .. } => *derefed = true,
+            _ => unreachable!(),
+        }
+        self
+    }
+
+    fn assert_valid(&self) {
+        assert!(!matches!(self, Self::Rt { reg, .. } if reg.get() == 0));
+    }
+
+    fn take_owned(&mut self) -> Option<Self> {
+        if self.is_ref() {
+            return None;
+        }
+
+        Some(std::mem::replace(self, self.as_ref()))
+    }
+
+    fn is_ref(&self) -> bool {
+        matches!(self, Self::Rt { reg, stack, .. } if reg.is_ref() && stack.as_ref().map_or(true, stack::Id::is_ref))
+    }
+}
+
+impl From<reg::Id> for Loc {
+    fn from(reg: reg::Id) -> Self {
+        Loc::reg(reg)
+    }
+}
+
+impl Default for Loc {
+    fn default() -> Self {
+        Self::Ct { value: [0; 8] }
+    }
+}
+
+struct Loop {
+    var_count:  u32,
+    offset:     u32,
+    reloc_base: u32,
+}
+
+struct Variable {
+    id:    Ident,
+    value: Value,
 }
 
 #[derive(Default)]
-pub struct Block {
-    code:   Vec<u8>,
-    relocs: Vec<Reloc>,
+struct ItemCtx {
+    file:    FileId,
+    id:      ty::Kind,
+    ret:     ty::Id,
+    ret_reg: reg::Id,
+
+    task_base: usize,
+    snap:      Snapshot,
+
+    stack: stack::Alloc,
+    regs:  reg::Alloc,
+
+    stack_relocs: Vec<Reloc>,
+    ret_relocs:   Vec<Reloc>,
+    loop_relocs:  Vec<Reloc>,
+    loops:        Vec<Loop>,
+    vars:         Vec<Variable>,
 }
 
-impl Block {
-    pub fn extend(&mut self, bytes: &[u8]) {
-        self.code.extend_from_slice(bytes);
+impl ItemCtx {
+    // pub fn dup_loc(&mut self, loc: &Loc) -> Loc {
+    //     match *loc {
+    //         Loc::Rt {
+    //             derefed,
+    //             ref reg,
+    //             ref stack,
+    //             offset,
+    //         } => Loc::Rt {
+    //             reg: reg.as_ref(),
+    //             derefed,
+    //             stack: stack.as_ref().map(|s| self.stack.dup_id(s)),
+    //             offset,
+    //         },
+    //         Loc::Ct { value } => Loc::Ct { value },
+    //     }
+    // }
+
+    fn finalize(&mut self, output: &mut Output) {
+        self.stack.finalize_leaked();
+        for rel in self.stack_relocs.drain(..) {
+            rel.apply_stack_offset(&mut output.code[self.snap.code..], &self.stack)
+        }
+
+        let ret_offset = output.code.len() - self.snap.code;
+        for rel in self.ret_relocs.drain(..) {
+            rel.apply_jump(&mut output.code[self.snap.code..], ret_offset as _);
+        }
+
+        self.finalize_frame(output);
+        self.stack.clear();
+
+        debug_assert!(self.loops.is_empty());
+        debug_assert!(self.loop_relocs.is_empty());
+        debug_assert!(self.vars.is_empty());
     }
 
-    pub fn offset(&mut self, id: FuncId, instr_offset: u16, size: u16) {
-        self.relocs.push(Reloc {
-            id: TypeKind::Func(id).encode(),
-            offset: self.code.len() as u32,
-            instr_offset,
-            size,
+    fn finalize_frame(&mut self, output: &mut Output) {
+        let mut cursor = self.snap.code;
+        let mut allocate = |size| (cursor += size, cursor).1;
+
+        let pushed = self.regs.pushed_size() as i64;
+        let stack = self.stack.max_height as i64;
+
+        write_reloc(&mut output.code, allocate(3), -(pushed + stack), 8);
+        write_reloc(&mut output.code, allocate(8 + 3), stack, 8);
+        write_reloc(&mut output.code, allocate(8), pushed, 2);
+
+        output.emit(ld(RET_ADDR, STACK_PTR, stack as _, pushed as _));
+        output.emit(addi64(STACK_PTR, STACK_PTR, (pushed + stack) as _));
+    }
+
+    fn free_loc(&mut self, src: impl Into<LocCow>) {
+        if let LocCow::Owned(Loc::Rt { reg, stack, .. }) = src.into() {
+            self.regs.free(reg);
+            if let Some(stack) = stack {
+                self.stack.free(stack);
+            }
+        }
+    }
+}
+
+fn write_reloc(doce: &mut [u8], offset: usize, value: i64, size: u16) {
+    let value = value.to_ne_bytes();
+    doce[offset..offset + size as usize].copy_from_slice(&value[..size as usize]);
+}
+
+#[derive(PartialEq, Eq, Hash)]
+struct SymKey {
+    file:  u32,
+    ident: u32,
+}
+
+impl SymKey {
+    pub fn pointer_to(ty: ty::Id) -> Self {
+        Self {
+            file:  u32::MAX,
+            ident: ty.repr(),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Func {
+    // if the most significant bit is 1, its considered to be an task id
+    offset: Offset,
+    args:   ty::Tuple,
+    ret:    ty::Id,
+}
+
+struct Global {
+    offset: Offset,
+    ty:     ty::Id,
+}
+
+struct Field {
+    name: Rc<str>,
+    ty:   ty::Id,
+}
+
+struct Struct {
+    fields: Rc<[Field]>,
+}
+
+struct Ptr {
+    base: ty::Id,
+}
+
+struct ParamAlloc(Range<u8>);
+
+impl ParamAlloc {
+    pub fn next(&mut self) -> u8 {
+        self.0.next().expect("too many paramteters")
+    }
+
+    fn next_wide(&mut self) -> u8 {
+        (self.next(), self.next()).0
+    }
+}
+
+#[derive(Default)]
+struct Types {
+    syms: HashMap<SymKey, ty::Id>,
+
+    funcs:   Vec<Func>,
+    args:    Vec<ty::Id>,
+    globals: Vec<Global>,
+    structs: Vec<Struct>,
+    ptrs:    Vec<Ptr>,
+}
+
+impl Types {
+    fn parama(&self, ret: impl Into<ty::Id>) -> ParamAlloc {
+        ParamAlloc(2 + (9..=16).contains(&self.size_of(ret.into())) as u8..12)
+    }
+
+    fn offset_of(&self, idx: ty::Struct, field: Result<&str, usize>) -> Option<(Offset, ty::Id)> {
+        let record = &self.structs[idx as usize];
+        let until = match field {
+            Ok(str) => record.fields.iter().position(|f| f.name.as_ref() == str)?,
+            Err(i) => i,
+        };
+
+        let mut offset = 0;
+        for &Field { ty, .. } in &record.fields[..until] {
+            offset = Self::align_up(offset, self.align_of(ty));
+            offset += self.size_of(ty);
+        }
+
+        Some((offset, record.fields[until].ty))
+    }
+
+    fn make_ptr(&mut self, base: ty::Id) -> ty::Id {
+        ty::Kind::Ptr(self.make_ptr_low(base)).compress()
+    }
+
+    fn make_ptr_low(&mut self, base: ty::Id) -> ty::Ptr {
+        let id = SymKey::pointer_to(base);
+
+        self.syms
+            .entry(id)
+            .or_insert_with(|| {
+                self.ptrs.push(Ptr { base });
+                ty::Kind::Ptr(self.ptrs.len() as u32 - 1).compress()
+            })
+            .expand()
+            .inner()
+    }
+
+    fn align_up(value: Size, align: Size) -> Size {
+        (value + align - 1) & !(align - 1)
+    }
+
+    fn size_of(&self, ty: ty::Id) -> Size {
+        match ty.expand() {
+            ty::Kind::Ptr(_) => 8,
+            ty::Kind::Builtin(ty::VOID) => 0,
+            ty::Kind::Builtin(ty::NEVER) => unreachable!(),
+            ty::Kind::Builtin(ty::INT | ty::UINT) => 8,
+            ty::Kind::Builtin(ty::I32 | ty::U32 | ty::TYPE) => 4,
+            ty::Kind::Builtin(ty::I16 | ty::U16) => 2,
+            ty::Kind::Builtin(ty::I8 | ty::U8 | ty::BOOL) => 1,
+            ty::Kind::Struct(ty) => {
+                let mut offset = 0u32;
+                let record = &self.structs[ty as usize];
+                for &Field { ty, .. } in record.fields.iter() {
+                    let align = self.align_of(ty);
+                    offset = Self::align_up(offset, align);
+                    offset += self.size_of(ty);
+                }
+                offset
+            }
+            ty => unimplemented!("size_of: {:?}", ty),
+        }
+    }
+
+    fn align_of(&self, ty: ty::Id) -> Size {
+        match ty.expand() {
+            ty::Kind::Struct(t) => self.structs[t as usize]
+                .fields
+                .iter()
+                .map(|&Field { ty, .. }| self.align_of(ty))
+                .max()
+                .unwrap(),
+            _ => self.size_of(ty).max(1),
+        }
+    }
+}
+
+mod task {
+    use super::Offset;
+
+    pub fn unpack(offset: Offset) -> Result<Offset, usize> {
+        if offset >> 31 != 0 {
+            Err((offset & !(1 << 31)) as usize)
+        } else {
+            Ok(offset)
+        }
+    }
+
+    pub fn id(index: usize) -> Offset {
+        1 << 31 | index as u32
+    }
+}
+
+struct FTask {
+    file: FileId,
+    expr: ExprRef,
+    id:   ty::Func,
+}
+
+#[derive(Default, Clone, Copy)]
+pub struct Snapshot {
+    code:    usize,
+    funcs:   usize,
+    globals: usize,
+}
+
+#[derive(Default)]
+struct Output {
+    code:    Vec<u8>,
+    funcs:   Vec<(ty::Func, Reloc)>,
+    globals: Vec<(ty::Global, Reloc)>,
+}
+
+impl Output {
+    fn emit_addi(&mut self, op: &reg::Id, delta: u64) {
+        self.emit_addi_low(op.get(), op.get(), delta)
+    }
+
+    fn emit_addi_low(&mut self, dest: u8, op: u8, delta: u64) {
+        if delta == 0 {
+            if dest != op {
+                self.emit(cp(dest, op));
+            }
+            return;
+        }
+
+        #[allow(overflowing_literals)]
+        self.emit(match delta as i64 {
+            //  -0x80..=0x7F => addi8(dest, op, delta as _),
+            //  -0x8000..=0x7FFF => addi16(dest, op, delta as _),
+            //  -0x80000000..=0x7FFFFFFF => addi32(dest, op, delta as _),
+            0x8000000000000000..=0x7FFFFFFFFFFFFFFF => addi64(dest, op, delta),
         });
     }
 
-    fn encode(&mut self, (len, instr): (usize, [u8; instrs::MAX_SIZE])) {
+    fn emit(&mut self, (len, instr): (usize, [u8; instrs::MAX_SIZE])) {
         let name = instrs::NAMES[instr[0] as usize];
         log::dbg!(
             "{:08x}: {}: {}",
@@ -358,1957 +993,109 @@ impl Block {
         self.code.extend_from_slice(&instr[..len]);
     }
 
-    fn short_cut_bin_op(&mut self, dest: Reg, src: Reg, imm: u64) -> bool {
-        if imm == 0 && dest != src {
-            self.encode(instrs::cp(dest, src));
+    fn emit_prelude(&mut self) {
+        self.emit(instrs::addi64(STACK_PTR, STACK_PTR, 0));
+        self.emit(instrs::st(RET_ADDR, STACK_PTR, 0, 0));
+    }
+
+    fn emit_entry_prelude(&mut self) {
+        self.emit(jal(RET_ADDR, reg::ZERO, 0));
+        self.emit(tx());
+    }
+
+    fn append(&mut self, val: &mut Self) {
+        for (_, rel) in val.globals.iter_mut().chain(&mut val.funcs) {
+            rel.offset += self.code.len() as Offset;
         }
-        imm != 0
+
+        self.code.append(&mut val.code);
+        self.funcs.append(&mut val.funcs);
+        self.globals.append(&mut val.globals);
     }
 
-    fn addi64(&mut self, dest: Reg, src: Reg, imm: u64) {
-        if self.short_cut_bin_op(dest, src, imm) {
-            self.encode(instrs::addi64(dest, src, imm));
+    fn pop(&mut self, stash: &mut Self, snap: &Snapshot) {
+        for (_, rel) in self.globals[snap.globals..]
+            .iter_mut()
+            .chain(&mut self.funcs[snap.funcs..])
+        {
+            rel.offset -= snap.code as Offset;
+            rel.offset += stash.code.len() as Offset;
+        }
+
+        stash.code.extend(self.code.drain(snap.code..));
+        stash.funcs.extend(self.funcs.drain(snap.funcs..));
+        stash.globals.extend(self.globals.drain(snap.globals..));
+    }
+
+    fn trunc(&mut self, snap: &Snapshot) {
+        self.code.truncate(snap.code);
+        self.globals.truncate(snap.globals);
+        self.funcs.truncate(snap.funcs);
+    }
+
+    fn write_trap(&mut self, trap: Trap) {
+        let len = self.code.len();
+        self.code.resize(len + std::mem::size_of::<Trap>(), 0);
+        unsafe { std::ptr::write_unaligned(self.code.as_mut_ptr().add(len) as _, trap) }
+    }
+
+    fn snap(&mut self) -> Snapshot {
+        Snapshot {
+            code:    self.code.len(),
+            funcs:   self.funcs.len(),
+            globals: self.globals.len(),
         }
     }
 
-    fn call(&mut self, func: FuncId) {
-        self.offset(func, 3, 4);
-        self.encode(instrs::jal(RET_ADDR, ZERO, 0));
-    }
-
-    fn ret(&mut self) {
-        self.encode(instrs::jala(ZERO, RET_ADDR, 0));
-    }
-
-    fn prelude(&mut self) {
-        self.encode(instrs::jal(RET_ADDR, ZERO, 0));
-        self.encode(instrs::tx());
-    }
-
-    fn relocate(&mut self, labels: &[Func], globals: &[Global], shift: i64, skip: usize) {
-        for reloc in self.relocs.iter().skip(skip) {
-            let offset = match TypeKind::from_ty(reloc.id) {
-                TypeKind::Func(id) => labels[id as usize].offset,
-                TypeKind::Global(id) => globals[id as usize].offset,
-                v => unreachable!("invalid reloc: {:?}", v),
-            };
-            let offset = if reloc.size == 8 {
-                reloc.offset as i64
-            } else {
-                offset as i64 - reloc.offset as i64
-            } + shift;
-
-            write_reloc(
-                &mut self.code,
-                reloc.offset as usize + reloc.instr_offset as usize,
-                offset,
-                reloc.size,
-            );
-        }
-    }
-
-    fn append(&mut self, data: &mut Block, code_offset: usize, reloc_offset: usize) {
-        for reloc in &mut data.relocs[reloc_offset..] {
-            reloc.offset += self.code.len() as u32;
-            reloc.offset -= code_offset as u32;
-        }
-        self.relocs.extend(data.relocs.drain(reloc_offset..));
-        self.code.extend(data.code.drain(code_offset..));
+    fn emit_call(&mut self, func_id: ty::Func) {
+        let reloc = Reloc::new(self.code.len() as _, 3, 4);
+        self.funcs.push((func_id, reloc));
+        self.emit(jal(RET_ADDR, ZERO, 0));
     }
 }
 
-fn write_reloc(doce: &mut [u8], offset: usize, value: i64, size: u16) {
-    debug_assert!(size <= 8);
-    debug_assert!(size.is_power_of_two());
-    debug_assert!(
-        doce[offset..offset + size as usize].iter().all(|&b| b == 0),
-        "{:?}",
-        &doce[offset..offset + size as usize]
-    );
-    let value = value.to_ne_bytes();
-    doce[offset..offset + size as usize].copy_from_slice(&value[..size as usize]);
+#[derive(Default, Debug)]
+struct Ctx {
+    loc: Option<Loc>,
+    ty:  Option<ty::Id>,
 }
 
-#[derive(Default, PartialEq, Eq)]
-pub struct RegAlloc {
-    free:     Vec<Reg>,
-    max_used: Reg,
-}
-
-impl std::fmt::Debug for RegAlloc {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RegAlloc").finish()
-    }
-}
-
-impl RegAlloc {
-    fn init_callee(&mut self) {
-        self.free.clear();
-        self.free.extend((32..=253).rev());
-        self.max_used = RET_ADDR;
-    }
-
-    fn allocate(&mut self) -> Reg {
-        let reg = self.free.pop().expect("TODO: we need to spill");
-        self.max_used = self.max_used.max(reg);
-        reg
-    }
-
-    fn free(&mut self, reg: Reg) {
-        self.free.push(reg);
-    }
-
-    fn pushed_size(&self) -> usize {
-        ((self.max_used as usize).saturating_sub(RET_ADDR as usize) + 1) * 8
-    }
-}
-
-#[derive(Clone)]
-struct Func {
-    offset: u32,
-    relocs: u32,
-    args:   Rc<[Type]>,
-    ret:    Type,
-}
-
-struct Variable {
-    id:    Ident,
-    value: Value,
-}
-
-struct RetReloc {
-    offset:       u32,
-    instr_offset: u16,
-    size:         u16,
-}
-
-struct Loop {
-    var_count: usize,
-    offset:    u32,
-    relocs:    Vec<RetReloc>,
-}
-
-struct Struct {
-    fields: Rc<[(Rc<str>, Type)]>,
-}
-
-struct TypeDisplay<'a> {
-    codegen: &'a Codegen,
-    ty:      Type,
-}
-
-impl<'a> TypeDisplay<'a> {
-    fn new(codegen: &'a Codegen, ty: Type) -> Self {
-        Self { codegen, ty }
-    }
-
-    fn rety(&self, ty: Type) -> Self {
-        Self::new(self.codegen, ty)
-    }
-}
-
-impl<'a> std::fmt::Display for TypeDisplay<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        use TypeKind as TK;
-        match TK::from_ty(self.ty) {
-            TK::Module(idx) => write!(f, "module{}", idx),
-            TK::Builtin(ty) => write!(f, "{}", bt::to_str(ty)),
-            TK::Pointer(ty) => {
-                write!(f, "^{}", self.rety(self.codegen.pointers[ty as usize]))
-            }
-            _ if let Some((key, _)) =
-                self.codegen.symbols.iter().find(|(_, &ty)| ty == self.ty)
-                && let Some(name) = self.codegen.files[key.file as usize]
-                    .exprs()
-                    .iter()
-                    .find_map(|expr| match expr {
-                        E::BinOp {
-                            left: &E::Ident { name, id, .. },
-                            op: T::Decl,
-                            ..
-                        } if id == key.id => Some(name),
-                        _ => None,
-                    }) =>
-            {
-                write!(f, "{name}")
-            }
-            TK::Struct(idx) => {
-                let record = &self.codegen.structs[idx as usize];
-                write!(f, "{{")?;
-                for (i, &(ref name, ty)) in record.fields.iter().enumerate() {
-                    if i != 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}: {}", name, self.rety(ty))?;
-                }
-                write!(f, "}}")
-            }
-            TK::Func(idx) => write!(f, "fn{}", idx),
-            TK::Global(idx) => write!(f, "global{}", idx),
-        }
-    }
-}
-
-struct Global {
-    code:   u32,
-    offset: u32,
-    dep:    GlobalId,
-    ty:     Type,
-}
-
-#[derive(Default)]
-struct Linked {
-    globals: usize,
-    relocs:  usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct SymKey {
-    id:   Ident,
-    file: FileId,
-}
-
-#[derive(Default)]
-pub struct Codegen {
-    cf:    parser::Ast,
-    cf_id: FileId,
-
-    ret:      Type,
-    ret_reg:  Option<Reg>,
-    cur_item: TypeKind,
-
-    gpa:        Rc<RefCell<RegAlloc>>,
-    sa:         Rc<RefCell<StackAlloc>>,
-    ret_relocs: Vec<RetReloc>,
-    loops:      Vec<Loop>,
-    vars:       Vec<Variable>,
-
-    to_generate: Vec<ItemId>,
-
-    code: Block,
-    data: Block,
-
-    symbols:  HashMap<SymKey, Type>,
-    funcs:    Vec<Func>,
-    globals:  Vec<Global>,
-    structs:  Vec<Struct>,
-    pointers: Vec<Type>,
-
-    pub files: Vec<parser::Ast>,
-
-    vm:     Vm<LoggedMem, 0>,
-    stack:  Vec<u8>,
-    linked: Linked,
-}
-
-impl Codegen {
-    fn with_cached_progress(&mut self, f: impl FnOnce(&mut Self)) {
-        let ret = std::mem::take(&mut self.ret);
-        let ret_reg = std::mem::take(&mut self.ret_reg);
-        let cur_item = std::mem::take(&mut self.cur_item);
-
-        let gpa = std::mem::take(&mut *self.gpa.borrow_mut());
-        let sa = std::mem::take(&mut *self.sa.borrow_mut());
-        let ret_relocs = self.ret_relocs.len();
-        let loops = self.loops.len();
-        let vars = self.vars.len();
-
-        f(self);
-
-        self.ret = ret;
-        self.ret_reg = ret_reg;
-        self.cur_item = cur_item;
-
-        *self.gpa.borrow_mut() = gpa;
-        *self.sa.borrow_mut() = sa;
-        self.ret_relocs.truncate(ret_relocs);
-        self.loops.truncate(loops);
-        self.vars.truncate(vars);
-    }
-
-    fn lazy_init(&mut self) {
-        if self.stack.capacity() == 0 {
-            self.stack.reserve(VM_STACK_SIZE);
-            self.vm.write_reg(
-                STACK_PTR,
-                unsafe { self.stack.as_ptr().add(self.stack.capacity()) } as u64,
-            );
+impl Ctx {
+    pub fn with_loc(self, loc: Loc) -> Self {
+        Self {
+            loc: Some(loc),
+            ..self
         }
     }
 
-    pub fn generate(&mut self) {
-        self.lazy_init();
-        self.find_and_declare(0, 0, Err("main"));
-        self.code.prelude();
-        self.complete_call_graph();
-    }
-
-    fn complete_call_graph(&mut self) {
-        while let Some(item) = self.to_generate.pop() {
-            self.with_cached_progress(|s| s.generate_item(item));
+    pub fn with_ty(self, ty: impl Into<ty::Id>) -> Self {
+        Self {
+            ty: Some(ty.into()),
+            ..self
         }
     }
 
-    fn generate_item(&mut self, item: ItemId) {
-        let ast = self.files[item.file as usize].clone();
-        let expr = item.expr.get(&ast).unwrap();
-
-        self.cf = ast.clone();
-        self.cf_id = item.file;
-
-        match expr {
-            E::BinOp {
-                left: E::Ident { name, .. },
-                op: T::Decl,
-                right: E::Closure { body, args, .. },
-            } => {
-                log::dbg!("fn: {}", name);
-
-                self.cur_item = TypeKind::Func(item.id);
-                self.funcs[item.id as usize].offset = self.code.code.len() as _;
-                self.funcs[item.id as usize].relocs = self.code.relocs.len() as _;
-
-                let func = self.funcs[item.id as usize].clone();
-                self.gpa.borrow_mut().init_callee();
-
-                self.gen_prelude();
-
-                log::dbg!("fn-args");
-                let mut parama = self.param_alloc(func.ret);
-                for (arg, &ty) in args.iter().zip(func.args.iter()) {
-                    let sym = parser::find_symbol(&self.cf.symbols, arg.id);
-                    let loc = self.load_arg(sym.flags, ty, &mut parama);
-                    self.vars.push(Variable {
-                        id:    arg.id,
-                        value: Value { ty, loc },
-                    });
-                }
-
-                if self.size_of(func.ret) > 16 {
-                    let reg = self.gpa.borrow_mut().allocate();
-                    self.code.encode(instrs::cp(reg, 1));
-                    self.ret_reg = Some(reg);
-                } else {
-                    self.ret_reg = None;
-                }
-
-                self.ret = func.ret;
-
-                log::dbg!("fn-body");
-                if self.expr(body).is_some() {
-                    self.report(body.pos(), "expected all paths in the fucntion to return");
-                }
-
-                log::dbg!("fn-prelude, stack: {:x}", self.sa.borrow().height);
-
-                log::dbg!("fn-relocs");
-                self.reloc_prelude(item.id);
-
-                log::dbg!("fn-ret");
-                self.reloc_rets();
-                self.ret();
-                self.sa.borrow_mut().clear();
-            }
-            value => todo!("{value:?}"),
-        }
-    }
-
-    fn align_of(&self, ty: Type) -> u64 {
-        use TypeKind as TK;
-        match TypeKind::from_ty(ty) {
-            TK::Struct(t) => self.structs[t as usize]
-                .fields
-                .iter()
-                .map(|&(_, ty)| self.align_of(ty))
-                .max()
-                .unwrap(),
-            _ => self.size_of(ty).max(1),
-        }
-    }
-
-    fn size_of(&self, ty: Type) -> u64 {
-        use TypeKind as TK;
-        match TK::from_ty(ty) {
-            TK::Pointer(_) => 8,
-            TK::Builtin(bt::VOID) => 0,
-            TK::Builtin(bt::NEVER) => unreachable!(),
-            TK::Builtin(bt::INT | bt::UINT) => 8,
-            TK::Builtin(bt::I32 | bt::U32 | bt::TYPE) => 4,
-            TK::Builtin(bt::I16 | bt::U16) => 2,
-            TK::Builtin(bt::I8 | bt::U8 | bt::BOOL) => 1,
-            TK::Struct(ty) => {
-                let mut offset = 0;
-                let record = &self.structs[ty as usize];
-                for &(_, ty) in record.fields.iter() {
-                    let align = self.align_of(ty);
-                    offset = align_up(offset, align);
-                    offset += self.size_of(ty);
-                }
-                offset
-            }
-            _ => unimplemented!("size_of: {}", self.display_ty(ty)),
-        }
-    }
-
-    fn display_ty(&self, ty: Type) -> TypeDisplay {
-        TypeDisplay::new(self, ty)
-    }
-
-    fn unwrap_struct(&self, ty: Type, pos: Pos, context: impl std::fmt::Display) -> Type {
-        match TypeKind::from_ty(ty) {
-            TypeKind::Struct(idx) => idx,
-            _ => self.report(
-                pos,
-                format_args!("expected struct, got {} ({context})", self.display_ty(ty)),
-            ),
-        }
-    }
-
-    fn offset_of(&self, pos: Pos, idx: u32, field: Result<&str, usize>) -> (u64, Type) {
-        let record = &self.structs[idx as usize];
-        let mut offset = 0;
-        for (i, &(ref name, ty)) in record.fields.iter().enumerate() {
-            if Ok(name.as_ref()) == field || Err(i) == field {
-                return (offset, ty);
-            }
-            let align = self.align_of(ty);
-            offset = align_up(offset, align);
-            offset += self.size_of(ty);
-        }
-
-        match field {
-            Ok(i) => self.report(pos, format_args!("field not found: {i}")),
-            Err(field) => self.report(pos, format_args!("field not found: {field}")),
-        }
-    }
-
-    fn alloc_reg(&mut self) -> LinReg {
-        LinReg(self.gpa.borrow_mut().allocate(), self.gpa.clone())
-    }
-
-    fn alloc_stack(&mut self, size: u64) -> Rc<Stack> {
-        let (offset, size) = self.sa.borrow_mut().alloc(size);
-        Stack {
-            offset,
-            size,
-            alloc: Cell::new(Some(self.sa.clone())),
-        }
-        .into()
-    }
-
-    fn loc_to_reg(&mut self, loc: Loc, size: u64) -> LinReg {
-        match loc {
-            Loc::RegRef(rr) => {
-                let reg = self.alloc_reg();
-                self.code.encode(instrs::cp(reg.0, rr));
-                reg
-            }
-            Loc::Reg(reg) => reg,
-            Loc::Deref(dreg, .., offset) => {
-                let reg = self.alloc_reg();
-                self.code
-                    .encode(instrs::ld(reg.0, dreg.0, offset, size as _));
-                reg
-            }
-            Loc::DerefRef(dreg, .., offset) => {
-                let reg = self.alloc_reg();
-                self.code.encode(instrs::ld(reg.0, dreg, offset, size as _));
-                reg
-            }
-            Loc::Imm(imm) => {
-                let reg = self.alloc_reg();
-                self.code.encode(instrs::li64(reg.0, imm));
-                reg
-            }
-            Loc::Stack(stack, off) => {
-                let reg = self.alloc_reg();
-                self.load_stack(reg.0, stack.offset + off, size as _);
-                reg
-            }
-        }
-    }
-
-    fn store_stack(&mut self, reg: Reg, offset: u64, size: u16) {
-        self.code.encode(instrs::st(reg, STACK_PTR, offset, size));
-    }
-
-    fn load_stack(&mut self, reg: Reg, offset: u64, size: u16) {
-        self.code.encode(instrs::ld(reg, STACK_PTR, offset, size));
-    }
-
-    fn reloc_rets(&mut self) {
-        let len = self.code.code.len() as i64;
-        for reloc in self.ret_relocs.iter() {
-            write_reloc(
-                &mut self.code.code,
-                reloc.offset as usize + reloc.instr_offset as usize,
-                len - reloc.offset as i64,
-                reloc.size,
-            );
-        }
-    }
-
-    fn ty(&mut self, expr: &parser::Expr) -> Type {
-        let offset = self.code.code.len();
-        let reloc_offset = self.code.relocs.len();
-
-        let value = self.expr(expr).unwrap();
-        _ = self.assert_ty(expr.pos(), value.ty, bt::TYPE);
-        if let Loc::Imm(ty) = value.loc {
-            return ty as _;
-        }
-
-        self.code.encode(instrs::tx());
-
-        let mut curr_temp = Block::default();
-        curr_temp.append(&mut self.code, offset, reloc_offset);
-
-        let mut curr_fn = Block::default();
-        match self.cur_item {
-            TypeKind::Func(id) => {
-                let func = &self.funcs[id as usize];
-                curr_fn.append(&mut self.code, func.offset as _, func.relocs as _);
-                log::dbg!("{:?}", curr_fn.code);
-            }
-            foo => todo!("{foo:?}"),
-        }
-
-        let offset = self.code.code.len();
-        self.code.append(&mut curr_temp, 0, 0);
-
-        self.complete_call_graph();
-
-        self.link();
-
-        self.vm.pc = hbvm::mem::Address::new(&self.code.code[offset] as *const u8 as _);
-        loop {
-            match self.vm.run().unwrap() {
-                hbvm::VmRunOk::End => break,
-                hbvm::VmRunOk::Ecall => self.handle_ecall(),
-                _ => unreachable!(),
-            }
-        }
-
-        match self.cur_item {
-            TypeKind::Func(id) => {
-                self.funcs[id as usize].offset = self.code.code.len() as _;
-                self.funcs[id as usize].relocs = self.code.relocs.len() as _;
-                self.code.append(&mut curr_fn, 0, 0);
-            }
-            foo => todo!("{foo:?}"),
-        }
-
-        match value.loc {
-            Loc::RegRef(reg) | Loc::Reg(LinReg(reg, ..)) => self.vm.read_reg(reg).0 as _,
-            Loc::Deref(LinReg(reg, ..), .., off) | Loc::DerefRef(reg, .., off) => {
-                let ptr = unsafe { (self.vm.read_reg(reg).0 as *const u8).add(off as _) };
-                unsafe { std::ptr::read(ptr as *const Type) }
-            }
-            v => unreachable!("{v:?}"),
-        }
-    }
-
-    fn handle_ecall(&mut self) {
-        // the ecalls have exception, we cant pass the return value in two registers otherwise its
-        // hard to tell where the trap code is
-        match self.vm.read_reg(2).0 {
-            traps::MAKE_STRUCT => unsafe {
-                let file_id = self.vm.read_reg(3).0 as u32;
-                let expr = std::mem::transmute::<_, parser::ExprRef>(self.vm.read_reg(4));
-                let mut captures_addr = (self.vm.read_reg(STACK_PTR).0 as *const u8)
-                    .add(self.vm.read_reg(5).0 as usize);
-                let ast = self.files[file_id as usize].clone();
-                let &E::Struct {
-                    pos,
-                    fields,
-                    captured,
-                } = expr.get(&ast).unwrap()
-                else {
-                    unreachable!()
-                };
-
-                let prev_len = self.vars.len();
-                for &id in captured {
-                    let ty: Type = std::ptr::read_unaligned(captures_addr.cast());
-                    captures_addr = captures_addr.add(4);
-                    let mut imm = [0u8; 8];
-                    assert!(self.size_of(ty) as usize <= imm.len());
-                    std::ptr::copy_nonoverlapping(
-                        captures_addr,
-                        imm.as_mut_ptr(),
-                        self.size_of(ty) as usize,
-                    );
-                    self.vars.push(Variable {
-                        id,
-                        value: Value {
-                            ty,
-                            loc: Loc::Imm(u64::from_ne_bytes(imm)),
-                        },
-                    });
-                }
-
-                let Value {
-                    loc: Loc::Imm(ty), ..
-                } = self
-                    .expr(&E::Struct {
-                        pos,
-                        fields,
-                        captured: &[],
-                    })
-                    .unwrap()
-                else {
-                    unreachable!()
-                };
-
-                self.vars.truncate(prev_len);
-
-                self.vm.write_reg(1, ty);
-            },
-            trap => todo!("unknown trap: {trap}"),
-        }
-    }
-
-    fn expr(&mut self, expr: &parser::Expr) -> Option<Value> {
-        self.expr_ctx(expr, Ctx::default())
-    }
-
-    fn handle_global(&mut self, id: GlobalId) -> Option<Value> {
-        let ptr = self.alloc_reg();
-
-        let global = &mut self.globals[id as usize];
-        match self.cur_item {
-            TypeKind::Global(gl) => global.dep = global.dep.max(gl),
-            _ => {}
-        }
-
-        self.code.relocs.push(Reloc {
-            id: TypeKind::Global(id as _).encode(),
-            offset: self.code.code.len() as u32,
-            instr_offset: 3,
-            size: 4,
-        });
-        self.code.encode(instrs::lra(ptr.0, 0, 0));
-
+    fn into_value(self) -> Option<Value> {
         Some(Value {
-            ty:  global.ty,
-            loc: Loc::Deref(ptr, None, 0),
+            ty:  self.ty.unwrap(),
+            loc: self.loc?,
         })
     }
-
-    fn expr_ctx(&mut self, expr: &parser::Expr, mut ctx: Ctx) -> Option<Value> {
-        use instrs as i;
-
-        let value = match *expr {
-            E::Mod { id, .. } => Some(Value::ty(TypeKind::Module(id).encode())),
-            E::Struct {
-                fields, captured, ..
-            } => {
-                if captured.is_empty() {
-                    let fields = fields
-                        .iter()
-                        .map(|&(name, ty)| (name.into(), self.ty(&ty)))
-                        .collect();
-                    self.structs.push(Struct { fields });
-                    Some(Value::ty(
-                        TypeKind::Struct(self.structs.len() as u32 - 1).encode(),
-                    ))
-                } else {
-                    let values = captured
-                        .iter()
-                        .map(|&id| E::Ident {
-                            id,
-                            name: "booodab",
-                            index: u16::MAX,
-                        })
-                        .map(|expr| self.expr(&expr))
-                        .collect::<Option<Vec<_>>>()?;
-                    let values_size = values
-                        .iter()
-                        .map(|value| 4 + self.size_of(value.ty))
-                        .sum::<u64>();
-
-                    let stack = self.alloc_stack(values_size);
-                    let ptr = Loc::DerefRef(STACK_PTR, None, stack.offset);
-                    let mut offset = 0;
-                    for value in values {
-                        self.assign(bt::TYPE, ptr.offset_ref(offset), Loc::Imm(value.ty as _));
-                        offset += 4;
-                        self.assign(value.ty, ptr.offset_ref(offset), value.loc);
-                        offset += self.size_of(value.ty);
-                    }
-
-                    // eca MAKE_STRUCT(FileId, ExprRef, *Captures) -> Type;
-                    let mut parama = self.param_alloc(bt::TYPE);
-                    self.pass_arg(&Value::imm(traps::MAKE_STRUCT), &mut parama);
-                    self.pass_arg(&Value::imm(self.cf_id as _), &mut parama);
-                    self.pass_arg(
-                        &Value::imm(unsafe { std::mem::transmute(parser::ExprRef::new(expr)) }),
-                        &mut parama,
-                    );
-                    self.pass_arg(&Value::imm(stack.offset), &mut parama);
-                    self.code.encode(i::eca());
-
-                    Some(Value {
-                        ty:  bt::TYPE,
-                        loc: Loc::RegRef(1),
-                    })
-                }
-            }
-            E::UnOp {
-                op: T::Xor, val, ..
-            } => {
-                let val = self.ty(val);
-                Some(Value::ty(self.alloc_pointer(val)))
-            }
-            E::Directive {
-                name: "TypeOf",
-                args: [expr],
-                ..
-            } => {
-                let offset = self.code.code.len() as u32;
-                let reloc_offset = self.code.relocs.len();
-                let ty = self
-                    .expr_ctx(expr, Ctx::DestUntyped(Loc::DerefRef(0, None, 0)))
-                    .unwrap()
-                    .ty;
-                self.code.code.truncate(offset as usize);
-                self.code.relocs.truncate(reloc_offset);
-
-                Some(Value {
-                    ty:  bt::TYPE,
-                    loc: Loc::Imm(ty as _),
-                })
-            }
-            E::Directive {
-                name: "eca",
-                args: [ret_ty, args @ ..],
-                ..
-            } => {
-                let ty = self.ty(ret_ty);
-
-                let mut parama = self.param_alloc(ty);
-                let mut values = Vec::with_capacity(args.len());
-                for arg in args {
-                    let arg = self.expr(arg)?;
-                    self.pass_arg(&arg, &mut parama);
-                    values.push(arg.loc);
-                }
-                drop(values);
-
-                let loc = self.alloc_ret_loc(ty, ctx);
-
-                self.code.encode(i::eca());
-
-                self.post_process_ret_loc(ty, &loc);
-
-                return Some(Value { ty, loc });
-            }
-            E::Directive {
-                name: "sizeof",
-                args: [ty],
-                ..
-            } => {
-                let ty = self.ty(ty);
-                let loc = Loc::Imm(self.size_of(ty));
-                return Some(Value { ty: bt::UINT, loc });
-            }
-            E::Directive {
-                name: "alignof",
-                args: [ty],
-                ..
-            } => {
-                let ty = self.ty(ty);
-                let loc = Loc::Imm(self.align_of(ty));
-                return Some(Value { ty: bt::UINT, loc });
-            }
-            E::Directive {
-                name: "intcast",
-                args: [val],
-                ..
-            } => {
-                let Some(ty) = ctx.ty() else {
-                    self.report(
-                        expr.pos(),
-                        "type to cast to is unknown, use `@as(<type>, <expr>)`",
-                    );
-                };
-                let mut val = self.expr(val)?;
-
-                let from_size = self.size_of(val.ty);
-                let to_size = self.size_of(ty);
-
-                if from_size < to_size && bt::is_signed(val.ty) {
-                    let reg = self.loc_to_reg(val.loc, from_size);
-                    let op = [i::sxt8, i::sxt16, i::sxt32][from_size.ilog2() as usize];
-                    self.code.encode(op(reg.0, reg.0));
-                    val.loc = Loc::Reg(reg);
-                }
-
-                Some(Value { ty, loc: val.loc })
-            }
-            E::Directive {
-                name: "bitcast",
-                args: [val],
-                ..
-            } => {
-                let Some(ty) = ctx.ty() else {
-                    self.report(
-                        expr.pos(),
-                        "type to cast to is unknown, use `@as(<type>, <expr>)`",
-                    );
-                };
-
-                let size = self.size_of(ty);
-
-                ctx = match ctx {
-                    Ctx::Dest(Value { loc, .. }) | Ctx::DestUntyped(loc, ..) => {
-                        Ctx::DestUntyped(loc)
-                    }
-                    _ => Ctx::None,
-                };
-
-                let val = self.expr_ctx(val, ctx)?;
-
-                if self.size_of(val.ty) != size {
-                    self.report(
-                        expr.pos(),
-                        format_args!(
-                            "cannot bitcast {} to {} (different sizes: {} != {size})",
-                            self.display_ty(val.ty),
-                            self.display_ty(ty),
-                            self.size_of(val.ty),
-                        ),
-                    );
-                }
-
-                // TODO: maybe check align
-
-                return Some(Value { ty, loc: val.loc });
-            }
-            E::Directive {
-                name: "as",
-                args: [ty, val],
-                ..
-            } => {
-                let ty = self.ty(ty);
-                let ctx = match ctx {
-                    Ctx::Dest(dest) => Ctx::Dest(dest),
-                    Ctx::DestUntyped(loc) => Ctx::Dest(Value { ty, loc }),
-                    _ => Ctx::Inferred(ty),
-                };
-                return self.expr_ctx(val, ctx);
-            }
-            E::Bool { value, .. } => Some(Value {
-                ty:  bt::BOOL,
-                loc: Loc::Imm(value as u64),
-            }),
-            E::Ctor {
-                pos, ty, fields, ..
-            } => {
-                let Some(ty) = ty.map(|ty| self.ty(ty)).or(ctx.ty()) else {
-                    self.report(pos, "expected type, (it cannot be inferred)");
-                };
-                let size = self.size_of(ty);
-
-                let loc = match ctx.loc() {
-                    Some(loc) => loc,
-                    _ => Loc::Stack(self.alloc_stack(size), 0),
-                };
-
-                let stuct = self.unwrap_struct(ty, pos, "struct literal");
-                let field_count = self.structs[stuct as usize].fields.len();
-                if field_count != fields.len() {
-                    self.report(
-                        pos,
-                        format_args!("expected {} fields, got {}", field_count, fields.len()),
-                    );
-                }
-
-                for (i, (name, field)) in fields.iter().enumerate() {
-                    let (offset, ty) = self.offset_of(field.pos(), stuct, name.ok_or(i));
-                    let loc = loc.offset_ref(offset);
-                    self.expr_ctx(field, Ctx::Dest(Value { ty, loc }))?;
-                }
-
-                return Some(Value { ty, loc });
-            }
-            E::Field { target, field } => {
-                let checkpoint = self.code.code.len();
-                let mut tal = self.expr(target)?;
-                if let TypeKind::Pointer(ty) = TypeKind::from_ty(tal.ty) {
-                    tal.ty = self.pointers[ty as usize];
-                    tal.loc = match tal.loc {
-                        Loc::Reg(r) => Loc::Deref(r, None, 0),
-                        Loc::RegRef(r) => Loc::DerefRef(r, None, 0),
-                        l => {
-                            let ptr = self.loc_to_reg(l, 8);
-                            Loc::Deref(ptr, None, 0)
-                        }
-                    };
-                }
-
-                match TypeKind::from_ty(tal.ty) {
-                    TypeKind::Struct(idx) => {
-                        let (offset, ty) = self.offset_of(target.pos(), idx, Ok(field));
-                        let loc = tal.loc.offset(offset);
-                        Some(Value { ty, loc })
-                    }
-                    TypeKind::Builtin(bt::TYPE) => {
-                        self.code.code.truncate(checkpoint);
-                        match TypeKind::from_ty(self.ty(target)) {
-                            TypeKind::Module(idx) => Some(Value::ty(
-                                self.find_and_declare(target.pos(), idx, Err(field))
-                                    .encode(),
-                            )),
-                            _ => todo!(),
-                        }
-                    }
-                    smh => self.report(
-                        target.pos(),
-                        format_args!("the field operation is not supported: {smh:?}"),
-                    ),
-                }
-            }
-            E::UnOp {
-                op: T::Band,
-                val,
-                pos,
-            } => {
-                let val = self.expr(val)?;
-                let loc = match val.loc {
-                    Loc::Deref(r, stack, off) => {
-                        if let Some(stack) = stack {
-                            stack.leak()
-                        }
-                        self.code.addi64(r.0, r.0, off);
-                        Loc::Reg(r)
-                    }
-                    Loc::DerefRef(r, stack, off) => {
-                        if let Some(stack) = stack {
-                            stack.leak()
-                        }
-                        let reg = self.alloc_reg();
-                        self.code.addi64(reg.0, r, off);
-                        Loc::Reg(reg)
-                    }
-                    Loc::Stack(stack, off) => {
-                        stack.leak();
-                        let reg = self.alloc_reg();
-                        self.code
-                            .encode(i::addi64(reg.0, STACK_PTR, stack.offset + off));
-                        Loc::Reg(reg)
-                    }
-                    l => self.report(
-                        pos,
-                        format_args!("cant take pointer of {} ({:?})", self.display_ty(val.ty), l),
-                    ),
-                };
-                Some(Value {
-                    ty: self.alloc_pointer(val.ty),
-                    loc,
-                })
-            }
-            E::UnOp {
-                op: T::Mul,
-                val,
-                pos,
-            } => {
-                let val = self.expr(val)?;
-                match TypeKind::from_ty(val.ty) {
-                    TypeKind::Pointer(ty) => Some(Value {
-                        ty:  self.pointers[ty as usize],
-                        loc: Loc::Deref(self.loc_to_reg(val.loc, self.size_of(val.ty)), None, 0),
-                    }),
-                    _ => self.report(
-                        pos,
-                        format_args!("expected pointer, got {}", self.display_ty(val.ty)),
-                    ),
-                }
-            }
-            E::BinOp {
-                left: E::Ident { id, .. },
-                op: T::Decl,
-                right,
-            } => {
-                let val = self.expr(right)?;
-                let loc = self.make_loc_owned(val.loc, val.ty);
-                let sym = parser::find_symbol(&self.cf.symbols, *id);
-                let loc = match loc {
-                    Loc::Reg(r) if sym.flags & idfl::REFERENCED != 0 => {
-                        let size = self.size_of(val.ty);
-                        let stack = self.alloc_stack(size);
-                        self.store_stack(r.0, stack.offset, size as _);
-                        Loc::Stack(stack, 0)
-                    }
-                    l => l,
-                };
-                self.vars.push(Variable {
-                    id:    *id,
-                    value: Value { ty: val.ty, loc },
-                });
-                Some(Value::VOID)
-            }
-            E::Call { func, args } => {
-                let func = self.ty(func);
-                let TypeKind::Func(func) = TypeKind::from_ty(func) else {
-                    todo!()
-                };
-
-                let fn_label = self.funcs[func as usize].clone();
-
-                let mut parama = self.param_alloc(fn_label.ret);
-                let mut values = Vec::with_capacity(args.len());
-                for (earg, &ty) in args.iter().zip(fn_label.args.iter()) {
-                    let arg = self.expr_ctx(earg, Ctx::Inferred(ty))?;
-                    _ = self.assert_ty(earg.pos(), ty, arg.ty);
-                    self.pass_arg(&arg, &mut parama);
-                    values.push(arg.loc);
-                }
-                drop(values);
-
-                let loc = self.alloc_ret_loc(fn_label.ret, ctx);
-
-                self.code.call(func);
-
-                self.post_process_ret_loc(fn_label.ret, &loc);
-
-                return Some(Value {
-                    ty: fn_label.ret,
-                    loc,
-                });
-            }
-            E::Ident { id, .. } if ident::is_null(id) => Some(Value::ty(id)),
-            E::Ident { id, index, .. }
-                if let Some((var_index, var)) =
-                    self.vars.iter_mut().enumerate().find(|(_, v)| v.id == id) =>
-            {
-                let sym = parser::find_symbol(&self.cf.symbols, id);
-
-                let loc = match idfl::index(sym.flags) == index
-                    && !self.loops.last().is_some_and(|l| l.var_count > var_index)
-                {
-                    true => std::mem::replace(&mut var.value.loc, Loc::Imm(0)),
-                    false => var.value.loc.take_ref(),
-                };
-
-                Some(Value {
-                    ty: var.value.ty,
-                    loc,
-                })
-            }
-            E::Ident { id, .. } => match self
-                .symbols
-                .get(&SymKey {
-                    id,
-                    file: self.cf_id,
-                })
-                .copied()
-                .map(TypeKind::from_ty)
-                .unwrap_or_else(|| self.find_and_declare(ident::pos(id), self.cf_id, Ok(id)))
-            {
-                TypeKind::Global(id) => self.handle_global(id),
-                tk => Some(Value::ty(tk.encode())),
-            },
-            E::Return { val, .. } => {
-                if let Some(val) = val {
-                    let size = self.size_of(self.ret);
-                    let loc = match size {
-                        0 => Loc::Imm(0),
-                        ..=16 => Loc::RegRef(1),
-                        _ => Loc::DerefRef(1, None, 0),
-                    };
-                    self.expr_ctx(val, Ctx::Dest(Value { loc, ty: self.ret }))?;
-                }
-                self.ret_relocs.push(RetReloc {
-                    offset:       self.code.code.len() as u32,
-                    instr_offset: 1,
-                    size:         4,
-                });
-                self.code.encode(i::jmp(0));
-                None
-            }
-            E::Block { stmts, .. } => {
-                for stmt in stmts {
-                    self.expr(stmt)?;
-                }
-                Some(Value::VOID)
-            }
-            E::Number { value, .. } => Some(Value {
-                ty:  ctx.ty().map(bt::strip_pointer).unwrap_or(bt::INT),
-                loc: Loc::Imm(value),
-            }),
-            E::If {
-                cond, then, else_, ..
-            } => 'b: {
-                log::dbg!("if-cond");
-                let cond = self.expr_ctx(cond, Ctx::Inferred(bt::BOOL))?;
-                let reg = self.loc_to_reg(cond.loc, 1);
-                let jump_offset = self.code.code.len() as u32;
-                self.code.encode(i::jeq(reg.0, 0, 0));
-
-                log::dbg!("if-then");
-                let then_unreachable = self.expr(then).is_none();
-                let mut else_unreachable = false;
-
-                let mut jump = self.code.code.len() as i64 - jump_offset as i64;
-
-                if let Some(else_) = else_ {
-                    log::dbg!("if-else");
-                    let else_jump_offset = self.code.code.len() as u32;
-                    if !then_unreachable {
-                        self.code.encode(i::jmp(0));
-                        jump = self.code.code.len() as i64 - jump_offset as i64;
-                    }
-
-                    else_unreachable = self.expr(else_).is_none();
-
-                    if !then_unreachable {
-                        let jump = self.code.code.len() as i64 - else_jump_offset as i64;
-                        log::dbg!("if-else-jump: {}", jump);
-                        write_reloc(&mut self.code.code, else_jump_offset as usize + 1, jump, 4);
-                    }
-                }
-
-                log::dbg!("if-then-jump: {}", jump);
-                write_reloc(&mut self.code.code, jump_offset as usize + 3, jump, 2);
-
-                if then_unreachable && else_unreachable {
-                    break 'b None;
-                }
-
-                Some(Value::VOID)
-            }
-            E::Loop { body, .. } => 'a: {
-                log::dbg!("loop");
-
-                let loop_start = self.code.code.len() as u32;
-                self.loops.push(Loop {
-                    var_count: self.vars.len() as _,
-                    offset:    loop_start,
-                    relocs:    Default::default(),
-                });
-                let body_unreachable = self.expr(body).is_none();
-
-                log::dbg!("loop-end");
-                if !body_unreachable {
-                    let loop_end = self.code.code.len();
-                    self.code
-                        .encode(i::jmp(loop_start as i32 - loop_end as i32));
-                }
-
-                let loop_end = self.code.code.len() as u32;
-
-                let loop_ = self.loops.pop().unwrap();
-                let is_unreachable = loop_.relocs.is_empty();
-                for reloc in loop_.relocs {
-                    let dest = &mut self.code.code
-                        [reloc.offset as usize + reloc.instr_offset as usize..]
-                        [..reloc.size as usize];
-                    let offset = loop_end as i32 - reloc.offset as i32;
-                    dest.copy_from_slice(&offset.to_ne_bytes());
-                }
-
-                self.vars.drain(loop_.var_count..);
-
-                if is_unreachable {
-                    log::dbg!("infinite loop");
-                    break 'a None;
-                }
-
-                Some(Value::VOID)
-            }
-            E::Break { .. } => {
-                let loop_ = self.loops.last_mut().unwrap();
-                let offset = self.code.code.len() as u32;
-                self.code.encode(i::jmp(0));
-                loop_.relocs.push(RetReloc {
-                    offset,
-                    instr_offset: 1,
-                    size: 4,
-                });
-                None
-            }
-            E::Continue { .. } => {
-                let loop_ = self.loops.last().unwrap();
-                let offset = self.code.code.len() as u32;
-                self.code
-                    .encode(i::jmp(loop_.offset as i32 - offset as i32));
-                None
-            }
-            E::BinOp {
-                left,
-                op: op @ (T::And | T::Or),
-                right,
-            } => {
-                let lhs = self.expr_ctx(left, Ctx::Inferred(bt::BOOL))?;
-                let lhs = self.loc_to_reg(lhs.loc, 1);
-                let jump_offset = self.code.code.len() + 3;
-                let op = if op == T::And { i::jeq } else { i::jne };
-                self.code.encode(op(lhs.0, 0, 0));
-
-                if let Some(rhs) = self.expr_ctx(right, Ctx::Inferred(bt::BOOL)) {
-                    let rhs = self.loc_to_reg(rhs.loc, 1);
-                    self.code.encode(i::cp(lhs.0, rhs.0));
-                }
-
-                let jump = self.code.code.len() as i64 - jump_offset as i64;
-                write_reloc(&mut self.code.code, jump_offset, jump, 2);
-
-                Some(Value {
-                    ty:  bt::BOOL,
-                    loc: Loc::Reg(lhs),
-                })
-            }
-            E::BinOp { left, op, right } => 'ops: {
-                let left = self.expr(left)?;
-
-                if op == T::Assign {
-                    self.expr_ctx(right, Ctx::Dest(left)).unwrap();
-                    return Some(Value::VOID);
-                }
-
-                if let TypeKind::Struct(_) = TypeKind::from_ty(left.ty) {
-                    let right = self.expr_ctx(right, Ctx::Inferred(left.ty))?;
-                    _ = self.assert_ty(expr.pos(), left.ty, right.ty);
-                    return self.struct_op(op, left.ty, ctx, left.loc, right.loc);
-                }
-
-                let lsize = self.size_of(left.ty);
-                let ty = ctx.ty().unwrap_or(left.ty);
-
-                let (lhs, loc) = match std::mem::take(&mut ctx).loc() {
-                    Some(Loc::RegRef(reg)) if Loc::RegRef(reg) == left.loc && reg != 1 => {
-                        (reg, Loc::RegRef(reg))
-                    }
-                    Some(loc) => {
-                        debug_assert!(!matches!(loc, Loc::Reg(LinReg(RET_ADDR, ..))));
-                        ctx = Ctx::Dest(Value { ty, loc });
-                        let reg = self.loc_to_reg(left.loc, lsize);
-                        (reg.0, Loc::Reg(reg))
-                    }
-                    None => {
-                        let reg = self.loc_to_reg(left.loc, lsize);
-                        (reg.0, Loc::Reg(reg))
-                    }
-                };
-                let right = self.expr_ctx(right, Ctx::Inferred(left.ty))?;
-                let rsize = self.size_of(right.ty);
-
-                let ty = self.assert_ty(expr.pos(), left.ty, right.ty);
-                let size = self.size_of(ty);
-                let signed = bt::is_signed(ty);
-
-                if let Loc::Imm(mut imm) = right.loc
-                    && let Some(oper) = Self::imm_math_op(op, signed, size)
-                {
-                    if matches!(op, T::Add | T::Sub)
-                        && let TypeKind::Pointer(ty) = TypeKind::from_ty(ty)
-                    {
-                        let size = self.size_of(self.pointers[ty as usize]);
-                        imm *= size;
-                    }
-
-                    self.code.encode(oper(lhs, lhs, imm));
-                    break 'ops Some(Value { ty, loc });
-                }
-
-                let rhs = self.loc_to_reg(right.loc, rsize);
-
-                if matches!(op, T::Add | T::Sub) {
-                    let min_size = lsize.min(rsize);
-                    if bt::is_signed(ty) && min_size < size {
-                        let operand = if lsize < rsize { lhs } else { rhs.0 };
-                        let op = [i::sxt8, i::sxt16, i::sxt32][min_size.ilog2() as usize];
-                        self.code.encode(op(operand, operand));
-                    }
-
-                    if bt::is_pointer(left.ty) ^ bt::is_pointer(right.ty) {
-                        let (offset, ty) = if bt::is_pointer(left.ty) {
-                            (rhs.0, left.ty)
-                        } else {
-                            (lhs, right.ty)
-                        };
-
-                        let TypeKind::Pointer(ty) = TypeKind::from_ty(ty) else {
-                            unreachable!()
-                        };
-
-                        let size = self.size_of(self.pointers[ty as usize]);
-                        self.code.encode(i::muli64(offset, offset, size as _));
-                    }
-                }
-
-                if let Some(op) = Self::math_op(op, signed, size) {
-                    self.code.encode(op(lhs, lhs, rhs.0));
-                    break 'ops Some(Value { ty, loc });
-                }
-
-                'cmp: {
-                    let against = match op {
-                        T::Le | T::Gt => 1,
-                        T::Ne | T::Eq => 0,
-                        T::Ge | T::Lt => (-1i64) as _,
-                        _ => break 'cmp,
-                    };
-
-                    let op_fn = if signed { i::cmps } else { i::cmpu };
-                    self.code.encode(op_fn(lhs, lhs, rhs.0));
-                    self.code.encode(i::cmpui(lhs, lhs, against));
-                    if matches!(op, T::Eq | T::Lt | T::Gt) {
-                        self.code.encode(i::not(lhs, lhs));
-                    }
-
-                    break 'ops Some(Value { ty: bt::BOOL, loc });
-                }
-
-                unimplemented!("{:#?}", op)
-            }
-            ast => unimplemented!("{:#?}", ast),
-        }?;
-
-        match ctx {
-            Ctx::Dest(dest) => {
-                _ = self.assert_ty(expr.pos(), value.ty, dest.ty);
-                self.assign(dest.ty, dest.loc, value.loc)?;
-                Some(Value {
-                    ty:  dest.ty,
-                    loc: Loc::Imm(0),
-                })
-            }
-            Ctx::DestUntyped(loc) => {
-                // Wo dont check since bitcast does
-                self.assign(value.ty, loc, value.loc);
-                Some(Value {
-                    ty:  value.ty,
-                    loc: Loc::Imm(0),
-                })
-            }
-            _ => Some(value),
-        }
-    }
-
-    fn math_op(
-        op: T,
-        signed: bool,
-        size: u64,
-    ) -> Option<fn(u8, u8, u8) -> (usize, [u8; instrs::MAX_SIZE])> {
-        use instrs as i;
-
-        macro_rules! div { ($($op:ident),*) => {[$(|a, b, c| i::$op(a, ZERO, b, c)),*]}; }
-        macro_rules! rem { ($($op:ident),*) => {[$(|a, b, c| i::$op(ZERO, a, b, c)),*]}; }
-
-        let ops = match op {
-            T::Add => [i::add8, i::add16, i::add32, i::add64],
-            T::Sub => [i::sub8, i::sub16, i::sub32, i::sub64],
-            T::Mul => [i::mul8, i::mul16, i::mul32, i::mul64],
-            T::Div if signed => div!(dirs8, dirs16, dirs32, dirs64),
-            T::Div => div!(diru8, diru16, diru32, diru64),
-            T::Mod if signed => rem!(dirs8, dirs16, dirs32, dirs64),
-            T::Mod => rem!(diru8, diru16, diru32, diru64),
-            T::Band => return Some(i::and),
-            T::Bor => return Some(i::or),
-            T::Xor => return Some(i::xor),
-            T::Shl => [i::slu8, i::slu16, i::slu32, i::slu64],
-            T::Shr if signed => [i::srs8, i::srs16, i::srs32, i::srs64],
-            T::Shr => [i::sru8, i::sru16, i::sru32, i::sru64],
-            _ => return None,
-        };
-
-        Some(ops[size.ilog2() as usize])
-    }
-
-    fn imm_math_op(
-        op: T,
-        signed: bool,
-        size: u64,
-    ) -> Option<fn(u8, u8, u64) -> (usize, [u8; instrs::MAX_SIZE])> {
-        use instrs as i;
-
-        macro_rules! def_op {
-            ($name:ident |$a:ident, $b:ident, $c:ident| $($tt:tt)*) => {
-                macro_rules! $name {
-                    ($$($$op:ident),*) => {
-                        [$$(
-                            |$a, $b, $c: u64| i::$$op($($tt)*),
-                        )*]
-                    }
-                }
-            };
-        }
-
-        def_op!(basic_op | a, b, c | a, b, c as _);
-        def_op!(sub_op | a, b, c | b, a, c.wrapping_neg() as _);
-
-        let ops = match op {
-            T::Add => basic_op!(addi8, addi16, addi32, addi64),
-            T::Sub => sub_op!(addi8, addi16, addi32, addi64),
-            T::Mul => basic_op!(muli8, muli16, muli32, muli64),
-            T::Band => return Some(i::andi),
-            T::Bor => return Some(i::ori),
-            T::Xor => return Some(i::xori),
-            T::Shr if signed => basic_op!(srui8, srui16, srui32, srui64),
-            T::Shr => basic_op!(srui8, srui16, srui32, srui64),
-            T::Shl => basic_op!(slui8, slui16, slui32, slui64),
-            _ => return None,
-        };
-
-        Some(ops[size.ilog2() as usize])
-    }
-
-    fn struct_op(&mut self, op: T, ty: Type, ctx: Ctx, left: Loc, right: Loc) -> Option<Value> {
-        if let TypeKind::Struct(stuct) = TypeKind::from_ty(ty) {
-            let dst = match ctx {
-                Ctx::Dest(dest) => dest.loc,
-                _ => Loc::Stack(self.alloc_stack(self.size_of(ty)), 0),
-            };
-            let mut offset = 0;
-            for &(_, ty) in self.structs[stuct as usize].fields.clone().iter() {
-                let align = self.align_of(ty);
-                offset = align_up(offset, align);
-                let size = self.size_of(ty);
-                let ctx = Ctx::Dest(Value::new(ty, dst.offset_ref(offset)));
-                let left = left.offset_ref(offset);
-                let right = right.offset_ref(offset);
-                self.struct_op(op, ty, ctx, left, right)?;
-                offset += size;
-            }
-
-            return Some(Value { ty, loc: dst });
-        }
-
-        let size = self.size_of(ty);
-        let signed = bt::is_signed(ty);
-        let (lhs, owned) = self.loc_to_reg_ref(&left, size);
-
-        if let Loc::Imm(imm) = right
-            && let Some(op) = Self::imm_math_op(op, signed, size)
-        {
-            self.code.encode(op(lhs, lhs, imm));
-            return if let Ctx::Dest(dest) = ctx {
-                self.assign(dest.ty, dest.loc, owned.map_or(Loc::RegRef(lhs), Loc::Reg));
-                Some(Value::VOID)
-            } else {
-                Some(Value::new(ty, owned.map_or(Loc::RegRef(lhs), Loc::Reg)))
-            };
-        }
-
-        let rhs = self.loc_to_reg(right, size);
-
-        if let Some(op) = Self::math_op(op, signed, size) {
-            self.code.encode(op(lhs, lhs, rhs.0));
-            return if let Ctx::Dest(dest) = ctx {
-                self.assign(dest.ty, dest.loc, owned.map_or(Loc::RegRef(lhs), Loc::Reg));
-                Some(Value::VOID)
-            } else {
-                Some(Value::new(ty, owned.map_or(Loc::RegRef(lhs), Loc::Reg)))
-            };
-        }
-
-        unimplemented!("{:#?}", op)
-    }
-
-    fn loc_to_reg_ref(&mut self, loc: &Loc, size: u64) -> (u8, Option<LinReg>) {
-        match *loc {
-            Loc::RegRef(reg) => (reg, None),
-            Loc::Reg(LinReg(reg, ..)) => (reg, None),
-            Loc::Deref(LinReg(reg, ..), .., off) | Loc::DerefRef(reg, .., off) => {
-                let new = self.alloc_reg();
-                self.code.encode(instrs::ld(new.0, reg, off, size as _));
-                (new.0, Some(new))
-            }
-            Loc::Stack(ref stack, off) => {
-                let new = self.alloc_reg();
-                self.load_stack(new.0, stack.offset + off, size as _);
-                (new.0, Some(new))
-            }
-            Loc::Imm(imm) => {
-                let new = self.alloc_reg();
-                self.code.encode(instrs::li64(new.0, imm));
-                (new.0, Some(new))
-            }
-        }
-    }
-
-    fn assign_opaque(&mut self, size: u64, right: Loc, left: Loc) -> Option<Value> {
-        if left == right {
-            return Some(Value::VOID);
-        }
-
-        match size {
-            0 => {}
-            ..=8 if let Loc::Imm(imm) = left
-                && let Loc::RegRef(reg) = right =>
-            {
-                self.code.encode(instrs::li64(reg, imm))
-            }
-            ..=8 => {
-                let lhs = self.loc_to_reg(left, size);
-                match right {
-                    Loc::RegRef(reg) => self.code.encode(instrs::cp(reg, lhs.0)),
-                    Loc::Deref(reg, .., off) => {
-                        self.code.encode(instrs::st(lhs.0, reg.0, off, size as _));
-                    }
-                    Loc::DerefRef(reg, .., off) => {
-                        self.code.encode(instrs::st(lhs.0, reg, off, size as _));
-                    }
-                    Loc::Stack(stack, off) => {
-                        self.store_stack(lhs.0, stack.offset + off, size as _);
-                    }
-                    l => unimplemented!("{:?}", l),
-                }
-            }
-            ..=16 if matches!(right, Loc::RegRef(1)) => {
-                let (lhs, loff) = left.ref_to_ptr();
-                self.code.encode(instrs::st(1, lhs, loff, 16));
-            }
-            ..=u64::MAX => {
-                let rhs = self.to_ptr(right);
-                let lhs = self.to_ptr(left);
-                self.code
-                    .encode(instrs::bmc(lhs.0, rhs.0, size.try_into().unwrap()));
-            }
-        }
-
-        Some(Value::VOID)
-    }
-
-    fn assign(&mut self, ty: Type, right: Loc, left: Loc) -> Option<Value> {
-        self.assign_opaque(self.size_of(ty), right, left)
-    }
-
-    fn to_ptr(&mut self, loc: Loc) -> LinReg {
-        match loc {
-            Loc::Deref(reg, .., off) => {
-                self.code.addi64(reg.0, reg.0, off);
-                reg
-            }
-            Loc::DerefRef(reg, .., off) => {
-                let new = self.alloc_reg();
-                self.code.addi64(new.0, reg, off);
-                new
-            }
-            Loc::Stack(stack, off) => {
-                let reg = self.alloc_reg();
-                self.code.addi64(reg.0, STACK_PTR, stack.offset + off);
-                reg
-            }
-            l => unreachable!("{:?}", l),
-        }
-    }
-
-    fn find_and_declare(&mut self, pos: Pos, file: FileId, name: Result<Ident, &str>) -> TypeKind {
-        let f = self.files[file as usize].clone();
-        let Some((expr, id)) = f.find_decl(name) else {
-            self.report(
-                pos,
-                match name {
-                    Ok(_) => format!("undefined indentifier"),
-                    Err("main") => {
-                        format!("compilation root is missing main function: {f}")
-                    }
-                    Err(name) => todo!("somehow we did not handle: {name:?}"),
-                },
-            );
-        };
-
-        let sym = match expr {
-            E::BinOp {
-                left: &E::Ident { .. },
-                op: T::Decl,
-                right: E::Closure { args, ret, .. },
-            } => {
-                let args = args.iter().map(|arg| self.ty(&arg.ty)).collect::<Vec<_>>();
-                let ret = self.ty(ret);
-                let id = self.declare_fn_label(args.into(), ret);
-                self.to_generate.push(ItemId {
-                    file,
-                    expr: ExprRef::new(expr),
-                    id,
-                });
-                TypeKind::Func(id)
-            }
-            E::BinOp {
-                left: &E::Ident { .. },
-                op: T::Decl,
-                right: E::Struct { fields, .. },
-            } => {
-                let fields = fields
-                    .iter()
-                    .map(|&(name, ty)| (name.into(), self.ty(&ty)))
-                    .collect();
-                self.structs.push(Struct { fields });
-                TypeKind::Struct(self.structs.len() as u32 - 1)
-            }
-            E::BinOp {
-                left: &E::Ident { .. },
-                op: T::Decl,
-                right,
-            } => {
-                let gid = self.globals.len() as GlobalId;
-                let prev_in_global = std::mem::replace(&mut self.cur_item, TypeKind::Global(gid));
-
-                let prev_gpa = std::mem::replace(&mut *self.gpa.borrow_mut(), Default::default());
-                let prev_sa = std::mem::replace(&mut *self.sa.borrow_mut(), Default::default());
-
-                let offset = self.code.code.len();
-                let reloc_count = self.code.relocs.len();
-                self.globals.push(Global {
-                    ty:     bt::UNDECLARED,
-                    code:   0,
-                    dep:    0,
-                    offset: u32::MAX,
-                });
-
-                self.gpa.borrow_mut().init_callee();
-                let ret = self.gpa.borrow_mut().allocate();
-                // TODO: detect is constant does not call anything
-                self.code.encode(instrs::cp(ret, 1));
-
-                let ret = self
-                    .expr_ctx(right, Ctx::DestUntyped(Loc::DerefRef(ret, None, 0)))
-                    .expect("TODO: unreachable constant/global");
-                self.code.encode(instrs::tx());
-                self.globals[gid as usize].ty = ret.ty;
-
-                self.globals[gid as usize].code = self.data.code.len() as u32;
-                self.data.append(&mut self.code, offset, reloc_count);
-
-                *self.sa.borrow_mut() = prev_sa;
-                *self.gpa.borrow_mut() = prev_gpa;
-                self.cur_item = prev_in_global;
-
-                TypeKind::Global(gid)
-            }
-            e => unimplemented!("{e:#?}"),
-        };
-        self.symbols.insert(SymKey { id, file }, sym.encode());
-        sym
-    }
-
-    fn declare_fn_label(&mut self, args: Rc<[Type]>, ret: Type) -> FuncId {
-        self.funcs.push(Func {
-            offset: 0,
-            relocs: 0,
-            args,
-            ret,
-        });
-        self.funcs.len() as u32 - 1
-    }
-
-    fn gen_prelude(&mut self) {
-        self.code.encode(instrs::addi64(STACK_PTR, STACK_PTR, 0));
-        self.code.encode(instrs::st(RET_ADDR, STACK_PTR, 0, 0));
-    }
-
-    fn reloc_prelude(&mut self, id: FuncId) {
-        let mut cursor = self.funcs[id as usize].offset as usize;
-        let mut allocate = |size| (cursor += size, cursor).1;
-
-        let pushed = self.gpa.borrow().pushed_size() as i64;
-        let stack = self.sa.borrow().height as i64;
-
-        write_reloc(&mut self.code.code, allocate(3), -(pushed + stack), 8);
-        write_reloc(&mut self.code.code, allocate(8 + 3), stack, 8);
-        write_reloc(&mut self.code.code, allocate(8), pushed, 2);
-    }
-
-    fn ret(&mut self) {
-        let pushed = self.gpa.borrow().pushed_size() as u64;
-        let stack = self.sa.borrow().height as u64;
-        self.code
-            .encode(instrs::ld(RET_ADDR, STACK_PTR, stack, pushed as _));
-        self.code
-            .encode(instrs::addi64(STACK_PTR, STACK_PTR, stack + pushed));
-        self.code.ret();
-    }
-
-    fn link(&mut self) {
-        let mut globals = std::mem::take(&mut self.globals);
-        for global in globals.iter_mut().skip(self.linked.globals as usize) {
-            let size = self.size_of(global.ty);
-            global.offset = self.code.code.len() as u32;
-            self.code.code.extend(std::iter::repeat(0).take(size as _));
-        }
-        self.globals = globals;
-
-        let prev_len = self.code.code.len();
-        self.code.append(&mut self.data, 0, 0);
-
-        self.code
-            .relocate(&self.funcs, &self.globals, 0, self.linked.relocs);
-
-        let mut var_order = self
-            .globals
-            .iter()
-            .map(|g| g.dep)
-            .zip(0u32..)
-            .skip(self.linked.globals as usize)
-            .collect::<Vec<_>>();
-        var_order.sort_unstable();
-
-        for (_, glob_id) in var_order.into_iter().rev() {
-            let global = &self.globals[glob_id as usize];
-            self.vm.pc = hbvm::mem::Address::new(
-                &mut self.code.code[global.code as usize + prev_len] as *mut _ as u64,
-            );
-            self.vm.write_reg(
-                1,
-                &mut self.code.code[global.offset as usize] as *mut _ as u64,
-            );
-            self.vm.run().unwrap();
-        }
-        self.code.code.truncate(prev_len);
-
-        self.linked.globals = self.globals.len();
-        self.linked.relocs = self.code.relocs.len();
-    }
-
-    pub fn dump(mut self, out: &mut impl std::io::Write) -> std::io::Result<()> {
-        self.code.relocs.push(Reloc {
-            offset: 0,
-            size: 4,
-            instr_offset: 3,
-            id: TypeKind::Func(0).encode() as _,
-        });
-        self.link();
-        out.write_all(&self.code.code)
-    }
-
-    fn alloc_pointer(&mut self, ty: Type) -> Type {
-        let ty = self
-            .pointers
-            .iter()
-            .position(|&p| p == ty)
-            .unwrap_or_else(|| {
-                self.pointers.push(ty);
-                self.pointers.len() - 1
-            });
-
-        TypeKind::Pointer(ty as Type).encode()
-    }
-
-    fn make_loc_owned(&mut self, loc: Loc, ty: Type) -> Loc {
-        match loc {
-            Loc::RegRef(rreg) => {
-                let reg = self.alloc_reg();
-                self.code.encode(instrs::cp(reg.0, rreg));
-                Loc::Reg(reg)
-            }
-            Loc::Imm(imm) => {
-                let reg = self.alloc_reg();
-                self.code.encode(instrs::li64(reg.0, imm));
-                Loc::Reg(reg)
-            }
-            l @ (Loc::DerefRef(..) | Loc::Deref(..)) => {
-                let size = self.size_of(ty);
-                let stack = self.alloc_stack(size);
-                self.assign(ty, Loc::DerefRef(STACK_PTR, None, stack.offset), l);
-                Loc::Stack(stack, 0)
-            }
-            l => l,
-        }
-    }
-
-    fn pass_arg(&mut self, value: &Value, parama: &mut Range<u8>) {
-        let size = self.size_of(value.ty);
-        let p = parama.next().unwrap() as Reg;
-
-        if size > 16 {
-            let (ptr, off) = value.loc.ref_to_ptr();
-            self.code.addi64(p, ptr, off);
-            return;
-        }
-
-        match value.loc {
-            Loc::Reg(LinReg(reg, ..)) | Loc::RegRef(reg) => self.code.encode(instrs::cp(p, reg)),
-            Loc::Deref(LinReg(reg, ..), .., off) | Loc::DerefRef(reg, .., off) => {
-                self.code.encode(instrs::ld(p, reg, off, size as _));
-            }
-            Loc::Imm(imm) => self.code.encode(instrs::li64(p, imm)),
-            Loc::Stack(ref stack, off) => {
-                self.load_stack(p, stack.offset + off, size as _);
-                if size > 8 {
-                    parama.next().unwrap();
-                }
-            }
-        }
-    }
-
-    fn load_arg(&mut self, flags: parser::IdentFlags, ty: Type, parama: &mut Range<u8>) -> Loc {
-        let size = self.size_of(ty);
-        match size {
-            0 => Loc::Imm(0),
-            ..=8 if flags & idfl::REFERENCED == 0 => {
-                let reg = self.alloc_reg();
-                self.code.encode(instrs::cp(reg.0, parama.next().unwrap()));
-                Loc::Reg(reg)
-            }
-            ..=8 => {
-                let stack = self.alloc_stack(size as _);
-                self.store_stack(parama.next().unwrap(), stack.offset, size as _);
-                Loc::Stack(stack, 0)
-            }
-            ..=16 => {
-                let stack = self.alloc_stack(size);
-                self.store_stack(parama.next().unwrap(), stack.offset, size as _);
-                parama.next().unwrap();
-                Loc::Stack(stack, 0)
-            }
-            _ if flags & (idfl::MUTABLE | idfl::REFERENCED) == 0 => {
-                let ptr = parama.next().unwrap();
-                let reg = self.alloc_reg();
-                self.code.encode(instrs::cp(reg.0, ptr));
-                Loc::Deref(reg, None, 0)
-            }
-            _ => {
-                let ptr = parama.next().unwrap();
-                let stack = self.alloc_stack(size);
-                self.assign(
-                    ty,
-                    Loc::DerefRef(STACK_PTR, None, stack.offset),
-                    Loc::DerefRef(ptr, None, 0),
-                );
-                Loc::Stack(stack, 0)
-            }
-        }
-    }
-
-    #[must_use]
-    fn assert_ty(&self, pos: Pos, ty: Type, expected: Type) -> Type {
-        if let Some(res) = bt::try_upcast(ty, expected) {
-            res
-        } else {
-            let ty = self.display_ty(ty);
-            let expected = self.display_ty(expected);
-            self.report(pos, format_args!("expected {ty}, got {expected}"));
-        }
-    }
-
-    fn report(&self, pos: Pos, msg: impl std::fmt::Display) -> ! {
-        let (line, col) = self.cf.nlines.line_col(pos);
-        println!("{}:{}:{}: {}", self.cf.path, line, col, msg);
-        unreachable!();
-    }
-
-    fn alloc_ret_loc(&mut self, ret: Type, ctx: Ctx) -> Loc {
-        let size = self.size_of(ret);
-        match size {
-            0 => Loc::Imm(0),
-            ..=8 => Loc::RegRef(1),
-            ..=16 => match ctx {
-                Ctx::Dest(dest) => dest.loc,
-                _ => Loc::Stack(self.alloc_stack(size), 0),
-            },
-            ..=u64::MAX => {
-                let val = match ctx {
-                    Ctx::Dest(dest) => dest.loc,
-                    _ => Loc::Stack(self.alloc_stack(size), 0),
-                };
-                let (ptr, off) = val.ref_to_ptr();
-                self.code.encode(instrs::cp(1, ptr));
-                self.code.addi64(1, ptr, off);
-                val
-            }
-        }
-    }
-
-    fn post_process_ret_loc(&mut self, ty: Type, loc: &Loc) {
-        let size = self.size_of(ty);
-        match size {
-            0 => {}
-            ..=8 => {}
-            ..=16 => {
-                if let Loc::Stack(ref stack, off) = loc {
-                    self.store_stack(1, stack.offset + off, size as _);
-                } else {
-                    unreachable!()
-                }
-            }
-            ..=u64::MAX => {}
-        }
-    }
-
-    fn param_alloc(&self, ret: Type) -> Range<u8> {
-        2 + (9..=16).contains(&self.size_of(ret)) as u8..12
-    }
 }
 
-#[derive(Debug)]
-pub struct Value {
-    ty:  Type,
-    loc: Loc,
-}
-
-impl Value {
-    const VOID: Self = Self {
-        ty:  bt::VOID,
-        loc: Loc::Imm(0),
-    };
-
-    fn new(ty: Type, loc: Loc) -> Self {
-        Self { ty, loc }
-    }
-
-    fn ty(ty: Type) -> Self {
+impl From<Value> for Ctx {
+    fn from(value: Value) -> Self {
         Self {
-            ty:  bt::TYPE,
-            loc: Loc::Imm(ty as _),
-        }
-    }
-
-    fn imm(imm: u64) -> Value {
-        Self {
-            ty:  bt::UINT,
-            loc: Loc::Imm(imm),
+            loc: Some(value.loc),
+            ty:  Some(value.ty),
         }
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum Loc {
-    Reg(LinReg),
-    RegRef(Reg),
-    Deref(LinReg, Option<Rc<Stack>>, u64),
-    DerefRef(Reg, Option<Rc<Stack>>, u64),
-    Imm(u64),
-    Stack(Rc<Stack>, u64),
-}
-
-impl Loc {
-    fn take_ref(&self) -> Loc {
-        match *self {
-            Self::Reg(LinReg(reg, ..), ..) | Self::RegRef(reg) => Self::RegRef(reg),
-            Self::Deref(LinReg(reg, ..), ref st, off) | Self::DerefRef(reg, ref st, off) => {
-                Self::DerefRef(reg, st.clone(), off)
-            }
-            Self::Stack(ref stack, off) => {
-                Self::DerefRef(STACK_PTR, Some(stack.clone()), stack.offset + off)
-            }
-            ref un => unreachable!("{:?}", un),
-        }
-    }
-
-    fn ref_to_ptr(&self) -> (Reg, u64) {
-        match *self {
-            Loc::Deref(LinReg(reg, ..), _, off) => (reg, off),
-            Loc::DerefRef(reg, _, off) => (reg, off),
-            Loc::Stack(ref stack, off) => (STACK_PTR, stack.offset + off),
-            ref l => panic!("expected stack location, got {:?}", l),
-        }
-    }
-
-    fn offset_ref(&self, offset: u64) -> Loc {
-        self.take_ref().offset(offset)
-    }
-
-    fn offset(self, offset: u64) -> Loc {
-        match self {
-            Loc::Deref(r, stack, off) => Loc::Deref(r, stack, off + offset),
-            Loc::DerefRef(r, stack, off) => Loc::DerefRef(r, stack, off + offset),
-            Loc::Stack(s, off) => Loc::Stack(s, off + offset),
-            l => unreachable!("{:?}", l),
-        }
-    }
+#[derive(Default)]
+struct Pool {
+    cis:     Vec<ItemCtx>,
+    outputs: Vec<Output>,
 }
 
 #[derive(Default)]
@@ -2327,6 +1114,10 @@ impl hbvm::mem::Memory for LoggedMem {
             "load: {:x} {:?}",
             addr.get(),
             core::slice::from_raw_parts(addr.get() as *const u8, count)
+                .iter()
+                .rev()
+                .map(|&b| format!("{b:02x}"))
+                .collect::<String>()
         );
         self.mem.load(addr, target, count)
     }
@@ -2341,6 +1132,10 @@ impl hbvm::mem::Memory for LoggedMem {
             "store: {:x} {:?}",
             addr.get(),
             core::slice::from_raw_parts(source, count)
+                .iter()
+                .rev()
+                .map(|&b| format!("{b:02x}"))
+                .collect::<String>()
         );
         self.mem.store(addr, source, count)
     }
@@ -2350,8 +1145,11 @@ impl hbvm::mem::Memory for LoggedMem {
             "read-typed: {:x} {} {:?}",
             addr.get(),
             std::any::type_name::<T>(),
-            if core::mem::size_of::<T>() == 1 {
-                instrs::NAMES[std::ptr::read(addr.get() as *const u8) as usize].to_string()
+            if core::mem::size_of::<T>() == 1
+                && let Some(nm) =
+                    instrs::NAMES.get(std::ptr::read(addr.get() as *const u8) as usize)
+            {
+                nm.to_string()
             } else {
                 core::slice::from_raw_parts(addr.get() as *const u8, core::mem::size_of::<T>())
                     .iter()
@@ -2360,6 +1158,1522 @@ impl hbvm::mem::Memory for LoggedMem {
             }
         );
         self.mem.prog_read(addr)
+    }
+}
+
+const VM_STACK_SIZE: usize = 1024 * 1024 * 2;
+
+struct Comptime {
+    vm:     hbvm::Vm<LoggedMem, 0>,
+    _stack: Box<[u8; VM_STACK_SIZE]>,
+}
+
+impl Default for Comptime {
+    fn default() -> Self {
+        let mut stack = Box::<[u8; VM_STACK_SIZE]>::new_uninit();
+        let mut vm = hbvm::Vm::default();
+        let ptr = unsafe { stack.as_mut_ptr().cast::<u8>().add(VM_STACK_SIZE) as u64 };
+        log::dbg!("stack_ptr: {:x}", ptr);
+        vm.write_reg(STACK_PTR, ptr);
+        Self {
+            vm,
+            _stack: unsafe { stack.assume_init() },
+        }
+    }
+}
+
+pub enum Trap {
+    MakeStruct {
+        file:        FileId,
+        struct_expr: ExprRef,
+    },
+}
+
+#[derive(Default)]
+pub struct Codegen {
+    pub files: Vec<parser::Ast>,
+    tasks:     Vec<Option<FTask>>,
+
+    tys:    Types,
+    ci:     ItemCtx,
+    output: Output,
+    pool:   Pool,
+    ct:     Comptime,
+}
+
+impl Codegen {
+    pub fn generate(&mut self) {
+        self.output.emit_entry_prelude();
+        self.find_or_declare(0, 0, Err("main"), "");
+        self.complete_call_graph();
+        self.link();
+    }
+
+    pub fn dump(mut self, out: &mut impl std::io::Write) -> std::io::Result<()> {
+        let reloc = Reloc::new(0, 3, 4);
+        self.output.funcs.push((0, reloc));
+        self.link();
+        out.write_all(&self.output.code)
+    }
+
+    fn expr(&mut self, expr: &Expr) -> Option<Value> {
+        self.expr_ctx(expr, Ctx::default())
+    }
+
+    fn build_struct(&mut self, fields: &[(&str, Expr)]) -> ty::Struct {
+        let fields = fields
+            .iter()
+            .map(|&(name, ty)| Field {
+                name: name.into(),
+                ty:   self.ty(&ty),
+            })
+            .collect();
+        self.tys.structs.push(Struct { fields });
+        self.tys.structs.len() as u32 - 1
+    }
+
+    fn expr_ctx(&mut self, expr: &Expr, mut ctx: Ctx) -> Option<Value> {
+        self.ci.stack.integriy_check();
+        use {Expr as E, TokenKind as T};
+        let value = match *expr {
+            E::Mod { id, .. } => Some(Value::ty(ty::Kind::Module(id).compress())),
+            E::Struct {
+                fields, captured, ..
+            } => {
+                if captured.is_empty() {
+                    Some(Value::ty(
+                        ty::Kind::Struct(self.build_struct(fields)).compress(),
+                    ))
+                } else {
+                    let values = captured
+                        .iter()
+                        .map(|&id| E::Ident {
+                            id,
+                            name: "booodab",
+                            index: u16::MAX,
+                        })
+                        .map(|expr| self.expr(&expr))
+                        .collect::<Option<Vec<_>>>()?;
+                    let values_size = values
+                        .iter()
+                        .map(|value| 4 + self.tys.size_of(value.ty))
+                        .sum::<Size>();
+
+                    let stack = self.ci.stack.allocate(values_size);
+                    let mut ptr = Loc::stack(stack.as_ref());
+                    for value in values {
+                        self.store_sized(Loc::ty(value.ty), &ptr, 4);
+                        ptr = ptr.offset(4);
+                        let size = self.tys.size_of(value.ty);
+                        self.store_sized(value.loc, &ptr, size);
+                        ptr = ptr.offset(size);
+                    }
+
+                    self.stack_offset_low(2, STACK_PTR, Some(&stack), 0);
+                    let val = self.eca(
+                        Trap::MakeStruct {
+                            file:        self.ci.file,
+                            struct_expr: ExprRef::new(expr),
+                        },
+                        ty::TYPE,
+                    );
+                    self.ci.free_loc(Loc::stack(stack));
+                    Some(val)
+                }
+            }
+            E::UnOp {
+                op: T::Xor, val, ..
+            } => {
+                let val = self.ty(val);
+                Some(Value::ty(self.tys.make_ptr(val)))
+            }
+            E::Directive {
+                name: "TypeOf",
+                args: [expr],
+                ..
+            } => {
+                let snap = self.output.snap();
+                let value = self.expr(expr).unwrap();
+                self.ci.free_loc(value.loc);
+                self.output.trunc(&snap);
+                Some(Value::ty(value.ty))
+            }
+            E::Directive {
+                name: "eca",
+                args: [ret_ty, args @ ..],
+                ..
+            } => {
+                let ty = self.ty(ret_ty);
+
+                let mut parama = self.tys.parama(ty);
+                // TODO: reuse a stack for this
+                let mut values = Vec::with_capacity(args.len());
+                for arg in args {
+                    let arg = self.expr(arg)?;
+                    self.pass_arg(&arg, &mut parama);
+                    values.push(arg.loc);
+                }
+                for value in values {
+                    self.ci.free_loc(value);
+                }
+
+                let loc = self.alloc_ret(ty, ctx);
+
+                self.output.emit(eca());
+
+                self.load_ret(ty, &loc);
+
+                return Some(Value { ty, loc });
+            }
+            E::Directive {
+                name: "sizeof",
+                args: [ty],
+                ..
+            } => {
+                let ty = self.ty(ty);
+                return Some(Value::imm(self.tys.size_of(ty) as _));
+            }
+            E::Directive {
+                name: "alignof",
+                args: [ty],
+                ..
+            } => {
+                let ty = self.ty(ty);
+                return Some(Value::imm(self.tys.align_of(ty) as _));
+            }
+            E::Directive {
+                name: "intcast",
+                args: [val],
+                ..
+            } => {
+                let Some(ty) = ctx.ty else {
+                    self.report(
+                        expr.pos(),
+                        "type to cast to is unknown, use `@as(<type>, <expr>)`",
+                    );
+                };
+                let mut val = self.expr(val)?;
+
+                let from_size = self.tys.size_of(val.ty);
+                let to_size = self.tys.size_of(ty);
+
+                if from_size < to_size && val.ty.is_signed() {
+                    let reg = self.loc_to_reg(val.loc, from_size);
+                    let op = [sxt8, sxt16, sxt32][from_size.ilog2() as usize];
+                    self.output.emit(op(reg.get(), reg.get()));
+                    val.loc = Loc::reg(reg);
+                }
+
+                Some(Value { ty, loc: val.loc })
+            }
+            E::Directive {
+                name: "bitcast",
+                args: [val],
+                ..
+            } => {
+                let Some(ty) = ctx.ty else {
+                    self.report(
+                        expr.pos(),
+                        "type to cast to is unknown, use `@as(<type>, <expr>)`",
+                    );
+                };
+
+                let size = self.tys.size_of(ty);
+
+                ctx.ty = None;
+
+                let val = self.expr_ctx(val, ctx)?;
+
+                if self.tys.size_of(val.ty) != size {
+                    self.report(
+                        expr.pos(),
+                        format_args!(
+                            "cannot bitcast {} to {} (different sizes: {} != {size})",
+                            self.ty_display(val.ty),
+                            self.ty_display(ty),
+                            self.tys.size_of(val.ty),
+                        ),
+                    );
+                }
+
+                // TODO: maybe check align
+
+                return Some(Value { ty, loc: val.loc });
+            }
+            E::Directive {
+                name: "as",
+                args: [ty, val],
+                ..
+            } => {
+                let ty = self.ty(ty);
+                ctx.ty = Some(ty);
+                return self.expr_ctx(val, ctx);
+            }
+            E::Bool { value, .. } => Some(Value {
+                ty:  ty::BOOL.into(),
+                loc: Loc::imm(value as u64),
+            }),
+            E::Ctor {
+                pos, ty, fields, ..
+            } => {
+                let Some(ty) = ty.map(|ty| self.ty(ty)).or(ctx.ty) else {
+                    self.report(pos, "expected type, (it cannot be inferred)");
+                };
+                let size = self.tys.size_of(ty);
+
+                let loc = ctx
+                    .loc
+                    .unwrap_or_else(|| Loc::stack(self.ci.stack.allocate(size)));
+                let ty::Kind::Struct(stuct) = ty.expand() else {
+                    self.report(pos, "expected expression to evaluate to struct")
+                };
+                let field_count = self.tys.structs[stuct as usize].fields.len();
+                if field_count != fields.len() {
+                    self.report(
+                        pos,
+                        format_args!("expected {} fields, got {}", field_count, fields.len()),
+                    );
+                }
+
+                for (i, (name, field)) in fields.iter().enumerate() {
+                    let Some((offset, ty)) = self.tys.offset_of(stuct, name.ok_or(i)) else {
+                        self.report(pos, format_args!("field not found: {name:?}"));
+                    };
+                    let loc = loc.as_ref().offset(offset);
+                    let value = self.expr_ctx(field, Ctx::default().with_loc(loc).with_ty(ty))?;
+                    self.ci.free_loc(value.loc);
+                }
+
+                return Some(Value { ty, loc });
+            }
+            E::Field { target, field } => {
+                let checkpoint = self.output.code.len();
+                let mut tal = self.expr(target)?;
+
+                if let ty::Kind::Ptr(ty) = tal.ty.expand() {
+                    tal.ty = self.tys.ptrs[ty as usize].base;
+                    tal.loc = tal.loc.into_derefed();
+                }
+
+                match tal.ty.expand() {
+                    ty::Kind::Struct(idx) => {
+                        let Some((offset, ty)) = self.tys.offset_of(idx, Ok(field)) else {
+                            self.report(target.pos(), format_args!("field not found: {field:?}"));
+                        };
+                        Some(Value {
+                            ty,
+                            loc: tal.loc.offset(offset),
+                        })
+                    }
+                    ty::Kind::Builtin(ty::TYPE) => {
+                        self.output.code.truncate(checkpoint);
+                        match ty::Kind::from_ty(self.ty(target)) {
+                            ty::Kind::Module(idx) => Some(Value::ty(
+                                self.find_or_declare(target.pos(), idx, Err(field), "")
+                                    .compress(),
+                            )),
+                            _ => unimplemented!(),
+                        }
+                    }
+                    smh => self.report(
+                        target.pos(),
+                        format_args!("the field operation is not supported: {smh:?}"),
+                    ),
+                }
+            }
+            E::UnOp {
+                op: T::Band,
+                val,
+                pos,
+            } => {
+                let mut val = self.expr(val)?;
+                let Loc::Rt {
+                    derefed: drfd @ true,
+                    reg,
+                    stack,
+                    offset,
+                } = &mut val.loc
+                else {
+                    self.report(
+                        pos,
+                        format_args!(
+                            "cant take pointer of {} ({:?})",
+                            self.ty_display(val.ty),
+                            val.loc
+                        ),
+                    );
+                };
+
+                *drfd = false;
+                let offset = std::mem::take(offset) as _;
+                if reg.is_ref() {
+                    let new_reg = self.ci.regs.allocate();
+                    self.stack_offset_low(new_reg.get(), reg.get(), stack.as_ref(), offset);
+                    *reg = new_reg;
+                } else {
+                    self.stack_offset_low(reg.get(), reg.get(), stack.as_ref(), offset);
+                }
+
+                // FIXME: we might be able to track this but it will be pain
+                std::mem::forget(stack.take());
+
+                Some(Value {
+                    ty:  self.tys.make_ptr(val.ty),
+                    loc: val.loc,
+                })
+            }
+            E::UnOp {
+                op: T::Mul,
+                val,
+                pos,
+            } => {
+                let val = self.expr(val)?;
+                match val.ty.expand() {
+                    ty::Kind::Ptr(ty) => Some(Value {
+                        ty:  self.tys.ptrs[ty as usize].base,
+                        loc: Loc::reg(self.loc_to_reg(val.loc, self.tys.size_of(val.ty)))
+                            .into_derefed(),
+                    }),
+                    _ => self.report(
+                        pos,
+                        format_args!("expected pointer, got {}", self.ty_display(val.ty)),
+                    ),
+                }
+            }
+            E::BinOp {
+                left: &E::Ident { id, .. },
+                op: T::Decl,
+                right,
+            } => {
+                let val = self.expr(right)?;
+                let mut loc = self.make_loc_owned(val.loc, val.ty);
+                let sym = parser::find_symbol(&self.cfile().symbols, id);
+                if sym.flags & idfl::REFERENCED != 0 {
+                    loc = self.spill(loc, self.tys.size_of(val.ty));
+                }
+                self.ci.vars.push(Variable {
+                    id,
+                    value: Value { ty: val.ty, loc },
+                });
+                Some(Value::void())
+            }
+            E::Call { func, args } => {
+                let func_ty = self.ty(func);
+                let ty::Kind::Func(func_id) = func_ty.expand() else {
+                    self.report(func.pos(), "can't call this, maybe in the future");
+                };
+
+                let func = self.tys.funcs[func_id as usize];
+
+                let mut parama = self.tys.parama(func.ret);
+                let mut values = Vec::with_capacity(args.len());
+                for (i, earg) in args.iter().enumerate() {
+                    // TODO: pass the arg as dest
+                    let ty = func.args.view(&self.tys.args)[i];
+                    let arg = self.expr_ctx(earg, Ctx::default().with_ty(ty))?;
+                    _ = self.assert_ty(earg.pos(), ty, arg.ty);
+                    self.pass_arg(&arg, &mut parama);
+                    values.push(arg.loc);
+                }
+                for value in values {
+                    self.ci.free_loc(value);
+                }
+
+                log::dbg!("call ctx: {ctx:?}");
+
+                let loc = self.alloc_ret(func.ret, ctx);
+                self.output.emit_call(func_id);
+                self.load_ret(func.ret, &loc);
+
+                return Some(Value { ty: func.ret, loc });
+            }
+            E::Ident { id, .. } if ident::is_null(id) => Some(Value::ty(id.into())),
+            E::Ident { id, index, .. }
+                if let Some((var_index, var)) = self
+                    .ci
+                    .vars
+                    .iter_mut()
+                    .enumerate()
+                    .find(|(_, v)| v.id == id) =>
+            {
+                let sym = parser::find_symbol(&self.files[self.ci.file as usize].symbols, id);
+                let loc = match idfl::index(sym.flags) == index
+                    && !self
+                        .ci
+                        .loops
+                        .last()
+                        .is_some_and(|l| l.var_count > var_index as u32)
+                {
+                    true => std::mem::take(&mut var.value.loc),
+                    false => var.value.loc.as_ref(),
+                };
+
+                Some(Value {
+                    ty: self.ci.vars[var_index].value.ty,
+                    loc,
+                })
+            }
+            E::Ident { id, name, .. } => match self
+                .tys
+                .syms
+                .get(&SymKey {
+                    ident: id,
+                    file:  self.ci.file,
+                })
+                .copied()
+                .map(ty::Kind::from_ty)
+                .unwrap_or_else(|| self.find_or_declare(ident::pos(id), self.ci.file, Ok(id), name))
+            {
+                ty::Kind::Global(id) => self.handle_global(id),
+                tk => Some(Value::ty(tk.compress())),
+            },
+            E::Return { val, .. } => {
+                if let Some(val) = val {
+                    let size = self.tys.size_of(self.ci.ret);
+                    let loc = match size {
+                        0 => Loc::default(),
+                        1..=16 => Loc::reg(1),
+                        _ => Loc::reg(self.ci.ret_reg.as_ref()).into_derefed(),
+                    };
+                    self.expr_ctx(val, Ctx::default().with_ty(self.ci.ret).with_loc(loc))?;
+                }
+                let off = self.output.code.len() as u32 - self.ci.snap.code as u32;
+                self.ci.ret_relocs.push(Reloc::new(off, 1, 4));
+                self.output.emit(jmp(0));
+                None
+            }
+            E::Block { stmts, .. } => {
+                for stmt in stmts {
+                    self.expr(stmt)?;
+                }
+                Some(Value::void())
+            }
+            E::Number { value, .. } => Some(Value {
+                ty:  ctx.ty.map(ty::Id::strip_pointer).unwrap_or(ty::INT.into()),
+                loc: Loc::imm(value),
+            }),
+            E::If {
+                cond, then, else_, ..
+            } => 'b: {
+                log::dbg!("if-cond");
+                let cond = self.expr_ctx(cond, Ctx::default().with_ty(ty::BOOL))?;
+                let reg = self.loc_to_reg(cond.loc, 1);
+                let jump_offset = self.output.code.len() as u32;
+                self.output.emit(jeq(reg.get(), 0, 0));
+                self.ci.regs.free(reg);
+
+                log::dbg!("if-then");
+                let then_unreachable = self.expr(then).is_none();
+                let mut else_unreachable = false;
+
+                let mut jump = self.output.code.len() as i64 - jump_offset as i64;
+
+                if let Some(else_) = else_ {
+                    log::dbg!("if-else");
+                    let else_jump_offset = self.output.code.len() as u32;
+                    if !then_unreachable {
+                        self.output.emit(jmp(0));
+                        jump = self.output.code.len() as i64 - jump_offset as i64;
+                    }
+
+                    else_unreachable = self.expr(else_).is_none();
+
+                    if !then_unreachable {
+                        let jump = self.output.code.len() as i64 - else_jump_offset as i64;
+                        log::dbg!("if-else-jump: {}", jump);
+                        write_reloc(
+                            &mut self.output.code,
+                            else_jump_offset as usize + 1,
+                            jump,
+                            4,
+                        );
+                    }
+                }
+
+                log::dbg!("if-then-jump: {}", jump);
+                write_reloc(&mut self.output.code, jump_offset as usize + 3, jump, 2);
+
+                if then_unreachable && else_unreachable {
+                    break 'b None;
+                }
+
+                Some(Value::void())
+            }
+            E::Loop { body, .. } => 'a: {
+                log::dbg!("loop");
+
+                let loop_start = self.output.code.len() as u32 - self.ci.snap.code as u32;
+                self.ci.loops.push(Loop {
+                    var_count:  self.ci.vars.len() as _,
+                    offset:     loop_start,
+                    reloc_base: self.ci.loop_relocs.len() as u32,
+                });
+                let body_unreachable = self.expr(body).is_none();
+
+                log::dbg!("loop-end");
+                if !body_unreachable {
+                    let loop_end = self.output.code.len() - self.ci.snap.code;
+                    self.output.emit(jmp(loop_start as i32 - loop_end as i32));
+                }
+
+                let loop_end = self.output.code.len() as u32 - self.ci.snap.code as u32;
+
+                let loopa = self.ci.loops.pop().unwrap();
+                let is_unreachable = loopa.reloc_base == self.ci.loop_relocs.len() as u32;
+                for reloc in self.ci.loop_relocs.drain(loopa.reloc_base as usize..) {
+                    reloc.apply_jump(&mut self.output.code[self.ci.snap.code..], loop_end);
+                }
+
+                // TODO: avoid collect
+                for var in self
+                    .ci
+                    .vars
+                    .drain(loopa.var_count as usize..)
+                    .collect::<Vec<_>>()
+                {
+                    self.ci.free_loc(var.value.loc);
+                }
+
+                if is_unreachable {
+                    log::dbg!("infinite loop");
+                    break 'a None;
+                }
+
+                Some(Value::void())
+            }
+            E::Break { .. } => {
+                let offset = self.output.code.len() as u32 - self.ci.snap.code as u32;
+                self.ci.loop_relocs.push(Reloc::new(offset, 1, 4));
+                self.output.emit(jmp(0));
+                None
+            }
+            E::Continue { .. } => {
+                let loop_ = self.ci.loops.last().unwrap();
+                let offset = self.output.code.len() as u32 - self.ci.snap.code as u32;
+                self.output.emit(jmp(loop_.offset as i32 - offset as i32));
+                None
+            }
+            E::BinOp {
+                left,
+                op: op @ (T::And | T::Or),
+                right,
+            } => {
+                let lhs = self.expr_ctx(left, Ctx::default().with_ty(ty::BOOL))?;
+                let lhs = self.loc_to_reg(lhs.loc, 1);
+                let jump_offset = self.output.code.len() + 3;
+                let op = if op == T::And { jeq } else { jne };
+                self.output.emit(op(lhs.get(), 0, 0));
+
+                if let Some(rhs) = self.expr_ctx(right, Ctx::default().with_ty(ty::BOOL)) {
+                    let rhs = self.loc_to_reg(rhs.loc, 1);
+                    self.output.emit(cp(lhs.get(), rhs.get()));
+                }
+
+                let jump = self.output.code.len() as i64 - jump_offset as i64;
+                write_reloc(&mut self.output.code, jump_offset, jump, 2);
+
+                Some(Value {
+                    ty:  ty::BOOL.into(),
+                    loc: Loc::reg(lhs),
+                })
+            }
+            E::BinOp { left, op, right } => 'ops: {
+                let left = self.expr(left)?;
+
+                if op == T::Assign {
+                    let value = self.expr_ctx(right, Ctx::from(left)).unwrap();
+                    self.ci.free_loc(value.loc);
+                    return Some(Value::void());
+                }
+
+                if let ty::Kind::Struct(_) = left.ty.expand() {
+                    let right = self.expr_ctx(right, Ctx::default().with_ty(left.ty))?;
+                    _ = self.assert_ty(expr.pos(), left.ty, right.ty);
+                    return self.struct_op(op, left.ty, ctx, left.loc, right.loc);
+                }
+
+                let lsize = self.tys.size_of(left.ty);
+                let ty = ctx.ty.unwrap_or(left.ty);
+
+                let lhs = match ctx.loc.take() {
+                    Some(Loc::Rt { reg, .. })
+                        if matches!(&left.loc, Loc::Rt { reg: r, ..} if *r == reg)
+                            && reg.get() != 1 =>
+                    {
+                        reg
+                    }
+                    Some(loc) => {
+                        ctx = Ctx::from(Value { ty, loc });
+                        self.loc_to_reg(left.loc, lsize)
+                    }
+                    None => self.loc_to_reg(left.loc, lsize),
+                };
+                let right = self.expr_ctx(right, Ctx::default().with_ty(left.ty))?;
+                let rsize = self.tys.size_of(right.ty);
+
+                let ty = self.assert_ty(expr.pos(), left.ty, right.ty);
+                let size = self.tys.size_of(ty);
+                let signed = ty.is_signed();
+
+                if let Loc::Ct { value } = right.loc
+                    && let Some(oper) = Self::imm_math_op(op, signed, size)
+                {
+                    let mut imm = u64::from_ne_bytes(value);
+                    if matches!(op, T::Add | T::Sub)
+                        && let ty::Kind::Ptr(ty) = ty::Kind::from_ty(ty)
+                    {
+                        let size = self.tys.size_of(self.tys.ptrs[ty as usize].base);
+                        imm *= size as u64;
+                    }
+
+                    self.output.emit(oper(lhs.get(), lhs.get(), imm));
+                    break 'ops Some(Value::new(ty, lhs));
+                }
+
+                let rhs = self.loc_to_reg(right.loc, rsize);
+
+                if matches!(op, T::Add | T::Sub) {
+                    let min_size = lsize.min(rsize);
+                    if ty.is_signed() && min_size < size {
+                        let operand = if lsize < rsize { lhs.get() } else { rhs.get() };
+                        let op = [sxt8, sxt16, sxt32][min_size.ilog2() as usize];
+                        self.output.emit(op(operand, operand));
+                    }
+
+                    if left.ty.is_pointer() ^ right.ty.is_pointer() {
+                        let (offset, ty) = if left.ty.is_pointer() {
+                            (rhs.get(), left.ty)
+                        } else {
+                            (lhs.get(), right.ty)
+                        };
+
+                        let ty::Kind::Ptr(ty) = ty.expand() else {
+                            unreachable!()
+                        };
+
+                        let size = self.tys.size_of(self.tys.ptrs[ty as usize].base);
+                        self.output.emit(muli64(offset, offset, size as _));
+                    }
+                }
+
+                if let Some(op) = Self::math_op(op, signed, size) {
+                    self.output.emit(op(lhs.get(), lhs.get(), rhs.get()));
+                    self.ci.regs.free(rhs);
+                    break 'ops Some(Value::new(ty, lhs));
+                }
+
+                'cmp: {
+                    let against = match op {
+                        T::Le | T::Gt => 1,
+                        T::Ne | T::Eq => 0,
+                        T::Ge | T::Lt => (-1i64) as _,
+                        _ => break 'cmp,
+                    };
+
+                    let op_fn = if signed { cmps } else { cmpu };
+                    self.output.emit(op_fn(lhs.get(), lhs.get(), rhs.get()));
+                    self.output.emit(cmpui(lhs.get(), lhs.get(), against));
+                    if matches!(op, T::Eq | T::Lt | T::Gt) {
+                        self.output.emit(not(lhs.get(), lhs.get()));
+                    }
+
+                    self.ci.regs.free(rhs);
+                    break 'ops Some(Value::new(ty::BOOL, lhs));
+                }
+
+                unimplemented!("{:#?}", op)
+            }
+            ast => unimplemented!("{:#?}", ast),
+        }?;
+
+        if let Some(ty) = ctx.ty {
+            _ = self.assert_ty(expr.pos(), value.ty, ty);
+        }
+
+        Some(match ctx.loc {
+            Some(dest) => {
+                log::dbg!("store ctx");
+                let ty = ctx.ty.unwrap_or(value.ty);
+                self.store_typed(value.loc, dest, ty);
+                Value {
+                    ty,
+                    loc: Loc::imm(0),
+                }
+            }
+            None => value,
+        })
+    }
+
+    fn struct_op(
+        &mut self,
+        op: TokenKind,
+        ty: ty::Id,
+        ctx: Ctx,
+        left: Loc,
+        mut right: Loc,
+    ) -> Option<Value> {
+        if let ty::Kind::Struct(stuct) = ty.expand() {
+            let loc = ctx
+                .loc
+                .or_else(|| right.take_owned())
+                .unwrap_or_else(|| Loc::stack(self.ci.stack.allocate(self.tys.size_of(ty))));
+            let mut offset = 0;
+            for &Field { ty, .. } in self.tys.structs[stuct as usize].fields.clone().iter() {
+                offset = Types::align_up(offset, self.tys.align_of(ty));
+                let size = self.tys.size_of(ty);
+                let ctx = Ctx::from(Value {
+                    ty,
+                    loc: loc.as_ref().offset(offset),
+                });
+                let left = left.as_ref().offset(offset);
+                let right = right.as_ref().offset(offset);
+                let value = self.struct_op(op, ty, ctx, left, right)?;
+                self.ci.free_loc(value.loc);
+                offset += size;
+            }
+
+            self.ci.free_loc(left);
+            self.ci.free_loc(right);
+
+            return Some(Value { ty, loc });
+        }
+
+        let size = self.tys.size_of(ty);
+        let signed = ty.is_signed();
+        let lhs = self.loc_to_reg(left, size);
+
+        if let Loc::Ct { value } = right
+            && let Some(op) = Self::imm_math_op(op, signed, size)
+        {
+            self.output
+                .emit(op(lhs.get(), lhs.get(), u64::from_ne_bytes(value)));
+            return Some(if let Some(value) = ctx.into_value() {
+                self.store_typed(Loc::reg(lhs.as_ref()), value.loc, value.ty);
+                Value::void()
+            } else {
+                Value {
+                    ty,
+                    loc: Loc::reg(lhs),
+                }
+            });
+        }
+
+        let rhs = self.loc_to_reg(right, size);
+
+        if let Some(op) = Self::math_op(op, signed, size) {
+            self.output.emit(op(lhs.get(), lhs.get(), rhs.get()));
+            self.ci.regs.free(rhs);
+            return if let Some(value) = ctx.into_value() {
+                self.store_typed(Loc::reg(lhs), value.loc, value.ty);
+                Some(Value::void())
+            } else {
+                Some(Value {
+                    ty,
+                    loc: Loc::reg(lhs),
+                })
+            };
+        }
+
+        unimplemented!("{:#?}", op)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn math_op(
+        op: TokenKind,
+        signed: bool,
+        size: u32,
+    ) -> Option<fn(u8, u8, u8) -> (usize, [u8; instrs::MAX_SIZE])> {
+        use TokenKind as T;
+
+        macro_rules! div { ($($op:ident),*) => {[$(|a, b, c| $op(a, ZERO, b, c)),*]}; }
+        macro_rules! rem { ($($op:ident),*) => {[$(|a, b, c| $op(ZERO, a, b, c)),*]}; }
+
+        let ops = match op {
+            T::Add => [add8, add16, add32, add64],
+            T::Sub => [sub8, sub16, sub32, sub64],
+            T::Mul => [mul8, mul16, mul32, mul64],
+            T::Div if signed => div!(dirs8, dirs16, dirs32, dirs64),
+            T::Div => div!(diru8, diru16, diru32, diru64),
+            T::Mod if signed => rem!(dirs8, dirs16, dirs32, dirs64),
+            T::Mod => rem!(diru8, diru16, diru32, diru64),
+            T::Band => return Some(and),
+            T::Bor => return Some(or),
+            T::Xor => return Some(xor),
+            T::Shl => [slu8, slu16, slu32, slu64],
+            T::Shr if signed => [srs8, srs16, srs32, srs64],
+            T::Shr => [sru8, sru16, sru32, sru64],
+            _ => return None,
+        };
+
+        Some(ops[size.ilog2() as usize])
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn imm_math_op(
+        op: TokenKind,
+        signed: bool,
+        size: u32,
+    ) -> Option<fn(u8, u8, u64) -> (usize, [u8; instrs::MAX_SIZE])> {
+        use TokenKind as T;
+
+        macro_rules! def_op {
+            ($name:ident |$a:ident, $b:ident, $c:ident| $($tt:tt)*) => {
+                macro_rules! $name {
+                    ($$($$op:ident),*) => {
+                        [$$(
+                            |$a, $b, $c: u64| $$op($($tt)*),
+                        )*]
+                    }
+                }
+            };
+        }
+
+        def_op!(basic_op | a, b, c | a, b, c as _);
+        def_op!(sub_op | a, b, c | b, a, c.wrapping_neg() as _);
+
+        let ops = match op {
+            T::Add => basic_op!(addi8, addi16, addi32, addi64),
+            T::Sub => sub_op!(addi8, addi16, addi32, addi64),
+            T::Mul => basic_op!(muli8, muli16, muli32, muli64),
+            T::Band => return Some(andi),
+            T::Bor => return Some(ori),
+            T::Xor => return Some(xori),
+            T::Shr if signed => basic_op!(srui8, srui16, srui32, srui64),
+            T::Shr => basic_op!(srui8, srui16, srui32, srui64),
+            T::Shl => basic_op!(slui8, slui16, slui32, slui64),
+            _ => return None,
+        };
+
+        Some(ops[size.ilog2() as usize])
+    }
+
+    fn handle_global(&mut self, id: ty::Global) -> Option<Value> {
+        let ptr = self.ci.regs.allocate();
+
+        let global = &mut self.tys.globals[id as usize];
+
+        let reloc = Reloc::new(self.output.code.len() as u32, 3, 4);
+        self.output.globals.push((id, reloc));
+        self.output.emit(instrs::lra(ptr.get(), 0, 0));
+
+        Some(Value {
+            ty:  global.ty,
+            loc: Loc::reg(ptr).into_derefed(),
+        })
+    }
+
+    fn spill(&mut self, loc: Loc, size: Size) -> Loc {
+        let stack = Loc::stack(self.ci.stack.allocate(size));
+        self.store_sized(loc, &stack, size);
+        stack
+    }
+
+    fn make_loc_owned(&mut self, loc: Loc, ty: ty::Id) -> Loc {
+        let size = self.tys.size_of(ty);
+        match size {
+            0 => Loc::default(),
+            1..=8 => Loc::reg(self.loc_to_reg(loc, size)),
+            _ if loc.is_ref() => {
+                let new_loc = Loc::stack(self.ci.stack.allocate(size));
+                self.store_sized(loc, &new_loc, size);
+                new_loc
+            }
+            _ => loc,
+        }
+    }
+
+    fn complete_call_graph(&mut self) {
+        while self.ci.task_base < self.tasks.len()
+            && let Some(task_slot) = self.tasks.pop()
+        {
+            let Some(task) = task_slot else { continue };
+            self.handle_task(task);
+        }
+    }
+
+    fn handle_task(&mut self, FTask { file, expr, id }: FTask) {
+        let ast = self.files[file as usize].clone();
+        let expr = expr.get(&ast).unwrap();
+        let func = self.tys.funcs[id as usize];
+
+        let repl = ItemCtx {
+            file,
+            id: ty::Kind::Func(id),
+            ret: func.ret,
+            ..self.pool.cis.pop().unwrap_or_default()
+        };
+        let prev_ci = std::mem::replace(&mut self.ci, repl);
+        self.ci.regs.init();
+        self.ci.snap = self.output.snap();
+
+        let Expr::BinOp {
+            left: Expr::Ident { name, .. },
+            op: TokenKind::Decl,
+            right: &Expr::Closure { body, args, .. },
+        } = expr
+        else {
+            unreachable!("{expr}")
+        };
+
+        log::dbg!("fn: {}", name);
+
+        self.output.emit_prelude();
+
+        log::dbg!("fn-args");
+        let mut parama = self.tys.parama(func.ret);
+        // TODO: dont allocate da vec
+        for (arg, ty) in args.iter().zip(func.args.view(&self.tys.args).to_vec()) {
+            let sym = parser::find_symbol(&ast.symbols, arg.id);
+            let loc = self.load_arg(sym.flags, ty, &mut parama);
+            self.ci.vars.push(Variable {
+                id:    arg.id,
+                value: Value { ty, loc },
+            });
+        }
+
+        if self.tys.size_of(func.ret) > 16 {
+            let reg = self.ci.regs.allocate();
+            self.output.emit(instrs::cp(reg.get(), 1));
+            self.ci.ret_reg = reg;
+        } else {
+            self.ci.ret_reg = reg::Id::RET;
+        }
+
+        log::dbg!("fn-body");
+        if self.expr(body).is_some() {
+            self.report(body.pos(), "expected all paths in the fucntion to return");
+        }
+
+        for vars in self.ci.vars.drain(..).collect::<Vec<_>>() {
+            self.ci.free_loc(vars.value.loc);
+        }
+
+        log::dbg!("fn-prelude, stack: {:x}", self.ci.stack.max_height);
+
+        log::dbg!("fn-relocs");
+        self.ci.finalize(&mut self.output);
+        self.output.emit(jala(ZERO, RET_ADDR, 0));
+        self.ci.regs.free(std::mem::take(&mut self.ci.ret_reg));
+        self.tys.funcs[id as usize].offset = self.ci.snap.code as Offset;
+        self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
+    }
+
+    fn load_arg(&mut self, flags: parser::IdentFlags, ty: ty::Id, parama: &mut ParamAlloc) -> Loc {
+        let size = self.tys.size_of(ty) as Size;
+        let (src, dst) = match size {
+            0 => (Loc::default(), Loc::default()),
+            ..=8 if flags & idfl::REFERENCED == 0 => {
+                (Loc::reg(parama.next()), Loc::reg(self.ci.regs.allocate()))
+            }
+            1..=8 => (
+                Loc::reg(parama.next()),
+                Loc::stack(self.ci.stack.allocate(size)),
+            ),
+            9..=16 => (
+                Loc::reg(parama.next_wide()),
+                Loc::stack(self.ci.stack.allocate(size)),
+            ),
+            _ if flags & (idfl::MUTABLE | idfl::REFERENCED) == 0 => {
+                let ptr = parama.next();
+                let reg = self.ci.regs.allocate();
+                self.output.emit(instrs::cp(reg.get(), ptr));
+                return Loc::reg(reg).into_derefed();
+            }
+            _ => (
+                Loc::reg(parama.next()).into_derefed(),
+                Loc::stack(self.ci.stack.allocate(size)),
+            ),
+        };
+
+        self.store_sized(src, &dst, size);
+        dst
+    }
+
+    fn eca(&mut self, trap: Trap, ret: impl Into<ty::Id>) -> Value {
+        self.output.emit(eca());
+        self.output.write_trap(trap);
+        Value {
+            ty:  ret.into(),
+            loc: Loc::reg(1),
+        }
+    }
+
+    fn alloc_ret(&mut self, ret: ty::Id, ctx: Ctx) -> Loc {
+        if let Some(loc) = ctx.loc {
+            return loc;
+        }
+
+        let size = self.tys.size_of(ret);
+        match size {
+            0 => Loc::default(),
+            1..=8 => Loc::reg(1),
+            9..=16 => Loc::stack(self.ci.stack.allocate(size)),
+            _ => {
+                let stack = self.ci.stack.allocate(size);
+                self.stack_offset_low(1, STACK_PTR, Some(&stack), 0);
+                Loc::stack(stack)
+            }
+        }
+    }
+
+    fn loc_to_reg(&mut self, loc: Loc, size: Size) -> reg::Id {
+        match loc {
+            Loc::Rt {
+                derefed: false,
+                mut reg,
+                offset,
+                stack,
+            } => {
+                debug_assert!(stack.is_none(), "TODO");
+                assert_eq!(offset, 0, "TODO");
+                if reg.is_ref() {
+                    let new_reg = self.ci.regs.allocate();
+                    self.output.emit(cp(new_reg.get(), reg.get()));
+                    reg = new_reg;
+                }
+                reg
+            }
+            Loc::Rt { .. } => {
+                let reg = self.ci.regs.allocate();
+                self.store_sized(loc, Loc::reg(reg.as_ref()), size);
+                reg
+            }
+            Loc::Ct { value } => {
+                let reg = self.ci.regs.allocate();
+                self.output.emit(li64(reg.get(), u64::from_ne_bytes(value)));
+                reg
+            }
+        }
+    }
+
+    fn load_ret(&mut self, ty: ty::Id, loc: &Loc) {
+        let size = self.tys.size_of(ty);
+        if let 1..=16 = size {
+            self.store_sized(Loc::reg(1), loc, size);
+        }
+    }
+
+    fn pass_arg(&mut self, value: &Value, parama: &mut ParamAlloc) {
+        self.pass_arg_low(&value.loc, self.tys.size_of(value.ty), parama)
+    }
+
+    fn pass_arg_low(&mut self, loc: &Loc, size: Size, parama: &mut ParamAlloc) {
+        if size > 16 {
+            let Loc::Rt {
+                reg, stack, offset, ..
+            } = loc
+            else {
+                unreachable!()
+            };
+            self.stack_offset_low(parama.next(), reg.get(), stack.as_ref(), *offset as _);
+            return;
+        }
+
+        let dst = match size {
+            0 => return,
+            9..=16 => Loc::reg(parama.next_wide()),
+            _ => Loc::reg(parama.next()),
+        };
+
+        self.store_sized(loc, dst, size);
+    }
+
+    fn store_typed(&mut self, src: impl Into<LocCow>, dst: impl Into<LocCow>, ty: ty::Id) {
+        self.store_sized(src, dst, self.tys.size_of(ty) as _)
+    }
+
+    fn store_sized(&mut self, src: impl Into<LocCow>, dst: impl Into<LocCow>, size: Size) {
+        self.store_sized_low(src.into(), dst.into(), size);
+    }
+
+    fn store_sized_low(&mut self, src: LocCow, dst: LocCow, size: Size) {
+        macro_rules! lpat {
+            ($der:literal, $reg:ident, $off:pat, $sta:pat) => {
+                &Loc::Rt { derefed: $der, reg: ref $reg, offset: $off, stack: $sta }
+            };
+        }
+
+        src.as_ref().assert_valid();
+        dst.as_ref().assert_valid();
+
+        match (src.as_ref(), dst.as_ref()) {
+            (&Loc::Ct { value }, lpat!(true, reg, off, ref sta)) => {
+                let ct = self.ci.regs.allocate();
+                self.output.emit(li64(ct.get(), u64::from_ne_bytes(value)));
+                let off = self.opt_stack_reloc(sta.as_ref(), off, 3);
+                self.output.emit(st(ct.get(), reg.get(), off, size as _));
+                self.ci.regs.free(ct);
+            }
+            (&Loc::Ct { value }, lpat!(false, reg, 0, None)) => {
+                self.output.emit(li64(reg.get(), u64::from_ne_bytes(value)))
+            }
+            (lpat!(true, src, soff, ref ssta), lpat!(true, dst, doff, ref dsta)) => {
+                // TODO: some oportuinies to ellit more optimal code
+                let src_off = self.ci.regs.allocate();
+                let dst_off = self.ci.regs.allocate();
+                self.stack_offset_low(src_off.get(), src.get(), ssta.as_ref(), soff);
+                self.stack_offset_low(dst_off.get(), dst.get(), dsta.as_ref(), doff);
+                self.output
+                    .emit(bmc(src_off.get(), dst_off.get(), size as _));
+                self.ci.regs.free(src_off);
+                self.ci.regs.free(dst_off);
+            }
+            (lpat!(false, src, 0, None), lpat!(false, dst, 0, None)) => {
+                if src != dst {
+                    self.output.emit(cp(dst.get(), src.get()));
+                }
+            }
+            (lpat!(true, src, soff, ref ssta), lpat!(false, dst, 0, None)) => {
+                if size < 8 {
+                    self.output.emit(cp(dst.get(), 0));
+                }
+                let off = self.opt_stack_reloc(ssta.as_ref(), soff, 3);
+                self.output.emit(ld(dst.get(), src.get(), off, size as _));
+            }
+            (lpat!(false, src, 0, None), lpat!(true, dst, doff, ref dsta)) => {
+                let off = self.opt_stack_reloc(dsta.as_ref(), doff, 3);
+                self.output.emit(st(src.get(), dst.get(), off, size as _))
+            }
+            (a, b) => unreachable!("{a:?} {b:?}"),
+        }
+
+        self.ci.free_loc(src);
+        self.ci.free_loc(dst);
+    }
+
+    fn stack_offset_low(&mut self, dst: u8, op: u8, stack: Option<&stack::Id>, off: Offset) {
+        let Some(stack) = stack else {
+            self.output.emit_addi_low(dst, op, off as _);
+            return;
+        };
+
+        let off = self.stack_reloc(stack, off, 3);
+        self.output.emit(addi64(dst, op, off));
+    }
+
+    fn opt_stack_reloc(&mut self, stack: Option<&stack::Id>, off: Offset, sub_offset: u32) -> u64 {
+        stack
+            .map(|s| self.stack_reloc(s, off, sub_offset))
+            .unwrap_or(off as _)
+    }
+
+    fn stack_reloc(&mut self, stack: &stack::Id, off: Offset, sub_offset: u32) -> u64 {
+        log::dbg!("whaaaaatahack: {:b}", stack.repr());
+        let offset = self.output.code.len() as u32 + sub_offset - self.ci.snap.code as u32;
+        self.ci.stack_relocs.push(Reloc::new(offset, 0, 8));
+        Reloc::pack_srel(stack, off)
+    }
+
+    fn link(&mut self) {
+        // FIXME: this will cause problems relating snapshots
+
+        self.output.funcs.retain(|&(f, rel)| {
+            task::unpack(self.tys.funcs[f as usize].offset)
+                .map(|off| rel.apply_jump(&mut self.output.code, off))
+                .is_err()
+        });
+
+        self.output.globals.retain(|&(g, rel)| {
+            task::unpack(self.tys.globals[g as usize].offset)
+                .map(|off| rel.apply_jump(&mut self.output.code, off))
+                .is_err()
+        })
+    }
+
+    // TODO: sometimes ists better to do this in bulk
+    fn ty(&mut self, expr: &Expr) -> ty::Id {
+        let mut stash = self.pool.outputs.pop().unwrap_or_default();
+        self.output.pop(&mut stash, &self.ci.snap);
+
+        let mut repl = ItemCtx {
+            file: self.ci.file,
+            id: self.ci.id,
+            ..self.pool.cis.pop().unwrap_or_default()
+        };
+        repl.regs.init();
+        repl.vars.append(&mut self.ci.vars);
+        let mut prev_ci = std::mem::replace(&mut self.ci, repl);
+        self.ci.snap = self.output.snap();
+        self.ci.task_base = self.tasks.len();
+
+        self.output.emit_prelude();
+
+        log::dbg!("ty: {expr}");
+        let ret = self.expr(expr).unwrap();
+        _ = self.assert_ty(expr.pos(), ret.ty, ty::TYPE.into());
+        let ty = match ret.loc {
+            Loc::Ct { value } => ty::Id::from(u64::from_ne_bytes(value) as u32),
+            Loc::Rt { .. } => {
+                let mut ty_stash = self.pool.outputs.pop().unwrap_or_default();
+                self.output.pop(&mut ty_stash, &self.ci.snap);
+
+                self.complete_call_graph();
+                self.ci.snap = self.output.snap();
+
+                self.output.append(&mut ty_stash);
+                self.pool.outputs.push(ty_stash);
+
+                prev_ci.vars.append(&mut self.ci.vars);
+                self.ci.finalize(&mut self.output);
+                self.output.emit(tx());
+
+                self.run_vm(self.ci.snap.code);
+
+                ty::Id::from(self.ct.vm.read_reg(1).0 as u32)
+            }
+        };
+
+        self.output.trunc(&self.ci.snap);
+        prev_ci.vars.append(&mut self.ci.vars);
+        self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
+        self.ci.snap = self.output.snap();
+        self.output.append(&mut stash);
+        self.pool.outputs.push(stash);
+
+        self.ci.stack.integriy_check();
+
+        ty
+    }
+
+    fn run_vm(&mut self, entry: usize) {
+        self.link();
+        self.ct.vm.pc = hbvm::mem::Address::new(&mut self.output.code[entry] as *mut _ as _);
+        loop {
+            match self.ct.vm.run().unwrap() {
+                hbvm::VmRunOk::End => break,
+                hbvm::VmRunOk::Timer => unreachable!(),
+                hbvm::VmRunOk::Ecall => self.handle_ecall(),
+                hbvm::VmRunOk::Breakpoint => unreachable!(),
+            }
+        }
+    }
+
+    fn handle_ecall(&mut self) {
+        let arr = self.ct.vm.pc.get() as *const Trap;
+        let trap = unsafe { std::ptr::read_unaligned(arr) };
+        self.ct.vm.pc = self.ct.vm.pc.wrapping_add(std::mem::size_of::<Trap>());
+
+        match trap {
+            Trap::MakeStruct { file, struct_expr } => {
+                let cfile = self.files[file as usize].clone();
+                let &Expr::Struct {
+                    fields, captured, ..
+                } = struct_expr.get(&cfile).unwrap()
+                else {
+                    unreachable!()
+                };
+
+                let prev_len = self.ci.vars.len();
+
+                let mut values = self.ct.vm.read_reg(2).0 as *const u8;
+                for &id in captured {
+                    let ty: ty::Id = unsafe { std::ptr::read_unaligned(values.cast()) };
+                    unsafe { values = values.add(4) };
+                    let size = self.tys.size_of(ty) as usize;
+                    let mut imm = [0u8; 8];
+                    assert!(size <= imm.len(), "TODO");
+                    unsafe { std::ptr::copy_nonoverlapping(values, imm.as_mut_ptr(), size) };
+                    self.ci.vars.push(Variable {
+                        id,
+                        value: Value::new(ty, Loc::imm(u64::from_ne_bytes(imm))),
+                    });
+                }
+
+                let stru = ty::Kind::Struct(self.build_struct(fields)).compress();
+                self.ci.vars.truncate(prev_len);
+                self.ct.vm.write_reg(1, stru.repr() as u64);
+            }
+        }
+    }
+
+    fn find_or_declare(
+        &mut self,
+        pos: Pos,
+        file: FileId,
+        name: Result<Ident, &str>,
+        lit_name: &str,
+    ) -> ty::Kind {
+        log::dbg!("find_or_declare: {lit_name}");
+        let f = self.files[file as usize].clone();
+        let Some((expr, ident)) = f.find_decl(name) else {
+            match name {
+                Ok(_) => self.report(pos, format_args!("undefined indentifier: {lit_name}")),
+                Err("main") => self.report(pos, format_args!("missing main function: {f}")),
+                Err(name) => unimplemented!("somehow we did not handle: {name:?}"),
+            }
+        };
+
+        if let Some(existing) = self.tys.syms.get(&SymKey { file, ident }) {
+            if let ty::Kind::Func(id) = existing.expand()
+                && let func = &mut self.tys.funcs[id as usize]
+                && let Err(idx) = task::unpack(func.offset)
+            {
+                func.offset = task::id(self.tasks.len());
+                let task = self.tasks[idx].take();
+                self.tasks.push(task);
+            }
+            return existing.expand();
+        }
+
+        let sym = match expr {
+            Expr::BinOp {
+                left: &Expr::Ident { .. },
+                op: TokenKind::Decl,
+                right: &Expr::Closure { pos, args, ret, .. },
+            } => {
+                let id = self.tys.funcs.len() as _;
+                let func = Func {
+                    offset: task::id(self.tasks.len()),
+                    args:   'b: {
+                        if args.is_empty() {
+                            break 'b ty::Tuple::empty();
+                        }
+
+                        let start = self.tys.args.len();
+                        for arg in args {
+                            let ty = self.ty(&arg.ty);
+                            self.tys.args.push(ty);
+                        }
+                        let needle = &self.tys.args[start..];
+                        // TODO: maybe later when this becomes a bottleneck we use more
+                        // efficient search (SIMD?, indexing?)
+                        let sp = self
+                            .tys
+                            .args
+                            .windows(needle.len())
+                            .position(|val| val == needle)
+                            .unwrap();
+                        self.tys.args.truncate((sp + needle.len()).max(start));
+                        ty::Tuple::new(sp, args.len()).unwrap_or_else(|| {
+                            self.report(pos, "amount of arguments not supported")
+                        })
+                    },
+                    ret:    self.ty(ret),
+                };
+                self.tys.funcs.push(func);
+                self.tasks.push(Some(FTask {
+                    file,
+                    expr: ExprRef::new(expr),
+                    id,
+                }));
+                ty::Kind::Func(id)
+            }
+            Expr::BinOp {
+                left: &Expr::Ident { .. },
+                op: TokenKind::Decl,
+                right: Expr::Struct { fields, .. },
+            } => ty::Kind::Struct(self.build_struct(fields)),
+            Expr::BinOp {
+                left: &Expr::Ident { .. },
+                op: TokenKind::Decl,
+                right,
+            } => {
+                let gid = self.tys.globals.len() as ty::Global;
+
+                let mut stash = self.pool.outputs.pop().unwrap_or_default();
+                self.output.pop(&mut stash, &self.ci.snap);
+
+                let prev_ci = std::mem::replace(
+                    &mut self.ci,
+                    ItemCtx {
+                        file,
+                        id: ty::Kind::Global(gid),
+                        ..self.pool.cis.pop().unwrap_or_default()
+                    },
+                );
+                debug_assert!(self.ci.stack_relocs.is_empty());
+                self.ci.snap = self.output.snap();
+                self.ci.regs.init();
+
+                self.tys.globals.push(Global {
+                    offset: u32::MAX,
+                    ty:     Default::default(),
+                });
+
+                self.output.emit_prelude();
+
+                let ret = self.ci.regs.allocate();
+                self.output.emit(instrs::cp(ret.get(), 1));
+                self.ci.task_base = self.tasks.len();
+
+                let ret = self
+                    .expr_ctx(right, Ctx::default().with_loc(Loc::reg(ret).into_derefed()))
+                    .expect("TODO: unreachable constant/global");
+
+                let mut global_stash = self.pool.outputs.pop().unwrap_or_default();
+                self.output.pop(&mut global_stash, &self.ci.snap);
+
+                log::dbg!("whaaaa");
+                self.complete_call_graph();
+                self.ci.snap = self.output.snap();
+                log::dbg!("bhaaaa");
+
+                let size = self.tys.size_of(ret.ty);
+                self.ci.snap.code += size as usize;
+                self.output.code.resize(self.ci.snap.code, 0);
+
+                self.output.append(&mut global_stash);
+                self.pool.outputs.push(global_stash);
+
+                self.ci.finalize(&mut self.output);
+                self.output.emit(tx());
+
+                let ret_loc = unsafe {
+                    self.output
+                        .code
+                        .as_mut_ptr()
+                        .add(self.ci.snap.code - size as usize)
+                };
+                self.ct.vm.write_reg(1, ret_loc as u64);
+
+                self.run_vm(self.ci.snap.code);
+                log::dbg!("brah");
+
+                self.tys.globals[gid as usize] = Global {
+                    ty:     ret.ty,
+                    offset: self.ci.snap.code as Offset - size,
+                };
+
+                self.output.trunc(&self.ci.snap);
+                self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
+                self.ci.snap = self.output.snap();
+                self.output.append(&mut stash);
+                self.pool.outputs.push(stash);
+
+                log::dbg!("dah");
+                self.ci.free_loc(ret.loc);
+
+                ty::Kind::Global(gid)
+            }
+            e => unimplemented!("{e:#?}"),
+        };
+        self.tys.syms.insert(SymKey { ident, file }, sym.compress());
+        sym
+    }
+
+    fn ty_display(&self, ty: ty::Id) -> ty::Display {
+        ty::Display::new(&self.tys, &self.files, ty)
+    }
+
+    #[must_use]
+    fn assert_ty(&self, pos: Pos, ty: ty::Id, expected: ty::Id) -> ty::Id {
+        if let Some(res) = ty.try_upcast(expected) {
+            res
+        } else {
+            let ty = self.ty_display(ty);
+            let expected = self.ty_display(expected);
+            self.report(pos, format_args!("expected {ty}, got {expected}"));
+        }
+    }
+
+    fn report(&self, pos: Pos, msg: impl std::fmt::Display) -> ! {
+        let (line, col) = self.cfile().nlines.line_col(pos);
+        println!("{}:{}:{}: {}", self.cfile().path, line, col, msg);
+        unreachable!();
+    }
+
+    fn cfile(&self) -> &parser::Ast {
+        &self.files[self.ci.file as usize]
     }
 }
 
@@ -2398,8 +2712,10 @@ mod tests {
         let input = find_block(input, ident);
 
         let path = "test";
-        let mut codegen = super::Codegen::default();
-        codegen.files = vec![parser::Ast::new(path, input, &parser::no_loader)];
+        let mut codegen = super::Codegen {
+            files: vec![parser::Ast::new(path, input, &parser::no_loader)],
+            ..Default::default()
+        };
         codegen.generate();
         let mut out = Vec::new();
         codegen.dump(&mut out).unwrap();
