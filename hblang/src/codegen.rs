@@ -1793,20 +1793,11 @@ impl Codegen {
                 }
 
                 let lsize = self.tys.size_of(left.ty);
-                let ty = ctx.ty.unwrap_or(left.ty);
 
-                let lhs = match ctx.loc.take() {
-                    Some(Loc::Rt { reg, .. })
-                        if matches!(&left.loc, Loc::Rt { reg: r, ..} if *r == reg)
-                            && reg.get() != 1 =>
-                    {
-                        reg
-                    }
-                    Some(loc) => {
-                        ctx = Ctx::from(Value { ty, loc });
-                        self.loc_to_reg(left.loc, lsize)
-                    }
-                    None => self.loc_to_reg(left.loc, lsize),
+                let lhs = if left.loc.is_ref() && matches!(right, E::Number { .. }) {
+                    self.loc_to_reg(&left.loc, lsize)
+                } else {
+                    self.loc_to_reg(left.loc, lsize)
                 };
                 let right = self.expr_ctx(right, Ctx::default().with_ty(left.ty))?;
                 let rsize = self.tys.size_of(right.ty);
@@ -2216,14 +2207,14 @@ impl Codegen {
         }
     }
 
-    fn loc_to_reg(&mut self, loc: Loc, size: Size) -> reg::Id {
-        match loc {
-            Loc::Rt {
+    fn loc_to_reg(&mut self, loc: impl Into<LocCow>, size: Size) -> reg::Id {
+        match loc.into() {
+            LocCow::Owned(Loc::Rt {
                 derefed: false,
                 mut reg,
                 offset,
                 stack,
-            } => {
+            }) => {
                 debug_assert!(stack.is_none(), "TODO");
                 assert_eq!(offset, 0, "TODO");
                 if reg.is_ref() {
@@ -2233,12 +2224,22 @@ impl Codegen {
                 }
                 reg
             }
-            Loc::Rt { .. } => {
+            LocCow::Ref(&Loc::Rt {
+                derefed: false,
+                ref reg,
+                offset,
+                ref stack,
+            }) => {
+                debug_assert!(stack.is_none(), "TODO");
+                assert_eq!(offset, 0, "TODO");
+                reg.as_ref()
+            }
+            loc @ (LocCow::Ref(Loc::Rt { .. }) | LocCow::Owned(Loc::Rt { .. })) => {
                 let reg = self.ci.regs.allocate();
                 self.store_sized(loc, Loc::reg(reg.as_ref()), size);
                 reg
             }
-            Loc::Ct { value } => {
+            LocCow::Ref(&Loc::Ct { value }) | LocCow::Owned(Loc::Ct { value }) => {
                 let reg = self.ci.regs.allocate();
                 self.output.emit(li64(reg.get(), u64::from_ne_bytes(value)));
                 reg
