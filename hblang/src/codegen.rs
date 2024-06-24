@@ -2292,19 +2292,23 @@ impl Codegen {
     }
 
     fn alloc_ret(&mut self, ret: ty::Id, ctx: Ctx) -> Loc {
-        if let Some(loc) = ctx.loc {
-            return loc;
-        }
-
         let size = self.tys.size_of(ret);
         match size {
             0 => Loc::default(),
             1..=8 => Loc::reg(1),
             9..=16 => Loc::stack(self.ci.stack.allocate(size)),
             _ => {
-                let stack = self.ci.stack.allocate(size);
-                self.stack_offset(1, STACK_PTR, Some(&stack), 0);
-                Loc::stack(stack)
+                let loc = ctx
+                    .loc
+                    .unwrap_or_else(|| Loc::stack(self.ci.stack.allocate(size)));
+                let Loc::Rt {
+                    reg, stack, offset, ..
+                } = &loc
+                else {
+                    todo!("old man with the beard looks at the sky scared");
+                };
+                self.stack_offset(1, reg.get(), stack.as_ref(), *offset);
+                loc
             }
         }
     }

@@ -261,8 +261,9 @@ Vec := fn($Elem: type): type {
 new := fn($Elem: type): Vec(Elem) return Vec(Elem).{ data: @bitcast(0), len: 0, cap: 0 };
 
 deinit := fn($Elem: type, vec: ^Vec(Elem)): void {
-	free(@bitcast(vec.data), vec.len * @sizeof(Elem), @alignof(Elem));
+	free(@bitcast(vec.data), vec.cap * @sizeof(Elem), @alignof(Elem));
 	*vec = new(Elem);
+	return;
 }
 
 push := fn($Elem: type, vec: ^Vec(Elem), value: Elem): ^Elem {
@@ -286,7 +287,9 @@ push := fn($Elem: type, vec: ^Vec(Elem), value: Elem): ^Elem {
 			dst_cursor += 1;
 		}
 
-		free(@bitcast(vec.data), vec.len * @sizeof(Elem), @alignof(Elem));
+		if vec.len != 0 {
+			free(@bitcast(vec.data), vec.len * @sizeof(Elem), @alignof(Elem));
+		}
 		vec.data = new_alloc;
 	}
 
@@ -299,7 +302,9 @@ push := fn($Elem: type, vec: ^Vec(Elem), value: Elem): ^Elem {
 main := fn(): int {
 	vec := new(int);
 	push(int, &vec, 69);
-	return *vec.data;
+	res := *vec.data;
+	deinit(int, &vec);
+	return res;
 }
 ```
 
