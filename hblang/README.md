@@ -241,6 +241,15 @@ main := fn(): int {
 
 #### generic_types
 ```hb
+MALLOC_SYS_CALL := 69
+FREE_SYS_CALL := 96
+
+malloc := fn(size: uint, align: uint): ^void
+	return @eca(^void, MALLOC_SYS_CALL, size, align);
+
+free := fn(ptr: ^void, size: uint, align: uint): void
+	return @eca(void, FREE_SYS_CALL, ptr, size, align);
+
 Vec := fn($Elem: type): type {
 	return struct {
 		data: ^Elem,
@@ -249,14 +258,57 @@ Vec := fn($Elem: type): type {
 	};
 }
 
+new := fn($Elem: type): Vec(Elem) return Vec(Elem).{ data: @bitcast(0), len: 0, cap: 0 };
+
+deinit := fn($Elem: type, vec: ^Vec(Elem)): void {
+	free(@bitcast(vec.data), vec.len * @sizeof(Elem), @alignof(Elem));
+	*vec = new(Elem);
+}
+
+push := fn($Elem: type, vec: ^Vec(Elem), value: Elem): ^Elem {
+	if vec.len == vec.cap {
+		if vec.cap == 0 {
+			vec.cap = 1;
+		} else {
+			vec.cap *= 2;
+		}
+
+		new_alloc := @as(^Elem, @bitcast(malloc(vec.cap * @sizeof(Elem), @alignof(Elem))));
+		if @as(uint, @bitcast(new_alloc)) == 0 return @bitcast(0);
+
+		src_cursor := vec.data;
+		dst_cursor := new_alloc;
+		end := vec.data + vec.len;
+		
+		loop if src_cursor == end break else {
+			*dst_cursor = *src_cursor;
+			src_cursor += 1;
+			dst_cursor += 1;
+		}
+
+		free(@bitcast(vec.data), vec.len * @sizeof(Elem), @alignof(Elem));
+		vec.data = new_alloc;
+	}
+
+	slot := vec.data + vec.len;
+	*slot = value;
+	vec.len += 1;
+	return slot;
+}
+
 main := fn(): int {
-	i := 69;
-	vec := Vec(int).{
-		data: &i,
-		len: 1,
-		cap: 1,
-	};
+	vec := new(int);
+	push(int, &vec, 69);
 	return *vec.data;
+}
+```
+
+#### generic_functions
+```hb
+add := fn($T: type, a: T, b: T): T return a + b;
+
+main := fn(): int {
+	return add(u32, 2, 2) - add(int, 1, 3);
 }
 ```
 

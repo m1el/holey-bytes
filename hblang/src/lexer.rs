@@ -156,8 +156,12 @@ pub struct Lexer<'a> {
 
 impl<'a> Lexer<'a> {
     pub fn new(input: &'a str) -> Self {
+        Self::restore(input, 0)
+    }
+
+    pub fn restore(input: &'a str, pos: u32) -> Self {
         Self {
-            pos:   0,
+            pos,
             bytes: input.as_bytes(),
         }
     }
@@ -317,13 +321,17 @@ impl LineMap {
 
         let mut iter = self.lines.iter().copied();
 
-        while let Some(mut len) = iter.next() {
+        loop {
             let mut acc = 0;
-            while len & 0x80 != 0 {
-                acc = (acc << 7) | (len & 0x7F) as u32;
-                len = iter.next().unwrap();
+            let mut idx = 0;
+            loop {
+                let len = iter.next().unwrap();
+                acc |= ((len & 0x7F) as u32) << (7 * idx);
+                idx += 1;
+                if len & 0x80 == 0 {
+                    break;
+                }
             }
-            acc += len as u32;
 
             if pos < acc {
                 break;
@@ -372,7 +380,7 @@ impl LineMap {
                 let idx = mask.trailing_zeros() as usize + i * 16 + start.len();
                 let mut len = idx - last_nl + 1;
                 while len >= 0x80 {
-                    lines.push((0x80 | (len & 0x7F)) as u8);
+                    lines.push(0x80 | (len & 0x7F) as u8);
                     len >>= 7;
                 }
                 lines.push(len as u8);
@@ -385,6 +393,33 @@ impl LineMap {
 
         Self {
             lines: Box::from(lines),
+        }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn test_smh() {
+        let example = include_str!("../README.md");
+
+        let nlines = super::LineMap::new(example);
+
+        fn slow_nline_search(str: &str, mut pos: usize) -> (usize, usize) {
+            (
+                str.lines()
+                    .take_while(|l| match pos.checked_sub(l.len() + 1) {
+                        Some(nl) => (pos = nl, true).1,
+                        None => false,
+                    })
+                    .count()
+                    + 1,
+                pos + 1,
+            )
+        }
+
+        for i in 0..example.len() {
+            assert_eq!(slow_nline_search(example, i), nlines.line_col(i as _));
         }
     }
 }

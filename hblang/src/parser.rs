@@ -136,16 +136,36 @@ impl<'a, 'b> Parser<'a, 'b> {
                 break;
             }
 
+            let checkpoint = self.token.start;
             let op = self.next().kind;
+
+            let op_ass = op.assign_op().map(|op| {
+                // this abomination reparses the left side, so that the desubaring adheres to the
+                // parser invariants.
+                let source = self.lexer.slice(0..checkpoint as usize);
+                let prev_lexer =
+                    std::mem::replace(&mut self.lexer, Lexer::restore(source, fold.pos()));
+                let prev_token = std::mem::replace(&mut self.token, self.lexer.next());
+                let clone = self.expr();
+                self.lexer = prev_lexer;
+                self.token = prev_token;
+
+                (op, clone)
+            });
 
             let right = self.unit_expr();
             let right = self.bin_expr(right, prec);
             let right = self.arena.alloc(right);
             let left = self.arena.alloc(fold);
 
-            if let Some(op) = op.assign_op() {
+            if let Some((op, clone)) = op_ass {
                 self.flag_idents(*left, idfl::MUTABLE);
-                let right = Expr::BinOp { left, op, right };
+
+                let right = Expr::BinOp {
+                    left: self.arena.alloc(clone),
+                    op,
+                    right,
+                };
                 fold = Expr::BinOp {
                     left,
                     op: TokenKind::Assign,
@@ -163,7 +183,7 @@ impl<'a, 'b> Parser<'a, 'b> {
     }
 
     fn resolve_ident(&mut self, token: Token, decl: bool) -> (Ident, u16) {
-        let is_ct = self.token.kind == TokenKind::CtIdent;
+        let is_ct = token.kind == TokenKind::CtIdent;
         let name = self.lexer.slice(token.range());
 
         if let Some(builtin) = codegen::ty::from_str(name) {
@@ -270,7 +290,12 @@ impl<'a, 'b> Parser<'a, 'b> {
             T::Ident | T::CtIdent => {
                 let (id, index) = self.resolve_ident(token, self.token.kind == T::Decl);
                 let name = self.move_str(token);
-                E::Ident { name, id, index }
+                E::Ident {
+                    pos: token.start,
+                    name,
+                    id,
+                    index,
+                }
             }
             T::If => E::If {
                 pos:   token.start,
@@ -526,7 +551,7 @@ macro_rules! generate_expr {
             pub fn pos(&self) -> Pos {
                 #[allow(unused_variables)]
                 match self {
-                    $(Self::$variant { $($field),* } => generate_expr!(@first $(($field),)*).posi(self),)*
+                    $(Self::$variant { $($field),* } => generate_expr!(@first $(($field),)*).posi(),)*
                 }
             }
 
@@ -573,6 +598,7 @@ generate_expr! {
             val: Option<&'a Self>,
         },
         Ident {
+            pos:   Pos,
             id:    Ident,
             name:  &'a str,
             index: u16,
@@ -637,21 +663,17 @@ generate_expr! {
 }
 
 trait Poser {
-    fn posi(self, expr: &Expr) -> Pos;
+    fn posi(self) -> Pos;
 }
 
 impl Poser for Pos {
-    fn posi(self, expr: &Expr) -> Pos {
-        if matches!(expr, Expr::Ident { .. }) {
-            ident::pos(self)
-        } else {
-            self
-        }
+    fn posi(self) -> Pos {
+        self
     }
 }
 
 impl<'a> Poser for &Expr<'a> {
-    fn posi(self, _: &Expr) -> Pos {
+    fn posi(self) -> Pos {
         self.pos()
     }
 }

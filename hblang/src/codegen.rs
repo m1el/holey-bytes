@@ -1,11 +1,11 @@
-use std::{ops::Range, rc::Rc};
+use std::{ops::Range, rc::Rc, usize};
 
 use crate::{
     ident::{self, Ident},
     instrs::{self, *},
     lexer::TokenKind,
     log,
-    parser::{self, idfl, Expr, ExprRef, FileId, Pos},
+    parser::{self, find_symbol, idfl, Expr, ExprRef, FileId, Pos},
     HashMap,
 };
 
@@ -63,12 +63,6 @@ mod stack {
     }
 
     impl Alloc {
-        pub fn integriy_check(&self) {
-            for meta in self.meta.iter() {
-                assert!(meta.offset <= self.max_height);
-            }
-        }
-
         pub fn allocate(&mut self, size: Size) -> Id {
             self.meta.push(Meta {
                 size,
@@ -190,7 +184,7 @@ mod reg {
 }
 
 pub mod ty {
-    use std::num::NonZeroU32;
+    use std::{num::NonZeroU32, ops::Range};
 
     use crate::{
         lexer::TokenKind,
@@ -203,6 +197,7 @@ pub mod ty {
     pub type Func = u32;
     pub type Global = u32;
     pub type Module = u32;
+    pub type Param = u32;
 
     #[derive(Clone, Copy)]
     pub struct Tuple(pub u32);
@@ -221,7 +216,12 @@ pub mod ty {
         }
 
         pub fn view(self, slice: &[Id]) -> &[Id] {
-            &slice[self.0 as usize >> Self::LEN_BITS..][..self.0 as usize & Self::LEN_MASK]
+            &slice[self.0 as usize >> Self::LEN_BITS..][..self.len()]
+        }
+
+        pub fn range(self) -> Range<usize> {
+            let start = self.0 as usize >> Self::LEN_BITS;
+            start..start + self.len()
         }
 
         pub fn len(self) -> usize {
@@ -234,6 +234,10 @@ pub mod ty {
 
         pub fn empty() -> Self {
             Self(0)
+        }
+
+        pub fn repr(&self) -> u32 {
+            self.0
         }
     }
 
@@ -261,7 +265,7 @@ pub mod ty {
 
         pub fn strip_pointer(self) -> Self {
             match self.expand() {
-                Kind::Ptr(_) => Id::from(INT),
+                Kind::Ptr(_) => Kind::Builtin(UINT).compress(),
                 _ => self,
             }
         }
@@ -290,9 +294,15 @@ pub mod ty {
         }
     }
 
+    impl From<[u8; 8]> for Id {
+        fn from(id: [u8; 8]) -> Self {
+            Self(unsafe { NonZeroU32::new_unchecked(u64::from_ne_bytes(id) as _) })
+        }
+    }
+
     impl From<u32> for Id {
         fn from(id: u32) -> Self {
-            Self(unsafe { NonZeroU32::new_unchecked(id) })
+            Kind::Builtin(id).compress()
         }
     }
 
@@ -467,7 +477,6 @@ pub mod ty {
 #[derive(Clone, Copy, Debug)]
 struct Reloc {
     offset:     Offset,
-    /// code_offset - sub_offset = instr_offset
     sub_offset: u8,
     width:      u8,
 }
@@ -482,9 +491,7 @@ impl Reloc {
     }
 
     fn apply_stack_offset(&self, code: &mut [u8], stack: &stack::Alloc) {
-        log::err!("faaah: {:x}", self.offset);
-        log::err!("{:x?} {}", &code[self.offset as usize..], self.sub_offset);
-        let bytes = &code[self.offset as usize..][..self.width as usize];
+        let bytes = &code[self.offset as usize + self.sub_offset as usize..][..self.width as usize];
         let (id, off) = Self::unpack_srel(u64::from_ne_bytes(bytes.try_into().unwrap()));
         self.write_offset(code, stack.final_offset(id, off) as i64);
     }
@@ -507,6 +514,9 @@ impl Reloc {
         let slice =
             &mut code[self.offset as usize + self.sub_offset as usize..][..self.width as usize];
         slice.copy_from_slice(&bytes[..self.width as usize]);
+        if slice.contains(&0x83) {
+            panic!()
+        }
     }
 }
 
@@ -645,7 +655,7 @@ impl Loc {
     fn into_derefed(mut self) -> Self {
         match &mut self {
             Self::Rt { derefed, .. } => *derefed = true,
-            _ => unreachable!(),
+            val => unreachable!("{val:?}"),
         }
         self
     }
@@ -664,6 +674,13 @@ impl Loc {
 
     fn is_ref(&self) -> bool {
         matches!(self, Self::Rt { reg, stack, .. } if reg.is_ref() && stack.as_ref().map_or(true, stack::Id::is_ref))
+    }
+
+    fn to_ty(&self) -> Option<ty::Id> {
+        match *self {
+            Self::Ct { value } => Some(ty::Id::from(value)),
+            Self::Rt { .. } => None,
+        }
     }
 }
 
@@ -754,6 +771,11 @@ impl ItemCtx {
         let pushed = self.regs.pushed_size() as i64;
         let stack = self.stack.max_height as i64;
 
+        let mut exmpl = Output::default();
+        exmpl.emit_prelude();
+
+        debug_assert!(output.code[self.snap.code..].starts_with(&exmpl.code));
+
         write_reloc(&mut output.code, allocate(3), -(pushed + stack), 8);
         write_reloc(&mut output.code, allocate(8 + 3), stack, 8);
         write_reloc(&mut output.code, allocate(8), pushed, 2);
@@ -775,6 +797,9 @@ impl ItemCtx {
 fn write_reloc(doce: &mut [u8], offset: usize, value: i64, size: u16) {
     let value = value.to_ne_bytes();
     doce[offset..offset + size as usize].copy_from_slice(&value[..size as usize]);
+    if value.contains(&131) {
+        panic!();
+    }
 }
 
 #[derive(PartialEq, Eq, Hash)]
@@ -793,11 +818,16 @@ impl SymKey {
 }
 
 #[derive(Clone, Copy)]
+struct Sig {
+    args: ty::Tuple,
+    ret:  ty::Id,
+}
+
+#[derive(Clone, Copy)]
 struct Func {
-    // if the most significant bit is 1, its considered to be an task id
+    expr:   ExprRef,
+    sig:    Option<Sig>,
     offset: Offset,
-    args:   ty::Tuple,
-    ret:    ty::Id,
 }
 
 struct Global {
@@ -937,7 +967,6 @@ mod task {
 
 struct FTask {
     file: FileId,
-    expr: ExprRef,
     id:   ty::Func,
 }
 
@@ -968,18 +997,18 @@ impl Output {
     }
 
     fn emit(&mut self, (len, instr): (usize, [u8; instrs::MAX_SIZE])) {
-        let name = instrs::NAMES[instr[0] as usize];
-        log::dbg!(
-            "{:08x}: {}: {}",
-            self.code.len(),
-            name,
-            instr
-                .iter()
-                .take(len)
-                .skip(1)
-                .map(|b| format!("{:02x}", b))
-                .collect::<String>()
-        );
+        // let name = instrs::NAMES[instr[0] as usize];
+        // log::dbg!(
+        //     "{:08x}: {}: {}",
+        //     self.code.len(),
+        //     name,
+        //     instr
+        //         .iter()
+        //         .take(len)
+        //         .skip(1)
+        //         .map(|b| format!("{:02x}", b))
+        //         .collect::<String>()
+        // );
         self.code.extend_from_slice(&instr[..len]);
     }
 
@@ -1084,8 +1113,9 @@ impl From<Value> for Ctx {
 
 #[derive(Default)]
 struct Pool {
-    cis:     Vec<ItemCtx>,
-    outputs: Vec<Output>,
+    cis:      Vec<ItemCtx>,
+    outputs:  Vec<Output>,
+    arg_locs: Vec<Loc>,
 }
 
 #[derive(Default)]
@@ -1172,7 +1202,7 @@ impl Default for Comptime {
     }
 }
 
-pub enum Trap {
+enum Trap {
     MakeStruct {
         file:        FileId,
         struct_expr: ExprRef,
@@ -1195,7 +1225,7 @@ impl Codegen {
     pub fn generate(&mut self) {
         self.output.emit_entry_prelude();
         self.find_or_declare(0, 0, Err("main"), "");
-        self.complete_call_graph();
+        self.complete_call_graph_low();
         self.link();
     }
 
@@ -1223,7 +1253,6 @@ impl Codegen {
     }
 
     fn expr_ctx(&mut self, expr: &Expr, mut ctx: Ctx) -> Option<Value> {
-        self.ci.stack.integriy_check();
         use {Expr as E, TokenKind as T};
         let value = match *expr {
             E::Mod { id, .. } => Some(Value::ty(ty::Kind::Module(id).compress())),
@@ -1238,6 +1267,7 @@ impl Codegen {
                     let values = captured
                         .iter()
                         .map(|&id| E::Ident {
+                            pos: 0,
                             id,
                             name: "booodab",
                             index: u16::MAX,
@@ -1296,14 +1326,13 @@ impl Codegen {
                 let ty = self.ty(ret_ty);
 
                 let mut parama = self.tys.parama(ty);
-                // TODO: reuse a stack for this
-                let mut values = Vec::with_capacity(args.len());
+                let base = self.pool.arg_locs.len();
                 for arg in args {
                     let arg = self.expr(arg)?;
                     self.pass_arg(&arg, &mut parama);
-                    values.push(arg.loc);
+                    self.pool.arg_locs.push(arg.loc);
                 }
-                for value in values {
+                for value in self.pool.arg_locs.drain(base..) {
                     self.ci.free_loc(value);
                 }
 
@@ -1386,7 +1415,11 @@ impl Codegen {
                     );
                 }
 
-                // TODO: maybe check align
+                debug_assert_eq!(
+                    self.tys.align_of(val.ty),
+                    self.tys.align_of(ty),
+                    "TODO: might need stack relocation"
+                );
 
                 return Some(Value { ty, loc: val.loc });
             }
@@ -1547,35 +1580,112 @@ impl Codegen {
                 });
                 Some(Value::void())
             }
-            E::Call { func, args } => {
-                let func_ty = self.ty(func);
-                let ty::Kind::Func(func_id) = func_ty.expand() else {
-                    self.report(func.pos(), "can't call this, maybe in the future");
+            E::Call { func: fast, args } => {
+                let func_ty = self.ty(fast);
+                let ty::Kind::Func(mut func_id) = func_ty.expand() else {
+                    self.report(fast.pos(), "can't call this, maybe in the future");
                 };
 
                 let func = self.tys.funcs[func_id as usize];
+                let ast = self.cfile().clone();
+                let E::BinOp {
+                    right:
+                        &E::Closure {
+                            args: cargs, ret, ..
+                        },
+                    ..
+                } = func.expr.get(&ast).unwrap()
+                else {
+                    unreachable!();
+                };
 
-                let mut parama = self.tys.parama(func.ret);
+                let sig = if let Some(sig) = func.sig {
+                    sig
+                } else {
+                    let scope = self.ci.vars.len();
+                    let arg_base = self.tys.args.len();
+
+                    for (arg, carg) in args.iter().zip(cargs) {
+                        let ty = self.ty(&carg.ty);
+                        log::dbg!("arg: {}", self.ty_display(ty));
+                        self.tys.args.push(ty);
+                        let sym = parser::find_symbol(&ast.symbols, carg.id);
+                        let loc = if sym.flags & idfl::COMPTIME == 0 {
+                            // FIXME: could fuck us
+                            Loc::default()
+                        } else {
+                            debug_assert_eq!(
+                                ty,
+                                ty::TYPE.into(),
+                                "TODO: we dont support anything except type generics"
+                            );
+                            let arg = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
+                            self.tys.args.push(arg.loc.to_ty().unwrap());
+                            arg.loc
+                        };
+
+                        self.ci.vars.push(Variable {
+                            id:    carg.id,
+                            value: Value { ty, loc },
+                        });
+                    }
+
+                    let args = self.pack_args(expr.pos(), arg_base);
+                    let ret = self.ty(ret);
+                    self.ci.vars.truncate(scope);
+
+                    let sym = SymKey {
+                        file:  !args.repr(),
+                        ident: func_id,
+                    };
+                    let ct = || {
+                        let func_id = self.tys.funcs.len();
+                        self.tys.funcs.push(Func {
+                            offset: task::id(func_id),
+                            sig:    Some(Sig { args, ret }),
+                            expr:   func.expr,
+                        });
+
+                        self.tasks.push(Some(FTask {
+                            // FIXME: this will fuck us
+                            file: self.ci.file,
+                            id:   func_id as _,
+                        }));
+
+                        ty::Kind::Func(func_id as _).compress()
+                    };
+                    func_id = self.tys.syms.entry(sym).or_insert_with(ct).expand().inner();
+
+                    Sig { args, ret }
+                };
+
+                let mut parama = self.tys.parama(sig.ret);
                 let mut values = Vec::with_capacity(args.len());
-                for (i, earg) in args.iter().enumerate() {
+                let mut sig_args = sig.args.range();
+                for (arg, carg) in args.iter().zip(cargs) {
+                    let ty = self.tys.args[sig_args.next().unwrap()];
+                    let sym = parser::find_symbol(&ast.symbols, carg.id);
+                    if sym.flags & idfl::COMPTIME != 0 {
+                        sig_args.next().unwrap();
+                        continue;
+                    }
+
                     // TODO: pass the arg as dest
-                    let ty = func.args.view(&self.tys.args)[i];
-                    let arg = self.expr_ctx(earg, Ctx::default().with_ty(ty))?;
-                    _ = self.assert_ty(earg.pos(), ty, arg.ty);
-                    self.pass_arg(&arg, &mut parama);
-                    values.push(arg.loc);
+                    let varg = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
+                    self.pass_arg(&varg, &mut parama);
+                    values.push(varg.loc);
                 }
+
                 for value in values {
                     self.ci.free_loc(value);
                 }
 
                 log::dbg!("call ctx: {ctx:?}");
 
-                let loc = self.alloc_ret(func.ret, ctx);
+                let loc = self.alloc_ret(sig.ret, ctx);
                 self.output.emit_call(func_id);
-                self.load_ret(func.ret, &loc);
-
-                return Some(Value { ty: func.ret, loc });
+                self.load_ret(sig.ret, &loc);
+                return Some(Value { ty: sig.ret, loc });
             }
             E::Ident { id, .. } if ident::is_null(id) => Some(Value::ty(id.into())),
             E::Ident { id, index, .. }
@@ -1587,14 +1697,20 @@ impl Codegen {
                     .find(|(_, v)| v.id == id) =>
             {
                 let sym = parser::find_symbol(&self.files[self.ci.file as usize].symbols, id);
-                let loc = match idfl::index(sym.flags) == index
+                let loc = match idfl::index(sym.flags) == dbg!(index)
                     && !self
                         .ci
                         .loops
                         .last()
                         .is_some_and(|l| l.var_count > var_index as u32)
                 {
-                    true => std::mem::take(&mut var.value.loc),
+                    true => {
+                        dbg!(
+                            log::dbg!("braj: {expr}"),
+                            std::mem::take(&mut var.value.loc)
+                        )
+                        .1
+                    }
                     false => var.value.loc.as_ref(),
                 };
 
@@ -1627,7 +1743,7 @@ impl Codegen {
                     };
                     self.expr_ctx(val, Ctx::default().with_ty(self.ci.ret).with_loc(loc))?;
                 }
-                let off = self.output.code.len() as u32 - self.ci.snap.code as u32;
+                let off = self.local_offset();
                 self.ci.ret_relocs.push(Reloc::new(off, 1, 4));
                 self.output.emit(jmp(0));
                 None
@@ -1644,11 +1760,11 @@ impl Codegen {
             }),
             E::If {
                 cond, then, else_, ..
-            } => 'b: {
+            } => {
                 log::dbg!("if-cond");
                 let cond = self.expr_ctx(cond, Ctx::default().with_ty(ty::BOOL))?;
                 let reg = self.loc_to_reg(&cond.loc, 1);
-                let jump_offset = self.output.code.len() as u32;
+                let jump_offset = self.local_offset();
                 self.output.emit(jeq(reg.get(), 0, 0));
                 self.ci.free_loc(cond.loc);
 
@@ -1656,43 +1772,34 @@ impl Codegen {
                 let then_unreachable = self.expr(then).is_none();
                 let mut else_unreachable = false;
 
-                let mut jump = self.output.code.len() as i64 - jump_offset as i64;
+                let mut jump = self.local_offset() as i64 - jump_offset as i64;
 
                 if let Some(else_) = else_ {
                     log::dbg!("if-else");
-                    let else_jump_offset = self.output.code.len() as u32;
+                    let else_jump_offset = self.local_offset();
                     if !then_unreachable {
                         self.output.emit(jmp(0));
-                        jump = self.output.code.len() as i64 - jump_offset as i64;
+                        jump = self.local_offset() as i64 - jump_offset as i64;
                     }
 
                     else_unreachable = self.expr(else_).is_none();
 
                     if !then_unreachable {
-                        let jump = self.output.code.len() as i64 - else_jump_offset as i64;
+                        let jump = self.local_offset() as i64 - else_jump_offset as i64;
                         log::dbg!("if-else-jump: {}", jump);
-                        write_reloc(
-                            &mut self.output.code,
-                            else_jump_offset as usize + 1,
-                            jump,
-                            4,
-                        );
+                        write_reloc(self.local_code(), else_jump_offset as usize + 1, jump, 4);
                     }
                 }
 
                 log::dbg!("if-then-jump: {}", jump);
-                write_reloc(&mut self.output.code, jump_offset as usize + 3, jump, 2);
+                write_reloc(self.local_code(), jump_offset as usize + 3, jump, 2);
 
-                if then_unreachable && else_unreachable {
-                    break 'b None;
-                }
-
-                Some(Value::void())
+                (!then_unreachable || !else_unreachable).then_some(Value::void())
             }
             E::Loop { body, .. } => 'a: {
                 log::dbg!("loop");
 
-                let loop_start = self.output.code.len() as u32 - self.ci.snap.code as u32;
+                let loop_start = self.local_offset();
                 self.ci.loops.push(Loop {
                     var_count:  self.ci.vars.len() as _,
                     offset:     loop_start,
@@ -1702,11 +1809,11 @@ impl Codegen {
 
                 log::dbg!("loop-end");
                 if !body_unreachable {
-                    let loop_end = self.output.code.len() - self.ci.snap.code;
+                    let loop_end = self.local_offset();
                     self.output.emit(jmp(loop_start as i32 - loop_end as i32));
                 }
 
-                let loop_end = self.output.code.len() as u32 - self.ci.snap.code as u32;
+                let loop_end = self.local_offset();
 
                 let loopa = self.ci.loops.pop().unwrap();
                 let is_unreachable = loopa.reloc_base == self.ci.loop_relocs.len() as u32;
@@ -1714,15 +1821,11 @@ impl Codegen {
                     reloc.apply_jump(&mut self.output.code[self.ci.snap.code..], loop_end);
                 }
 
-                // TODO: avoid collect
-                for var in self
-                    .ci
-                    .vars
-                    .drain(loopa.var_count as usize..)
-                    .collect::<Vec<_>>()
-                {
+                let mut vars = std::mem::take(&mut self.ci.vars);
+                for var in vars.drain(loopa.var_count as usize..) {
                     self.ci.free_loc(var.value.loc);
                 }
+                self.ci.vars = vars;
 
                 if is_unreachable {
                     log::dbg!("infinite loop");
@@ -1732,14 +1835,14 @@ impl Codegen {
                 Some(Value::void())
             }
             E::Break { .. } => {
-                let offset = self.output.code.len() as u32 - self.ci.snap.code as u32;
+                let offset = self.local_offset();
                 self.ci.loop_relocs.push(Reloc::new(offset, 1, 4));
                 self.output.emit(jmp(0));
                 None
             }
             E::Continue { .. } => {
                 let loop_ = self.ci.loops.last().unwrap();
-                let offset = self.output.code.len() as u32 - self.ci.snap.code as u32;
+                let offset = self.local_offset();
                 self.output.emit(jmp(loop_.offset as i32 - offset as i32));
                 None
             }
@@ -1785,6 +1888,7 @@ impl Codegen {
                 let lsize = self.tys.size_of(left.ty);
 
                 let lhs = self.loc_to_reg(left.loc, lsize);
+                log::dbg!("{expr}");
                 let right = self.expr_ctx(right, Ctx::default().with_ty(left.ty))?;
                 let rsize = self.tys.size_of(right.ty);
 
@@ -1869,7 +1973,6 @@ impl Codegen {
 
         Some(match ctx.loc {
             Some(dest) => {
-                log::dbg!("store ctx");
                 let ty = ctx.ty.unwrap_or(value.ty);
                 self.store_typed(value.loc, dest, ty);
                 Value {
@@ -2059,24 +2162,33 @@ impl Codegen {
         }
     }
 
-    fn complete_call_graph(&mut self) {
+    #[must_use]
+    fn complete_call_graph(&mut self) -> Output {
+        let stash = self.pop_stash();
+        self.complete_call_graph_low();
+        stash
+    }
+
+    fn complete_call_graph_low(&mut self) {
         while self.ci.task_base < self.tasks.len()
             && let Some(task_slot) = self.tasks.pop()
         {
             let Some(task) = task_slot else { continue };
             self.handle_task(task);
         }
+        self.ci.snap = self.output.snap();
     }
 
-    fn handle_task(&mut self, FTask { file, expr, id }: FTask) {
-        let ast = self.files[file as usize].clone();
-        let expr = expr.get(&ast).unwrap();
+    fn handle_task(&mut self, FTask { file, id }: FTask) {
         let func = self.tys.funcs[id as usize];
+        let sig = func.sig.unwrap();
+        let ast = self.files[file as usize].clone();
+        let expr = func.expr.get(&ast).unwrap();
 
         let repl = ItemCtx {
             file,
             id: ty::Kind::Func(id),
-            ret: func.ret,
+            ret: sig.ret,
             ..self.pool.cis.pop().unwrap_or_default()
         };
         let prev_ci = std::mem::replace(&mut self.ci, repl);
@@ -2097,18 +2209,22 @@ impl Codegen {
         self.output.emit_prelude();
 
         log::dbg!("fn-args");
-        let mut parama = self.tys.parama(func.ret);
-        // TODO: dont allocate da vec
-        for (arg, ty) in args.iter().zip(func.args.view(&self.tys.args).to_vec()) {
+        let mut parama = self.tys.parama(self.ci.ret);
+        let mut sig_args = sig.args.range();
+        for arg in args.iter() {
+            let ty = self.tys.args[sig_args.next().unwrap()];
             let sym = parser::find_symbol(&ast.symbols, arg.id);
-            let loc = self.load_arg(sym.flags, ty, &mut parama);
+            let loc = match sym.flags & idfl::COMPTIME != 0 {
+                true => Loc::ty(self.tys.args[sig_args.next().unwrap()]),
+                false => self.load_arg(sym.flags, ty, &mut parama),
+            };
             self.ci.vars.push(Variable {
                 id:    arg.id,
                 value: Value { ty, loc },
             });
         }
 
-        if self.tys.size_of(func.ret) > 16 {
+        if self.tys.size_of(self.ci.ret) > 16 {
             let reg = self.ci.regs.allocate();
             self.output.emit(instrs::cp(reg.get(), 1));
             self.ci.ret_reg = reg;
@@ -2333,16 +2449,16 @@ impl Codegen {
         self.output.emit(addi64(dst, op, off));
     }
 
-    fn opt_stack_reloc(&mut self, stack: Option<&stack::Id>, off: Offset, sub_offset: u32) -> u64 {
+    fn opt_stack_reloc(&mut self, stack: Option<&stack::Id>, off: Offset, sub_offset: u8) -> u64 {
         stack
             .map(|s| self.stack_reloc(s, off, sub_offset))
             .unwrap_or(off as _)
     }
 
-    fn stack_reloc(&mut self, stack: &stack::Id, off: Offset, sub_offset: u32) -> u64 {
+    fn stack_reloc(&mut self, stack: &stack::Id, off: Offset, sub_offset: u8) -> u64 {
         log::dbg!("whaaaaatahack: {:b}", stack.repr());
-        let offset = self.output.code.len() as u32 + sub_offset - self.ci.snap.code as u32;
-        self.ci.stack_relocs.push(Reloc::new(offset, 0, 8));
+        let offset = self.local_offset();
+        self.ci.stack_relocs.push(Reloc::new(offset, sub_offset, 8));
         Reloc::pack_srel(stack, off)
     }
 
@@ -2350,84 +2466,55 @@ impl Codegen {
         // FIXME: this will cause problems relating snapshots
 
         self.output.funcs.retain(|&(f, rel)| {
-            task::unpack(self.tys.funcs[f as usize].offset)
-                .map(|off| rel.apply_jump(&mut self.output.code, off))
-                .is_err()
+            _ = task::unpack(self.tys.funcs[f as usize].offset)
+                .map(|off| rel.apply_jump(&mut self.output.code, off));
+            true
         });
 
         self.output.globals.retain(|&(g, rel)| {
-            task::unpack(self.tys.globals[g as usize].offset)
-                .map(|off| rel.apply_jump(&mut self.output.code, off))
-                .is_err()
+            _ = task::unpack(self.tys.globals[g as usize].offset)
+                .map(|off| rel.apply_jump(&mut self.output.code, off));
+            true
         })
     }
 
-    // TODO: sometimes ists better to do this in bulk
+    // TODO: sometimes its better to do this in bulk
     fn ty(&mut self, expr: &Expr) -> ty::Id {
-        let mut stash = self.pool.outputs.pop().unwrap_or_default();
-        self.output.pop(&mut stash, &self.ci.snap);
-
-        let mut repl = ItemCtx {
+        let mut ci = ItemCtx {
             file: self.ci.file,
             id: self.ci.id,
             ..self.pool.cis.pop().unwrap_or_default()
         };
-        repl.regs.init();
-        repl.vars.append(&mut self.ci.vars);
-        let mut prev_ci = std::mem::replace(&mut self.ci, repl);
-        self.ci.snap = self.output.snap();
-        self.ci.task_base = self.tasks.len();
+        ci.vars.append(&mut self.ci.vars);
 
-        self.output.emit_prelude();
+        let loc = self.ct_eval(ci, |s, prev| {
+            s.output.emit_prelude();
 
-        log::dbg!("ty: {expr}");
-        let ret = self.expr(expr).unwrap();
-        _ = self.assert_ty(expr.pos(), ret.ty, ty::TYPE.into());
-        let ty = match ret.loc {
-            Loc::Ct { value } => ty::Id::from(u64::from_ne_bytes(value) as u32),
-            Loc::Rt { .. } => {
-                let mut ty_stash = self.pool.outputs.pop().unwrap_or_default();
-                self.output.pop(&mut ty_stash, &self.ci.snap);
+            let ctx = Ctx::default().with_ty(ty::TYPE);
+            let Some(ret) = s.expr_ctx(expr, ctx) else {
+                s.report(expr.pos(), "type cannot be unreachable");
+            };
 
-                self.complete_call_graph();
-                self.ci.snap = self.output.snap();
+            let stash = s.complete_call_graph();
+            s.push_stash(stash);
 
-                self.output.append(&mut ty_stash);
-                self.pool.outputs.push(ty_stash);
+            prev.vars.append(&mut s.ci.vars);
+            s.ci.finalize(&mut s.output);
+            s.output.emit(tx());
 
-                prev_ci.vars.append(&mut self.ci.vars);
-                self.ci.finalize(&mut self.output);
-                self.output.emit(tx());
+            let loc = match ret.loc {
+                Loc::Rt { ref reg, .. } => Ok(reg.get()),
+                Loc::Ct { value } => Err(value),
+            };
+            s.ci.free_loc(ret.loc);
 
-                self.run_vm(self.ci.snap.code);
+            loc
+        });
 
-                ty::Id::from(self.ct.vm.read_reg(1).0 as u32)
-            }
-        };
-
-        self.output.trunc(&self.ci.snap);
-        prev_ci.vars.append(&mut self.ci.vars);
-        self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
-        self.ci.snap = self.output.snap();
-        self.output.append(&mut stash);
-        self.pool.outputs.push(stash);
-
-        self.ci.stack.integriy_check();
-
-        ty
-    }
-
-    fn run_vm(&mut self, entry: usize) {
-        self.link();
-        self.ct.vm.pc = hbvm::mem::Address::new(&mut self.output.code[entry] as *mut _ as _);
-        loop {
-            match self.ct.vm.run().unwrap() {
-                hbvm::VmRunOk::End => break,
-                hbvm::VmRunOk::Timer => unreachable!(),
-                hbvm::VmRunOk::Ecall => self.handle_ecall(),
-                hbvm::VmRunOk::Breakpoint => unreachable!(),
-            }
-        }
+        ty::Id::from(match loc {
+            Ok(reg) => self.ct.vm.read_reg(reg).cast::<u64>().to_ne_bytes(),
+            Err(ct) => ct,
+        })
     }
 
     fn handle_ecall(&mut self) {
@@ -2506,38 +2593,28 @@ impl Codegen {
                 let id = self.tys.funcs.len() as _;
                 let func = Func {
                     offset: task::id(self.tasks.len()),
-                    args:   'b: {
-                        if args.is_empty() {
-                            break 'b ty::Tuple::empty();
-                        }
-
-                        let start = self.tys.args.len();
+                    sig:    'b: {
+                        let arg_base = self.tys.args.len();
                         for arg in args {
+                            let sym = find_symbol(&self.files[file as usize].symbols, arg.id);
+                            if sym.flags & idfl::COMPTIME != 0 {
+                                self.tys.args.truncate(arg_base);
+                                break 'b None;
+                            }
                             let ty = self.ty(&arg.ty);
                             self.tys.args.push(ty);
                         }
-                        let needle = &self.tys.args[start..];
-                        // TODO: maybe later when this becomes a bottleneck we use more
-                        // efficient search (SIMD?, indexing?)
-                        let sp = self
-                            .tys
-                            .args
-                            .windows(needle.len())
-                            .position(|val| val == needle)
-                            .unwrap();
-                        self.tys.args.truncate((sp + needle.len()).max(start));
-                        ty::Tuple::new(sp, args.len()).unwrap_or_else(|| {
-                            self.report(pos, "amount of arguments not supported")
-                        })
+
+                        self.tasks.push(Some(FTask { file, id }));
+
+                        let args = self.pack_args(pos, arg_base);
+                        let ret = self.ty(ret);
+                        Some(Sig { args, ret })
                     },
-                    ret:    self.ty(ret),
+                    expr:   ExprRef::new(expr),
                 };
                 self.tys.funcs.push(func);
-                self.tasks.push(Some(FTask {
-                    file,
-                    expr: ExprRef::new(expr),
-                    id,
-                }));
+
                 ty::Kind::Func(id)
             }
             Expr::BinOp {
@@ -2551,79 +2628,20 @@ impl Codegen {
                 right,
             } => {
                 let gid = self.tys.globals.len() as ty::Global;
-
-                let mut stash = self.pool.outputs.pop().unwrap_or_default();
-                self.output.pop(&mut stash, &self.ci.snap);
-
-                let prev_ci = std::mem::replace(
-                    &mut self.ci,
-                    ItemCtx {
-                        file,
-                        id: ty::Kind::Global(gid),
-                        ..self.pool.cis.pop().unwrap_or_default()
-                    },
-                );
-                debug_assert!(self.ci.stack_relocs.is_empty());
-                self.ci.snap = self.output.snap();
-                self.ci.regs.init();
-
                 self.tys.globals.push(Global {
                     offset: u32::MAX,
                     ty:     Default::default(),
                 });
 
-                self.output.emit_prelude();
-
-                let ret = self.ci.regs.allocate();
-                self.output.emit(instrs::cp(ret.get(), 1));
-                self.ci.task_base = self.tasks.len();
-
-                let ret = self
-                    .expr_ctx(right, Ctx::default().with_loc(Loc::reg(ret).into_derefed()))
-                    .expect("TODO: unreachable constant/global");
-
-                let mut global_stash = self.pool.outputs.pop().unwrap_or_default();
-                self.output.pop(&mut global_stash, &self.ci.snap);
-
-                log::dbg!("whaaaa");
-                self.complete_call_graph();
-                self.ci.snap = self.output.snap();
-                log::dbg!("bhaaaa");
-
-                let size = self.tys.size_of(ret.ty);
-                self.ci.snap.code += size as usize;
-                self.output.code.resize(self.ci.snap.code, 0);
-
-                self.output.append(&mut global_stash);
-                self.pool.outputs.push(global_stash);
-
-                self.ci.finalize(&mut self.output);
-                self.output.emit(tx());
-
-                let ret_loc = unsafe {
-                    self.output
-                        .code
-                        .as_mut_ptr()
-                        .add(self.ci.snap.code - size as usize)
-                };
-                self.ct.vm.write_reg(1, ret_loc as u64);
-
-                self.run_vm(self.ci.snap.code);
-                log::dbg!("brah");
-
-                self.tys.globals[gid as usize] = Global {
-                    ty:     ret.ty,
-                    offset: self.ci.snap.code as Offset - size,
+                let ci = ItemCtx {
+                    file,
+                    id: ty::Kind::Global(gid),
+                    ..self.pool.cis.pop().unwrap_or_default()
                 };
 
-                self.output.trunc(&self.ci.snap);
-                self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
-                self.ci.snap = self.output.snap();
-                self.output.append(&mut stash);
-                self.pool.outputs.push(stash);
-
-                log::dbg!("dah");
-                self.ci.free_loc(ret.loc);
+                self.tys.globals[gid as usize] = self
+                    .ct_eval(ci, |s, _| Ok::<_, !>(s.generate_global(right)))
+                    .into_ok();
 
                 ty::Kind::Global(gid)
             }
@@ -2631,6 +2649,85 @@ impl Codegen {
         };
         self.tys.syms.insert(SymKey { ident, file }, sym.compress());
         sym
+    }
+
+    fn generate_global(&mut self, expr: &Expr) -> Global {
+        self.output.emit_prelude();
+
+        let ret = self.ci.regs.allocate();
+        self.output.emit(instrs::cp(ret.get(), 1));
+        self.ci.task_base = self.tasks.len();
+
+        let ctx = Ctx::default().with_loc(Loc::reg(ret).into_derefed());
+        let Some(ret) = self.expr_ctx(expr, ctx) else {
+            self.report(expr.pos(), "expression is not reachable");
+        };
+
+        let stash = self.complete_call_graph();
+
+        let offset = self.ci.snap.code;
+        self.ci.snap.code += self.tys.size_of(ret.ty) as usize;
+        self.output.code.resize(self.ci.snap.code, 0);
+
+        self.push_stash(stash);
+
+        self.ci.finalize(&mut self.output);
+        self.output.emit(tx());
+
+        let ret_loc = unsafe { self.output.code.as_mut_ptr().add(offset) };
+        self.ct.vm.write_reg(1, ret_loc as u64);
+
+        Global {
+            ty:     ret.ty,
+            offset: offset as _,
+        }
+    }
+
+    fn pop_stash(&mut self) -> Output {
+        let mut stash = self.pool.outputs.pop().unwrap_or_default();
+        self.output.pop(&mut stash, &self.ci.snap);
+        stash
+    }
+
+    fn push_stash(&mut self, mut stash: Output) {
+        self.output.append(&mut stash);
+        self.pool.outputs.push(stash);
+    }
+
+    fn ct_eval<T, E>(
+        &mut self,
+        ci: ItemCtx,
+        compile: impl FnOnce(&mut Self, &mut ItemCtx) -> Result<T, E>,
+    ) -> Result<T, E> {
+        let stash = self.pop_stash();
+
+        let mut prev_ci = std::mem::replace(&mut self.ci, ci);
+        self.ci.snap = self.output.snap();
+        self.ci.task_base = self.tasks.len();
+        self.ci.regs.init();
+
+        let ret = compile(self, &mut prev_ci);
+
+        if ret.is_ok() {
+            self.link();
+            let entry = &mut self.output.code[self.ci.snap.code] as *mut _ as _;
+            self.ct.vm.pc = hbvm::mem::Address::new(entry);
+            loop {
+                match self.ct.vm.run().unwrap() {
+                    hbvm::VmRunOk::End => break,
+                    hbvm::VmRunOk::Timer => unreachable!(),
+                    hbvm::VmRunOk::Ecall => self.handle_ecall(),
+                    hbvm::VmRunOk::Breakpoint => unreachable!(),
+                }
+            }
+        }
+
+        self.output.trunc(&self.ci.snap);
+        self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
+        self.ci.snap = self.output.snap();
+        self.push_stash(stash);
+
+        ret
     }
 
     fn ty_display(&self, ty: ty::Id) -> ty::Display {
@@ -2644,7 +2741,7 @@ impl Codegen {
         } else {
             let ty = self.ty_display(ty);
             let expected = self.ty_display(expected);
-            self.report(pos, format_args!("expected {ty}, got {expected}"));
+            self.report(pos, format_args!("expected {expected}, got {ty}"));
         }
     }
 
@@ -2656,6 +2753,33 @@ impl Codegen {
 
     fn cfile(&self) -> &parser::Ast {
         &self.files[self.ci.file as usize]
+    }
+
+    fn local_code(&mut self) -> &mut [u8] {
+        &mut self.output.code[self.ci.snap.code..]
+    }
+
+    fn local_offset(&self) -> u32 {
+        (self.output.code.len() - self.ci.snap.code) as u32
+    }
+
+    fn pack_args(&mut self, pos: Pos, arg_base: usize) -> ty::Tuple {
+        let needle = &self.tys.args[arg_base..];
+        if needle.is_empty() {
+            return ty::Tuple::empty();
+        }
+        let len = needle.len();
+        // FIXME: maybe later when this becomes a bottleneck we use more
+        // efficient search (SIMD?, indexing?)
+        let sp = self
+            .tys
+            .args
+            .windows(needle.len())
+            .position(|val| val == needle)
+            .unwrap();
+        self.tys.args.truncate((sp + needle.len()).max(arg_base));
+        ty::Tuple::new(sp, len)
+            .unwrap_or_else(|| self.report(pos, "amount of arguments not supported"))
     }
 }
 
@@ -2721,6 +2845,26 @@ mod tests {
         let stat = loop {
             match vm.run() {
                 Ok(hbvm::VmRunOk::End) => break Ok(()),
+                Ok(hbvm::VmRunOk::Ecall) => match vm.read_reg(2).0 {
+                    1 => writeln!(output, "ev: Ecall").unwrap(), // compatibility with a test
+                    69 => {
+                        let [size, align] = [vm.read_reg(3).0 as usize, vm.read_reg(4).0 as usize];
+                        let layout = std::alloc::Layout::from_size_align(size, align).unwrap();
+                        let ptr = unsafe { std::alloc::alloc(layout) };
+                        vm.write_reg(1, ptr as u64);
+                    }
+                    96 => {
+                        let [ptr, size, align] = [
+                            vm.read_reg(3).0 as usize,
+                            vm.read_reg(4).0 as usize,
+                            vm.read_reg(5).0 as usize,
+                        ];
+
+                        let layout = std::alloc::Layout::from_size_align(size, align).unwrap();
+                        unsafe { std::alloc::dealloc(ptr as *mut u8, layout) };
+                    }
+                    unknown => unreachable!("unknown ecall: {unknown:?}"),
+                },
                 Ok(ev) => writeln!(output, "ev: {:?}", ev).unwrap(),
                 Err(e) => break Err(e),
             }
@@ -2746,5 +2890,6 @@ mod tests {
         directives => README;
         global_variables => README;
         generic_types => README;
+        generic_functions => README;
     }
 }

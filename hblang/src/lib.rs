@@ -3,6 +3,8 @@
 #![feature(anonymous_lifetime_in_impl_trait)]
 #![feature(inline_const_pat)]
 #![feature(pattern)]
+#![feature(never_type)]
+#![feature(unwrap_infallible)]
 #![feature(if_let_guard)]
 #![feature(slice_partition_dedup)]
 #![feature(noop_waker)]
@@ -217,8 +219,14 @@ impl<T> TaskQueueInner<T> {
     }
 }
 
-pub fn parse_all(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
+pub fn parse_from_fs(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     const GIT_DEPS_DIR: &str = "git-deps";
+
+    enum Chk<'a> {
+        Branch(&'a str),
+        Rev(&'a str),
+        Tag(&'a str),
+    }
 
     enum ImportPath<'a> {
         Root {
@@ -228,11 +236,9 @@ pub fn parse_all(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
             path: &'a str,
         },
         Git {
-            link:   &'a str,
-            path:   &'a str,
-            branch: Option<&'a str>,
-            tag:    Option<&'a str>,
-            rev:    Option<&'a str>,
+            link: &'a str,
+            path: &'a str,
+            chk:  Option<Chk<'a>>,
         },
     }
 
@@ -249,22 +255,16 @@ pub fn parse_all(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
                     let (link, path) =
                         path.split_once(':').ok_or(ParseImportError::ExpectedPath)?;
                     let (link, params) = link.split_once('?').unwrap_or((link, ""));
-                    let [mut branch, mut tag, mut rev] = [None; 3];
-                    for (key, value) in params.split('&').filter_map(|s| s.split_once('=')) {
-                        match key {
-                            "branch" => branch = Some(value),
-                            "tag" => tag = Some(value),
-                            "rev" => rev = Some(value),
-                            _ => return Err(ParseImportError::UnexpectedParam),
-                        }
-                    }
-                    Ok(Self::Git {
-                        link,
-                        path,
-                        branch,
-                        tag,
-                        rev,
-                    })
+                    let chk = params
+                        .split('&')
+                        .filter_map(|s| s.split_once('='))
+                        .find_map(|(key, value)| match key {
+                            "branch" => Some(Chk::Branch(value)),
+                            "rev" => Some(Chk::Rev(value)),
+                            "tag" => Some(Chk::Tag(value)),
+                            _ => None,
+                        });
+                    Ok(Self::Git { link, path, chk })
                 }
                 _ => Err(ParseImportError::InvalidPrefix),
             }
@@ -294,21 +294,15 @@ pub fn parse_all(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     enum ParseImportError {
         ExpectedPath,
         InvalidPrefix,
-        UnexpectedParam,
     }
 
     impl std::fmt::Display for ParseImportError {
         fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
             match self {
-                Self::ExpectedPath => write!(f, "expected path"),
-                Self::InvalidPrefix => write!(
-                    f,
-                    "invalid prefix, expected one of rel, \
+                Self::ExpectedPath => "expected path".fmt(f),
+                Self::InvalidPrefix => "invalid prefix, expected one of rel, \
                     git or none followed by colon"
-                ),
-                Self::UnexpectedParam => {
-                    write!(f, "unexpected git param, expected branch, tag or rev")
-                }
+                    .fmt(f),
             }
         }
     }
@@ -389,14 +383,7 @@ pub fn parse_all(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
         };
 
         let command = if !physiscal_path.exists() {
-            let ImportPath::Git {
-                link,
-                branch,
-                rev,
-                tag,
-                ..
-            } = path
-            else {
+            let ImportPath::Git { link, chk, .. } = path else {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
                     format!("can't find file: {}", physiscal_path.display()),
@@ -406,13 +393,15 @@ pub fn parse_all(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
             let root = PathBuf::from_iter([GIT_DEPS_DIR, preprocess_git(link)]);
 
             let mut command = std::process::Command::new("git");
-            command
-                .args(["clone", "--depth", "1"])
-                .args(branch.map(|b| ["--branch", b]).into_iter().flatten())
-                .args(tag.map(|t| ["--tag", t]).into_iter().flatten())
-                .args(rev.map(|r| ["--rev", r]).into_iter().flatten())
-                .arg(link)
-                .arg(root);
+            command.args(["clone", "--depth", "1"]);
+            if let Some(chk) = chk {
+                command.args(match chk {
+                    Chk::Branch(b) => ["--branch", b],
+                    Chk::Tag(t) => ["--tag", t],
+                    Chk::Rev(r) => ["--rev", r],
+                });
+            }
+            command.arg(link).arg(root);
             Some(command)
         } else {
             None
@@ -472,9 +461,7 @@ pub fn parse_all(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
         .collect::<io::Result<Vec<_>>>()
 }
 
-type HashMap<K, V> = std::collections::HashMap<K, V, FnvBuildHash>;
-
-type FnvBuildHash = std::hash::BuildHasherDefault<FnvHasher>;
+type HashMap<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<FnvHasher>>;
 
 struct FnvHasher(u64);
 
