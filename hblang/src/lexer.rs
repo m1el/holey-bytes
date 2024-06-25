@@ -1,5 +1,16 @@
 use std::simd::cmp::SimdPartialEq;
 
+const fn ascii_mask(chars: &[u8]) -> u128 {
+    let mut eq = 0;
+    let mut i = 0;
+    while i < chars.len() {
+        let b = chars[i];
+        eq |= 1 << b;
+        i += 1;
+    }
+    eq
+}
+
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Token {
     pub kind:  TokenKind,
@@ -35,15 +46,15 @@ macro_rules! gen_token_kind {
     ) => {
         impl std::fmt::Display for $name {
             fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                let s = match *self {
+                let sf = *self as u8;
+                f.write_str(match *self {
                     $( Self::$pattern => concat!('<', stringify!($pattern), '>'), )*
-
                     $( Self::$keyword => stringify!($keyword_lit), )*
                     $( Self::$punkt   => stringify!($punkt_lit),   )*
                     $($( Self::$op    => $op_lit,
                       $(Self::$assign => concat!($op_lit, "="),)?)*)*
-                };
-                f.write_str(s)
+                    _ => unsafe { std::str::from_utf8_unchecked(std::slice::from_ref(&sf)) },
+                })
             }
         }
 
@@ -64,23 +75,98 @@ macro_rules! gen_token_kind {
                     _ => Self::Ident,
                 }
             }
-
-            pub fn assign_op(&self) -> Option<Self> {
-                Some(match self {
-                    $($($(Self::$assign => Self::$op,)?)*)*
-                    _ => return None,
-                })
-            }
-        }
-
-        #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-        $vis enum $name {
-            $( $pattern, )*
-            $( $keyword, )*
-            $( $punkt,   )*
-            $($( $op, $($assign,)?  )*)*
         }
     };
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[repr(u8)]
+pub enum TokenKind {
+    Not     = b'!',
+    DQuote  = b'"',
+    Pound   = b'#',
+    CtIdent = b'$',
+    Mod     = b'%',
+    Band    = b'&',
+    Quote   = b'\'',
+    LParen  = b'(',
+    RParen  = b')',
+    Mul     = b'*',
+    Add     = b'+',
+    Comma   = b',',
+    Sub     = b'-',
+    Dot     = b'.',
+    Div     = b'/',
+    Shl     = b'0',
+    Shr     = b'1',
+    // Unused = 2-9
+    Colon   = b':',
+    Semi    = b';',
+    Gt      = b'>',
+    Assign  = b'=',
+    Lt      = b'<',
+    Que     = b'?',
+    Directive = b'@',
+
+    Ident,
+    Number,
+    Eof,
+    String,
+
+    Return,
+    If,
+    Else,
+    Loop,
+    Break,
+    Continue,
+    Fn,
+    Struct,
+    True,
+
+    Ctor,
+    Tupl,
+
+    Or,
+    And,
+
+    // Unused = R-Z
+    LBrack  = b'[',
+    BSlash  = b'\\',
+    RBrack  = b']',
+    Xor     = b'^',
+    Tick    = b'`',
+    // Unused = a-z
+    LBrace  = b'{',
+    Bor     = b'|',
+    RBrace  = b'}',
+    Tilde   = b'~',
+
+    Decl    = b':' + 128,
+    Eq      = b'=' + 128,
+    Ne      = b'!' + 128,
+    Le      = b'<' + 128,
+    Ge      = b'>' + 128,
+
+    BorAss  = b'|' + 128,
+    AddAss  = b'+' + 128,
+    SubAss  = b'-' + 128,
+    MulAss  = b'*' + 128,
+    DivAss  = b'/' + 128,
+    ModAss  = b'%' + 128,
+    XorAss  = b'^' + 128,
+    BandAss = b'&' + 128,
+    ShlAss  = b'0' + 128,
+    ShrAss  = b'1' + 128,
+}
+
+impl TokenKind {
+    pub fn assign_op(self) -> Option<Self> {
+        let id = (self as u8).saturating_sub(128);
+        if ascii_mask(b"|+-*/%^&01") & (1u128 << id) == 0 {
+            return None;
+        }
+        Some(unsafe { std::mem::transmute::<u8, Self>(id) })
+    }
 }
 
 gen_token_kind! {
@@ -90,8 +176,7 @@ gen_token_kind! {
         Ident,
         Number,
         Eof,
-        Error,
-        Driective,
+        Directive,
         String,
         #[keywords]
         Return   = b"return",
@@ -104,14 +189,6 @@ gen_token_kind! {
         Struct   = b"struct",
         True     = b"true",
         #[punkt]
-        LParen = "(",
-        RParen = ")",
-        LBrace = "{",
-        RBrace = "}",
-        Semi   = ";",
-        Colon  = ":",
-        Comma  = ",",
-        Dot    = ".",
         Ctor   = ".{",
         Tupl   = ".(",
         #[ops]
@@ -194,30 +271,20 @@ impl<'a> Lexer<'a> {
             };
 
             let advance_ident = |s: &mut Self| {
-                while let Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_') = s.peek() {
+                while let Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_' | 127..) = s.peek() {
                     s.advance();
                 }
             };
 
-            let kind = match c {
-                b'\n' | b'\r' | b'\t' | b' ' => continue,
+            let mut kind = match c {
+                ..=b' ' => continue,
                 b'0'..=b'9' => {
                     while let Some(b'0'..=b'9') = self.peek() {
                         self.advance();
                     }
                     T::Number
                 }
-                b'@' => {
-                    start += 1;
-                    advance_ident(self);
-                    T::Driective
-                }
-                b'$' => {
-                    start += 1;
-                    advance_ident(self);
-                    T::CtIdent
-                }
-                b'a'..=b'z' | b'A'..=b'Z' | b'_' => {
+                b'a'..=b'z' | b'A'..=b'Z' | b'_' | 127.. => {
                     advance_ident(self);
                     let ident = &self.bytes[start as usize..self.pos as usize];
                     T::from_ident(ident)
@@ -232,52 +299,23 @@ impl<'a> Lexer<'a> {
                     }
                     T::String
                 }
-                b':' if self.advance_if(b'=') => T::Decl,
-                b':' => T::Colon,
-                b',' => T::Comma,
                 b'.' if self.advance_if(b'{') => T::Ctor,
                 b'.' if self.advance_if(b'(') => T::Tupl,
-                b'.' => T::Dot,
-                b';' => T::Semi,
-                b'!' if self.advance_if(b'=') => T::Ne,
-                b'=' if self.advance_if(b'=') => T::Eq,
-                b'=' => T::Assign,
-                b'<' if self.advance_if(b'=') => T::Le,
-                b'<' if self.advance_if(b'<') => match self.advance_if(b'=') {
-                    true => T::ShlAss,
-                    false => T::Shl,
-                },
-                b'<' => T::Lt,
-                b'>' if self.advance_if(b'=') => T::Ge,
-                b'>' if self.advance_if(b'>') => match self.advance_if(b'=') {
-                    true => T::ShrAss,
-                    false => T::Shr,
-                },
-                b'>' => T::Gt,
-                b'+' if self.advance_if(b'=') => T::AddAss,
-                b'+' => T::Add,
-                b'-' if self.advance_if(b'=') => T::SubAss,
-                b'-' => T::Sub,
-                b'*' if self.advance_if(b'=') => T::MulAss,
-                b'*' => T::Mul,
-                b'/' if self.advance_if(b'=') => T::DivAss,
-                b'/' => T::Div,
-                b'%' if self.advance_if(b'=') => T::ModAss,
-                b'%' => T::Mod,
-                b'&' if self.advance_if(b'=') => T::BandAss,
+                b'<' if self.advance_if(b'<') => T::Shl,
+                b'>' if self.advance_if(b'>') => T::Shr,
                 b'&' if self.advance_if(b'&') => T::And,
-                b'&' => T::Band,
-                b'^' if self.advance_if(b'=') => T::XorAss,
-                b'^' => T::Xor,
-                b'|' if self.advance_if(b'=') => T::BorAss,
                 b'|' if self.advance_if(b'|') => T::Or,
-                b'|' => T::Bor,
-                b'(' => T::LParen,
-                b')' => T::RParen,
-                b'{' => T::LBrace,
-                b'}' => T::RBrace,
-                _ => T::Error,
+                b => unsafe { std::mem::transmute::<u8, T>(b) },
             };
+
+            if matches!(kind, T::Directive | T::CtIdent) {
+                start += 1;
+                advance_ident(self);
+            } else if ascii_mask(b":=!<>|+-*/%^&01") & (1u128 << kind as u8) != 0
+                && self.advance_if(b'=')
+            {
+                kind = unsafe { std::mem::transmute::<u8, T>(kind as u8 + 128) };
+            }
 
             return Token {
                 kind,

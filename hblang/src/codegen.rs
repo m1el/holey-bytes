@@ -1,4 +1,4 @@
-use std::{ops::Range, rc::Rc, usize};
+use std::{ops::Range, rc::Rc};
 
 use crate::{
     ident::{self, Ident},

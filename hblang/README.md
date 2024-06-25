@@ -84,10 +84,10 @@ fib := fn(x: int): int {
 #### variables
 ```hb
 main := fn(): int {
-	a := 1;
+	ඞ := 1;
 	b := 2;
-	a = a + 1;
-	return a - b;
+	ඞ = ඞ + 1;
+	return ඞ - b;
 }
 ```
 
@@ -275,7 +275,7 @@ push := fn($Elem: type, vec: ^Vec(Elem), value: Elem): ^Elem {
 		}
 
 		new_alloc := @as(^Elem, @bitcast(malloc(vec.cap * @sizeof(Elem), @alignof(Elem))));
-		if @as(uint, @bitcast(new_alloc)) == 0 return @bitcast(0);
+		if new_alloc == 0 return 0;
 
 		src_cursor := vec.data;
 		dst_cursor := new_alloc;

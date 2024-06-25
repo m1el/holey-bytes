@@ -235,7 +235,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         let prev_boundary = self.ns_bound;
         let prev_captured = self.captured.len();
         let mut expr = match token.kind {
-            T::Driective if self.lexer.slice(token.range()) == "use" => {
+            T::Directive if self.lexer.slice(token.range()) == "use" => {
                 self.expect_advance(TokenKind::LParen);
                 let str = self.expect_advance(TokenKind::String);
                 self.expect_advance(TokenKind::RParen);
@@ -250,7 +250,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                     },
                 }
             }
-            T::Driective => E::Directive {
+            T::Directive => E::Directive {
                 pos:  token.start,
                 name: self.move_str(token),
                 args: {
