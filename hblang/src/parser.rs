@@ -389,19 +389,21 @@ impl<'a, 'b> Parser<'a, 'b> {
                     trailing_comma: std::mem::take(&mut self.trailing_sep),
                 },
                 T::Ctor => E::Ctor {
-                    pos:    token.start,
-                    ty:     Some(self.arena.alloc(expr)),
+                    pos: token.start,
+                    ty: Some(self.arena.alloc(expr)),
                     fields: self.collect_list(T::Comma, T::RBrace, |s| {
                         let name = s.expect_advance(T::Ident);
                         s.expect_advance(T::Colon);
                         let val = s.expr();
                         (Some(s.move_str(name)), val)
                     }),
+                    trailing_comma: std::mem::take(&mut self.trailing_sep),
                 },
                 T::Tupl => E::Ctor {
-                    pos:    token.start,
-                    ty:     Some(self.arena.alloc(expr)),
+                    pos: token.start,
+                    ty: Some(self.arena.alloc(expr)),
                     fields: self.collect_list(T::Comma, T::RParen, |s| (None, s.expr())),
+                    trailing_comma: std::mem::take(&mut self.trailing_sep),
                 },
                 T::Dot => E::Field {
                     target: self.arena.alloc(expr),
@@ -652,6 +654,7 @@ generate_expr! {
             pos:    Pos,
             ty:     Option<&'a Self>,
             fields: &'a [(Option<&'a str>, Self)],
+            trailing_comma: bool,
         },
         Field {
             target: &'a Self,
@@ -799,28 +802,33 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 write!(f, "struct {{")?;
                 fmt_list(f, "}", fields, |(name, val), f| write!(f, "{name}: {val}",))
             }
-            Self::Ctor { ty, fields, .. } => {
+            Self::Ctor {
+                ty,
+                fields,
+                trailing_comma,
+                ..
+            } => {
                 let (left, rith) = if fields.iter().any(|(name, _)| name.is_some()) {
-                    ('{', '}')
+                    ('{', "}")
                 } else {
-                    ('(', ')')
+                    ('(', ")")
                 };
 
                 if let Some(ty) = ty {
                     write!(f, "{}", Unary(ty))?;
                 }
                 write!(f, ".{left}")?;
-                let first = &mut true;
-                for (name, val) in fields {
-                    if !std::mem::take(first) {
-                        write!(f, ", ")?;
-                    }
+                let fmt_field = |(name, val): &_, f: &mut std::fmt::Formatter| {
                     if let Some(name) = name {
                         write!(f, "{name}: ")?;
                     }
-                    write!(f, "{val}")?;
+                    write!(f, "{val}")
+                };
+                if trailing_comma {
+                    fmt_trailing_list(f, rith, fields, fmt_field)
+                } else {
+                    fmt_list(f, rith, fields, fmt_field)
                 }
-                write!(f, "{rith}")
             }
             Self::UnOp { op, val, .. } => write!(f, "{op}{}", Unary(val)),
             Self::Break { .. } => write!(f, "break;"),
@@ -1206,5 +1214,8 @@ mod test {
         some_ordinary_code => "loft := fn(): int return loft(1, 2, 3);\n";
         some_arg_per_line_code => "loft := fn(): int return loft(\
             \n\t1,\n\t2,\n\t3,\n);\n";
+        some_ordinary_struct => "loft := fn(): int return loft.{a: 1, b: 2};\n";
+        some_ordinary_fild_per_lin_struct => "loft := fn(): int return loft.{\
+            \n\ta: 1,\n\tb: 2,\n};\n";
     }
 }
