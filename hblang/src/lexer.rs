@@ -1,4 +1,4 @@
-use std::simd::cmp::SimdPartialEq;
+use std::{convert::identity, simd::cmp::SimdPartialEq};
 
 const fn ascii_mask(chars: &[u8]) -> u128 {
     let mut eq = 0;
@@ -285,11 +285,6 @@ impl<'a> Lexer<'a> {
 
             let kind = match c {
                 ..=b' ' => continue,
-                b'@' | b'$' => {
-                    start += 1;
-                    advance_ident(self);
-                    identity(c)
-                }
                 b'0'..=b'9' => {
                     while let Some(b'0'..=b'9') = self.peek() {
                         self.advance();
@@ -301,23 +296,28 @@ impl<'a> Lexer<'a> {
                     let ident = &self.bytes[start as usize..self.pos as usize];
                     T::from_ident(ident)
                 }
-                b'"' => {
-                    while let Some(c) = self.advance() {
-                        match c {
-                            b'"' => break,
+                b'"' | b'\'' => {
+                    while let Some(nc) = self.advance() {
+                        match nc {
                             b'\\' => _ = self.advance(),
+                            nc if nc == c => break,
                             _ => {}
                         }
                     }
-                    T::String
+                    identity(c)
                 }
                 b'.' if self.advance_if(b'{') => T::Ctor,
                 b'.' if self.advance_if(b'(') => T::Tupl,
+                b'&' if self.advance_if(b'&') => T::And,
+                b'|' if self.advance_if(b'|') => T::Or,
+                b'@' | b'$' => {
+                    start += 1;
+                    advance_ident(self);
+                    identity(c)
+                }
                 b'<' | b'>' if self.advance_if(c) => {
                     identity(c - 5 + 128 * self.advance_if(b'=') as u8)
                 }
-                b'&' if self.advance_if(b'&') => T::And,
-                b'|' if self.advance_if(b'|') => T::Or,
                 b':' | b'=' | b'!' | b'<' | b'>' | b'|' | b'+' | b'-' | b'*' | b'/' | b'%'
                 | b'^' | b'&'
                     if self.advance_if(b'=') =>
@@ -326,8 +326,6 @@ impl<'a> Lexer<'a> {
                 }
                 _ => identity(c),
             };
-
-            println!("{kind}");
 
             return Token {
                 kind,
