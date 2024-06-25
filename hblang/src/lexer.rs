@@ -327,6 +327,8 @@ impl<'a> Lexer<'a> {
                 _ => identity(c),
             };
 
+            println!("{kind}");
+
             return Token {
                 kind,
                 start,
