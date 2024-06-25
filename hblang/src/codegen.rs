@@ -1964,6 +1964,7 @@ impl Codegen {
 
                 unimplemented!("{:#?}", op)
             }
+            E::Comment { .. } => Some(Value::void()),
             ast => unimplemented!("{:#?}", ast),
         }?;
 
@@ -2253,6 +2254,9 @@ impl Codegen {
 
     fn load_arg(&mut self, flags: parser::IdentFlags, ty: ty::Id, parama: &mut ParamAlloc) -> Loc {
         let size = self.tys.size_of(ty) as Size;
+        if size == 0 {
+            return Loc::default();
+        }
         let (src, dst) = match size {
             0 => (Loc::default(), Loc::default()),
             ..=8 if flags & idfl::REFERENCED == 0 => {
@@ -2393,6 +2397,10 @@ impl Codegen {
             ($der:literal, $reg:ident, $off:pat, $sta:pat) => {
                 &Loc::Rt { derefed: $der, reg: ref $reg, offset: $off, stack: $sta }
             };
+        }
+
+        if size == 0 {
+            return;
         }
 
         src.as_ref().assert_valid();
@@ -2884,6 +2892,7 @@ mod tests {
         arithmetic => README;
         variables => README;
         functions => README;
+        comments => README;
         if_statements => README;
         loops => README;
         fb_driver => README;

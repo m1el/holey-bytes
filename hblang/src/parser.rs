@@ -367,6 +367,10 @@ impl<'a, 'b> Parser<'a, 'b> {
                 self.expect_advance(T::RParen);
                 expr
             }
+            T::Comment => Expr::Comment {
+                pos:     token.start,
+                literal: self.move_str(token),
+            },
             tok => self.report(format_args!("unexpected token: {tok:?}")),
         };
 
@@ -577,6 +581,10 @@ macro_rules! generate_expr {
 generate_expr! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum Expr<'a> {
+        Comment {
+            pos: Pos,
+            literal: &'a str,
+        },
         Break {
             pos: Pos,
         },
@@ -725,6 +733,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
         }
 
         match *self {
+            Self::Comment { literal, .. } => write!(f, "{literal}"),
             Self::Mod { path, .. } => write!(f, "@mod(\"{path}\")"),
             Self::Field { target, field } => write!(f, "{}.{field}", Postfix(target)),
             Self::Directive { name, args, .. } => {

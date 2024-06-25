@@ -1,4 +1,4 @@
-use std::{convert::identity, simd::cmp::SimdPartialEq};
+use std::simd::cmp::SimdPartialEq;
 
 const fn ascii_mask(chars: &[u8]) -> u128 {
     let mut eq = 0;
