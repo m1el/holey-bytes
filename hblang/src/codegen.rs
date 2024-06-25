@@ -1580,7 +1580,9 @@ impl Codegen {
                 });
                 Some(Value::void())
             }
-            E::Call { func: fast, args } => {
+            E::Call {
+                func: fast, args, ..
+            } => {
                 let func_ty = self.ty(fast);
                 let ty::Kind::Func(mut func_id) = func_ty.expand() else {
                     self.report(fast.pos(), "can't call this, maybe in the future");

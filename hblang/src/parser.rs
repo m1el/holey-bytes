@@ -58,15 +58,16 @@ struct ScopeIdent {
 }
 
 pub struct Parser<'a, 'b> {
-    path:     &'b str,
-    loader:   Loader<'b>,
-    lexer:    Lexer<'b>,
-    arena:    &'b Arena<'a>,
-    token:    Token,
-    symbols:  &'b mut Symbols,
-    ns_bound: usize,
-    idents:   Vec<ScopeIdent>,
-    captured: Vec<Ident>,
+    path:         &'b str,
+    loader:       Loader<'b>,
+    lexer:        Lexer<'b>,
+    arena:        &'b Arena<'a>,
+    token:        Token,
+    symbols:      &'b mut Symbols,
+    ns_bound:     usize,
+    trailing_sep: bool,
+    idents:       Vec<ScopeIdent>,
+    captured:     Vec<Ident>,
 }
 
 impl<'a, 'b> Parser<'a, 'b> {
@@ -80,6 +81,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             arena,
             symbols,
             ns_bound: 0,
+            trailing_sep: false,
             idents: Vec::new(),
             captured: Vec::new(),
         }
@@ -384,6 +386,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 T::LParen => Expr::Call {
                     func: self.arena.alloc(expr),
                     args: self.collect_list(T::Comma, T::RParen, Self::expr),
+                    trailing_comma: std::mem::take(&mut self.trailing_sep),
                 },
                 T::Ctor => E::Ctor {
                     pos:    token.start,
@@ -464,7 +467,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         self.collect(|s| {
             s.advance_if(end).not().then(|| {
                 let val = f(s);
-                s.advance_if(delim);
+                s.trailing_sep = s.advance_if(delim);
                 val
             })
         })
@@ -600,6 +603,7 @@ generate_expr! {
         Call {
             func: &'a Self,
             args: &'a [Self],
+            trailing_comma: bool,
         },
         Return {
             pos: Pos,
@@ -686,6 +690,17 @@ impl<'a> Poser for &Expr<'a> {
     }
 }
 
+thread_local! {
+    static FMT_SOURCE: Cell<*const str> = const { Cell::new("") };
+}
+
+pub fn with_fmt_source<T>(source: &str, f: impl FnOnce() -> T) -> T {
+    FMT_SOURCE.with(|s| s.set(source));
+    let r = f();
+    FMT_SOURCE.with(|s| s.set(""));
+    r
+}
+
 impl<'a> std::fmt::Display for Expr<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         thread_local! {
@@ -706,6 +721,33 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 fmt(expr, f)?;
             }
             write!(f, "{end}")
+        }
+
+        fn fmt_trailing_list<T>(
+            f: &mut std::fmt::Formatter,
+            end: &str,
+            list: &[T],
+            fmt: impl Fn(&T, &mut std::fmt::Formatter) -> std::fmt::Result,
+        ) -> std::fmt::Result {
+            writeln!(f)?;
+            INDENT.with(|i| i.set(i.get() + 1));
+            let res = (|| {
+                for stmt in list {
+                    for _ in 0..INDENT.with(|i| i.get()) {
+                        write!(f, "\t")?;
+                    }
+                    fmt(stmt, f)?;
+                    writeln!(f, ",")?;
+                }
+                Ok(())
+            })();
+            INDENT.with(|i| i.set(i.get() - 1));
+
+            for _ in 0..INDENT.with(|i| i.get()) {
+                write!(f, "\t")?;
+            }
+            write!(f, "{end}")?;
+            res
         }
 
         macro_rules! impl_parenter {
@@ -732,8 +774,21 @@ impl<'a> std::fmt::Display for Expr<'a> {
             Consecutive => Expr::UnOp { .. },
         }
 
+        {
+            let source = unsafe { &*FMT_SOURCE.with(|s| s.get()) };
+            let pos = self.pos();
+
+            if let Some(before) = source.get(..pos as usize) {
+                let trailing_whitespace = &before[before.trim_end().len()..];
+                let ncount = trailing_whitespace.chars().filter(|&c| c == '\n').count();
+                if ncount > 1 {
+                    writeln!(f)?;
+                }
+            }
+        }
+
         match *self {
-            Self::Comment { literal, .. } => write!(f, "{literal}"),
+            Self::Comment { literal, .. } => write!(f, "{}", literal.trim_end()),
             Self::Mod { path, .. } => write!(f, "@mod(\"{path}\")"),
             Self::Field { target, field } => write!(f, "{}.{field}", Postfix(target)),
             Self::Directive { name, args, .. } => {
@@ -787,28 +842,24 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 fmt_list(f, "", args, |arg, f| write!(f, "{}: {}", arg.name, arg.ty))?;
                 write!(f, "): {ret} {body}")
             }
-            Self::Call { func, args } => {
+            Self::Call {
+                func,
+                args,
+                trailing_comma,
+            } => {
                 write!(f, "{}(", Postfix(func))?;
-                fmt_list(f, ")", args, std::fmt::Display::fmt)
+                if trailing_comma {
+                    fmt_trailing_list(f, ")", args, std::fmt::Display::fmt)
+                } else {
+                    fmt_list(f, ")", args, std::fmt::Display::fmt)
+                }
             }
             Self::Return { val: Some(val), .. } => write!(f, "return {val};"),
             Self::Return { val: None, .. } => write!(f, "return;"),
             Self::Ident { name, .. } => write!(f, "{name}"),
             Self::Block { stmts, .. } => {
-                writeln!(f, "{{")?;
-                INDENT.with(|i| i.set(i.get() + 1));
-                let res = (|| {
-                    for stmt in stmts {
-                        for _ in 0..INDENT.with(|i| i.get()) {
-                            write!(f, "    ")?;
-                        }
-                        writeln!(f, "{stmt}")?;
-                    }
-                    Ok(())
-                })();
-                INDENT.with(|i| i.set(i.get() - 1));
-                write!(f, "}}")?;
-                res
+                write!(f, "{{")?;
+                fmt_trailing_list(f, "}", stmts, std::fmt::Display::fmt)
             }
             Self::Number { value, .. } => write!(f, "{value}"),
             Self::Bool { value, .. } => write!(f, "{value}"),
@@ -1107,5 +1158,53 @@ impl Drop for ArenaChunk {
             current = next;
             log::dbg!("deallocating full chunk");
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    fn format(ident: &str, input: &str) {
+        let ast = super::Ast::new(ident, input, &super::no_loader);
+        let mut output = String::new();
+        super::with_fmt_source(input, || {
+            for expr in ast.exprs() {
+                use std::fmt::Write;
+                writeln!(output, "{expr}").unwrap();
+            }
+        });
+
+        let input_path = format!("formatter_{ident}.expected");
+        let output_path = format!("formatter_{ident}.actual");
+        std::fs::write(&input_path, input).unwrap();
+        std::fs::write(&output_path, output).unwrap();
+
+        let success = std::process::Command::new("diff")
+            .arg("-u")
+            .arg("--color")
+            .arg(&input_path)
+            .arg(&output_path)
+            .status()
+            .unwrap()
+            .success();
+        std::fs::remove_file(&input_path).unwrap();
+        std::fs::remove_file(&output_path).unwrap();
+        assert!(success, "test failed");
+    }
+
+    macro_rules! test {
+        ($($name:ident => $input:expr;)*) => {$(
+            #[test]
+            fn $name() {
+                format(stringify!($name), $input);
+            }
+        )*};
+    }
+
+    test! {
+        comments => "// comment\n// comment\n\n// comment\n\n\
+            /* comment */\n/* comment */\n\n/* comment */\n";
+        some_ordinary_code => "loft := fn(): int return loft(1, 2, 3);\n";
+        some_arg_per_line_code => "loft := fn(): int return loft(\
+            \n\t1,\n\t2,\n\t3,\n);\n";
     }
 }

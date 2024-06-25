@@ -1,0 +1,3 @@
+--fmt - format all source files
+--fmt-current - format mentioned file
+	--fmt-stdout - dont write the formatted file but print it
