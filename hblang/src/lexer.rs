@@ -97,14 +97,15 @@ pub enum TokenKind {
     Sub     = b'-',
     Dot     = b'.',
     Div     = b'/',
-    Shl     = b'0',
-    Shr     = b'1',
-    // Unused = 2-9
+    // Unused = 2-6
+    Shr     = b'<' - 5,
+    // Unused = 8
+    Shl     = b'>' - 5,
     Colon   = b':',
     Semi    = b';',
-    Gt      = b'>',
-    Assign  = b'=',
     Lt      = b'<',
+    Assign  = b'=',
+    Gt      = b'>',
     Que     = b'?',
     Directive = b'@',
 
@@ -248,7 +249,11 @@ impl<'a> Lexer<'a> {
     }
 
     fn peek(&self) -> Option<u8> {
-        self.bytes.get(self.pos as usize).copied()
+        if std::intrinsics::unlikely(self.pos >= self.bytes.len() as u32) {
+            None
+        } else {
+            Some(unsafe { *self.bytes.get_unchecked(self.pos as usize) })
+        }
     }
 
     fn advance(&mut self) -> Option<u8> {
@@ -276,8 +281,15 @@ impl<'a> Lexer<'a> {
                 }
             };
 
-            let mut kind = match c {
+            let identity = |s: u8| unsafe { std::mem::transmute::<u8, T>(s) };
+
+            let kind = match c {
                 ..=b' ' => continue,
+                b'@' | b'$' => {
+                    start += 1;
+                    advance_ident(self);
+                    identity(c)
+                }
                 b'0'..=b'9' => {
                     while let Some(b'0'..=b'9') = self.peek() {
                         self.advance();
@@ -301,21 +313,19 @@ impl<'a> Lexer<'a> {
                 }
                 b'.' if self.advance_if(b'{') => T::Ctor,
                 b'.' if self.advance_if(b'(') => T::Tupl,
-                b'<' if self.advance_if(b'<') => T::Shl,
-                b'>' if self.advance_if(b'>') => T::Shr,
+                b'<' | b'>' if self.advance_if(c) => {
+                    identity(c - 5 + 128 * self.advance_if(b'=') as u8)
+                }
                 b'&' if self.advance_if(b'&') => T::And,
                 b'|' if self.advance_if(b'|') => T::Or,
-                b => unsafe { std::mem::transmute::<u8, T>(b) },
+                b':' | b'=' | b'!' | b'<' | b'>' | b'|' | b'+' | b'-' | b'*' | b'/' | b'%'
+                | b'^' | b'&'
+                    if self.advance_if(b'=') =>
+                {
+                    identity(c + 128)
+                }
+                _ => identity(c),
             };
-
-            if matches!(kind, T::Directive | T::CtIdent) {
-                start += 1;
-                advance_ident(self);
-            } else if ascii_mask(b":=!<>|+-*/%^&01") & (1u128 << kind as u8) != 0
-                && self.advance_if(b'=')
-            {
-                kind = unsafe { std::mem::transmute::<u8, T>(kind as u8 + 128) };
-            }
 
             return Token {
                 kind,

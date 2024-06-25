@@ -1,4 +1,5 @@
 #![feature(vec_pop_if)]
+#![feature(core_intrinsics)]
 #![feature(new_uninit)]
 #![feature(anonymous_lifetime_in_impl_trait)]
 #![feature(inline_const_pat)]
@@ -15,6 +16,7 @@
 #![feature(ptr_metadata)]
 #![feature(const_mut_refs)]
 #![feature(slice_ptr_get)]
+#![allow(internal_features)]
 #![allow(clippy::format_collect)]
 
 use std::{
