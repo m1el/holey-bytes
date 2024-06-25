@@ -66,6 +66,21 @@ add_one := fn(x: int): int {
 }
 ```
 
+#### comments
+```hb
+// commant is an item
+main := fn(): int {
+	// comment is a statement
+	foo(/* comment is an exprression /* if you are crazy */ */);
+	return 0;
+}
+
+foo := fn(comment: void): void
+	return /* comment evaluates to void */;
+
+// comments might be formatted in the future
+```
+
 #### if_statements
 ```hb
 main := fn(): int {

@@ -109,6 +109,8 @@ pub enum TokenKind {
     Que     = b'?',
     Directive = b'@',
 
+    Comment,
+
     Ident,
     Number,
     Eof,
@@ -296,15 +298,33 @@ impl<'a> Lexer<'a> {
                     let ident = &self.bytes[start as usize..self.pos as usize];
                     T::from_ident(ident)
                 }
-                b'"' | b'\'' => {
-                    while let Some(nc) = self.advance() {
-                        match nc {
-                            b'\\' => _ = self.advance(),
-                            nc if nc == c => break,
+                b'"' | b'\'' => loop {
+                    match self.advance() {
+                        Some(b'\\') => _ = self.advance(),
+                        Some(nc) if nc == c => break identity(c),
+                        Some(_) => {}
+                        None => break T::Eof,
+                    }
+                },
+                b'/' if self.advance_if(b'/') => {
+                    while let Some(l) = self.advance()
+                        && l != b'\n'
+                    {}
+                    T::Comment
+                }
+                b'/' if self.advance_if(b'*') => {
+                    let mut depth = 1;
+                    while let Some(l) = self.advance() {
+                        match l {
+                            b'/' if self.advance_if(b'*') => depth += 1,
+                            b'*' if self.advance_if(b'/') => match depth {
+                                1 => break,
+                                _ => depth -= 1,
+                            },
                             _ => {}
                         }
                     }
-                    identity(c)
+                    T::Comment
                 }
                 b'.' if self.advance_if(b'{') => T::Ctor,
                 b'.' if self.advance_if(b'(') => T::Tupl,
