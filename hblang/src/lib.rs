@@ -1,4 +1,5 @@
 #![feature(vec_pop_if)]
+#![feature(get_many_mut)]
 #![feature(core_intrinsics)]
 #![feature(new_uninit)]
 #![feature(anonymous_lifetime_in_impl_trait)]

@@ -264,6 +264,10 @@ impl<'a, 'b> Parser<'a, 'b> {
                 pos:   token.start,
                 value: true,
             },
+            T::DQuote => E::String {
+                pos:     token.start,
+                literal: self.move_str(token),
+            },
             T::Struct => E::Struct {
                 fields:   {
                     self.ns_bound = self.idents.len();
@@ -586,6 +590,10 @@ macro_rules! generate_expr {
 generate_expr! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum Expr<'a> {
+        String {
+            pos: Pos,
+            literal: &'a str,
+        },
         Comment {
             pos: Pos,
             literal: &'a str,
@@ -791,6 +799,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
         }
 
         match *self {
+            Self::String { literal, .. } => write!(f, "{}", literal),
             Self::Comment { literal, .. } => write!(f, "{}", literal.trim_end()),
             Self::Mod { path, .. } => write!(f, "@mod(\"{path}\")"),
             Self::Field { target, field } => write!(f, "{}.{field}", Postfix(target)),

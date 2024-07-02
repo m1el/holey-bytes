@@ -252,6 +252,20 @@ main := fn(): int {
 - `@bitcast(<expr>)`: tell compiler to assume `@TypeOf(<expr>)` is whatever is inferred, so long as size and alignment did not change
 - `@eca(<ty>, <expr>...)`: invoke `eca` instruction, where `<ty>` is the type this will return and `<expr>...` are arguments passed to the call
 
+#### c_strings
+```hb
+main := fn(): int {
+	// when string ends with '\0' its a C string and thus type is '^u8'
+	some_str := "abඞ\n\r\t\{ff}\{fff0f0ff}\0";
+	len := 0;
+	loop if *some_str == 0 break else {
+		len += 1;
+		some_str += 1;
+	}
+	return len;
+}
+```
+
 ### Incomplete Examples
 
 #### generic_types

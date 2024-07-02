@@ -1,12 +1,13 @@
-use std::{ops::Range, rc::Rc};
-
-use crate::{
-    ident::{self, Ident},
-    instrs::{self, *},
-    lexer::TokenKind,
-    log,
-    parser::{self, find_symbol, idfl, Expr, ExprRef, FileId, Pos},
-    HashMap,
+use {
+    crate::{
+        ident::{self, Ident},
+        instrs::{self, *},
+        lexer::TokenKind,
+        log,
+        parser::{self, find_symbol, idfl, Expr, ExprRef, FileId, Pos},
+        HashMap,
+    },
+    std::{ops::Range, rc::Rc},
 };
 
 use self::reg::{RET_ADDR, STACK_PTR, ZERO};
@@ -975,6 +976,7 @@ pub struct Snapshot {
     code:    usize,
     funcs:   usize,
     globals: usize,
+    strings: usize,
 }
 
 #[derive(Default)]
@@ -982,6 +984,7 @@ struct Output {
     code:    Vec<u8>,
     funcs:   Vec<(ty::Func, Reloc)>,
     globals: Vec<(ty::Global, Reloc)>,
+    strings: Vec<StringReloc>,
 }
 
 impl Output {
@@ -1022,21 +1025,24 @@ impl Output {
         self.emit(tx());
     }
 
-    fn append(&mut self, val: &mut Self) {
-        for (_, rel) in val.globals.iter_mut().chain(&mut val.funcs) {
-            rel.offset += self.code.len() as Offset;
-        }
+    fn reloc_iter_mut(&mut self, snap: &Snapshot) -> impl Iterator<Item = &mut Reloc> {
+        self.globals[snap.globals..]
+            .iter_mut()
+            .chain(&mut self.funcs[snap.funcs..])
+            .map(|(_, rel)| rel)
+            .chain(
+                self.strings[snap.strings..]
+                    .iter_mut()
+                    .map(|rl| &mut rl.reloc),
+            )
+    }
 
-        self.code.append(&mut val.code);
-        self.funcs.append(&mut val.funcs);
-        self.globals.append(&mut val.globals);
+    fn append(&mut self, val: &mut Self) {
+        val.pop(self, &Snapshot::default());
     }
 
     fn pop(&mut self, stash: &mut Self, snap: &Snapshot) {
-        for (_, rel) in self.globals[snap.globals..]
-            .iter_mut()
-            .chain(&mut self.funcs[snap.funcs..])
-        {
+        for rel in self.reloc_iter_mut(snap) {
             rel.offset -= snap.code as Offset;
             rel.offset += stash.code.len() as Offset;
         }
@@ -1044,12 +1050,14 @@ impl Output {
         stash.code.extend(self.code.drain(snap.code..));
         stash.funcs.extend(self.funcs.drain(snap.funcs..));
         stash.globals.extend(self.globals.drain(snap.globals..));
+        stash.strings.extend(self.strings.drain(snap.strings..));
     }
 
     fn trunc(&mut self, snap: &Snapshot) {
         self.code.truncate(snap.code);
         self.globals.truncate(snap.globals);
         self.funcs.truncate(snap.funcs);
+        self.strings.truncate(snap.strings);
     }
 
     fn write_trap(&mut self, trap: Trap) {
@@ -1063,6 +1071,7 @@ impl Output {
             code:    self.code.len(),
             funcs:   self.funcs.len(),
             globals: self.globals.len(),
+            strings: self.strings.len(),
         }
     }
 
@@ -1209,10 +1218,21 @@ enum Trap {
     },
 }
 
+struct StringReloc {
+    reloc: Reloc,
+    range: std::ops::Range<u32>,
+}
+impl StringReloc {
+    fn range(&self) -> std::ops::Range<usize> {
+        self.range.start as _..self.range.end as _
+    }
+}
+
 #[derive(Default)]
 pub struct Codegen {
-    pub files: Vec<parser::Ast>,
-    tasks:     Vec<Option<FTask>>,
+    pub files:   Vec<parser::Ast>,
+    tasks:       Vec<Option<FTask>>,
+    string_data: Vec<u8>,
 
     tys:    Types,
     ci:     ItemCtx,
@@ -1436,6 +1456,73 @@ impl Codegen {
                 ty:  ty::BOOL.into(),
                 loc: Loc::imm(value as u64),
             }),
+            E::String { pos, mut literal } => {
+                literal = literal.trim_matches('"');
+
+                if !literal.ends_with("\\0") {
+                    self.report(pos, "string literal must end with null byte (for now)");
+                }
+
+                let reloc = Reloc::new(self.output.code.len() as _, 3, 4);
+                let start = self.string_data.len();
+
+                let report = |s: &Codegen, bytes: &std::str::Bytes, message| {
+                    s.report(pos + (literal.len() - bytes.len()) as u32 - 1, message)
+                };
+
+                let decode_braces = |s: &mut Codegen, bytes: &mut std::str::Bytes| {
+                    while let Some(b) = bytes.next()
+                        && b != b'}'
+                    {
+                        let c = bytes
+                            .next()
+                            .unwrap_or_else(|| report(s, bytes, "incomplete escape sequence"));
+                        let decode = |s: &Codegen, b: u8| match b {
+                            b'0'..=b'9' => b - b'0',
+                            b'a'..=b'f' => b - b'a' + 10,
+                            b'A'..=b'F' => b - b'A' + 10,
+                            _ => report(s, bytes, "expected hex digit or '}'"),
+                        };
+                        s.string_data.push(decode(s, b) << 4 | decode(s, c));
+                    }
+                };
+
+                let mut bytes = literal.bytes();
+                while let Some(b) = bytes.next() {
+                    if b != b'\\' {
+                        self.string_data.push(b);
+                        continue;
+                    }
+                    let b = match bytes
+                        .next()
+                        .unwrap_or_else(|| report(self, &bytes, "incomplete escape sequence"))
+                    {
+                        b'n' => b'\n',
+                        b'r' => b'\r',
+                        b't' => b'\t',
+                        b'\\' => b'\\',
+                        b'\'' => b'\'',
+                        b'"' => b'"',
+                        b'0' => b'\0',
+                        b'{' => {
+                            decode_braces(self, &mut bytes);
+                            continue;
+                        }
+                        _ => report(
+                            self,
+                            &bytes,
+                            "unknown escape sequence, expected [nrt\\\"'{0]",
+                        ),
+                    };
+                    self.string_data.push(b);
+                }
+
+                let range = start as _..self.string_data.len() as _;
+                self.output.strings.push(StringReloc { reloc, range });
+                let reg = self.ci.regs.allocate();
+                self.output.emit(instrs::lra(reg.get(), 0, 0));
+                Some(Value::new(self.tys.make_ptr(ty::U8.into()), reg))
+            }
             E::Ctor {
                 pos, ty, fields, ..
             } => {
@@ -1699,20 +1786,14 @@ impl Codegen {
                     .find(|(_, v)| v.id == id) =>
             {
                 let sym = parser::find_symbol(&self.files[self.ci.file as usize].symbols, id);
-                let loc = match idfl::index(sym.flags) == dbg!(index)
+                let loc = match idfl::index(sym.flags) == index
                     && !self
                         .ci
                         .loops
                         .last()
                         .is_some_and(|l| l.var_count > var_index as u32)
                 {
-                    true => {
-                        dbg!(
-                            log::dbg!("braj: {expr}"),
-                            std::mem::take(&mut var.value.loc)
-                        )
-                        .1
-                    }
+                    true => std::mem::take(&mut var.value.loc),
                     false => var.value.loc.as_ref(),
                 };
 
@@ -2489,7 +2570,45 @@ impl Codegen {
             _ = task::unpack(self.tys.globals[g as usize].offset)
                 .map(|off| rel.apply_jump(&mut self.output.code, off));
             true
-        })
+        });
+
+        self.compress_strings();
+        let base = self.output.code.len() as u32;
+        self.output.code.append(&mut self.string_data);
+
+        for srel in self.output.strings.drain(..) {
+            srel.reloc
+                .apply_jump(&mut self.output.code, srel.range.start + base);
+        }
+    }
+
+    fn compress_strings(&mut self) {
+        // FIXME: we can go faster
+        self.output
+            .strings
+            .sort_by(|a, b| self.string_data[b.range()].cmp(&self.string_data[a.range()]));
+
+        let mut cursor = 0;
+        let mut anchor = 0;
+        for i in 1..self.output.strings.len() {
+            let [a, b] = self.output.strings.get_many_mut([anchor, i]).unwrap();
+            if self.string_data[a.range()].ends_with(&self.string_data[b.range()]) {
+                b.range.end = a.range.end;
+                b.range.start = a.range.end - (b.range.end - b.range.start);
+            } else {
+                self.string_data.copy_within(a.range(), cursor);
+                cursor += a.range.len();
+                anchor = i;
+            }
+        }
+
+        if !self.output.strings.is_empty() {
+            let a = &self.output.strings[anchor];
+            self.string_data.copy_within(a.range(), cursor);
+            cursor += a.range.len();
+        }
+
+        self.string_data.truncate(cursor)
     }
 
     // TODO: sometimes its better to do this in bulk
@@ -2906,5 +3025,6 @@ mod tests {
         global_variables => README;
         generic_types => README;
         generic_functions => README;
+        c_strings => README;
     }
 }
