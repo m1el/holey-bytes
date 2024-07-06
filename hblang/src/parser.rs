@@ -239,7 +239,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         let mut expr = match token.kind {
             T::Directive if self.lexer.slice(token.range()) == "use" => {
                 self.expect_advance(TokenKind::LParen);
-                let str = self.expect_advance(TokenKind::String);
+                let str = self.expect_advance(TokenKind::DQuote);
                 self.expect_advance(TokenKind::RParen);
                 let path = self.lexer.slice(str.range()).trim_matches('"');
 

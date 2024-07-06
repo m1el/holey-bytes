@@ -114,7 +114,6 @@ pub enum TokenKind {
     Ident,
     Number,
     Eof,
-    String,
 
     Return,
     If,
@@ -180,7 +179,6 @@ gen_token_kind! {
         Number,
         Eof,
         Directive,
-        String,
         #[keywords]
         Return   = b"return",
         If       = b"if",
