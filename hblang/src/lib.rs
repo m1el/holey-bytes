@@ -280,16 +280,25 @@ pub fn parse_from_fs(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     }
 
     impl<'a> ImportPath<'a> {
-        fn resolve(&self, from: &str) -> Result<PathBuf, CantLoadFile> {
+        fn resolve(&self, from: &str, root: &str) -> Result<PathBuf, CantLoadFile> {
             let path = match self {
-                Self::Root { path } => PathBuf::from(path),
-                Self::Rel { path } => PathBuf::from_iter([from, path]),
+                Self::Root { path } => {
+                    PathBuf::from_iter([Path::new(root).parent().unwrap(), Path::new(path)])
+                }
+                Self::Rel { path } => {
+                    PathBuf::from_iter([Path::new(from).parent().unwrap(), Path::new(path)])
+                }
                 Self::Git { path, link, .. } => {
                     let link = preprocess_git(link);
                     PathBuf::from_iter([GIT_DEPS_DIR, link, path])
                 }
             };
-            path.canonicalize().map_err(|e| CantLoadFile(path, e))
+            path.canonicalize().map_err(|e| CantLoadFile {
+                file_name: path,
+                directory: PathBuf::from(root),
+                from:      PathBuf::from(from),
+                source:    e,
+            })
         }
     }
 
@@ -319,17 +328,28 @@ pub fn parse_from_fs(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     }
 
     #[derive(Debug)]
-    struct CantLoadFile(PathBuf, io::Error);
+    struct CantLoadFile {
+        file_name: PathBuf,
+        directory: PathBuf,
+        from:      PathBuf,
+        source:    io::Error,
+    }
 
     impl std::fmt::Display for CantLoadFile {
         fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            write!(f, "can't load file: {}", self.0.display())
+            write!(
+                f,
+                "can't load file: {} (dir: {}) (from: {})",
+                self.file_name.display(),
+                self.directory.display(),
+                self.from.display(),
+            )
         }
     }
 
     impl std::error::Error for CantLoadFile {
         fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-            Some(&self.1)
+            Some(&self.source)
         }
     }
 
@@ -369,7 +389,7 @@ pub fn parse_from_fs(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     let loader = |path: &str, from: &str| {
         let path = ImportPath::try_from(path)?;
 
-        let physiscal_path = path.resolve(from)?;
+        let physiscal_path = path.resolve(from, root)?;
 
         let id = {
             let mut seen = seen.lock().unwrap();

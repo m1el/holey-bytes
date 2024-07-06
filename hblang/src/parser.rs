@@ -248,7 +248,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                     path: self.arena.alloc_str(path),
                     id:   match (self.loader)(path, self.path) {
                         Ok(id) => id,
-                        Err(e) => self.report(format_args!("error loading dependency: {e:#?}")),
+                        Err(e) => self.report(format_args!("error loading dependency: {e:#}")),
                     },
                 }
             }
