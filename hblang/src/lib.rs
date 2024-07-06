@@ -553,6 +553,63 @@ pub fn run_test(
     panic!("test failed");
 }
 
+#[derive(Default)]
+pub struct Options {
+    pub fmt:         bool,
+    pub fmt_current: bool,
+}
+
+pub fn run_compiler(
+    root_file: &str,
+    options: Options,
+    out: &mut impl std::io::Write,
+) -> io::Result<()> {
+    let parsed = parse_from_fs(1, root_file)?;
+
+    fn format_to_stdout(ast: parser::Ast) -> std::io::Result<()> {
+        let source = std::fs::read_to_string(&*ast.path)?;
+        parser::with_fmt_source(&source, || {
+            for expr in ast.exprs() {
+                use std::io::Write;
+                writeln!(std::io::stdout(), "{expr}")?;
+            }
+            std::io::Result::Ok(())
+        })
+    }
+
+    fn format_ast(ast: parser::Ast) -> std::io::Result<()> {
+        let source = std::fs::read_to_string(&*ast.path)?;
+        let mut output = Vec::new();
+        parser::with_fmt_source(&source, || {
+            for expr in ast.exprs() {
+                use std::io::Write;
+                writeln!(output, "{expr}")?;
+            }
+            std::io::Result::Ok(())
+        })?;
+
+        std::fs::write(&*ast.path, output)?;
+
+        Ok(())
+    }
+
+    if options.fmt {
+        for parsed in parsed {
+            format_ast(parsed)?;
+        }
+    } else if options.fmt_current {
+        format_to_stdout(parsed.into_iter().next().unwrap())?;
+    } else {
+        let mut codegen = codegen::Codegen::default();
+        codegen.files = parsed;
+
+        codegen.generate();
+        codegen.dump(out)?;
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod test {
     use std::sync::Arc;
