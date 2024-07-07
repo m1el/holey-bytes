@@ -2660,10 +2660,6 @@ impl Codegen {
         for srel in self.output.strings.drain(..) {
             #[cfg(debug_assertions)]
             assert!(srel.shifted);
-            log::err!(
-                "{:?}",
-                &self.output.code[srel.range.start as usize..srel.range.end as usize]
-            );
             srel.reloc
                 .apply_jump(&mut self.output.code, srel.range.start);
         }
