@@ -421,8 +421,9 @@ main := fn(): int {
 			y: 2,
 		},
 	};
-
-	if *(&pixel.point.x + 1) != 2 {
+	
+	soupan := 1;
+	if *(&pixel.point.x + soupan) != 2 {
 		return 0;
 	}
 

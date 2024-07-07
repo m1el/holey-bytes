@@ -264,6 +264,10 @@ pub mod ty {
             (U8..=UINT).contains(&self.repr())
         }
 
+        pub fn is_integer(self) -> bool {
+            (U8..=INT).contains(&self.repr())
+        }
+
         pub fn strip_pointer(self) -> Self {
             match self.expand() {
                 Kind::Ptr(_) => Kind::Builtin(UINT).compress(),
@@ -282,6 +286,7 @@ pub mod ty {
                 _ if oa == ob => oa,
                 _ if a.is_signed() && b.is_signed() || a.is_unsigned() && b.is_unsigned() => ob,
                 _ if a.is_unsigned() && b.is_signed() && a.repr() - U8 < b.repr() - I8 => ob,
+                _ if oa.is_integer() && ob.is_pointer() => ob,
                 _ => return None,
             })
         }
@@ -2624,7 +2629,7 @@ impl Codegen {
             true
         });
 
-        self.compress_strings();
+        //self.compress_strings();
         let base = self.output.code.len() as u32;
         self.output.code.append(&mut self.string_data);
 
@@ -2634,34 +2639,34 @@ impl Codegen {
         }
     }
 
-    fn compress_strings(&mut self) {
-        // FIXME: we can go faster
-        self.output
-            .strings
-            .sort_by(|a, b| self.string_data[b.range()].cmp(&self.string_data[a.range()]));
+    //fn compress_strings(&mut self) {
+    //    // FIXME: we can go faster
+    //    self.output
+    //        .strings
+    //        .sort_by(|a, b| self.string_data[b.range()].cmp(&self.string_data[a.range()]));
 
-        let mut cursor = 0;
-        let mut anchor = 0;
-        for i in 1..self.output.strings.len() {
-            let [a, b] = self.output.strings.get_many_mut([anchor, i]).unwrap();
-            if self.string_data[a.range()].ends_with(&self.string_data[b.range()]) {
-                b.range.end = a.range.end;
-                b.range.start = a.range.end - (b.range.end - b.range.start);
-            } else {
-                self.string_data.copy_within(a.range(), cursor);
-                cursor += a.range.len();
-                anchor = i;
-            }
-        }
+    //    let mut cursor = 0;
+    //    let mut anchor = 0;
+    //    for i in 1..self.output.strings.len() {
+    //        let [a, b] = self.output.strings.get_many_mut([anchor, i]).unwrap();
+    //        if self.string_data[a.range()].ends_with(&self.string_data[b.range()]) {
+    //            b.range.end = a.range.end;
+    //            b.range.start = a.range.end - (b.range.end - b.range.start);
+    //        } else {
+    //            self.string_data.copy_within(a.range(), cursor);
+    //            cursor += a.range.len();
+    //            anchor = i;
+    //        }
+    //    }
 
-        if !self.output.strings.is_empty() {
-            let a = &self.output.strings[anchor];
-            self.string_data.copy_within(a.range(), cursor);
-            cursor += a.range.len();
-        }
+    //    if !self.output.strings.is_empty() {
+    //        let a = &self.output.strings[anchor];
+    //        self.string_data.copy_within(a.range(), cursor);
+    //        cursor += a.range.len();
+    //    }
 
-        self.string_data.truncate(cursor)
-    }
+    //    self.string_data.truncate(cursor)
+    //}
 
     // TODO: sometimes its better to do this in bulk
     fn ty(&mut self, expr: &Expr) -> ty::Id {
