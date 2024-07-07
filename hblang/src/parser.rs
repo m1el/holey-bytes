@@ -341,6 +341,8 @@ impl<'a, 'b> Parser<'a, 'b> {
                 },
                 body: self.ptr_expr(),
             },
+            T::Ctor => self.ctor(token.start, None),
+            T::Tupl => self.tupl(token.start, None),
             T::Band | T::Mul | T::Xor => E::UnOp {
                 pos: token.start,
                 op:  token.kind,
@@ -392,23 +394,8 @@ impl<'a, 'b> Parser<'a, 'b> {
                     args: self.collect_list(T::Comma, T::RParen, Self::expr),
                     trailing_comma: std::mem::take(&mut self.trailing_sep),
                 },
-                T::Ctor => E::Ctor {
-                    pos: token.start,
-                    ty: Some(self.arena.alloc(expr)),
-                    fields: self.collect_list(T::Comma, T::RBrace, |s| {
-                        let name = s.expect_advance(T::Ident);
-                        s.expect_advance(T::Colon);
-                        let val = s.expr();
-                        (Some(s.move_str(name)), val)
-                    }),
-                    trailing_comma: std::mem::take(&mut self.trailing_sep),
-                },
-                T::Tupl => E::Ctor {
-                    pos: token.start,
-                    ty: Some(self.arena.alloc(expr)),
-                    fields: self.collect_list(T::Comma, T::RParen, |s| (None, s.expr())),
-                    trailing_comma: std::mem::take(&mut self.trailing_sep),
-                },
+                T::Ctor => self.ctor(token.start, Some(expr)),
+                T::Tupl => self.tupl(token.start, Some(expr)),
                 T::Dot => E::Field {
                     target: self.arena.alloc(expr),
                     field:  {
@@ -429,6 +416,28 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
 
         expr
+    }
+
+    fn tupl(&mut self, pos: Pos, ty: Option<Expr<'a>>) -> Expr<'a> {
+        Expr::Tupl {
+            pos,
+            ty: ty.map(|ty| self.arena.alloc(ty)),
+            fields: self.collect_list(TokenKind::Comma, TokenKind::RParen, Self::expr),
+            trailing_comma: std::mem::take(&mut self.trailing_sep),
+        }
+    }
+
+    fn ctor(&mut self, pos: Pos, ty: Option<Expr<'a>>) -> Expr<'a> {
+        Expr::Ctor {
+            pos,
+            ty: ty.map(|ty| self.arena.alloc(ty)),
+            fields: self.collect_list(TokenKind::Comma, TokenKind::RBrace, |s| {
+                let name = s.advance_ident();
+                let value = s.advance_if(TokenKind::Colon).then(|| s.expr());
+                (s.move_str(name), value)
+            }),
+            trailing_comma: std::mem::take(&mut self.trailing_sep),
+        }
     }
 
     fn advance_ident(&mut self) -> Token {
@@ -661,7 +670,13 @@ generate_expr! {
         Ctor {
             pos:    Pos,
             ty:     Option<&'a Self>,
-            fields: &'a [(Option<&'a str>, Self)],
+            fields: &'a [(&'a str, Option<Self>)],
+            trailing_comma: bool,
+        },
+        Tupl {
+            pos:    Pos,
+            ty:     Option<&'a Self>,
+            fields: &'a [Self],
             trailing_comma: bool,
         },
         Field {
@@ -720,26 +735,22 @@ impl<'a> std::fmt::Display for Expr<'a> {
 
         fn fmt_list<T>(
             f: &mut std::fmt::Formatter,
+            trailing: bool,
             end: &str,
             list: &[T],
             fmt: impl Fn(&T, &mut std::fmt::Formatter) -> std::fmt::Result,
         ) -> std::fmt::Result {
-            let first = &mut true;
-            for expr in list {
-                if !std::mem::take(first) {
-                    write!(f, ", ")?;
+            if !trailing {
+                let first = &mut true;
+                for expr in list {
+                    if !std::mem::take(first) {
+                        write!(f, ", ")?;
+                    }
+                    fmt(expr, f)?;
                 }
-                fmt(expr, f)?;
+                return write!(f, "{end}");
             }
-            write!(f, "{end}")
-        }
 
-        fn fmt_trailing_list<T>(
-            f: &mut std::fmt::Formatter,
-            end: &str,
-            list: &[T],
-            fmt: impl Fn(&T, &mut std::fmt::Formatter) -> std::fmt::Result,
-        ) -> std::fmt::Result {
             writeln!(f)?;
             INDENT.with(|i| i.set(i.get() + 1));
             let res = (|| {
@@ -805,11 +816,13 @@ impl<'a> std::fmt::Display for Expr<'a> {
             Self::Field { target, field } => write!(f, "{}.{field}", Postfix(target)),
             Self::Directive { name, args, .. } => {
                 write!(f, "@{name}(")?;
-                fmt_list(f, ")", args, std::fmt::Display::fmt)
+                fmt_list(f, false, ")", args, std::fmt::Display::fmt)
             }
             Self::Struct { fields, .. } => {
                 write!(f, "struct {{")?;
-                fmt_list(f, "}", fields, |(name, val), f| write!(f, "{name}: {val}",))
+                fmt_list(f, true, "}", fields, |(name, val), f| {
+                    write!(f, "{name}: {val}",)
+                })
             }
             Self::Ctor {
                 ty,
@@ -817,27 +830,30 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 trailing_comma,
                 ..
             } => {
-                let (left, rith) = if fields.iter().any(|(name, _)| name.is_some()) {
-                    ('{', "}")
-                } else {
-                    ('(', ")")
-                };
-
                 if let Some(ty) = ty {
                     write!(f, "{}", Unary(ty))?;
                 }
-                write!(f, ".{left}")?;
+                write!(f, ".{{")?;
                 let fmt_field = |(name, val): &_, f: &mut std::fmt::Formatter| {
-                    if let Some(name) = name {
-                        write!(f, "{name}: ")?;
+                    if let Some(val) = val {
+                        write!(f, "{name}: {val}")
+                    } else {
+                        write!(f, "{name}")
                     }
-                    write!(f, "{val}")
                 };
-                if trailing_comma {
-                    fmt_trailing_list(f, rith, fields, fmt_field)
-                } else {
-                    fmt_list(f, rith, fields, fmt_field)
+                fmt_list(f, trailing_comma, "}", fields, fmt_field)
+            }
+            Self::Tupl {
+                ty,
+                fields,
+                trailing_comma,
+                ..
+            } => {
+                if let Some(ty) = ty {
+                    write!(f, "{}", Unary(ty))?;
                 }
+                write!(f, ".(")?;
+                fmt_list(f, trailing_comma, ")", fields, std::fmt::Display::fmt)
             }
             Self::UnOp { op, val, .. } => write!(f, "{op}{}", Unary(val)),
             Self::Break { .. } => write!(f, "break"),
@@ -856,7 +872,9 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 ret, body, args, ..
             } => {
                 write!(f, "fn(")?;
-                fmt_list(f, "", args, |arg, f| write!(f, "{}: {}", arg.name, arg.ty))?;
+                fmt_list(f, false, "", args, |arg, f| {
+                    write!(f, "{}: {}", arg.name, arg.ty)
+                })?;
                 write!(f, "): {ret} {body}")?;
                 if !matches!(body, Self::Block { .. }) {
                     write!(f, ";")?;
@@ -869,11 +887,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 trailing_comma,
             } => {
                 write!(f, "{}(", Postfix(func))?;
-                if trailing_comma {
-                    fmt_trailing_list(f, ")", args, std::fmt::Display::fmt)
-                } else {
-                    fmt_list(f, ")", args, std::fmt::Display::fmt)
-                }
+                fmt_list(f, trailing_comma, ")", args, std::fmt::Display::fmt)
             }
             Self::Return { val: Some(val), .. } => write!(f, "return {val}"),
             Self::Return { val: None, .. } => write!(f, "return"),

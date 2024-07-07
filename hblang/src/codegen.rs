@@ -1584,34 +1584,38 @@ impl Codegen {
             E::Ctor {
                 pos, ty, fields, ..
             } => {
-                let Some(ty) = ty.map(|ty| self.ty(ty)).or(ctx.ty) else {
-                    self.report(pos, "expected type, (it cannot be inferred)");
-                };
-                let size = self.tys.size_of(ty);
-
-                let loc = ctx
-                    .loc
-                    .unwrap_or_else(|| Loc::stack(self.ci.stack.allocate(size)));
-                let ty::Kind::Struct(stuct) = ty.expand() else {
-                    self.report(pos, "expected expression to evaluate to struct")
-                };
-                let field_count = self.tys.structs[stuct as usize].fields.len();
-                if field_count != fields.len() {
-                    self.report(
-                        pos,
-                        format_args!("expected {} fields, got {}", field_count, fields.len()),
-                    );
-                }
-
-                for (i, (name, field)) in fields.iter().enumerate() {
-                    let Some((offset, ty)) = self.tys.offset_of(stuct, name.ok_or(i)) else {
+                let (stuct, loc) = self.prepare_struct_ctor(pos, ctx, ty, fields.len());
+                for (name, field) in fields {
+                    let Some((offset, ty)) = self.tys.offset_of(stuct, Ok(name)) else {
                         self.report(pos, format_args!("field not found: {name:?}"));
                     };
                     let loc = loc.as_ref().offset(offset);
-                    let value = self.expr_ctx(field, Ctx::default().with_loc(loc).with_ty(ty))?;
+                    let value = self.expr_ctx(
+                        field.as_ref().expect("TODO"),
+                        Ctx::default().with_loc(loc).with_ty(ty),
+                    )?;
                     self.ci.free_loc(value.loc);
                 }
 
+                let ty = ty::Kind::Struct(stuct).compress();
+                return Some(Value { ty, loc });
+            }
+            E::Tupl {
+                pos, ty, fields, ..
+            } => {
+                let (stuct, loc) = self.prepare_struct_ctor(pos, ctx, ty, fields.len());
+                let mut offset = 0;
+                let sfields = self.tys.structs[stuct as usize].fields.clone();
+                for (sfield, field) in sfields.iter().zip(fields) {
+                    let loc = loc.as_ref().offset(offset);
+                    let ctx = Ctx::default().with_loc(loc).with_ty(sfield.ty);
+                    let value = self.expr_ctx(field, ctx)?;
+                    self.ci.free_loc(value.loc);
+                    offset += self.tys.size_of(sfield.ty);
+                    offset = Types::align_up(offset, self.tys.align_of(sfield.ty));
+                }
+
+                let ty = ty::Kind::Struct(stuct).compress();
                 return Some(Value { ty, loc });
             }
             E::Field { target, field } => {
@@ -2136,6 +2140,36 @@ impl Codegen {
             }
             None => value,
         })
+    }
+
+    fn prepare_struct_ctor(
+        &mut self,
+        pos: Pos,
+        ctx: Ctx,
+        ty: Option<&Expr>,
+        field_len: usize,
+    ) -> (ty::Struct, Loc) {
+        let Some(ty) = ty.map(|ty| self.ty(ty)).or(ctx.ty) else {
+            self.report(pos, "expected type, (it cannot be inferred)");
+        };
+
+        let size = self.tys.size_of(ty);
+        let loc = ctx
+            .loc
+            .unwrap_or_else(|| Loc::stack(self.ci.stack.allocate(size)));
+        let ty::Kind::Struct(stuct) = ty.expand() else {
+            self.report(pos, "expected expression to evaluate to struct")
+        };
+
+        let field_count = self.tys.structs[stuct as usize].fields.len();
+        if field_count != field_len {
+            self.report(
+                pos,
+                format_args!("expected {field_count} fields, got {field_len}"),
+            );
+        }
+
+        (stuct, loc)
     }
 
     fn struct_op(
@@ -2743,12 +2777,12 @@ impl Codegen {
     }
 
     fn handle_ecall(&mut self) {
-        let local_pc = (self.ct.vm.pc.get() as usize - self.output.code.as_ptr() as usize)
-            .checked_sub(self.ci.snap.code);
-
         let arr = self.ct.vm.pc.get() as *const Trap;
         let trap = unsafe { std::ptr::read_unaligned(arr) };
         self.ct.vm.pc = self.ct.vm.pc.wrapping_add(std::mem::size_of::<Trap>());
+
+        let local_pc = (self.ct.vm.pc.get() as usize - self.output.code.as_ptr() as usize)
+            .checked_sub(self.ci.snap.code);
 
         match trap {
             Trap::MakeStruct { file, struct_expr } => {
@@ -2783,10 +2817,7 @@ impl Codegen {
         }
 
         if let Some(lpc) = local_pc {
-            let offset = std::mem::size_of::<Trap>()
-                + lpc
-                + self.ci.snap.code
-                + self.output.code.as_ptr() as usize;
+            let offset = lpc + self.ci.snap.code + self.output.code.as_ptr() as usize;
             self.ct.vm.pc = hbvm::mem::Address::new(offset as _);
         }
     }
