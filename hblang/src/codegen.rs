@@ -807,7 +807,10 @@ impl ItemCtx {
         let mut exmpl = Output::default();
         exmpl.emit_prelude();
 
-        debug_assert!(output.code[self.snap.code..].starts_with(&exmpl.code));
+        debug_assert_eq!(
+            exmpl.code.as_slice(),
+            &output.code[self.snap.code..][..exmpl.code.len()],
+        );
 
         write_reloc(&mut output.code, allocate(3), -(pushed + stack), 8);
         write_reloc(&mut output.code, allocate(8 + 3), stack, 8);
@@ -1003,18 +1006,20 @@ struct FTask {
 
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Snapshot {
-    code:    usize,
-    funcs:   usize,
-    globals: usize,
-    strings: usize,
+    code:        usize,
+    string_data: usize,
+    funcs:       usize,
+    globals:     usize,
+    strings:     usize,
 }
 
 #[derive(Default)]
 struct Output {
-    code:    Vec<u8>,
-    funcs:   Vec<(ty::Func, Reloc)>,
-    globals: Vec<(ty::Global, Reloc)>,
-    strings: Vec<StringReloc>,
+    code:        Vec<u8>,
+    string_data: Vec<u8>,
+    funcs:       Vec<(ty::Func, Reloc)>,
+    globals:     Vec<(ty::Global, Reloc)>,
+    strings:     Vec<StringReloc>,
 }
 
 impl Output {
@@ -1072,15 +1077,12 @@ impl Output {
     }
 
     fn pop(&mut self, stash: &mut Self, snap: &Snapshot) {
-        // for rel in self.reloc_iter_mut(snap) {
-        //     debug_assert!(snap.code < rel.offset as usize);
-        //     rel.offset -= snap.code as Offset;
-        //     rel.offset += stash.code.len() as Offset;
-        // }
-
         let init_code = stash.code.len();
 
         stash.code.extend(self.code.drain(snap.code..));
+        stash
+            .string_data
+            .extend(self.string_data.drain(snap.string_data..));
         stash.funcs.extend(
             self.funcs.drain(snap.funcs..).inspect(|(_, rel)| {
                 debug_assert!(rel.offset as usize + init_code < stash.code.len())
@@ -1106,6 +1108,7 @@ impl Output {
 
     fn trunc(&mut self, snap: &Snapshot) {
         self.code.truncate(snap.code);
+        self.string_data.truncate(snap.string_data);
         self.globals.truncate(snap.globals);
         self.funcs.truncate(snap.funcs);
         self.strings.truncate(snap.strings);
@@ -1119,10 +1122,11 @@ impl Output {
 
     fn snap(&mut self) -> Snapshot {
         Snapshot {
-            code:    self.code.len(),
-            funcs:   self.funcs.len(),
-            globals: self.globals.len(),
-            strings: self.strings.len(),
+            code:        self.code.len(),
+            string_data: self.string_data.len(),
+            funcs:       self.funcs.len(),
+            globals:     self.globals.len(),
+            strings:     self.strings.len(),
         }
     }
 }
@@ -1264,8 +1268,10 @@ enum Trap {
 }
 
 struct StringReloc {
-    reloc: Reloc,
-    range: std::ops::Range<u32>,
+    reloc:   Reloc,
+    range:   std::ops::Range<u32>,
+    #[cfg(debug_assertions)]
+    shifted: bool,
 }
 
 impl StringReloc {
@@ -1276,9 +1282,8 @@ impl StringReloc {
 
 #[derive(Default)]
 pub struct Codegen {
-    pub files:   Vec<parser::Ast>,
-    tasks:       Vec<Option<FTask>>,
-    string_data: Vec<u8>,
+    pub files: Vec<parser::Ast>,
+    tasks:     Vec<Option<FTask>>,
 
     tys:    Types,
     ci:     ItemCtx,
@@ -1509,12 +1514,11 @@ impl Codegen {
                     self.report(pos, "string literal must end with null byte (for now)");
                 }
 
-                let reloc = Reloc::new(self.local_offset() as _, 3, 4);
-                let start = self.string_data.len();
-
                 let report = |s: &Codegen, bytes: &std::str::Bytes, message| {
                     s.report(pos + (literal.len() - bytes.len()) as u32 - 1, message)
                 };
+
+                let start = self.output.string_data.len();
 
                 let decode_braces = |s: &mut Codegen, bytes: &mut std::str::Bytes| {
                     while let Some(b) = bytes.next()
@@ -1529,14 +1533,14 @@ impl Codegen {
                             b'A'..=b'F' => b - b'A' + 10,
                             _ => report(s, bytes, "expected hex digit or '}'"),
                         };
-                        s.string_data.push(decode(s, b) << 4 | decode(s, c));
+                        s.output.string_data.push(decode(s, b) << 4 | decode(s, c));
                     }
                 };
 
                 let mut bytes = literal.bytes();
                 while let Some(b) = bytes.next() {
                     if b != b'\\' {
-                        self.string_data.push(b);
+                        self.output.string_data.push(b);
                         continue;
                     }
                     let b = match bytes
@@ -1560,11 +1564,17 @@ impl Codegen {
                             "unknown escape sequence, expected [nrt\\\"'{0]",
                         ),
                     };
-                    self.string_data.push(b);
+                    self.output.string_data.push(b);
                 }
 
-                let range = start as _..self.string_data.len() as _;
-                self.output.strings.push(StringReloc { reloc, range });
+                let range = start as _..self.output.string_data.len() as _;
+                let reloc = Reloc::new(self.local_offset() as _, 3, 4);
+                self.output.strings.push(StringReloc {
+                    reloc,
+                    range,
+                    #[cfg(debug_assertions)]
+                    shifted: false,
+                });
                 let reg = self.ci.regs.allocate();
                 self.output.emit(instrs::lra(reg.get(), 0, 0));
                 Some(Value::new(self.tys.make_ptr(ty::U8.into()), reg))
@@ -2305,6 +2315,8 @@ impl Codegen {
     fn complete_call_graph(&mut self) -> Output {
         let stash = self.pop_stash();
         self.complete_call_graph_low();
+
+        self.ci.snap = self.output.snap();
         stash
     }
 
@@ -2315,7 +2327,22 @@ impl Codegen {
             let Some(task) = task_slot else { continue };
             self.handle_task(task);
         }
-        self.ci.snap = self.output.snap();
+
+        let base = self.output.code.len() as u32;
+        let prev_data_len = self.output.string_data.len();
+        self.output.code.append(&mut self.output.string_data);
+        for srel in self.output.strings.iter_mut() {
+            #[cfg(debug_assertions)]
+            {
+                if std::mem::replace(&mut srel.shifted, true) {
+                    panic!("str reloc visited twice");
+                }
+            }
+            debug_assert!(srel.range.end <= prev_data_len as u32);
+            debug_assert!(srel.range.start <= srel.range.end);
+            srel.range.start += base;
+            srel.range.end += base;
+        }
     }
 
     fn handle_task(&mut self, FTask { file, id }: FTask) {
@@ -2630,12 +2657,15 @@ impl Codegen {
         });
 
         //self.compress_strings();
-        let base = self.output.code.len() as u32;
-        self.output.code.append(&mut self.string_data);
-
         for srel in self.output.strings.drain(..) {
+            #[cfg(debug_assertions)]
+            assert!(srel.shifted);
+            log::err!(
+                "{:?}",
+                &self.output.code[srel.range.start as usize..srel.range.end as usize]
+            );
             srel.reloc
-                .apply_jump(&mut self.output.code, srel.range.start + base);
+                .apply_jump(&mut self.output.code, srel.range.start);
         }
     }
 
@@ -2964,15 +2994,19 @@ impl Codegen {
 
     fn local_snap(&self) -> Snapshot {
         Snapshot {
-            code:    self.output.code.len() - self.ci.snap.code,
-            funcs:   self.output.funcs.len() - self.ci.snap.funcs,
-            globals: self.output.globals.len() - self.ci.snap.globals,
-            strings: self.output.strings.len() - self.ci.snap.strings,
+            code:        self.output.code.len() - self.ci.snap.code,
+            string_data: self.output.string_data.len() - self.ci.snap.string_data,
+            funcs:       self.output.funcs.len() - self.ci.snap.funcs,
+            globals:     self.output.globals.len() - self.ci.snap.globals,
+            strings:     self.output.strings.len() - self.ci.snap.strings,
         }
     }
 
     fn pop_local_snap(&mut self, snap: Snapshot) {
         self.output.code.truncate(snap.code + self.ci.snap.code);
+        self.output
+            .string_data
+            .truncate(snap.string_data + self.ci.snap.string_data);
         self.output.funcs.truncate(snap.funcs + self.ci.snap.funcs);
         self.output
             .globals
@@ -3044,6 +3078,8 @@ mod tests {
         codegen.generate();
         let mut out = Vec::new();
         codegen.dump(&mut out).unwrap();
+
+        log::dbg!("code: {}", String::from_utf8_lossy(&out));
 
         use std::fmt::Write;
 

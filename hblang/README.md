@@ -254,15 +254,23 @@ main := fn(): int {
 
 #### c_strings
 ```hb
+
+str_len := fn(str: ^u8): int {
+	len := 0;
+	loop if *str == 0 break else {
+		len += 1;
+		str += 1;
+	}
+	return len;
+}
+
 main := fn(): int {
 	// when string ends with '\0' its a C string and thus type is '^u8'
 	some_str := "abඞ\n\r\t\{ff}\{fff0f0ff}\0";
-	len := 0;
-	loop if *some_str == 0 break else {
-		len += 1;
-		some_str += 1;
-	}
-	return len;
+	len := str_len(some_str);
+	some_other_str := "fff\0";
+	lep := str_len(some_other_str);
+	return lep + len;
 }
 ```
 
