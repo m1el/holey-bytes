@@ -1639,6 +1639,14 @@ impl Codegen {
                                 self.find_or_declare(target.pos(), idx, Err(field), "")
                                     .compress(),
                             )),
+                            ty::Kind::Global(idx) => Some(Value::ty({
+                                let global = &self.tys.globals[idx as usize];
+                                ty::Id::from(u32::from_ne_bytes(
+                                    self.output.code[global.offset as usize..][..4]
+                                        .try_into()
+                                        .unwrap(),
+                                ))
+                            })),
                             e => unimplemented!("{e:?}"),
                         }
                     }

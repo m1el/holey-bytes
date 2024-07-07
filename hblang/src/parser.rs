@@ -876,7 +876,23 @@ impl<'a> std::fmt::Display for Expr<'a> {
             Self::Ident { name, .. } => write!(f, "{name}"),
             Self::Block { stmts, .. } => {
                 write!(f, "{{")?;
-                fmt_trailing_list(f, "}", stmts, std::fmt::Display::fmt)
+                writeln!(f)?;
+                INDENT.with(|i| i.set(i.get() + 1));
+                let res = (|| {
+                    for stmt in list {
+                        for _ in 0..INDENT.with(|i| i.get()) {
+                            write!(f, "\t")?;
+                        }
+                        fmt(stmt, f)?;
+                    }
+                    Ok(())
+                })();
+                INDENT.with(|i| i.set(i.get() - 1));
+                for _ in 0..INDENT.with(|i| i.get()) {
+                    write!(f, "\t")?;
+                }
+                write!(f, "{end}")?;
+                res
             }
             Self::Number { value, .. } => write!(f, "{value}"),
             Self::Bool { value, .. } => write!(f, "{value}"),
