@@ -1629,18 +1629,13 @@ impl Codegen {
                         self.ci.free_loc(tal.loc);
                         self.pop_local_snap(checkpoint);
                         match ty::Kind::from_ty(self.ty(target)) {
-                            ty::Kind::Module(idx) => Some(Value::ty(
-                                self.find_or_declare(target.pos(), idx, Err(field), "")
-                                    .compress(),
-                            )),
-                            ty::Kind::Global(idx) => Some(Value::ty({
-                                let global = &self.tys.globals[idx as usize];
-                                ty::Id::from(u32::from_ne_bytes(
-                                    self.output.code[global.offset as usize..][..4]
-                                        .try_into()
-                                        .unwrap(),
-                                ))
-                            })),
+                            ty::Kind::Module(idx) => {
+                                match self.find_or_declare(target.pos(), idx, Err(field), "") {
+                                    ty::Kind::Global(idx) => self.handle_global(idx),
+                                    e => Some(Value::ty(e.compress())),
+                                }
+                            }
+                            ty::Kind::Global(idx) => self.handle_global(idx),
                             e => unimplemented!("{e:?}"),
                         }
                     }
