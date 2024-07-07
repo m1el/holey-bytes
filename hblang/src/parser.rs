@@ -879,11 +879,12 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 writeln!(f)?;
                 INDENT.with(|i| i.set(i.get() + 1));
                 let res = (|| {
-                    for stmt in list {
+                    for stmt in stmts {
                         for _ in 0..INDENT.with(|i| i.get()) {
                             write!(f, "\t")?;
                         }
-                        fmt(stmt, f)?;
+                        stmt.fmt(f)?;
+                        writeln!(f)?;
                     }
                     Ok(())
                 })();
@@ -891,7 +892,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 for _ in 0..INDENT.with(|i| i.get()) {
                     write!(f, "\t")?;
                 }
-                write!(f, "{end}")?;
+                write!(f, "}}")?;
                 res
             }
             Self::Number { value, .. } => write!(f, "{value}"),

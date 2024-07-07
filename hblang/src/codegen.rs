@@ -1274,12 +1274,6 @@ struct StringReloc {
     shifted: bool,
 }
 
-impl StringReloc {
-    fn range(&self) -> std::ops::Range<usize> {
-        self.range.start as _..self.range.end as _
-    }
-}
-
 #[derive(Default)]
 pub struct Codegen {
     pub files: Vec<parser::Ast>,
