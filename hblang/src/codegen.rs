@@ -1083,11 +1083,19 @@ impl Output {
         stash
             .string_data
             .extend(self.string_data.drain(snap.string_data..));
-        stash.funcs.extend(
-            self.funcs.drain(snap.funcs..).inspect(|(_, rel)| {
-                debug_assert!(rel.offset as usize + init_code < stash.code.len())
-            }),
-        );
+        stash
+            .funcs
+            .extend(self.funcs.drain(snap.funcs..).inspect(|(_, rel)| {
+                #[cfg(debug_assertions)]
+                assert!(!rel.shifted);
+                debug_assert!(
+                    rel.offset as usize + init_code < stash.code.len(),
+                    "{} {} {}",
+                    rel.offset,
+                    init_code,
+                    stash.code.len()
+                )
+            }));
         stash
             .globals
             .extend(self.globals.drain(snap.globals..).inspect(|(_, rel)| {
@@ -2717,7 +2725,10 @@ impl Codegen {
             };
 
             let stash = s.complete_call_graph();
+
             s.push_stash(stash);
+
+            s.dunp_imported_fns();
 
             prev.vars.append(&mut s.ci.vars);
             s.ci.finalize(&mut s.output);
@@ -2732,6 +2743,9 @@ impl Codegen {
     }
 
     fn handle_ecall(&mut self) {
+        let local_pc = (self.ct.vm.pc.get() as usize - self.output.code.as_ptr() as usize)
+            .checked_sub(self.ci.snap.code);
+
         let arr = self.ct.vm.pc.get() as *const Trap;
         let trap = unsafe { std::ptr::read_unaligned(arr) };
         self.ct.vm.pc = self.ct.vm.pc.wrapping_add(std::mem::size_of::<Trap>());
@@ -2766,6 +2780,14 @@ impl Codegen {
                 self.ci.vars.truncate(prev_len);
                 self.ct.vm.write_reg(1, stru.repr() as u64);
             }
+        }
+
+        if let Some(lpc) = local_pc {
+            let offset = std::mem::size_of::<Trap>()
+                + lpc
+                + self.ci.snap.code
+                + self.output.code.as_ptr() as usize;
+            self.ct.vm.pc = hbvm::mem::Address::new(offset as _);
         }
     }
 
@@ -2898,6 +2920,15 @@ impl Codegen {
         }
     }
 
+    fn dunp_imported_fns(&mut self) {
+        for &(f, _) in &self.output.funcs[self.ci.snap.funcs..] {
+            let fnball = self.tys.funcs[f as usize];
+            let file = self.files[fnball.file as usize].clone();
+            let expr = fnball.expr.get(&file).unwrap();
+            log::dbg!("{expr}");
+        }
+    }
+
     fn pop_stash(&mut self) -> Output {
         let mut stash = self.pool.outputs.pop().unwrap_or_default();
         self.output.pop(&mut stash, &self.ci.snap);
@@ -2927,6 +2958,10 @@ impl Codegen {
 
         if ret.is_ok() {
             self.link();
+            self.output.trunc(&Snapshot {
+                code: self.output.code.len(),
+                ..self.ci.snap
+            });
             log::dbg!("{} {}", self.output.code.len(), self.ci.snap.code);
             let entry = &mut self.output.code[self.ci.snap.code] as *mut _ as _;
             let prev_pc = std::mem::replace(&mut self.ct.vm.pc, hbvm::mem::Address::new(entry));

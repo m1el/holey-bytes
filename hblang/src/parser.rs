@@ -840,8 +840,8 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 }
             }
             Self::UnOp { op, val, .. } => write!(f, "{op}{}", Unary(val)),
-            Self::Break { .. } => write!(f, "break;"),
-            Self::Continue { .. } => write!(f, "continue;"),
+            Self::Break { .. } => write!(f, "break"),
+            Self::Continue { .. } => write!(f, "continue"),
             Self::If {
                 cond, then, else_, ..
             } => {
@@ -857,7 +857,11 @@ impl<'a> std::fmt::Display for Expr<'a> {
             } => {
                 write!(f, "fn(")?;
                 fmt_list(f, "", args, |arg, f| write!(f, "{}: {}", arg.name, arg.ty))?;
-                write!(f, "): {ret} {body}")
+                write!(f, "): {ret} {body}")?;
+                if !matches!(body, Self::Block { .. }) {
+                    write!(f, ";")?;
+                }
+                Ok(())
             }
             Self::Call {
                 func,
@@ -871,8 +875,8 @@ impl<'a> std::fmt::Display for Expr<'a> {
                     fmt_list(f, ")", args, std::fmt::Display::fmt)
                 }
             }
-            Self::Return { val: Some(val), .. } => write!(f, "return {val};"),
-            Self::Return { val: None, .. } => write!(f, "return;"),
+            Self::Return { val: Some(val), .. } => write!(f, "return {val}"),
+            Self::Return { val: None, .. } => write!(f, "return"),
             Self::Ident { name, .. } => write!(f, "{name}"),
             Self::Block { stmts, .. } => {
                 write!(f, "{{")?;
@@ -883,8 +887,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
                         for _ in 0..INDENT.with(|i| i.get()) {
                             write!(f, "\t")?;
                         }
-                        stmt.fmt(f)?;
-                        writeln!(f)?;
+                        writeln!(f, "{stmt};")?;
                     }
                     Ok(())
                 })();
@@ -1243,5 +1246,6 @@ mod test {
         some_ordinary_struct => "loft := fn(): int return loft.{a: 1, b: 2};\n";
         some_ordinary_fild_per_lin_struct => "loft := fn(): int return loft.{\
             \n\ta: 1,\n\tb: 2,\n};\n";
+        code_block => "loft := fn(): int {\n\tloft();\n\treturn 1;\n}\n";
     }
 }
