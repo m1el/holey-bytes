@@ -1,5 +1,5 @@
 use {
-    crate::{utils::IterExt, ROOT},
+    crate::utils::IterExt,
     argh::FromArgs,
     std::{
         fs::File,
@@ -17,8 +17,10 @@ pub struct Command {
 }
 
 pub fn command(args: Command) -> io::Result<()> {
-    let mut file =
-        File::options().read(true).write(true).open(ROOT.join("hbbytecode/instructions.in"))?;
+    let mut file = File::options()
+        .read(true)
+        .write(true)
+        .open(crate::root().join("hbbytecode/instructions.in"))?;
 
     // Extract records
     let reader = BufReader::new(&file);
