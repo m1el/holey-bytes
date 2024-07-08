@@ -3,5 +3,8 @@ name    = "xtask"
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
-argh = { git = "https://github.com/google/argh.git", branch = "master", default-features = false, features = ["help"] }
+[dependencies.argh]
+git = "https://github.com/google/argh.git"
+branch = "master"
+default-features = false
+features = ["help"]

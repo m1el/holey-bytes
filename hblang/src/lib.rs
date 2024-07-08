@@ -1,24 +1,19 @@
-#![feature(vec_pop_if)]
-#![feature(get_many_mut)]
-#![feature(core_intrinsics)]
-#![feature(new_uninit)]
-#![feature(anonymous_lifetime_in_impl_trait)]
-#![feature(inline_const_pat)]
-#![feature(pattern)]
-#![feature(never_type)]
-#![feature(unwrap_infallible)]
-#![feature(if_let_guard)]
-#![feature(slice_partition_dedup)]
-#![feature(noop_waker)]
-#![feature(portable_simd)]
-#![feature(iter_collect_into)]
-#![feature(macro_metavar_expr)]
-#![feature(let_chains)]
-#![feature(ptr_metadata)]
-#![feature(const_mut_refs)]
-#![feature(slice_ptr_get)]
-#![allow(internal_features)]
-#![allow(clippy::format_collect)]
+#![feature(
+    let_chains,
+    if_let_guard,
+    macro_metavar_expr,
+    anonymous_lifetime_in_impl_trait,
+    core_intrinsics,
+    new_uninit,
+    never_type,
+    unwrap_infallible,
+    slice_partition_dedup,
+    portable_simd,
+    iter_collect_into,
+    ptr_metadata,
+    slice_ptr_get
+)]
+#![allow(internal_features, clippy::format_collect)]
 
 use {
     parser::Ast,
@@ -217,7 +212,7 @@ impl<T> TaskQueueInner<T> {
     }
 }
 
-pub fn parse_from_fs(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
+pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     const GIT_DEPS_DIR: &str = "git-deps";
 
     enum Chk<'a> {
@@ -227,7 +222,6 @@ pub fn parse_from_fs(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     }
 
     enum ImportPath<'a> {
-        Root { path: &'a str },
         Rel { path: &'a str },
         Git { link: &'a str, path: &'a str, chk: Option<Chk<'a>> },
     }
@@ -239,8 +233,7 @@ pub fn parse_from_fs(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
             let (prefix, path) = value.split_once(':').unwrap_or(("", value));
 
             match prefix {
-                "" => Ok(Self::Root { path }),
-                "rel" => Ok(Self::Rel { path }),
+                "rel" | "" => Ok(Self::Rel { path }),
                 "git" => {
                     let (link, path) =
                         path.split_once(':').ok_or(ParseImportError::ExpectedPath)?;
@@ -266,24 +259,22 @@ pub fn parse_from_fs(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     }
 
     impl<'a> ImportPath<'a> {
-        fn resolve(&self, from: &str, root: &str) -> Result<PathBuf, CantLoadFile> {
+        fn resolve(&self, from: &str) -> Result<PathBuf, CantLoadFile> {
             let path = match self {
-                Self::Root { path } => {
-                    PathBuf::from_iter([Path::new(root).parent().unwrap(), Path::new(path)])
-                }
-                Self::Rel { path } => {
-                    PathBuf::from_iter([Path::new(from).parent().unwrap(), Path::new(path)])
-                }
+                Self::Rel { path } => match Path::new(from).parent() {
+                    Some(parent) => PathBuf::from_iter([parent, Path::new(path)]),
+                    None => PathBuf::from(path),
+                },
                 Self::Git { path, link, .. } => {
                     let link = preprocess_git(link);
                     PathBuf::from_iter([GIT_DEPS_DIR, link, path])
                 }
             };
-            path.canonicalize().map_err(|e| CantLoadFile {
-                file_name: path,
-                directory: PathBuf::from(root),
+
+            path.canonicalize().map_err(|source| CantLoadFile {
+                path,
                 from: PathBuf::from(from),
-                source: e,
+                source,
             })
         }
     }
@@ -315,21 +306,14 @@ pub fn parse_from_fs(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
 
     #[derive(Debug)]
     struct CantLoadFile {
-        file_name: PathBuf,
-        directory: PathBuf,
+        path: PathBuf,
         from: PathBuf,
         source: io::Error,
     }
 
     impl std::fmt::Display for CantLoadFile {
         fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            write!(
-                f,
-                "can't load file: {} (dir: {}) (from: {})",
-                self.file_name.display(),
-                self.directory.display(),
-                self.from.display(),
-            )
+            write!(f, "can't load file: {} (from: {})", self.path.display(), self.from.display(),)
         }
     }
 
@@ -369,13 +353,13 @@ pub fn parse_from_fs(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     type Task = (u32, PathBuf, Option<std::process::Command>);
 
     let seen = Mutex::new(HashMap::<PathBuf, u32>::default());
-    let tasks = TaskQueue::<Task>::new(threads);
+    let tasks = TaskQueue::<Task>::new(extra_threads);
     let ast = Mutex::new(Vec::<io::Result<Ast>>::new());
 
     let loader = |path: &str, from: &str| {
         let path = ImportPath::try_from(path)?;
 
-        let physiscal_path = path.resolve(from, root)?;
+        let physiscal_path = path.resolve(from)?;
 
         let id = {
             let mut seen = seen.lock().unwrap();
@@ -460,7 +444,11 @@ pub fn parse_from_fs(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     seen.lock().unwrap().insert(path.clone(), 0);
     tasks.push((0, path, None));
 
-    std::thread::scope(|s| (0..threads).for_each(|_| _ = s.spawn(thread)));
+    if extra_threads == 0 {
+        thread();
+    } else {
+        std::thread::scope(|s| (0..extra_threads + 1).for_each(|_| _ = s.spawn(thread)));
+    }
 
     ast.into_inner().unwrap().into_iter().collect::<io::Result<Vec<_>>>()
 }
@@ -551,6 +539,7 @@ pub fn run_test(
 pub struct Options {
     pub fmt: bool,
     pub fmt_current: bool,
+    pub extra_threads: usize,
 }
 
 pub fn run_compiler(
@@ -558,7 +547,7 @@ pub fn run_compiler(
     options: Options,
     out: &mut impl std::io::Write,
 ) -> io::Result<()> {
-    let parsed = parse_from_fs(1, root_file)?;
+    let parsed = parse_from_fs(options.extra_threads, root_file)?;
 
     fn format_to_stdout(ast: parser::Ast) -> std::io::Result<()> {
         let source = std::fs::read_to_string(&*ast.path)?;
@@ -618,7 +607,6 @@ mod test {
                 std::thread::spawn(move || {
                     for _ in 0..100 {
                         queue.extend([queue.pop().unwrap()]);
-                        //dbg!();
                     }
                 })
             })
