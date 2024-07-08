@@ -312,6 +312,18 @@ fib_iter := fn(n: int): int {
 }
 ```
 
+#### arrays
+```hb
+main := fn(): int {
+	arr := [int].(1, 2, 4);
+	return pass(&arr);
+}
+
+pass := fn(arr: ^[int; 3]): int {
+	return arr[0] + arr[1] + arr[arr[1]];
+}
+```
+
 ### Incomplete Examples
 
 #### generic_types

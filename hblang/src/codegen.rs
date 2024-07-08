@@ -13,6 +13,7 @@ use {
 
 type Offset = u32;
 type Size = u32;
+type ArrayLen = u32;
 
 mod stack {
     use {
@@ -192,6 +193,7 @@ mod reg {
 pub mod ty {
     use {
         crate::{
+            codegen::ArrayLen,
             lexer::TokenKind,
             parser::{self, Expr},
         },
@@ -205,6 +207,7 @@ pub mod ty {
     pub type Global = u32;
     pub type Module = u32;
     pub type Param = u32;
+    pub type Slice = u32;
 
     #[derive(Clone, Copy)]
     pub struct Tuple(pub u32);
@@ -416,6 +419,7 @@ pub mod ty {
             Func,
             Global,
             Module,
+            Slice,
         }
     }
 
@@ -454,7 +458,7 @@ pub mod ty {
                     .tys
                     .syms
                     .iter()
-                    .find(|(sym, &ty)| sym.file != u32::MAX && ty == self.ty)
+                    .find(|(sym, &ty)| sym.file < self.files.len() as u32 && ty == self.ty)
                     && let Some(name) = self.files[key.file as usize].exprs().iter().find_map(
                         |expr| match expr {
                             Expr::BinOp {
@@ -481,6 +485,13 @@ pub mod ty {
                 }
                 TK::Func(idx) => write!(f, "fn{idx}"),
                 TK::Global(idx) => write!(f, "global{idx}"),
+                TK::Slice(idx) => {
+                    let array = self.tys.arrays[idx as usize];
+                    match array.len {
+                        ArrayLen::MAX => write!(f, "[{}]", self.rety(array.ty)),
+                        len => write!(f, "[{}; {len}]", self.rety(array.ty)),
+                    }
+                }
             }
         }
     }
@@ -852,6 +863,12 @@ impl ParamAlloc {
     }
 }
 
+#[derive(Clone, Copy)]
+struct Array {
+    ty: ty::Id,
+    len: ArrayLen,
+}
+
 #[derive(Default)]
 struct Types {
     syms: HashMap<SymKey, ty::Id>,
@@ -861,6 +878,7 @@ struct Types {
     globals: Vec<Global>,
     structs: Vec<Struct>,
     ptrs: Vec<Ptr>,
+    arrays: Vec<Array>,
 }
 
 impl Types {
@@ -896,6 +914,29 @@ impl Types {
             .inner()
     }
 
+    fn make_array(&mut self, ty: ty::Id, len: ArrayLen) -> ty::Id {
+        ty::Kind::Slice(self.make_array_low(ty, len)).compress()
+    }
+
+    fn make_array_low(&mut self, ty: ty::Id, len: ArrayLen) -> ty::Slice {
+        let id = SymKey {
+            file: match len {
+                ArrayLen::MAX => ArrayLen::MAX - 1,
+                len => ArrayLen::MAX - len - 2,
+            },
+            ident: ty.repr(),
+        };
+
+        self.syms
+            .entry(id)
+            .or_insert_with(|| {
+                self.arrays.push(Array { ty, len });
+                ty::Kind::Slice(self.arrays.len() as u32 - 1).compress()
+            })
+            .expand()
+            .inner()
+    }
+
     fn align_up(value: Size, align: Size) -> Size {
         (value + align - 1) & !(align - 1)
     }
@@ -909,9 +950,17 @@ impl Types {
             ty::Kind::Builtin(ty::I32 | ty::U32 | ty::TYPE) => 4,
             ty::Kind::Builtin(ty::I16 | ty::U16) => 2,
             ty::Kind::Builtin(ty::I8 | ty::U8 | ty::BOOL) => 1,
-            ty::Kind::Struct(ty) => {
+            ty::Kind::Slice(arr) => {
+                let arr = &self.arrays[arr as usize];
+                match arr.len {
+                    0 => 0,
+                    ArrayLen::MAX => 16,
+                    len => self.size_of(arr.ty) * len,
+                }
+            }
+            ty::Kind::Struct(stru) => {
                 let mut offset = 0u32;
-                let record = &self.structs[ty as usize];
+                let record = &self.structs[stru as usize];
                 for &Field { ty, .. } in record.fields.iter() {
                     let align = self.align_of(ty);
                     offset = Self::align_up(offset, align);
@@ -925,12 +974,19 @@ impl Types {
 
     fn align_of(&self, ty: ty::Id) -> Size {
         match ty.expand() {
-            ty::Kind::Struct(t) => self.structs[t as usize]
+            ty::Kind::Struct(stru) => self.structs[stru as usize]
                 .fields
                 .iter()
                 .map(|&Field { ty, .. }| self.align_of(ty))
                 .max()
                 .unwrap(),
+            ty::Kind::Slice(arr) => {
+                let arr = &self.arrays[arr as usize];
+                match arr.len {
+                    ArrayLen::MAX => 8,
+                    _ => self.align_of(arr.ty),
+                }
+            }
             _ => self.size_of(ty).max(1),
         }
     }
@@ -1275,6 +1331,60 @@ impl Codegen {
                     Some(val)
                 }
             }
+            E::Slice { size, item, .. } => {
+                let ty = self.ty(item);
+                let len = size.map_or(ArrayLen::MAX, |expr| self.eval_const(expr, ty::U32) as _);
+                Some(Value::ty(self.tys.make_array(ty, len)))
+            }
+            E::Index { base, index } => {
+                // TODO: we need to check if index is in bounds on debug builds
+
+                let mut base_val = self.expr(base)?;
+                base_val.loc = self.make_loc_owned(base_val.loc, base_val.ty);
+                let index_val = self.expr(index)?;
+                _ = self.assert_ty(index.pos(), index_val.ty, ty::INT.into());
+
+                if let ty::Kind::Ptr(ty) = base_val.ty.expand() {
+                    base_val.ty = self.tys.ptrs[ty as usize].base;
+                    base_val.loc = base_val.loc.into_derefed();
+                }
+
+                match base_val.ty.expand() {
+                    ty::Kind::Slice(arr) => {
+                        let ty = self.tys.arrays[arr as usize].ty;
+                        let item_size = self.tys.size_of(ty);
+
+                        let Loc::Rt { derefed: true, ref mut reg, ref stack, offset } =
+                            base_val.loc
+                        else {
+                            unreachable!()
+                        };
+
+                        if reg.is_ref() {
+                            let new_reg = self.ci.regs.allocate();
+                            self.stack_offset(new_reg.get(), reg.get(), stack.as_ref(), offset);
+                            *reg = new_reg;
+                        } else {
+                            self.stack_offset(reg.get(), reg.get(), stack.as_ref(), offset);
+                        }
+
+                        let idx = self.loc_to_reg(index_val.loc, 8);
+
+                        self.output.emit(muli64(idx.get(), idx.get(), item_size as _));
+                        self.output.emit(add64(reg.get(), reg.get(), idx.get()));
+                        self.ci.regs.free(idx);
+
+                        Some(Value::new(ty, base_val.loc))
+                    }
+                    _ => self.report(
+                        base.pos(),
+                        format_args!(
+                            "compiler did not (yet) learn how to index into '{}'",
+                            self.ty_display(base_val.ty)
+                        ),
+                    ),
+                }
+            }
             E::UnOp { op: T::Xor, val, .. } => {
                 let val = self.ty(val);
                 Some(Value::ty(self.tys.make_ptr(val)))
@@ -1448,33 +1558,61 @@ impl Codegen {
                 Some(Value::new(self.tys.make_ptr(ty::U8.into()), reg))
             }
             E::Ctor { pos, ty, fields, .. } => {
-                let (stuct, loc) = self.prepare_struct_ctor(pos, ctx, ty, fields.len());
+                let (ty, loc) = self.prepare_struct_ctor(pos, ctx, ty, fields.len());
+
+                let ty::Kind::Struct(stru) = ty.expand() else {
+                    self.report(
+                        pos,
+                        "our current technology does not (yet) allow\
+                        us to construct '{}' with struct constructor",
+                    );
+                };
                 for &CtorField { pos, name, ref value, .. } in fields {
-                    let Some((offset, ty)) = self.tys.offset_of(stuct, name) else {
+                    let Some((offset, ty)) = self.tys.offset_of(stru, name) else {
                         self.report(pos, format_args!("field not found: {name:?}"));
                     };
                     let loc = loc.as_ref().offset(offset);
                     let value = self.expr_ctx(value, Ctx::default().with_loc(loc).with_ty(ty))?;
                     self.ci.free_loc(value.loc);
                 }
-
-                let ty = ty::Kind::Struct(stuct).compress();
                 return Some(Value { ty, loc });
             }
             E::Tupl { pos, ty, fields, .. } => {
-                let (stuct, loc) = self.prepare_struct_ctor(pos, ctx, ty, fields.len());
-                let mut offset = 0;
-                let sfields = self.tys.structs[stuct as usize].fields.clone();
-                for (sfield, field) in sfields.iter().zip(fields) {
-                    let loc = loc.as_ref().offset(offset);
-                    let ctx = Ctx::default().with_loc(loc).with_ty(sfield.ty);
-                    let value = self.expr_ctx(field, ctx)?;
-                    self.ci.free_loc(value.loc);
-                    offset += self.tys.size_of(sfield.ty);
-                    offset = Types::align_up(offset, self.tys.align_of(sfield.ty));
+                let (ty, loc) = self.prepare_struct_ctor(pos, ctx, ty, fields.len());
+
+                match ty.expand() {
+                    ty::Kind::Struct(stru) => {
+                        let mut offset = 0;
+                        let sfields = self.tys.structs[stru as usize].fields.clone();
+                        for (sfield, field) in sfields.iter().zip(fields) {
+                            let loc = loc.as_ref().offset(offset);
+                            let ctx = Ctx::default().with_loc(loc).with_ty(sfield.ty);
+                            let value = self.expr_ctx(field, ctx)?;
+                            self.ci.free_loc(value.loc);
+                            offset += self.tys.size_of(sfield.ty);
+                            offset = Types::align_up(offset, self.tys.align_of(sfield.ty));
+                        }
+                    }
+                    ty::Kind::Slice(arr) => {
+                        let arr = &self.tys.arrays[arr as usize];
+                        let item_size = self.tys.size_of(arr.ty);
+                        for (i, value) in fields.iter().enumerate() {
+                            let loc = loc.as_ref().offset(i as u32 * item_size);
+                            let value =
+                                self.expr_ctx(value, Ctx::default().with_loc(loc).with_ty(ty))?;
+                            self.ci.free_loc(value.loc);
+                        }
+                    }
+                    _ => self.report(
+                        pos,
+                        format_args!(
+                            "compiler does not (yet) know how to initialize\
+                            '{}' with tuple constructor",
+                            self.ty_display(ty)
+                        ),
+                    ),
                 }
 
-                let ty = ty::Kind::Struct(stuct).compress();
                 return Some(Value { ty, loc });
             }
             E::Field { target, name: field } => {
@@ -1932,6 +2070,45 @@ impl Codegen {
         })
     }
 
+    fn eval_const(&mut self, expr: &Expr, ty: impl Into<ty::Id>) -> u64 {
+        let mut ci = ItemCtx {
+            file: self.ci.file,
+            id: self.ci.id,
+            ret: ty.into(),
+            ..self.pool.cis.pop().unwrap_or_default()
+        };
+        ci.vars.append(&mut self.ci.vars);
+
+        let loc = self.ct_eval(ci, |s, prev| {
+            s.output.emit_prelude();
+
+            if s.expr_ctx(
+                &Expr::Return { pos: 0, val: Some(expr) },
+                Ctx::default().with_ty(s.ci.ret),
+            )
+            .is_some()
+            {
+                s.report(expr.pos(), "we fucked up");
+            };
+
+            let stash = s.complete_call_graph();
+
+            s.push_stash(stash);
+
+            s.dunp_imported_fns();
+
+            prev.vars.append(&mut s.ci.vars);
+            s.ci.finalize(&mut s.output);
+            s.output.emit(tx());
+
+            Ok(1)
+        });
+
+        match loc {
+            Ok(i) | Err(i) => self.ct.vm.read_reg(i).cast::<u64>(),
+        }
+    }
+
     fn assign_pattern(&mut self, pat: &Expr, right: Value) -> Option<Value> {
         match *pat {
             Expr::Ident { id, .. } => {
@@ -1977,23 +2154,41 @@ impl Codegen {
         ctx: Ctx,
         ty: Option<&Expr>,
         field_len: usize,
-    ) -> (ty::Struct, Loc) {
-        let Some(ty) = ty.map(|ty| self.ty(ty)).or(ctx.ty) else {
+    ) -> (ty::Id, Loc) {
+        let Some(mut ty) = ty.map(|ty| self.ty(ty)).or(ctx.ty) else {
             self.report(pos, "expected type, (it cannot be inferred)");
         };
 
-        let size = self.tys.size_of(ty);
-        let loc = ctx.loc.unwrap_or_else(|| Loc::stack(self.ci.stack.allocate(size)));
-        let ty::Kind::Struct(stuct) = ty.expand() else {
-            self.report(pos, "expected expression to evaluate to struct")
-        };
-
-        let field_count = self.tys.structs[stuct as usize].fields.len();
-        if field_count != field_len {
-            self.report(pos, format_args!("expected {field_count} fields, got {field_len}"));
+        match ty.expand() {
+            ty::Kind::Struct(stru) => {
+                let field_count = self.tys.structs[stru as usize].fields.len();
+                if field_count != field_len {
+                    self.report(
+                        pos,
+                        format_args!("expected {field_count} fields, got {field_len}"),
+                    );
+                }
+            }
+            ty::Kind::Slice(arr) => {
+                let arr = &self.tys.arrays[arr as usize];
+                if arr.len == ArrayLen::MAX {
+                    ty = self.tys.make_array(arr.ty, field_len as _);
+                } else if arr.len != field_len as u32 {
+                    self.report(
+                        pos,
+                        format_args!(
+                            "literal has {} elements, but explicit array type has {} elements",
+                            arr.len, field_len
+                        ),
+                    );
+                }
+            }
+            _ => self.report(pos, "expected expression to evaluate to struct (or array maybe)"),
         }
 
-        (stuct, loc)
+        let size = self.tys.size_of(ty);
+        let loc = ctx.loc.unwrap_or_else(|| Loc::stack(self.ci.stack.allocate(size)));
+        (ty, loc)
     }
 
     fn struct_op(
@@ -2505,42 +2700,7 @@ impl Codegen {
 
     // TODO: sometimes its better to do this in bulk
     fn ty(&mut self, expr: &Expr) -> ty::Id {
-        let mut ci = ItemCtx {
-            file: self.ci.file,
-            id: self.ci.id,
-            ret: ty::TYPE.into(),
-            ..self.pool.cis.pop().unwrap_or_default()
-        };
-        ci.vars.append(&mut self.ci.vars);
-
-        let loc = self.ct_eval(ci, |s, prev| {
-            s.output.emit_prelude();
-
-            if s.expr_ctx(
-                &Expr::Return { pos: 0, val: Some(expr) },
-                Ctx::default().with_ty(ty::TYPE),
-            )
-            .is_some()
-            {
-                s.report(expr.pos(), "we fucked up");
-            };
-
-            let stash = s.complete_call_graph();
-
-            s.push_stash(stash);
-
-            s.dunp_imported_fns();
-
-            prev.vars.append(&mut s.ci.vars);
-            s.ci.finalize(&mut s.output);
-            s.output.emit(tx());
-
-            Ok(1)
-        });
-
-        ty::Id::from(match loc {
-            Ok(reg) | Err(reg) => self.ct.vm.read_reg(reg).cast::<u64>().to_ne_bytes(),
-        })
+        ty::Id::from(self.eval_const(expr, ty::TYPE).to_ne_bytes())
     }
 
     fn handle_ecall(&mut self) {
@@ -2970,5 +3130,6 @@ mod tests {
         generic_functions => README;
         c_strings => README;
         struct_patterns => README;
+        arrays => README;
     }
 }

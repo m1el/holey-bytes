@@ -354,16 +354,19 @@ impl<'a, 'b> Parser<'a, 'b> {
             },
             T::Ctor => self.ctor(token.start, None),
             T::Tupl => self.tupl(token.start, None),
+            T::LBrack => E::Slice {
+                item: self.ptr_unit_expr(),
+                size: self.advance_if(T::Semi).then(|| self.ptr_expr()),
+                pos: {
+                    self.expect_advance(T::RBrack);
+                    token.start
+                },
+            },
             T::Band | T::Mul | T::Xor => E::UnOp {
                 pos: token.start,
                 op: token.kind,
                 val: {
-                    let expr = if token.kind == T::Xor {
-                        let expr = self.expr();
-                        self.arena.alloc(expr)
-                    } else {
-                        self.ptr_unit_expr()
-                    };
+                    let expr = self.ptr_unit_expr();
                     if token.kind == T::Band {
                         self.flag_idents(*expr, idfl::REFERENCED);
                     }
@@ -392,7 +395,7 @@ impl<'a, 'b> Parser<'a, 'b> {
 
         loop {
             let token = self.token;
-            if matches!(token.kind, T::LParen | T::Ctor | T::Dot | T::Tupl) {
+            if matches!(token.kind, T::LParen | T::Ctor | T::Dot | T::Tupl | T::LBrack) {
                 self.next();
             }
 
@@ -404,6 +407,14 @@ impl<'a, 'b> Parser<'a, 'b> {
                 },
                 T::Ctor => self.ctor(token.start, Some(expr)),
                 T::Tupl => self.tupl(token.start, Some(expr)),
+                T::LBrack => E::Index {
+                    base: self.arena.alloc(expr),
+                    index: {
+                        let index = self.expr();
+                        self.expect_advance(T::RBrack);
+                        self.arena.alloc(index)
+                    },
+                },
                 T::Dot => E::Field {
                     target: self.arena.alloc(expr),
                     name: {
@@ -682,6 +693,15 @@ generate_expr! {
             fields: &'a [Self],
             trailing_comma: bool,
         },
+        Slice {
+            pos: Pos,
+            size: Option<&'a Self>,
+            item: &'a Self,
+        },
+        Index {
+            base: &'a Self,
+            index: &'a Self,
+        },
         Field {
             target: &'a Self,
             name:  &'a str,
@@ -888,6 +908,11 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 write!(f, ".(")?;
                 fmt_list(f, trailing_comma, ")", fields, std::fmt::Display::fmt)
             }
+            Self::Slice { item, size, .. } => match size {
+                Some(size) => write!(f, "[{size}]{item}"),
+                None => write!(f, "[]{item}"),
+            },
+            Self::Index { base, index } => write!(f, "{base}[{index}]"),
             Self::UnOp { op, val, .. } => write!(f, "{op}{}", Unary(val)),
             Self::Break { .. } => write!(f, "break"),
             Self::Continue { .. } => write!(f, "continue"),
