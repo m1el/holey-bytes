@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 fn main() -> std::io::Result<()> {
     let args = std::env::args().collect::<Vec<_>>();
     let args = args.iter().map(String::as_str).collect::<Vec<_>>();
@@ -13,6 +15,12 @@ fn main() -> std::io::Result<()> {
         hblang::Options {
             fmt: args.contains(&"--fmt"),
             fmt_current: args.contains(&"--fmt-current"),
+            extra_threads: args
+                .iter()
+                .position(|&a| a == "--threads")
+                .map(|i| args[i + 1].parse::<NonZeroUsize>().expect("--threads expects integer"))
+                .map_or(1, NonZeroUsize::get)
+                - 1,
         },
         &mut std::io::stdout(),
     )

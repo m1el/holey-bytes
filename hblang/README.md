@@ -228,24 +228,30 @@ note: values of global variables are evaluated at compile time
 
 #### directives
 ```hb
-Type := struct {
-	brah: int,
-	blah: int,
-}
+foo := @use("foo.hb");
 
 main := fn(): int {
 	byte := @as(u8, 10);
 	same_type_as_byte := @as(@TypeOf(byte), 30);
 	wide_uint := @as(u32, 40);
 	truncated_uint := @as(u8, @intcast(wide_uint));
-	size_of_Type_in_bytes := @sizeof(Type);
-	align_of_Type_in_bytes := @alignof(Type);
+	size_of_Type_in_bytes := @sizeof(foo.Type);
+	align_of_Type_in_bytes := @alignof(foo.Type);
 	hardcoded_pointer := @as(^u8, @bitcast(10));
-	ecall_that_returns_int := @eca(int, 1, Type.(10, 20), 5, 6);
+	ecall_that_returns_int := @eca(int, 1, foo.Type.(10, 20), 5, 6);
 	return 0;
+}
+
+// in module: foo.hb
+
+Type := struct {
+	brah: int,
+	blah: int,
 }
 ```
 
+- `@use(<string>)`: imports a module based of string, the string is passed to a loader that can be customized, default loader uses following syntax:
+	- `((rel:|)(<path>)|git:<git-addr>:<path>)`: `rel:` and `''` prefixes both mean module is located at `path` relavive to the current file, `git:` takes a git url without `https://` passed as `git-addr`, `path` then refers to file within the repository
 - `@TypeOf(<expr>)`: results into literal type of whatever the type of `<expr>` is, `<expr>` is not included in final binary
 - `@as(<ty>, <expr>)`: hint to the compiler that  `@TypeOf(<expr>) == <ty>`
 - `@intcast(<expr>)`: needs to be used when conversion of `@TypeOf(<expr>)` would loose precision (widening of integers is implicit)
@@ -255,7 +261,6 @@ main := fn(): int {
 
 #### c_strings
 ```hb
-
 str_len := fn(str: ^u8): int {
 	len := 0;
 	loop if *str == 0 break else {
@@ -272,6 +277,38 @@ main := fn(): int {
 	some_other_str := "fff\0";
 	lep := str_len(some_other_str);
 	return lep + len;
+}
+```
+
+#### struct_patterns
+```hb
+.{ fib, fib_iter, Fiber } := @use("fibs.hb");
+
+main := fn(): int {
+	.{ a, b } := Fiber.{ a: 10, b: 10 };
+	return fib(a) - fib_iter(b);
+}
+
+// in module: fibs.hb
+
+Fiber := struct { a: u8, b: u8 };
+
+fib := fn(n: int): int if n < 2 {
+	return n;
+} else {
+	return fib(n - 1) + fib(n - 2);
+};
+
+fib_iter := fn(n: int): int {
+	a := 0;
+	b := 1;
+	loop if n == 0 break else {
+		c := a + b;
+		a = b;
+		b = c;
+		n -= 1;
+	}
+	return a;
 }
 ```
 

@@ -2841,7 +2841,8 @@ impl Codegen {
 mod tests {
     use {
         super::parser,
-        crate::{codegen::LoggedMem, log},
+        crate::{codegen::LoggedMem, log, parser::FileId},
+        std::io,
     };
 
     const README: &str = include_str!("../README.md");
@@ -2872,9 +2873,30 @@ mod tests {
 
         let input = find_block(input, ident);
 
-        let path = "test";
+        let mut module_map = Vec::new();
+        let mut last_start = 0;
+        let mut last_module_name = "test";
+        for (i, m) in input.match_indices("// in module: ") {
+            module_map.push((last_module_name, &input[last_start..i]));
+            let (module_name, _) = input[i + m.len()..].split_once('\n').unwrap();
+            last_module_name = module_name;
+            last_start = i + m.len() + module_name.len() + 1;
+        }
+        module_map.push((last_module_name, &input[last_start..]));
+
+        let loader = |path: &str, _: &str| {
+            module_map
+                .iter()
+                .position(|&(name, _)| name == path)
+                .map(|i| i as FileId)
+                .ok_or(io::Error::from(io::ErrorKind::NotFound))
+        };
+
         let mut codegen = super::Codegen {
-            files: vec![parser::Ast::new(path, input, &parser::no_loader)],
+            files: module_map
+                .iter()
+                .map(|&(path, content)| parser::Ast::new(path, content, &loader))
+                .collect(),
             ..Default::default()
         };
         codegen.generate();
@@ -2947,5 +2969,6 @@ mod tests {
         generic_types => README;
         generic_functions => README;
         c_strings => README;
+        struct_patterns => README;
     }
 }
