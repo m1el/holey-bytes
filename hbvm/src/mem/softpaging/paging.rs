@@ -62,16 +62,13 @@ pub struct PageTable {
     /// How much entries are in use
     pub childen: u8,
     /// Entries
-    pub table:   [PtEntry; 256],
+    pub table: [PtEntry; 256],
 }
 
 impl Default for PageTable {
     fn default() -> Self {
         // SAFETY: It's fine, zeroed page table entry is valid (= empty)
-        Self {
-            childen: 0,
-            table:   unsafe { MaybeUninit::zeroed().assume_init() },
-        }
+        Self { childen: 0, table: unsafe { MaybeUninit::zeroed().assume_init() } }
     }
 }
 
@@ -80,7 +77,7 @@ impl Default for PageTable {
 #[repr(C, align(4096))]
 pub union PtPointedData {
     /// Node - next page table
-    pub pt:   PageTable,
+    pub pt: PageTable,
     /// Leaf
     pub page: u8,
 }

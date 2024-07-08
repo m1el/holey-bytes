@@ -1,7 +1,11 @@
 mod fmt;
 mod utils;
 
-use {argh::FromArgs, color_eyre::Result, once_cell::sync::Lazy, std::path::Path};
+use {
+    argh::FromArgs,
+    once_cell::sync::Lazy,
+    std::{io, path::Path},
+};
 
 static ROOT: Lazy<&Path> = Lazy::new(|| Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap());
 
@@ -18,7 +22,7 @@ enum Subcommands {
     Format(fmt::Command),
 }
 
-fn main() -> Result<()> {
+fn main() -> io::Result<()> {
     match argh::from_env::<Command>().subcom {
         Subcommands::Format(com) => fmt::command(com),
     }

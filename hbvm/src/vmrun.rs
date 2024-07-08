@@ -173,9 +173,7 @@ where
                     LI64 => handler!(self, |OpsRD(tg, imm)| self.write_reg(tg, imm)),
                     LRA => handler!(self, |OpsRRO(tg, reg, off)| self.write_reg(
                         tg,
-                        self.pcrel(off)
-                            .wrapping_add(self.read_reg(reg).cast::<i64>())
-                            .get(),
+                        self.pcrel(off).wrapping_add(self.read_reg(reg).cast::<i64>()).get(),
                     )),
                     // Load. If loading more than register size, continue on adjecent registers
                     LD => handler!(self, |OpsRRAH(dst, base, off, count)| self
@@ -251,9 +249,7 @@ where
                         let OpsRRO(save, reg, offset) = self.decode();
 
                         self.write_reg(save, self.pc.next::<OpsRRO>());
-                        self.pc = self
-                            .pcrel(offset)
-                            .wrapping_add(self.read_reg(reg).cast::<i64>());
+                        self.pc = self.pcrel(offset).wrapping_add(self.read_reg(reg).cast::<i64>());
                     }
                     JALA => {
                         // Jump and link. Save PC after this instruction to
@@ -375,10 +371,7 @@ where
     /// Bump instruction pointer
     #[inline(always)]
     fn bump_pc<T: Copy>(&mut self) {
-        self.pc = self
-            .pc
-            .wrapping_add(core::mem::size_of::<T>())
-            .wrapping_add(1);
+        self.pc = self.pc.wrapping_add(core::mem::size_of::<T>()).wrapping_add(1);
     }
 
     /// Decode instruction operands
@@ -404,10 +397,7 @@ where
         unsafe {
             self.memory.load(
                 self.ldst_addr_uber(dst, base, offset, count, n)?,
-                self.registers
-                    .as_mut_ptr()
-                    .add(usize::from(dst) + usize::from(n))
-                    .cast(),
+                self.registers.as_mut_ptr().add(usize::from(dst) + usize::from(n)).cast(),
                 usize::from(count).saturating_sub(n.into()),
             )
         }?;
@@ -444,10 +434,7 @@ where
     #[inline(always)]
     unsafe fn binary_op<T: ValueVariant>(&mut self, op: impl Fn(T, T) -> T) {
         let OpsRRR(tg, a0, a1) = unsafe { self.decode() };
-        self.write_reg(
-            tg,
-            op(self.read_reg(a0).cast::<T>(), self.read_reg(a1).cast::<T>()),
-        );
+        self.write_reg(tg, op(self.read_reg(a0).cast::<T>(), self.read_reg(a1).cast::<T>()));
         self.bump_pc::<OpsRRR>();
     }
 
@@ -467,13 +454,7 @@ where
     #[inline(always)]
     unsafe fn binary_op_shift<T: ValueVariant>(&mut self, op: impl Fn(T, u32) -> T) {
         let OpsRRR(tg, a0, a1) = unsafe { self.decode() };
-        self.write_reg(
-            tg,
-            op(
-                self.read_reg(a0).cast::<T>(),
-                self.read_reg(a1).cast::<u32>(),
-            ),
-        );
+        self.write_reg(tg, op(self.read_reg(a0).cast::<T>(), self.read_reg(a1).cast::<u32>()));
         self.bump_pc::<OpsRRR>();
     }
 
@@ -540,12 +521,7 @@ where
     #[inline(always)]
     unsafe fn cond_jmp<T: ValueVariant + Ord>(&mut self, expected: Ordering) {
         let OpsRRP(a0, a1, ja) = unsafe { self.decode() };
-        if self
-            .read_reg(a0)
-            .cast::<T>()
-            .cmp(&self.read_reg(a1).cast::<T>())
-            == expected
-        {
+        if self.read_reg(a0).cast::<T>().cmp(&self.read_reg(a1).cast::<T>()) == expected {
             self.pc = self.pcrel(ja);
         } else {
             self.bump_pc::<OpsRRP>();

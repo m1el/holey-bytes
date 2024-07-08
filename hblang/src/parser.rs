@@ -1,22 +1,24 @@
-use std::{
-    cell::{Cell, UnsafeCell},
-    io,
-    ops::{Deref, Not},
-    ptr::NonNull,
-    sync::atomic::AtomicUsize,
-};
-
-use crate::{
-    codegen,
-    ident::{self, Ident},
-    lexer::{Lexer, LineMap, Token, TokenKind},
-    log,
+use {
+    crate::{
+        codegen,
+        ident::{self, Ident},
+        lexer::{Lexer, LineMap, Token, TokenKind},
+        log,
+    },
+    std::{
+        cell::{Cell, UnsafeCell},
+        io,
+        ops::{Deref, Not},
+        ptr::NonNull,
+        sync::atomic::AtomicUsize,
+    },
 };
 
 pub type Pos = u32;
 pub type IdentFlags = u32;
 pub type Symbols = Vec<Symbol>;
 pub type FileId = u32;
+pub type IdentIndex = u16;
 pub type Loader<'a> = &'a (dyn Fn(&str, &str) -> io::Result<FileId> + 'a);
 
 pub mod idfl {
@@ -35,7 +37,7 @@ pub mod idfl {
         COMPTIME,
     }
 
-    pub fn index(i: IdentFlags) -> u16 {
+    pub fn index(i: IdentFlags) -> IdentIndex {
         (i & !ALL) as _
     }
 }
@@ -46,28 +48,28 @@ pub fn no_loader(_: &str, _: &str) -> io::Result<FileId> {
 
 #[derive(Debug)]
 pub struct Symbol {
-    pub name:  Ident,
+    pub name: Ident,
     pub flags: IdentFlags,
 }
 
 #[derive(Clone, Copy)]
 struct ScopeIdent {
-    ident:    Ident,
+    ident: Ident,
     declared: bool,
-    flags:    IdentFlags,
+    flags: IdentFlags,
 }
 
 pub struct Parser<'a, 'b> {
-    path:         &'b str,
-    loader:       Loader<'b>,
-    lexer:        Lexer<'b>,
-    arena:        &'b Arena<'a>,
-    token:        Token,
-    symbols:      &'b mut Symbols,
-    ns_bound:     usize,
+    path: &'b str,
+    loader: Loader<'b>,
+    lexer: Lexer<'b>,
+    arena: &'b Arena<'a>,
+    token: Token,
+    symbols: &'b mut Symbols,
+    ns_bound: usize,
     trailing_sep: bool,
-    idents:       Vec<ScopeIdent>,
-    captured:     Vec<Ident>,
+    idents: Vec<ScopeIdent>,
+    captured: Vec<Ident>,
 }
 
 impl<'a, 'b> Parser<'a, 'b> {
@@ -92,7 +94,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         self.lexer = Lexer::new(input);
         self.token = self.lexer.next();
 
-        let f = self.collect_list(TokenKind::Semi, TokenKind::Eof, Self::expr);
+        let f = self.collect_list(TokenKind::Semi, TokenKind::Eof, |s| s.expr_low(true));
 
         self.pop_scope(0);
         let has_undeclared = !self.idents.is_empty();
@@ -123,12 +125,16 @@ impl<'a, 'b> Parser<'a, 'b> {
         self.arena.alloc(self.expr())
     }
 
-    fn expr(&mut self) -> Expr<'a> {
+    fn expr_low(&mut self, top_level: bool) -> Expr<'a> {
         let left = self.unit_expr();
-        self.bin_expr(left, 0)
+        self.bin_expr(left, 0, top_level)
     }
 
-    fn bin_expr(&mut self, mut fold: Expr<'a>, min_prec: u8) -> Expr<'a> {
+    fn expr(&mut self) -> Expr<'a> {
+        self.expr_low(false)
+    }
+
+    fn bin_expr(&mut self, mut fold: Expr<'a>, min_prec: u8, top_level: bool) -> Expr<'a> {
         loop {
             let Some(prec) = self.token.kind.precedence() else {
                 break;
@@ -141,7 +147,11 @@ impl<'a, 'b> Parser<'a, 'b> {
             let checkpoint = self.token.start;
             let op = self.next().kind;
 
-            let op_ass = op.assign_op().map(|op| {
+            if op == TokenKind::Decl {
+                self.declare_rec(&fold, top_level);
+            }
+
+            let op_ass = op.ass_op().map(|op| {
                 // this abomination reparses the left side, so that the desubaring adheres to the
                 // parser invariants.
                 let source = self.lexer.slice(0..checkpoint as usize);
@@ -156,23 +166,15 @@ impl<'a, 'b> Parser<'a, 'b> {
             });
 
             let right = self.unit_expr();
-            let right = self.bin_expr(right, prec);
+            let right = self.bin_expr(right, prec, false);
             let right = self.arena.alloc(right);
             let left = self.arena.alloc(fold);
 
             if let Some((op, clone)) = op_ass {
                 self.flag_idents(*left, idfl::MUTABLE);
 
-                let right = Expr::BinOp {
-                    left: self.arena.alloc(clone),
-                    op,
-                    right,
-                };
-                fold = Expr::BinOp {
-                    left,
-                    op: TokenKind::Assign,
-                    right: self.arena.alloc(right),
-                };
+                let right = Expr::BinOp { left: self.arena.alloc(clone), op, right };
+                fold = Expr::BinOp { left, op: TokenKind::Assign, right: self.arena.alloc(right) };
             } else {
                 fold = Expr::BinOp { left, right, op };
                 if op == TokenKind::Assign {
@@ -184,7 +186,42 @@ impl<'a, 'b> Parser<'a, 'b> {
         fold
     }
 
-    fn resolve_ident(&mut self, token: Token, decl: bool) -> (Ident, u16) {
+    fn declare_rec(&mut self, expr: &Expr, top_level: bool) {
+        let idx = |idx| top_level.not().then_some(idx);
+        match *expr {
+            Expr::Ident { pos, id, index, .. } => self.declare(pos, id, idx(index)),
+            Expr::Ctor { fields, .. } => {
+                for CtorField { value, .. } in fields {
+                    self.declare_rec(value, top_level)
+                }
+            }
+            _ => self.report_pos(expr.pos(), "cant declare this shit (yet)"),
+        }
+    }
+
+    fn declare(&mut self, pos: Pos, id: Ident, index_to_check: Option<IdentIndex>) {
+        if let Some(index) = index_to_check
+            && index != 0
+        {
+            self.report_pos(
+                pos,
+                format_args!(
+                    "out of order declaration not allowed: {}",
+                    self.lexer.slice(ident::range(id))
+                ),
+            );
+        }
+
+        let index = self.idents.binary_search_by_key(&id, |s| s.ident).expect("fck up");
+        if std::mem::replace(&mut self.idents[index].declared, true) {
+            self.report_pos(
+                pos,
+                format_args!("redeclaration of identifier: {}", self.lexer.slice(ident::range(id))),
+            )
+        }
+    }
+
+    fn resolve_ident(&mut self, token: Token) -> (Ident, IdentIndex) {
         let is_ct = token.kind == TokenKind::CtIdent;
         let name = self.lexer.slice(token.range());
 
@@ -198,25 +235,17 @@ impl<'a, 'b> Parser<'a, 'b> {
             .enumerate()
             .rfind(|(_, elem)| self.lexer.slice(ident::range(elem.ident)) == name)
         {
-            Some((_, elem)) if decl && elem.declared => {
-                self.report(format_args!("redeclaration of identifier: {name}"))
-            }
             Some((i, elem)) => {
                 elem.flags += 1;
                 (i, elem)
             }
             None => {
                 let id = ident::new(token.start, name.len() as _);
-                self.idents.push(ScopeIdent {
-                    ident:    id,
-                    declared: false,
-                    flags:    0,
-                });
+                self.idents.push(ScopeIdent { ident: id, declared: false, flags: 0 });
                 (self.idents.len() - 1, self.idents.last_mut().unwrap())
             }
         };
 
-        id.declared |= decl;
         id.flags |= idfl::COMPTIME * is_ct as u32;
         if id.declared && self.ns_bound > i {
             id.flags |= idfl::COMPTIME;
@@ -244,32 +273,26 @@ impl<'a, 'b> Parser<'a, 'b> {
                 let path = self.lexer.slice(str.range()).trim_matches('"');
 
                 E::Mod {
-                    pos:  token.start,
+                    pos: token.start,
                     path: self.arena.alloc_str(path),
-                    id:   match (self.loader)(path, self.path) {
+                    id: match (self.loader)(path, self.path) {
                         Ok(id) => id,
                         Err(e) => self.report(format_args!("error loading dependency: {e:#}")),
                     },
                 }
             }
             T::Directive => E::Directive {
-                pos:  token.start,
+                pos: token.start,
                 name: self.move_str(token),
                 args: {
                     self.expect_advance(T::LParen);
                     self.collect_list(T::Comma, T::RParen, Self::expr)
                 },
             },
-            T::True => E::Bool {
-                pos:   token.start,
-                value: true,
-            },
-            T::DQuote => E::String {
-                pos:     token.start,
-                literal: self.move_str(token),
-            },
+            T::True => E::Bool { pos: token.start, value: true },
+            T::DQuote => E::String { pos: token.start, literal: self.move_str(token) },
             T::Struct => E::Struct {
-                fields:   {
+                fields: {
                     self.ns_bound = self.idents.len();
                     self.expect_advance(T::LBrace);
                     self.collect_list(T::Comma, T::RBrace, |s| {
@@ -285,7 +308,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                     self.captured.truncate(prev_captured + preserved);
                     self.arena.alloc_slice(&self.captured[prev_captured..])
                 },
-                pos:      {
+                pos: {
                     if self.ns_bound == 0 {
                         // we might save some memory
                         self.captured.clear();
@@ -294,25 +317,17 @@ impl<'a, 'b> Parser<'a, 'b> {
                 },
             },
             T::Ident | T::CtIdent => {
-                let (id, index) = self.resolve_ident(token, self.token.kind == T::Decl);
+                let (id, index) = self.resolve_ident(token);
                 let name = self.move_str(token);
-                E::Ident {
-                    pos: token.start,
-                    name,
-                    id,
-                    index,
-                }
+                E::Ident { pos: token.start, name, id, index }
             }
             T::If => E::If {
-                pos:   token.start,
-                cond:  self.ptr_expr(),
-                then:  self.ptr_expr(),
+                pos: token.start,
+                cond: self.ptr_expr(),
+                then: self.ptr_expr(),
                 else_: self.advance_if(T::Else).then(|| self.ptr_expr()),
             },
-            T::Loop => E::Loop {
-                pos:  token.start,
-                body: self.ptr_expr(),
-            },
+            T::Loop => E::Loop { pos: token.start, body: self.ptr_expr() },
             T::Break => E::Break { pos: token.start },
             T::Continue => E::Continue { pos: token.start },
             T::Return => E::Return {
@@ -320,22 +335,18 @@ impl<'a, 'b> Parser<'a, 'b> {
                 val: (self.token.kind != T::Semi).then(|| self.ptr_expr()),
             },
             T::Fn => E::Closure {
-                pos:  token.start,
+                pos: token.start,
                 args: {
                     self.expect_advance(T::LParen);
                     self.collect_list(T::Comma, T::RParen, |s| {
                         let name = s.advance_ident();
-                        let (id, index) = s.resolve_ident(name, true);
+                        let (id, index) = s.resolve_ident(name);
+                        s.declare(name.start, id, None);
                         s.expect_advance(T::Colon);
-                        Arg {
-                            name: s.move_str(name),
-                            id,
-                            index,
-                            ty: s.expr(),
-                        }
+                        Arg { name: s.move_str(name), id, index, ty: s.expr() }
                     })
                 },
-                ret:  {
+                ret: {
                     self.expect_advance(T::Colon);
                     self.ptr_expr()
                 },
@@ -345,7 +356,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             T::Tupl => self.tupl(token.start, None),
             T::Band | T::Mul | T::Xor => E::UnOp {
                 pos: token.start,
-                op:  token.kind,
+                op: token.kind,
                 val: {
                     let expr = if token.kind == T::Xor {
                         let expr = self.expr();
@@ -360,11 +371,11 @@ impl<'a, 'b> Parser<'a, 'b> {
                 },
             },
             T::LBrace => E::Block {
-                pos:   token.start,
+                pos: token.start,
                 stmts: self.collect_list(T::Semi, T::RBrace, Self::expr),
             },
             T::Number => E::Number {
-                pos:   token.start,
+                pos: token.start,
                 value: match self.lexer.slice(token.range()).parse() {
                     Ok(value) => value,
                     Err(e) => self.report(format_args!("invalid number: {e}")),
@@ -375,10 +386,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 self.expect_advance(T::RParen);
                 expr
             }
-            T::Comment => Expr::Comment {
-                pos:     token.start,
-                literal: self.move_str(token),
-            },
+            T::Comment => Expr::Comment { pos: token.start, literal: self.move_str(token) },
             tok => self.report(format_args!("unexpected token: {tok:?}")),
         };
 
@@ -398,7 +406,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 T::Tupl => self.tupl(token.start, Some(expr)),
                 T::Dot => E::Field {
                     target: self.arena.alloc(expr),
-                    field:  {
+                    name: {
                         let token = self.expect_advance(T::Ident);
                         self.move_str(token)
                     },
@@ -432,9 +440,18 @@ impl<'a, 'b> Parser<'a, 'b> {
             pos,
             ty: ty.map(|ty| self.arena.alloc(ty)),
             fields: self.collect_list(TokenKind::Comma, TokenKind::RBrace, |s| {
-                let name = s.advance_ident();
-                let value = s.advance_if(TokenKind::Colon).then(|| s.expr());
-                (s.move_str(name), value)
+                let name_tok = s.advance_ident();
+                let name = s.move_str(name_tok);
+                CtorField {
+                    pos: name_tok.start,
+                    name,
+                    value: if s.advance_if(TokenKind::Colon) {
+                        s.expr()
+                    } else {
+                        let (id, index) = s.resolve_ident(name_tok);
+                        Expr::Ident { pos: name_tok.start, id, name, index }
+                    },
+                }
             }),
             trailing_comma: std::mem::take(&mut self.trailing_sep),
         }
@@ -444,10 +461,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         if matches!(self.token.kind, TokenKind::Ident | TokenKind::CtIdent) {
             self.next()
         } else {
-            self.report(format_args!(
-                "expected identifier, found {:?}",
-                self.token.kind
-            ))
+            self.report(format_args!("expected identifier, found {:?}", self.token.kind))
         }
     }
 
@@ -462,10 +476,7 @@ impl<'a, 'b> Parser<'a, 'b> {
 
         self.idents
             .drain(undeclared_count..)
-            .map(|ident| Symbol {
-                name:  ident.ident,
-                flags: ident.flags,
-            })
+            .map(|ident| Symbol { name: ident.ident, flags: ident.flags })
             .collect_into(self.symbols);
     }
 
@@ -489,6 +500,7 @@ impl<'a, 'b> Parser<'a, 'b> {
     }
 
     fn collect<T: Copy>(&mut self, mut f: impl FnMut(&mut Self) -> Option<T>) -> &'a [T] {
+        // TODO: avoid this allocation
         let vec = std::iter::from_fn(|| f(self)).collect::<Vec<_>>();
         self.arena.alloc_slice(&vec)
     }
@@ -504,10 +516,7 @@ impl<'a, 'b> Parser<'a, 'b> {
 
     fn expect_advance(&mut self, kind: TokenKind) -> Token {
         if self.token.kind != kind {
-            self.report(format_args!(
-                "expected {:?}, found {:?}",
-                kind, self.token.kind
-            ));
+            self.report(format_args!("expected {:?}, found {:?}", kind, self.token.kind));
         }
         self.next()
     }
@@ -534,25 +543,19 @@ impl<'a, 'b> Parser<'a, 'b> {
 }
 
 fn find_ident(idents: &mut [ScopeIdent], id: Ident) -> &mut ScopeIdent {
-    idents
-        .binary_search_by_key(&id, |si| si.ident)
-        .map(|i| &mut idents[i])
-        .unwrap()
+    idents.binary_search_by_key(&id, |si| si.ident).map(|i| &mut idents[i]).unwrap()
 }
 
 pub fn find_symbol(symbols: &[Symbol], id: Ident) -> &Symbol {
-    symbols
-        .binary_search_by_key(&id, |s| s.name)
-        .map(|i| &symbols[i])
-        .unwrap()
+    symbols.binary_search_by_key(&id, |s| s.name).map(|i| &symbols[i]).unwrap()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Arg<'a> {
-    pub name:  &'a str,
-    pub id:    Ident,
-    pub index: u16,
-    pub ty:    Expr<'a>,
+    pub name: &'a str,
+    pub id: Ident,
+    pub index: IdentIndex,
+    pub ty: Expr<'a>,
 }
 
 macro_rules! generate_expr {
@@ -632,7 +635,7 @@ generate_expr! {
             pos:   Pos,
             id:    Ident,
             name:  &'a str,
-            index: u16,
+            index: IdentIndex,
         },
         Block {
             pos:   Pos,
@@ -670,7 +673,7 @@ generate_expr! {
         Ctor {
             pos:    Pos,
             ty:     Option<&'a Self>,
-            fields: &'a [(&'a str, Option<Self>)],
+            fields: &'a [CtorField<'a>],
             trailing_comma: bool,
         },
         Tupl {
@@ -681,7 +684,7 @@ generate_expr! {
         },
         Field {
             target: &'a Self,
-            field:  &'a str,
+            name:  &'a str,
         },
         Bool {
             pos:   Pos,
@@ -698,6 +701,48 @@ generate_expr! {
             path: &'a str,
         },
     }
+}
+
+impl<'a> Expr<'a> {
+    pub fn declares(&self, iden: Result<Ident, &str>) -> Option<Ident> {
+        match *self {
+            Self::Ident { id, name, .. } if iden == Ok(id) || iden == Err(name) => Some(id),
+            Self::Ctor { fields, .. } => fields.iter().find_map(|f| f.value.declares(iden)),
+            _ => None,
+        }
+    }
+
+    pub fn find_pattern_path<F: FnOnce(&Expr)>(
+        &self,
+        ident: Ident,
+        target: &Expr,
+        mut with_final: F,
+    ) -> Result<(), F> {
+        match *self {
+            Self::Ident { id, .. } if id == ident => {
+                with_final(target);
+                Ok(())
+            }
+            Self::Ctor { fields, .. } => {
+                for CtorField { name, value, .. } in fields {
+                    match value.find_pattern_path(ident, &Expr::Field { target, name }, with_final)
+                    {
+                        Ok(()) => return Ok(()),
+                        Err(e) => with_final = e,
+                    }
+                }
+                Err(with_final)
+            }
+            _ => Err(with_final),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CtorField<'a> {
+    pub pos: Pos,
+    pub name: &'a str,
+    pub value: Expr<'a>,
 }
 
 trait Poser {
@@ -813,42 +858,30 @@ impl<'a> std::fmt::Display for Expr<'a> {
             Self::String { literal, .. } => write!(f, "{}", literal),
             Self::Comment { literal, .. } => write!(f, "{}", literal.trim_end()),
             Self::Mod { path, .. } => write!(f, "@mod(\"{path}\")"),
-            Self::Field { target, field } => write!(f, "{}.{field}", Postfix(target)),
+            Self::Field { target, name: field } => write!(f, "{}.{field}", Postfix(target)),
             Self::Directive { name, args, .. } => {
                 write!(f, "@{name}(")?;
                 fmt_list(f, false, ")", args, std::fmt::Display::fmt)
             }
             Self::Struct { fields, .. } => {
                 write!(f, "struct {{")?;
-                fmt_list(f, true, "}", fields, |(name, val), f| {
-                    write!(f, "{name}: {val}",)
-                })
+                fmt_list(f, true, "}", fields, |(name, val), f| write!(f, "{name}: {val}",))
             }
-            Self::Ctor {
-                ty,
-                fields,
-                trailing_comma,
-                ..
-            } => {
+            Self::Ctor { ty, fields, trailing_comma, .. } => {
                 if let Some(ty) = ty {
                     write!(f, "{}", Unary(ty))?;
                 }
                 write!(f, ".{{")?;
-                let fmt_field = |(name, val): &_, f: &mut std::fmt::Formatter| {
-                    if let Some(val) = val {
-                        write!(f, "{name}: {val}")
-                    } else {
+                let fmt_field = |CtorField { name, value, .. }: &_, f: &mut std::fmt::Formatter| {
+                    if matches!(value, Expr::Ident { name: n, .. } if name == n) {
                         write!(f, "{name}")
+                    } else {
+                        write!(f, "{name}: {value}")
                     }
                 };
                 fmt_list(f, trailing_comma, "}", fields, fmt_field)
             }
-            Self::Tupl {
-                ty,
-                fields,
-                trailing_comma,
-                ..
-            } => {
+            Self::Tupl { ty, fields, trailing_comma, .. } => {
                 if let Some(ty) = ty {
                     write!(f, "{}", Unary(ty))?;
                 }
@@ -858,9 +891,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
             Self::UnOp { op, val, .. } => write!(f, "{op}{}", Unary(val)),
             Self::Break { .. } => write!(f, "break"),
             Self::Continue { .. } => write!(f, "continue"),
-            Self::If {
-                cond, then, else_, ..
-            } => {
+            Self::If { cond, then, else_, .. } => {
                 write!(f, "if {cond} {}", Consecutive(then))?;
                 if let Some(else_) = else_ {
                     write!(f, " else {else_}")?;
@@ -868,24 +899,16 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 Ok(())
             }
             Self::Loop { body, .. } => write!(f, "loop {body}"),
-            Self::Closure {
-                ret, body, args, ..
-            } => {
+            Self::Closure { ret, body, args, .. } => {
                 write!(f, "fn(")?;
-                fmt_list(f, false, "", args, |arg, f| {
-                    write!(f, "{}: {}", arg.name, arg.ty)
-                })?;
+                fmt_list(f, false, "", args, |arg, f| write!(f, "{}: {}", arg.name, arg.ty))?;
                 write!(f, "): {ret} {body}")?;
                 if !matches!(body, Self::Block { .. }) {
                     write!(f, ";")?;
                 }
                 Ok(())
             }
-            Self::Call {
-                func,
-                args,
-                trailing_comma,
-            } => {
+            Self::Call { func, args, trailing_comma } => {
                 write!(f, "{}(", Postfix(func))?;
                 fmt_list(f, trailing_comma, ")", args, std::fmt::Display::fmt)
             }
@@ -936,11 +959,11 @@ impl<'a> std::fmt::Display for Expr<'a> {
 #[repr(C)]
 pub struct AstInner<T: ?Sized> {
     ref_count: AtomicUsize,
-    mem:       ArenaChunk,
-    exprs:     *const [Expr<'static>],
+    mem: ArenaChunk,
+    exprs: *const [Expr<'static>],
 
-    pub path:    Box<str>,
-    pub nlines:  LineMap,
+    pub path: Box<str>,
+    pub nlines: LineMap,
     pub symbols: T,
 }
 
@@ -966,17 +989,14 @@ impl AstInner<[Symbol]> {
             let ptr = std::alloc::alloc(layout);
             let inner: *mut Self = std::ptr::from_raw_parts_mut(ptr as *mut _, syms.len());
 
-            std::ptr::write(
-                inner as *mut AstInner<()>,
-                AstInner {
-                    ref_count: AtomicUsize::new(1),
-                    mem: arena.chunk.into_inner(),
-                    exprs,
-                    path: path.into(),
-                    nlines: LineMap::new(content),
-                    symbols: (),
-                },
-            );
+            std::ptr::write(inner as *mut AstInner<()>, AstInner {
+                ref_count: AtomicUsize::new(1),
+                mem: arena.chunk.into_inner(),
+                exprs,
+                path: path.into(),
+                nlines: LineMap::new(content),
+                symbols: (),
+            });
             std::ptr::addr_of_mut!((*inner).symbols)
                 .as_mut_ptr()
                 .copy_from_nonoverlapping(syms.as_ptr(), syms.len());
@@ -1004,11 +1024,7 @@ impl Ast {
 
     pub fn find_decl(&self, id: Result<Ident, &str>) -> Option<(&Expr, Ident)> {
         self.exprs().iter().find_map(|expr| match expr {
-            Expr::BinOp {
-                left: &Expr::Ident { id: iden, name, .. },
-                op: TokenKind::Decl,
-                ..
-            } if Ok(iden) == id || Err(name) == id => Some((expr, iden)),
+            Expr::BinOp { left, op: TokenKind::Decl, .. } => left.declares(id).map(|id| (expr, id)),
             _ => None,
         })
     }
@@ -1052,9 +1068,7 @@ unsafe impl Sync for Ast {}
 
 impl Clone for Ast {
     fn clone(&self) -> Self {
-        unsafe { self.0.as_ref() }
-            .ref_count
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        unsafe { self.0.as_ref() }.ref_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Self(self.0)
     }
 }
@@ -1062,11 +1076,7 @@ impl Clone for Ast {
 impl Drop for Ast {
     fn drop(&mut self) {
         let inner = unsafe { self.0.as_ref() };
-        if inner
-            .ref_count
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed)
-            == 1
-        {
+        if inner.ref_count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) == 1 {
             unsafe { std::ptr::drop_in_place(self.0.as_ptr()) };
 
             let layout = AstInner::layout(inner.symbols.len());
@@ -1088,7 +1098,7 @@ impl Deref for Ast {
 #[derive(Default)]
 pub struct Arena<'a> {
     chunk: UnsafeCell<ArenaChunk>,
-    ph:    std::marker::PhantomData<&'a ()>,
+    ph: std::marker::PhantomData<&'a ()>,
 }
 
 impl<'a> Arena<'a> {
@@ -1103,8 +1113,7 @@ impl<'a> Arena<'a> {
         let layout = unsafe { std::alloc::Layout::from_size_align_unchecked(size, align) };
         let ptr = self.alloc_low(layout);
         unsafe {
-            ptr.cast::<u64>()
-                .copy_from_nonoverlapping(NonNull::from(&expr).cast(), size / 8)
+            ptr.cast::<u64>().copy_from_nonoverlapping(NonNull::from(&expr).cast(), size / 8)
         };
         unsafe { ptr.cast::<Expr<'a>>().as_ref() }
     }
@@ -1116,11 +1125,7 @@ impl<'a> Arena<'a> {
 
         let layout = std::alloc::Layout::array::<T>(slice.len()).unwrap();
         let ptr = self.alloc_low(layout);
-        unsafe {
-            ptr.as_ptr()
-                .cast::<T>()
-                .copy_from_nonoverlapping(slice.as_ptr(), slice.len())
-        };
+        unsafe { ptr.as_ptr().cast::<T>().copy_from_nonoverlapping(slice.as_ptr(), slice.len()) };
         unsafe { std::slice::from_raw_parts(ptr.as_ptr() as _, slice.len()) }
     }
 
@@ -1144,24 +1149,21 @@ impl<'a> Arena<'a> {
 
 struct ArenaChunk {
     base: *mut u8,
-    end:  *mut u8,
+    end: *mut u8,
 }
 
 impl Default for ArenaChunk {
     fn default() -> Self {
-        Self {
-            base: std::ptr::null_mut(),
-            end:  std::ptr::null_mut(),
-        }
+        Self { base: std::ptr::null_mut(), end: std::ptr::null_mut() }
     }
 }
 
 impl ArenaChunk {
-    const CHUNK_SIZE: usize = 1 << 16;
     const ALIGN: usize = std::mem::align_of::<Self>();
-    const NEXT_OFFSET: usize = Self::CHUNK_SIZE - std::mem::size_of::<*mut u8>();
+    const CHUNK_SIZE: usize = 1 << 16;
     const LAYOUT: std::alloc::Layout =
         unsafe { std::alloc::Layout::from_size_align_unchecked(Self::CHUNK_SIZE, Self::ALIGN) };
+    const NEXT_OFFSET: usize = Self::CHUNK_SIZE - std::mem::size_of::<*mut u8>();
 
     fn new(next: *mut u8) -> Self {
         let base = unsafe { std::alloc::alloc(Self::LAYOUT) };

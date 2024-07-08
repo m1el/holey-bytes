@@ -20,14 +20,15 @@
 #![allow(internal_features)]
 #![allow(clippy::format_collect)]
 
-use std::{
-    collections::VecDeque,
-    io::{self, Read},
-    path::{Path, PathBuf},
-    sync::Mutex,
+use {
+    parser::Ast,
+    std::{
+        collections::VecDeque,
+        io::{self, Read},
+        path::{Path, PathBuf},
+        sync::Mutex,
+    },
 };
-
-use parser::Ast;
 
 #[macro_export]
 macro_rules! run_tests {
@@ -137,9 +138,7 @@ struct TaskQueue<T> {
 
 impl<T> TaskQueue<T> {
     fn new(max_waiters: usize) -> Self {
-        Self {
-            inner: Mutex::new(TaskQueueInner::new(max_waiters)),
-        }
+        Self { inner: Mutex::new(TaskQueueInner::new(max_waiters)) }
     }
 
     pub fn push(&self, message: T) {
@@ -163,8 +162,8 @@ enum TaskSlot<T> {
 
 struct TaskQueueInner<T> {
     max_waiters: usize,
-    messages:    VecDeque<T>,
-    parked:      VecDeque<(*mut TaskSlot<T>, std::thread::Thread)>,
+    messages: VecDeque<T>,
+    parked: VecDeque<(*mut TaskSlot<T>, std::thread::Thread)>,
 }
 
 unsafe impl<T: Send> Send for TaskQueueInner<T> {}
@@ -172,11 +171,7 @@ unsafe impl<T: Send + Sync> Sync for TaskQueueInner<T> {}
 
 impl<T> TaskQueueInner<T> {
     fn new(max_waiters: usize) -> Self {
-        Self {
-            max_waiters,
-            messages: Default::default(),
-            parked: Default::default(),
-        }
+        Self { max_waiters, messages: Default::default(), parked: Default::default() }
     }
 
     fn push(&mut self, messages: impl IntoIterator<Item = T>) {
@@ -232,17 +227,9 @@ pub fn parse_from_fs(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     }
 
     enum ImportPath<'a> {
-        Root {
-            path: &'a str,
-        },
-        Rel {
-            path: &'a str,
-        },
-        Git {
-            link: &'a str,
-            path: &'a str,
-            chk:  Option<Chk<'a>>,
-        },
+        Root { path: &'a str },
+        Rel { path: &'a str },
+        Git { link: &'a str, path: &'a str, chk: Option<Chk<'a>> },
     }
 
     impl<'a> TryFrom<&'a str> for ImportPath<'a> {
@@ -258,15 +245,14 @@ pub fn parse_from_fs(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
                     let (link, path) =
                         path.split_once(':').ok_or(ParseImportError::ExpectedPath)?;
                     let (link, params) = link.split_once('?').unwrap_or((link, ""));
-                    let chk = params
-                        .split('&')
-                        .filter_map(|s| s.split_once('='))
-                        .find_map(|(key, value)| match key {
+                    let chk = params.split('&').filter_map(|s| s.split_once('=')).find_map(
+                        |(key, value)| match key {
                             "branch" => Some(Chk::Branch(value)),
                             "rev" => Some(Chk::Rev(value)),
                             "tag" => Some(Chk::Tag(value)),
                             _ => None,
-                        });
+                        },
+                    );
                     Ok(Self::Git { link, path, chk })
                 }
                 _ => Err(ParseImportError::InvalidPrefix),
@@ -296,8 +282,8 @@ pub fn parse_from_fs(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
             path.canonicalize().map_err(|e| CantLoadFile {
                 file_name: path,
                 directory: PathBuf::from(root),
-                from:      PathBuf::from(from),
-                source:    e,
+                from: PathBuf::from(from),
+                source: e,
             })
         }
     }
@@ -331,8 +317,8 @@ pub fn parse_from_fs(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     struct CantLoadFile {
         file_name: PathBuf,
         directory: PathBuf,
-        from:      PathBuf,
-        source:    io::Error,
+        from: PathBuf,
+        source: io::Error,
     }
 
     impl std::fmt::Display for CantLoadFile {
@@ -439,10 +425,8 @@ pub fn parse_from_fs(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
         if let Some(mut command) = command {
             let output = command.output()?;
             if !output.status.success() {
-                let msg = format!(
-                    "git command failed: {}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
+                let msg =
+                    format!("git command failed: {}", String::from_utf8_lossy(&output.stderr));
                 return Err(io::Error::new(io::ErrorKind::Other, msg));
             }
         }
@@ -478,10 +462,7 @@ pub fn parse_from_fs(threads: usize, root: &str) -> io::Result<Vec<Ast>> {
 
     std::thread::scope(|s| (0..threads).for_each(|_| _ = s.spawn(thread)));
 
-    ast.into_inner()
-        .unwrap()
-        .into_iter()
-        .collect::<io::Result<Vec<_>>>()
+    ast.into_inner().unwrap().into_iter().collect::<io::Result<Vec<_>>>()
 }
 
 type HashMap<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<FnvHasher>>;
@@ -530,10 +511,7 @@ pub fn run_test(
         std::env::var("PT_TEST_ROOT")
             .unwrap_or(concat!(env!("CARGO_MANIFEST_DIR"), "/tests").to_string()),
     );
-    root.push(
-        name.replace("::", "_")
-            .replace(concat!(env!("CARGO_PKG_NAME"), "_"), ""),
-    );
+    root.push(name.replace("::", "_").replace(concat!(env!("CARGO_PKG_NAME"), "_"), ""));
     root.set_extension("txt");
 
     let expected = std::fs::read_to_string(&root).unwrap_or_default();
@@ -562,11 +540,7 @@ pub fn run_test(
         .spawn()
         .unwrap();
 
-    proc.stdin
-        .as_mut()
-        .unwrap()
-        .write_all(output.as_bytes())
-        .unwrap();
+    proc.stdin.as_mut().unwrap().write_all(output.as_bytes()).unwrap();
 
     proc.wait().unwrap();
 
@@ -575,7 +549,7 @@ pub fn run_test(
 
 #[derive(Default)]
 pub struct Options {
-    pub fmt:         bool,
+    pub fmt: bool,
     pub fmt_current: bool,
 }
 

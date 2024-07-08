@@ -7,10 +7,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut generated = String::new();
 
-    writeln!(
-        generated,
-        "#![allow(dead_code)] #![allow(clippy::upper_case_acronyms)]"
-    )?;
+    writeln!(generated, "#![allow(dead_code)] #![allow(clippy::upper_case_acronyms)]")?;
     gen_max_size(&mut generated)?;
     gen_encodes(&mut generated)?;
     gen_structs(&mut generated)?;
@@ -22,11 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn gen_name_list(generated: &mut String) -> Result<(), Box<dyn std::error::Error>> {
-    writeln!(
-        generated,
-        "pub const NAMES: [&str; {}] = [",
-        instructions().count()
-    )?;
+    writeln!(generated, "pub const NAMES: [&str; {}] = [", instructions().count())?;
     for [_, name, _, _] in instructions() {
         writeln!(generated, "    \"{}\",", name.to_lowercase())?;
     }
@@ -59,15 +52,9 @@ fn gen_encodes(generated: &mut String) -> Result<(), Box<dyn std::error::Error>>
         let args = comma_sep(
             iter_args(ty).map(|(i, c)| format!("{}{i}: {}", arg_to_name(c), arg_to_type(c))),
         );
-        writeln!(
-            generated,
-            "pub fn {name}({args}) -> (usize, [u8; MAX_SIZE]) {{"
-        )?;
+        writeln!(generated, "pub fn {name}({args}) -> (usize, [u8; MAX_SIZE]) {{")?;
         let arg_names = comma_sep(iter_args(ty).map(|(i, c)| format!("{}{i}", arg_to_name(c))));
-        writeln!(
-            generated,
-            "    unsafe {{ crate::encode({ty}({op}, {arg_names})) }}"
-        )?;
+        writeln!(generated, "    unsafe {{ crate::encode({ty}({op}, {arg_names})) }}")?;
         writeln!(generated, "}}")?;
     }
 
@@ -88,10 +75,7 @@ fn gen_structs(generated: &mut String) -> Result<(), Box<dyn std::error::Error>>
 }
 
 fn comma_sep(items: impl Iterator<Item = String>) -> String {
-    items
-        .map(|item| item.to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
+    items.map(|item| item.to_string()).collect::<Vec<_>>().join(", ")
 }
 
 fn instructions() -> impl Iterator<Item = [&'static str; 4]> {

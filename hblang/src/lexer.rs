@@ -13,9 +13,9 @@ const fn ascii_mask(chars: &[u8]) -> u128 {
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Token {
-    pub kind:  TokenKind,
+    pub kind: TokenKind,
     pub start: u32,
-    pub end:   u32,
+    pub end: u32,
 }
 
 impl Token {
@@ -82,31 +82,31 @@ macro_rules! gen_token_kind {
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 #[repr(u8)]
 pub enum TokenKind {
-    Not     = b'!',
-    DQuote  = b'"',
-    Pound   = b'#',
+    Not = b'!',
+    DQuote = b'"',
+    Pound = b'#',
     CtIdent = b'$',
-    Mod     = b'%',
-    Band    = b'&',
-    Quote   = b'\'',
-    LParen  = b'(',
-    RParen  = b')',
-    Mul     = b'*',
-    Add     = b'+',
-    Comma   = b',',
-    Sub     = b'-',
-    Dot     = b'.',
-    Div     = b'/',
+    Mod = b'%',
+    Band = b'&',
+    Quote = b'\'',
+    LParen = b'(',
+    RParen = b')',
+    Mul = b'*',
+    Add = b'+',
+    Comma = b',',
+    Sub = b'-',
+    Dot = b'.',
+    Div = b'/',
     // Unused = 2-6
-    Shr     = b'<' - 5,
+    Shr = b'<' - 5,
     // Unused = 8
-    Shl     = b'>' - 5,
-    Colon   = b':',
-    Semi    = b';',
-    Lt      = b'<',
-    Assign  = b'=',
-    Gt      = b'>',
-    Que     = b'?',
+    Shl = b'>' - 5,
+    Colon = b':',
+    Semi = b';',
+    Lt = b'<',
+    Assign = b'=',
+    Gt = b'>',
+    Que = b'?',
     Directive = b'@',
 
     Comment,
@@ -132,37 +132,37 @@ pub enum TokenKind {
     And,
 
     // Unused = R-Z
-    LBrack  = b'[',
-    BSlash  = b'\\',
-    RBrack  = b']',
-    Xor     = b'^',
-    Tick    = b'`',
+    LBrack = b'[',
+    BSlash = b'\\',
+    RBrack = b']',
+    Xor = b'^',
+    Tick = b'`',
     // Unused = a-z
-    LBrace  = b'{',
-    Bor     = b'|',
-    RBrace  = b'}',
-    Tilde   = b'~',
+    LBrace = b'{',
+    Bor = b'|',
+    RBrace = b'}',
+    Tilde = b'~',
 
-    Decl    = b':' + 128,
-    Eq      = b'=' + 128,
-    Ne      = b'!' + 128,
-    Le      = b'<' + 128,
-    Ge      = b'>' + 128,
+    Decl = b':' + 128,
+    Eq = b'=' + 128,
+    Ne = b'!' + 128,
+    Le = b'<' + 128,
+    Ge = b'>' + 128,
 
-    BorAss  = b'|' + 128,
-    AddAss  = b'+' + 128,
-    SubAss  = b'-' + 128,
-    MulAss  = b'*' + 128,
-    DivAss  = b'/' + 128,
-    ModAss  = b'%' + 128,
-    XorAss  = b'^' + 128,
+    BorAss = b'|' + 128,
+    AddAss = b'+' + 128,
+    SubAss = b'-' + 128,
+    MulAss = b'*' + 128,
+    DivAss = b'/' + 128,
+    ModAss = b'%' + 128,
+    XorAss = b'^' + 128,
     BandAss = b'&' + 128,
-    ShlAss  = b'0' + 128,
-    ShrAss  = b'1' + 128,
+    ShlAss = b'0' + 128,
+    ShrAss = b'1' + 128,
 }
 
 impl TokenKind {
-    pub fn assign_op(self) -> Option<Self> {
+    pub fn ass_op(self) -> Option<Self> {
         let id = (self as u8).saturating_sub(128);
         if ascii_mask(b"|+-*/%^&01") & (1u128 << id) == 0 {
             return None;
@@ -228,7 +228,7 @@ gen_token_kind! {
 }
 
 pub struct Lexer<'a> {
-    pos:   u32,
+    pos: u32,
     bytes: &'a [u8],
 }
 
@@ -238,10 +238,7 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn restore(input: &'a str, pos: u32) -> Self {
-        Self {
-            pos,
-            bytes: input.as_bytes(),
-        }
+        Self { pos, bytes: input.as_bytes() }
     }
 
     pub fn slice(&self, tok: std::ops::Range<usize>) -> &'a str {
@@ -268,11 +265,7 @@ impl<'a> Lexer<'a> {
             let mut start = self.pos;
 
             let Some(c) = self.advance() else {
-                return Token {
-                    kind: T::Eof,
-                    start,
-                    end: self.pos,
-                };
+                return Token { kind: T::Eof, start, end: self.pos };
             };
 
             let advance_ident = |s: &mut Self| {
@@ -345,11 +338,7 @@ impl<'a> Lexer<'a> {
                 _ => identity(c),
             };
 
-            return Token {
-                kind,
-                start,
-                end: self.pos,
-            };
+            return Token { kind, start, end: self.pos };
         }
     }
 
@@ -416,10 +405,8 @@ impl LineMap {
         let query = std::simd::u8x16::splat(b'\n');
 
         let nl_count = start.iter().map(|&b| (b == b'\n') as usize).sum::<usize>()
-            + simd_mid
-                .iter()
-                .map(|s| s.simd_eq(query).to_bitmask().count_ones())
-                .sum::<u32>() as usize
+            + simd_mid.iter().map(|s| s.simd_eq(query).to_bitmask().count_ones()).sum::<u32>()
+                as usize
             + end.iter().map(|&b| (b == b'\n') as usize).sum::<usize>();
 
         let mut lines = Vec::with_capacity(nl_count);
@@ -457,9 +444,7 @@ impl LineMap {
 
         handle_rem(bytes.len() - end.len(), end, &mut last_nl, &mut lines);
 
-        Self {
-            lines: Box::from(lines),
-        }
+        Self { lines: Box::from(lines) }
     }
 }
 

@@ -1,11 +1,12 @@
 //! Address lookup
 
-use crate::mem::addr::Address;
-
-use super::{
-    addr_extract_index,
-    paging::{PageTable, Permission},
-    PageSize,
+use {
+    super::{
+        addr_extract_index,
+        paging::{PageTable, Permission},
+        PageSize,
+    },
+    crate::mem::addr::Address,
 };
 
 /// Good result from address split
@@ -48,11 +49,7 @@ impl AddrPageLookuper {
     /// Create a new page lookuper
     #[inline]
     pub const fn new(addr: Address, size: usize, pagetable: *const PageTable) -> Self {
-        Self {
-            addr,
-            size,
-            pagetable,
-        }
+        Self { addr, size, pagetable }
     }
 
     /// Bump address by size X
@@ -78,9 +75,8 @@ impl Iterator for AddrPageLookuper {
             for lvl in (0..5).rev() {
                 // Get an entry
                 unsafe {
-                    let entry = (*current_pt)
-                        .table
-                        .get_unchecked(addr_extract_index(self.addr, lvl));
+                    let entry =
+                        (*current_pt).table.get_unchecked(addr_extract_index(self.addr, lvl));
 
                     let ptr = entry.ptr();
                     match entry.permission() {

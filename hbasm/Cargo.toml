@@ -1,9 +1,0 @@
-[package]
-name = "hbasm"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-paste               = "1.0"
-rhai                = "1.16"
-with_builtin_macros = "0.0.3"

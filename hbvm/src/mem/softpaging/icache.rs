@@ -1,9 +1,8 @@
 //! Program instruction cache
 
-use crate::mem::Address;
-
 use {
     super::{lookup::AddrPageLookuper, paging::PageTable, PageSize},
+    crate::mem::Address,
     core::{
         mem::{size_of, MaybeUninit},
         ptr::{copy_nonoverlapping, NonNull},
@@ -46,9 +45,8 @@ impl ICache {
     ) -> Option<T> {
         let mut ret = MaybeUninit::<T>::uninit();
 
-        let pbase = self
-            .data
-            .or_else(|| unsafe { self.fetch_page(self.base + self.size, root_pt) })?;
+        let pbase =
+            self.data.or_else(|| unsafe { self.fetch_page(self.base + self.size, root_pt) })?;
 
         // Get address base
         let base = addr.map(|x| x & self.mask);
@@ -62,9 +60,7 @@ impl ICache {
         let requ_size = size_of::<T>();
 
         // Page overflow
-        let rem = (offset as usize)
-            .saturating_add(requ_size)
-            .saturating_sub(self.size as _);
+        let rem = (offset as usize).saturating_add(requ_size).saturating_sub(self.size as _);
         let first_copy = requ_size.saturating_sub(rem);
 
         // Copy non-overflowing part

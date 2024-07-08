@@ -1,10 +1,9 @@
 use {
     crate::{utils::IterExt, ROOT},
     argh::FromArgs,
-    color_eyre::{eyre::eyre, Result},
     std::{
         fs::File,
-        io::{BufRead, BufReader, BufWriter, Seek, Write},
+        io::{self, BufRead, BufReader, BufWriter, Seek, Write},
     },
 };
 
@@ -17,11 +16,9 @@ pub struct Command {
     renumber: bool,
 }
 
-pub fn command(args: Command) -> Result<()> {
-    let mut file = File::options()
-        .read(true)
-        .write(true)
-        .open(ROOT.join("hbbytecode/instructions.in"))?;
+pub fn command(args: Command) -> io::Result<()> {
+    let mut file =
+        File::options().read(true).write(true).open(ROOT.join("hbbytecode/instructions.in"))?;
 
     // Extract records
     let reader = BufReader::new(&file);
@@ -36,14 +33,11 @@ pub fn command(args: Command) -> Result<()> {
                 return None;
             }
 
-            s.split(',')
-                .map(|s| Box::<str>::from(s.trim()))
-                .collect_array::<4>()
-                .map(Ok::<_, ()>)
+            s.split(',').map(|s| Box::<str>::from(s.trim())).collect_array::<4>().map(Ok::<_, ()>)
         })
         .transpose()
     }) {
-        let rec = rec?.map_err(|_| eyre!("Invalid record format"))?;
+        let rec = rec?.expect("Valid record format");
         for (current, next) in lens.iter_mut().zip(rec.iter()) {
             *current = (*current).max(next.len());
         }

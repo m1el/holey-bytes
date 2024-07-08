@@ -1,13 +1,12 @@
 //! Automatic memory mapping
 
-use crate::{mem::addr::Address, utils::impl_display};
-
 use {
     super::{
         addr_extract_index,
         paging::{PageTable, Permission, PtEntry, PtPointedData},
         PageSize, SoftPagedMem,
     },
+    crate::{mem::addr::Address, utils::impl_display},
     alloc::boxed::Box,
 };
 
@@ -36,11 +35,8 @@ impl<'p, A, const OUT_PROG_EXEC: bool> SoftPagedMem<'p, A, OUT_PROG_EXEC> {
 
         // Walk pagetable levels
         for lvl in (lookup_depth + 1..5).rev() {
-            let entry = unsafe {
-                (*current_pt)
-                    .table
-                    .get_unchecked_mut(addr_extract_index(target, lvl))
-            };
+            let entry =
+                unsafe { (*current_pt).table.get_unchecked_mut(addr_extract_index(target, lvl)) };
 
             let ptr = entry.ptr();
             match entry.permission() {
@@ -50,9 +46,7 @@ impl<'p, A, const OUT_PROG_EXEC: bool> SoftPagedMem<'p, A, OUT_PROG_EXEC> {
                     // Increase children count
                     unsafe { *current_pt }.childen += 1;
 
-                    let table = Box::into_raw(Box::new(PtPointedData {
-                        pt: PageTable::default(),
-                    }));
+                    let table = Box::into_raw(Box::new(PtPointedData { pt: PageTable::default() }));
 
                     unsafe { core::ptr::write(entry, PtEntry::new(table, Permission::Node)) };
                     current_pt = table as _;
@@ -66,9 +60,7 @@ impl<'p, A, const OUT_PROG_EXEC: bool> SoftPagedMem<'p, A, OUT_PROG_EXEC> {
         }
 
         let node = unsafe {
-            (*current_pt)
-                .table
-                .get_unchecked_mut(addr_extract_index(target, lookup_depth))
+            (*current_pt).table.get_unchecked_mut(addr_extract_index(target, lookup_depth))
         };
 
         // Check if node is not mapped
@@ -95,11 +87,8 @@ impl<'p, A, const OUT_PROG_EXEC: bool> SoftPagedMem<'p, A, OUT_PROG_EXEC> {
 
         // Walk page table in reverse
         for lvl in (0..5).rev() {
-            let entry = unsafe {
-                (*current_pt)
-                    .table
-                    .get_unchecked_mut(addr_extract_index(addr, lvl))
-            };
+            let entry =
+                unsafe { (*current_pt).table.get_unchecked_mut(addr_extract_index(addr, lvl)) };
 
             let ptr = entry.ptr();
             match entry.permission() {

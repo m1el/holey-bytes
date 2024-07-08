@@ -23,13 +23,13 @@ use {
 #[derive(Clone, Debug)]
 pub struct SoftPagedMem<'p, PfH, const OUT_PROG_EXEC: bool = true> {
     /// Root page table
-    pub root_pt:    *mut PageTable,
+    pub root_pt: *mut PageTable,
     /// Page fault handler
     pub pf_handler: PfH,
     /// Program memory segment
-    pub program:    &'p [u8],
+    pub program: &'p [u8],
     /// Program instruction cache
-    pub icache:     ICache,
+    pub icache: ICache,
 }
 
 impl<'p, PfH: HandlePageFault, const OUT_PROG_EXEC: bool> Memory
@@ -127,10 +127,7 @@ impl<'p, PfH: HandlePageFault, const OUT_PROG_EXEC: bool> SoftPagedMem<'p, PfH, 
             );
 
             // Return shifted from what we've already copied
-            (
-                src.saturating_add(to_copy as u64),
-                len.saturating_sub(to_copy),
-            )
+            (src.saturating_add(to_copy as u64), len.saturating_sub(to_copy))
         } else {
             (src, len) // Nothing weird!
         };
@@ -145,12 +142,7 @@ impl<'p, PfH: HandlePageFault, const OUT_PROG_EXEC: bool> SoftPagedMem<'p, PfH, 
         loop {
             match pspl.next() {
                 // Page is found
-                Some(Ok(AddrPageLookupOk {
-                    vaddr,
-                    ptr,
-                    size,
-                    perm,
-                })) => {
+                Some(Ok(AddrPageLookupOk { vaddr, ptr, size, perm })) => {
                     if !permission_check(perm) {
                         return Err(vaddr);
                     }
@@ -243,10 +235,7 @@ pub mod perm_check {
     /// Page is readable
     #[inline(always)]
     pub const fn readable(perm: Permission) -> bool {
-        matches!(
-            perm,
-            Permission::Readonly | Permission::Write | Permission::Exec
-        )
+        matches!(perm, Permission::Readonly | Permission::Write | Permission::Exec)
     }
 
     /// Page is writable

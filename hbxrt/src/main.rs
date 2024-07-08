@@ -53,20 +53,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("[I] Image loaded at {:p}", mmap.as_ptr());
 
     let mut vm = unsafe {
-        Vm::<_, 0>::new(
-            hbvm::mem::HostMemory,
-            Address::new(mmap.as_ptr().add(stack.len()) as u64),
-        )
+        Vm::<_, 0>::new(hbvm::mem::HostMemory, Address::new(mmap.as_ptr().add(stack.len()) as u64))
     };
     vm.write_reg(254, stack.as_mut_ptr() as u64);
 
     // Execute program
     let stat = loop {
         match vm.run() {
-            Ok(VmRunOk::Breakpoint) => eprintln!(
-                "[I] Hit breakpoint\nIP: {}\n== Registers ==\n{:?}",
-                vm.pc, vm.registers
-            ),
+            Ok(VmRunOk::Breakpoint) => {
+                eprintln!("[I] Hit breakpoint\nIP: {}\n== Registers ==\n{:?}", vm.pc, vm.registers)
+            }
             Ok(VmRunOk::Timer) => (),
             Ok(VmRunOk::Ecall) if dsls => unsafe {
                 std::arch::asm!(

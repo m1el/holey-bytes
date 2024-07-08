@@ -28,16 +28,14 @@ unsafe impl BytecodeItem for u8 {}
 pub enum RoundingMode {
     NearestEven = 0,
     Truncate = 1,
-    Up       = 2,
-    Down     = 3,
+    Up = 2,
+    Down = 3,
 }
 
 impl TryFrom<u8> for RoundingMode {
     type Error = ();
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        (value <= 3)
-            .then(|| unsafe { core::mem::transmute(value) })
-            .ok_or(())
+        (value <= 3).then(|| unsafe { core::mem::transmute(value) }).ok_or(())
     }
 }

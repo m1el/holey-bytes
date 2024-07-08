@@ -1,5 +1,5 @@
-pkg := @use("pkg.hb");
+.{ global, fib } := @use("pkg.hb");
 
 main := fn(a: int): int {
-	return pkg.fib(pkg.global);
+	return fib(global);
 }

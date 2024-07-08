@@ -16,25 +16,20 @@ struct AlignedBuf([MaybeUninit<u8>; BUF_SIZE]);
 /// State for block memory copy
 pub struct BlockCopier {
     /// Source address
-    src:       Address,
+    src: Address,
     /// Destination address
-    dst:       Address,
+    dst: Address,
     /// How many buffer sizes to copy?
     n_buffers: usize,
     /// …and what remainds after?
-    rem:       usize,
+    rem: usize,
 }
 
 impl BlockCopier {
     /// Construct a new one
     #[inline]
     pub fn new(src: Address, dst: Address, count: usize) -> Self {
-        Self {
-            src,
-            dst,
-            n_buffers: count / BUF_SIZE,
-            rem: count % BUF_SIZE,
-        }
+        Self { src, dst, n_buffers: count / BUF_SIZE, rem: count % BUF_SIZE }
     }
 
     /// Copy one block
@@ -47,15 +42,9 @@ impl BlockCopier {
 
         // We have at least one buffer size to copy
         if self.n_buffers != 0 {
-            if let Err(e) = unsafe {
-                act(
-                    memory,
-                    self.src,
-                    self.dst,
-                    buf.0.as_mut_ptr().cast(),
-                    BUF_SIZE,
-                )
-            } {
+            if let Err(e) =
+                unsafe { act(memory, self.src, self.dst, buf.0.as_mut_ptr().cast(), BUF_SIZE) }
+            {
                 return Poll::Ready(Err(e));
             }
 
@@ -75,15 +64,9 @@ impl BlockCopier {
         }
 
         if self.rem != 0 {
-            if let Err(e) = unsafe {
-                act(
-                    memory,
-                    self.src,
-                    self.dst,
-                    buf.0.as_mut_ptr().cast(),
-                    self.rem,
-                )
-            } {
+            if let Err(e) =
+                unsafe { act(memory, self.src, self.dst, buf.0.as_mut_ptr().cast(), self.rem) }
+            {
                 return Poll::Ready(Err(e));
             }
         }
@@ -103,20 +86,16 @@ unsafe fn act(
 ) -> Result<(), BlkCopyError> {
     unsafe {
         // Load to buffer
-        memory
-            .load(src, buf, count)
-            .map_err(|super::mem::LoadError(addr)| BlkCopyError {
-                access_reason: MemoryAccessReason::Load,
-                addr,
-            })?;
+        memory.load(src, buf, count).map_err(|super::mem::LoadError(addr)| BlkCopyError {
+            access_reason: MemoryAccessReason::Load,
+            addr,
+        })?;
 
         // Store from buffer
-        memory
-            .store(dst, buf, count)
-            .map_err(|super::mem::StoreError(addr)| BlkCopyError {
-                access_reason: MemoryAccessReason::Store,
-                addr,
-            })?;
+        memory.store(dst, buf, count).map_err(|super::mem::StoreError(addr)| BlkCopyError {
+            access_reason: MemoryAccessReason::Store,
+            addr,
+        })?;
     }
 
     Ok(())

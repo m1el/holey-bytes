@@ -4,9 +4,8 @@ pub mod softpaging;
 
 pub(crate) mod addr;
 
-pub use addr::Address;
-
 use crate::utils::impl_display;
+pub use addr::Address;
 
 /// Load-store memory access
 pub trait Memory {

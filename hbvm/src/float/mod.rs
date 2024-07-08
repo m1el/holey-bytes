@@ -12,7 +12,7 @@ macro_rules! arch_specific {
             #[cfg($($cfg)*)]
             pub const FL_ARCH_SPECIFIC_SUPPORTED: bool = true;
         )*
-        
+
         #[cfg(not(any($($($cfg)*),*)))]
         mod unsupported;
 

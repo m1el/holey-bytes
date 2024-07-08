@@ -26,7 +26,6 @@ mod utils;
 mod vmrun;
 
 pub use float::FL_ARCH_SPECIFIC_SUPPORTED;
-
 use {
     bmc::BlockCopier,
     mem::{Address, Memory},
@@ -58,10 +57,10 @@ impl<Mem: Default, const TIMER_QUOTIENT: usize> Default for Vm<Mem, TIMER_QUOTIE
     fn default() -> Self {
         Self {
             registers: [Value::from(0_u64); 256],
-            memory:    Mem::default(),
-            pc:        Address::default(),
-            timer:     0,
-            copier:    None,
+            memory: Mem::default(),
+            pc: Address::default(),
+            timer: 0,
+            copier: None,
         }
     }
 }
@@ -75,13 +74,7 @@ where
     /// # Safety
     /// Program code has to be validated
     pub unsafe fn new(memory: Mem, entry: Address) -> Self {
-        Self {
-            registers: [Value::from(0_u64); 256],
-            memory,
-            pc: entry,
-            timer: 0,
-            copier: None,
-        }
+        Self { registers: [Value::from(0_u64); 256], memory, pc: entry, timer: 0, copier: None }
     }
 
     /// Read register

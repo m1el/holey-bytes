@@ -11,7 +11,7 @@ fn main() -> std::io::Result<()> {
     hblang::run_compiler(
         args.get(1).copied().unwrap_or("main.hb"),
         hblang::Options {
-            fmt:         args.contains(&"--fmt"),
+            fmt: args.contains(&"--fmt"),
             fmt_current: args.contains(&"--fmt-current"),
         },
         &mut std::io::stdout(),
