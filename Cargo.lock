@@ -5,18 +5,17 @@ version = 3
 [[package]]
 name = "argh"
 version = "0.1.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7af5ba06967ff7214ce4c7419c7d185be7ecd6cc4965a8f6e1d8ce0398aad219"
+source = "git+https://github.com/google/argh.git?branch=master#f02f6b44444b340a553ff2db298744721ebc77a7"
 dependencies = [
  "argh_derive",
  "argh_shared",
+ "rust-fuzzy-search",
 ]
 
 [[package]]
 name = "argh_derive"
 version = "0.1.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56df0aeedf6b7a2fc67d06db35b09684c3e8da0c95f8f27685cb17e08413d87a"
+source = "git+https://github.com/google/argh.git?branch=master#f02f6b44444b340a553ff2db298744721ebc77a7"
 dependencies = [
  "argh_shared",
  "proc-macro2",
@@ -27,11 +26,7 @@ dependencies = [
 [[package]]
 name = "argh_shared"
 version = "0.1.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5693f39141bda5760ecc4111ab08da40565d1771038c4a0250f03457ec707531"
-dependencies = [
- "serde",
-]
+source = "git+https://github.com/google/argh.git?branch=master#f02f6b44444b340a553ff2db298744721ebc77a7"
 
 [[package]]
 name = "hbbytecode"
@@ -97,24 +92,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde"
-version = "1.0.202"
+name = "rust-fuzzy-search"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "226b61a0d411b2ba5ff6d7f73a476ac4f8bb900373459cd00fab8512828ba395"
-dependencies = [
- "serde_derive",
-]
-
-[[package]]
-name = "serde_derive"
-version = "1.0.202"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6048858004bcff69094cd972ed40a32500f153bd3be9f716b2eed2e8217c4838"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
+checksum = "a157657054ffe556d8858504af8a672a054a6e0bd9e8ee531059100c0fa11bb2"
 
 [[package]]
 name = "syn"
