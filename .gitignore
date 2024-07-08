@@ -2,3 +2,4 @@
 /hbbytecode/src/opcode.rs
 /hbbytecode/src/ops.rs
 /hblang/src/instrs.rs
+rust-ice-*
