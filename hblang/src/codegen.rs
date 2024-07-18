@@ -2592,6 +2592,16 @@ impl Codegen {
             (&Loc::Ct { value }, lpat!(false, reg, 0, None)) => {
                 self.output.emit(li64(reg.get(), u64::from_ne_bytes(value)))
             }
+            (&Loc::Ct { value }, lpat!(false, reg, 8, None)) if reg.get() == 1 && size == 8 => {
+                self.output.emit(li64(reg.get() + 1, u64::from_ne_bytes(value)));
+            }
+            (&Loc::Ct { value }, lpat!(false, reg, off, None)) if reg.get() == 1 => {
+                let freg = reg.get() + (off / 8) as u8;
+                let mask = !(((1u64 << (8 * size)) - 1) << (8 * (off % 8)));
+                self.output.emit(andi(freg, freg, mask));
+                let value = u64::from_ne_bytes(value) << (8 * (off % 8));
+                self.output.emit(ori(freg, freg, value));
+            }
             (lpat!(true, src, soff, ref ssta), lpat!(true, dst, doff, ref dsta)) => {
                 // TODO: some oportuinies to ellit more optimal code
                 let src_off = self.ci.regs.allocate();
@@ -3131,5 +3141,6 @@ mod tests {
         c_strings => README;
         struct_patterns => README;
         arrays => README;
+        struct_return_from_module_function => README;
     }
 }

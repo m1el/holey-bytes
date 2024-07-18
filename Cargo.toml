@@ -1,3 +1,10 @@
 [workspace]
 resolver = "2"
 members = ["hbbytecode", "hbvm", "hbxrt", "xtask", "hblang", "hbjit"]
+
+[profile.small]
+inherits = "release"
+opt-level = "z"
+strip = true
+lto = true
+codegen-units = 1

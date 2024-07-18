@@ -448,7 +448,6 @@ main := fn(): int {
 
 #### different_types
 ```hb
-
 Color := struct {
 	r: u8,
 	g: u8,
@@ -494,3 +493,17 @@ main := fn(): int {
 }
 ```
 
+#### struct_return_from_module_function
+```hb
+bar := @use("bar.hb");
+
+main := fn(): int {
+	return 7 - bar.foo().x - bar.foo().y - bar.foo().z;
+}
+
+// in module: bar.hb
+
+foo := fn(): struct { x: int, y: u32, z: u32 } {
+	return .{ x: 3, y: 2, z: 2 };
+}
+```
