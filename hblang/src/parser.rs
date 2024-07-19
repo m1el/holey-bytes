@@ -431,10 +431,6 @@ impl<'a, 'b> Parser<'a, 'b> {
             }
         }
 
-        if matches!(token.kind, T::Return) {
-            self.expect_advance(T::Semi);
-        }
-
         if matches!(token.kind, T::Loop | T::LBrace | T::Fn) {
             self.pop_scope(frame);
         }

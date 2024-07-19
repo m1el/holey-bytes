@@ -363,7 +363,7 @@ new := fn($Elem: type): Vec(Elem) return Vec(Elem).{ data: @bitcast(0), len: 0, 
 deinit := fn($Elem: type, vec: ^Vec(Elem)): void {
 	free(@bitcast(vec.data), vec.cap * @sizeof(Elem), @alignof(Elem));
 	*vec = new(Elem);
-	return;
+	return
 }
 
 push := fn($Elem: type, vec: ^Vec(Elem), value: Elem): ^Elem {
