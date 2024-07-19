@@ -261,6 +261,18 @@ impl<'a> Lexer<'a> {
         Some(c)
     }
 
+    pub fn last(&mut self) -> Token {
+        let mut token = self.next();
+        loop {
+            let next = self.next();
+            if next.kind == TokenKind::Eof {
+                break;
+            }
+            token = next;
+        }
+        token
+    }
+
     pub fn next(&mut self) -> Token {
         use TokenKind as T;
         loop {

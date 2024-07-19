@@ -424,7 +424,7 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
         let mut file = std::fs::File::open(path)?;
         file.read_to_end(buffer)?;
         let src = std::str::from_utf8(buffer).map_err(InvalidFileData)?;
-        Ok(Ast::new(path, src, &loader))
+        Ok(Ast::new(path, src, &loader, false))
     };
 
     let thread = || {
@@ -543,6 +543,33 @@ pub struct Options {
     pub extra_threads: usize,
 }
 
+fn format_to(
+    ast: &parser::Ast,
+    source: &str,
+    out: &mut impl std::io::Write,
+) -> std::io::Result<()> {
+    parser::with_fmt_source(source, || {
+        for (i, expr) in ast.exprs().iter().enumerate() {
+            write!(out, "{expr}")?;
+            if let Some(expr) = ast.exprs().get(i + 1)
+                && let Some(rest) = source.get(expr.pos() as usize..)
+            {
+                if parser::insert_needed_semicolon(rest) {
+                    write!(out, ";")?;
+                }
+                if parser::preserve_newlines(&source[..expr.pos() as usize]) > 1 {
+                    writeln!(out)?;
+                }
+            }
+
+            if i + 1 != ast.exprs().len() {
+                writeln!(out)?;
+            }
+        }
+        std::io::Result::Ok(())
+    })
+}
+
 pub fn run_compiler(
     root_file: &str,
     options: Options,
@@ -550,30 +577,10 @@ pub fn run_compiler(
 ) -> io::Result<()> {
     let parsed = parse_from_fs(options.extra_threads, root_file)?;
 
-    fn format_to(ast: &parser::Ast, out: &mut impl std::io::Write) -> std::io::Result<()> {
-        let source = std::fs::read_to_string(&*ast.path)?;
-        parser::with_fmt_source(&source, || {
-            for (i, expr) in ast.exprs().iter().enumerate() {
-                write!(out, "{expr}")?;
-                if let Some(expr) = ast.exprs().get(i + 1)
-                    && let Some(rest) = source.get(expr.pos() as usize..)
-                {
-                    if parser::insert_needed_semicolon(rest) {
-                        write!(out, ";")?;
-                    }
-                    for _ in 1..parser::preserve_newlines(&source[..expr.pos() as usize]) {
-                        writeln!(out)?;
-                    }
-                }
-                writeln!(out)?;
-            }
-            std::io::Result::Ok(())
-        })
-    }
-
     fn format_ast(ast: parser::Ast) -> std::io::Result<()> {
         let mut output = Vec::new();
-        format_to(&ast, &mut output)?;
+        let source = std::fs::read_to_string(&*ast.path)?;
+        format_to(&ast, &source, &mut output)?;
         std::fs::write(&*ast.path, output)?;
         Ok(())
     }
@@ -583,7 +590,9 @@ pub fn run_compiler(
             format_ast(parsed)?;
         }
     } else if options.fmt_current {
-        format_to(&parsed.into_iter().next().unwrap(), &mut std::io::stdout())?;
+        let ast = parsed.into_iter().next().unwrap();
+        let source = std::fs::read_to_string(&*ast.path)?;
+        format_to(&ast, &source, &mut std::io::stdout())?;
     } else {
         let mut codegen = codegen::Codegen::default();
         codegen.files = parsed;

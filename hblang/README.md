@@ -47,22 +47,22 @@ main := fn(): int {
 #### arithmetic
 ```hb
 main := fn(): int {
-	return 10 - 20 / 2 + 4 * (2 + 2) - 4 * 4 + 1;
+	return 10 - 20 / 2 + 4 * (2 + 2) - 4 * 4 + 1
 }
 ```
 
 #### functions
 ```hb
 main := fn(): int {
-	return add_one(10) + add_two(20);
+	return add_one(10) + add_two(20)
 }
 
 add_two := fn(x: int): int {
-	return x + 2;
+	return x + 2
 }
 
 add_one := fn(x: int): int {
-	return x + 1;
+	return x + 1
 }
 ```
 
@@ -71,12 +71,11 @@ add_one := fn(x: int): int {
 // commant is an item
 main := fn(): int {
 	// comment is a statement
-	foo(/* comment is an exprression /* if you are crazy */ */);
-	return 0;
+	foo(/* comment is an exprression /* if you are crazy */ */)
+	return 0
 }
 
-foo := fn(comment: void): void
-	return /* comment evaluates to void */;
+foo := fn(comment: void): void return /* comment evaluates to void */
 
 // comments might be formatted in the future
 ```
@@ -84,14 +83,14 @@ foo := fn(comment: void): void
 #### if_statements
 ```hb
 main := fn(): int {
-	return fib(10);
+	return fib(10)
 }
 
 fib := fn(x: int): int {
 	if x <= 2 {
-		return 1;
+		return 1
 	} else {
-		return fib(x - 1) + fib(x - 2);
+		return fib(x - 1) + fib(x - 2)
 	}
 }
 ```
@@ -99,55 +98,55 @@ fib := fn(x: int): int {
 #### variables
 ```hb
 main := fn(): int {
-	ඞ := 1;
-	b := 2;
-	ඞ = ඞ + 1;
-	return ඞ - b;
+	ඞ := 1
+	b := 2
+	ඞ += 1
+	return ඞ - b
 }
 ```
 
 #### loops
 ```hb
 main := fn(): int {
-	return fib(10);
+	return fib(10)
 }
 
 fib := fn(n: int): int {
-	a := 0;
-	b := 1;
+	a := 0
+	b := 1
 	loop {
-		if n == 0 break;
-		c := a + b;
-		a = b;
-		b = c;
-		n -= 1;
+		if n == 0 break
+		c := a + b
+		a = b
+		b = c
+		n -= 1
 
-		stack_reclamation_edge_case := 0;
+		stack_reclamation_edge_case := 0
 
-		continue;
+		continue
 	}
-	return a;
+	return a
 }
 ```
 
 #### pointers
 ```hb
 main := fn(): int {
-	a := 1;
-	b := &a;
-	modify(b);
-	drop(a);
-	stack_reclamation_edge_case := 0;
-	return *b - 2;
+	a := 1
+	b := &a
+	modify(b)
+	drop(a)
+	stack_reclamation_edge_case := 0
+	return *b - 2
 }
 
 modify := fn(a: ^int): void {
-	*a = 2;
-	return;
+	*a = 2
+	return
 }
 
 drop := fn(a: int): void {
-	return;
+	return
 }
 ```
 
@@ -164,21 +163,21 @@ Ty2 := struct {
 }
 
 main := fn(): int {
-	finst := Ty2.{ ty: Ty.{ a: 4, b: 1 }, c: 3 };
-	inst := odher_pass(finst);
+	finst := Ty2.{ty: Ty.{a: 4, b: 1}, c: 3}
+	inst := odher_pass(finst)
 	if inst.c == 3 {
-		return pass(&inst.ty);
+		return pass(&inst.ty)
 	}
-	return 0;
+	return 0
 }
 
 pass := fn(t: ^Ty): int {
-	.{ a, b } := *t;
-	return a - b;
+	.{a, b} := *t
+	return a - b
 }
 
 odher_pass := fn(t: Ty2): Ty2 {
-	return t;
+	return t
 }
 ```
 
@@ -195,51 +194,51 @@ Rect := struct {
 }
 
 main := fn(): int {
-	a := Point.(1, 2);
-	b := Point.(3, 4);
+	a := Point.(1, 2)
+	b := Point.(3, 4)
 
-	d := Rect.(a + b, b - a);
-	d2 := Rect.(Point.(0, 0) - b, a);
-	d2 = d2 + d;
+	d := Rect.(a + b, b - a)
+	d2 := Rect.(Point.(0, 0) - b, a)
+	d2 += d
 
-	c := d2.a + d2.b;
-	return c.x + c.y;
+	c := d2.a + d2.b
+	return c.x + c.y
 }
 ```
 
 #### global_variables
 ```hb
-global_var := 10;
+global_var := 10
 
-complex_global_var := fib(global_var) - 5;
+complex_global_var := fib(global_var) - 5
 
 fib := fn(n: int): int {
 	if 2 > n {
-		return n;
+		return n
 	}
-	return fib(n - 1) + fib(n - 2);
+	return fib(n - 1) + fib(n - 2)
 }
 
 main := fn(): int {
-	return complex_global_var;
+	return complex_global_var
 }
 ```
 note: values of global variables are evaluated at compile time
 
 #### directives
 ```hb
-foo := @use("foo.hb");
+foo := @use("foo.hb")
 
 main := fn(): int {
-	byte := @as(u8, 10);
-	same_type_as_byte := @as(@TypeOf(byte), 30);
-	wide_uint := @as(u32, 40);
-	truncated_uint := @as(u8, @intcast(wide_uint));
-	size_of_Type_in_bytes := @sizeof(foo.Type);
-	align_of_Type_in_bytes := @alignof(foo.Type);
-	hardcoded_pointer := @as(^u8, @bitcast(10));
-	ecall_that_returns_int := @eca(int, 1, foo.Type.(10, 20), 5, 6);
-	return 0;
+	byte := @as(u8, 10)
+	same_type_as_byte := @as(@TypeOf(byte), 30)
+	wide_uint := @as(u32, 40)
+	truncated_uint := @as(u8, @intcast(wide_uint))
+	size_of_Type_in_bytes := @sizeof(foo.Type)
+	align_of_Type_in_bytes := @alignof(foo.Type)
+	hardcoded_pointer := @as(^u8, @bitcast(10))
+	ecall_that_returns_int := @eca(int, 1, foo.Type.(10, 20), 5, 6)
+	return 0
 }
 
 // in module: foo.hb
@@ -262,65 +261,65 @@ Type := struct {
 #### c_strings
 ```hb
 str_len := fn(str: ^u8): int {
-	len := 0;
+	len := 0
 	loop if *str == 0 break else {
-		len += 1;
-		str += 1;
+		len += 1
+		str += 1
 	}
-	return len;
+	return len
 }
 
 main := fn(): int {
 	// when string ends with '\0' its a C string and thus type is '^u8'
-	some_str := "abඞ\n\r\t\{ff}\{fff0f0ff}\0";
-	len := str_len(some_str);
-	some_other_str := "fff\0";
-	lep := str_len(some_other_str);
-	return lep + len;
+	some_str := "abඞ\n\r\t\{ff}\{fff0f0ff}\0"
+	len := str_len(some_str)
+	some_other_str := "fff\0"
+	lep := str_len(some_other_str)
+	return lep + len
 }
 ```
 
 #### struct_patterns
 ```hb
-.{ fib, fib_iter, Fiber } := @use("fibs.hb");
+.{fib, fib_iter, Fiber} := @use("fibs.hb")
 
 main := fn(): int {
-	.{ a, b } := Fiber.{ a: 10, b: 10 };
-	return fib(a) - fib_iter(b);
+	.{a, b} := Fiber.{a: 10, b: 10}
+	return fib(a) - fib_iter(b)
 }
 
 // in module: fibs.hb
 
-Fiber := struct { a: u8, b: u8 };
+Fiber := struct {a: u8, b: u8}
 
 fib := fn(n: int): int if n < 2 {
-	return n;
+	return n
 } else {
-	return fib(n - 1) + fib(n - 2);
-};
+	return fib(n - 1) + fib(n - 2)
+}
 
 fib_iter := fn(n: int): int {
-	a := 0;
-	b := 1;
+	a := 0
+	b := 1
 	loop if n == 0 break else {
-		c := a + b;
-		a = b;
-		b = c;
-		n -= 1;
+		c := a + b
+		a = b
+		b = c
+		n -= 1
 	}
-	return a;
+	return a
 }
 ```
 
 #### arrays
 ```hb
 main := fn(): int {
-	arr := [int].(1, 2, 4);
-	return pass(&arr);
+	arr := [int].(1, 2, 4)
+	return pass(&arr)
 }
 
 pass := fn(arr: ^[int; 3]): int {
-	return arr[0] + arr[1] + arr[arr[1]];
+	return arr[0] + arr[1] + arr[arr[1]]
 }
 ```
 
@@ -329,13 +328,13 @@ pass := fn(arr: ^[int; 3]): int {
 #### comptime_pointers
 ```hb
 main := fn(): int {
-	$integer := 7;
-	modify(&integer);
-	return integer;
+	$integer := 7
+	modify(&integer)
+	return integer
 }
 
 modify := fn($num: ^int): void {
-	$: *num = 0;
+	$: *num = 0
 }
 ```
 
@@ -344,116 +343,111 @@ modify := fn($num: ^int): void {
 MALLOC_SYS_CALL := 69
 FREE_SYS_CALL := 96
 
-malloc := fn(size: uint, align: uint): ^void
-	return @eca(^void, MALLOC_SYS_CALL, size, align);
-
-free := fn(ptr: ^void, size: uint, align: uint): void
-	return @eca(void, FREE_SYS_CALL, ptr, size, align);
+malloc := fn(size: uint, align: uint): ^void return @eca(^void, MALLOC_SYS_CALL, size, align)
+free := fn(ptr: ^void, size: uint, align: uint): void return @eca(void, FREE_SYS_CALL, ptr, size, align)
 
 Vec := fn($Elem: type): type {
 	return struct {
 		data: ^Elem,
 		len: uint,
 		cap: uint,
-	};
+	}
 }
 
-new := fn($Elem: type): Vec(Elem) return Vec(Elem).{ data: @bitcast(0), len: 0, cap: 0 };
+new := fn($Elem: type): Vec(Elem) return Vec(Elem).{data: @bitcast(0), len: 0, cap: 0}
 
 deinit := fn($Elem: type, vec: ^Vec(Elem)): void {
 	free(@bitcast(vec.data), vec.cap * @sizeof(Elem), @alignof(Elem));
-	*vec = new(Elem);
+	*vec = new(Elem)
 	return
 }
 
 push := fn($Elem: type, vec: ^Vec(Elem), value: Elem): ^Elem {
 	if vec.len == vec.cap {
 		if vec.cap == 0 {
-			vec.cap = 1;
+			vec.cap = 1
 		} else {
-			vec.cap *= 2;
+			vec.cap *= 2
 		}
 
-		new_alloc := @as(^Elem, @bitcast(malloc(vec.cap * @sizeof(Elem), @alignof(Elem))));
-		if new_alloc == 0 return 0;
+		new_alloc := @as(^Elem, @bitcast(malloc(vec.cap * @sizeof(Elem), @alignof(Elem))))
+		if new_alloc == 0 return 0
 
-		src_cursor := vec.data;
-		dst_cursor := new_alloc;
-		end := vec.data + vec.len;
-		
+		src_cursor := vec.data
+		dst_cursor := new_alloc
+		end := vec.data + vec.len
+
 		loop if src_cursor == end break else {
-			*dst_cursor = *src_cursor;
-			src_cursor += 1;
-			dst_cursor += 1;
+			*dst_cursor = *src_cursor
+			src_cursor += 1
+			dst_cursor += 1
 		}
 
 		if vec.len != 0 {
-			free(@bitcast(vec.data), vec.len * @sizeof(Elem), @alignof(Elem));
+			free(@bitcast(vec.data), vec.len * @sizeof(Elem), @alignof(Elem))
 		}
-		vec.data = new_alloc;
+		vec.data = new_alloc
 	}
 
 	slot := vec.data + vec.len;
-	*slot = value;
-	vec.len += 1;
-	return slot;
+	*slot = value
+	vec.len += 1
+	return slot
 }
 
 main := fn(): int {
-	vec := new(int);
-	push(int, &vec, 69);
-	res := *vec.data;
-	deinit(int, &vec);
-	return res;
+	vec := new(int)
+	push(int, &vec, 69)
+	res := *vec.data
+	deinit(int, &vec)
+	return res
 }
 ```
 
 #### generic_functions
 ```hb
-add := fn($T: type, a: T, b: T): T return a + b;
+add := fn($T: type, a: T, b: T): T return a + b
 
 main := fn(): int {
-	return add(u32, 2, 2) - add(int, 1, 3);
+	return add(u32, 2, 2) - add(int, 1, 3)
 }
 ```
 
 #### fb_driver
 ```hb
-arm_fb_ptr := fn(): int return 100;
-x86_fb_ptr := fn(): int return 100;
-
+arm_fb_ptr := fn(): int return 100
+x86_fb_ptr := fn(): int return 100
 
 check_platform := fn(): int {
-    return x86_fb_ptr();
+	return x86_fb_ptr()
 }
 
 set_pixel := fn(x: int, y: int, width: int): int {
-    pix_offset := y * width + x;
-
-    return 0;
+	pix_offset := y * width + x
+	return 0
 }
 
 main := fn(): int {
-    fb_ptr := check_platform();
-    width := 100;
-    height := 30;
-    x:= 0;
-    y:= 0;
+	fb_ptr := check_platform()
+	width := 100
+	height := 30
+	x := 0
+	y := 0
 
-    loop {
-        if x <= height + 1 {
-            set_pixel(x,y,width);
-            x = x + 1;
-        } else {
-            set_pixel(x,y,width);
-            x = 0;
-            y = y + 1;
-        }
-        if y == width {
-            break;
-        }
-    }
-    return 0;
+	loop {
+		if x <= height + 1 {
+			set_pixel(x, y, width)
+			x += 1
+		} else {
+			set_pixel(x, y, width)
+			x = 0
+			y += 1
+		}
+		if y == width {
+			break
+		}
+	}
+	return 0
 }
 ```
 
@@ -490,33 +484,33 @@ main := fn(): int {
 			x: 0,
 			y: 2,
 		},
-	};
-	
-	soupan := 1;
+	}
+
+	soupan := 1
 	if *(&pixel.point.x + soupan) != 2 {
-		return 0;
+		return 0
 	}
 
 	if *(&pixel.point.y - 1) != 0 {
-		return 64;
+		return 64
 	}
 
 	return pixel.point.x + pixel.point.y + pixel.color.r
-		+ pixel.color.g + pixel.color.b + pixel.color.a;
+		+ pixel.color.g + pixel.color.b + pixel.color.a
 }
 ```
 
 #### struct_return_from_module_function
 ```hb
-bar := @use("bar.hb");
+bar := @use("bar.hb")
 
 main := fn(): int {
-	return 7 - bar.foo().x - bar.foo().y - bar.foo().z;
+	return 7 - bar.foo().x - bar.foo().y - bar.foo().z
 }
 
 // in module: bar.hb
 
-foo := fn(): struct { x: int, y: u32, z: u32 } {
-	return .{ x: 3, y: 2, z: 2 };
+foo := fn(): struct {x: int, y: u32, z: u32} {
+	return .{x: 3, y: 2, z: 2}
 }
 ```

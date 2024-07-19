@@ -1382,7 +1382,13 @@ impl Codegen {
                 } else {
                     let values = captured
                         .iter()
-                        .map(|&id| E::Ident { pos: 0, id, name: "booodab", index: u16::MAX })
+                        .map(|&id| E::Ident {
+                            pos: 0,
+                            is_ct: false,
+                            id,
+                            name: "booodab",
+                            index: u16::MAX,
+                        })
                         .map(|expr| self.expr(&expr))
                         .collect::<Option<Vec<_>>>()?;
                     let values_size =
@@ -3221,7 +3227,9 @@ mod tests {
             }
         }
 
-        let input = find_block(input, ident);
+        let input = find_block(input, ident).trim();
+
+        parser::test::format(ident, input);
 
         let mut module_map = Vec::new();
         let mut last_start = 0;
@@ -3245,7 +3253,7 @@ mod tests {
         let mut codegen = super::Codegen {
             files: module_map
                 .iter()
-                .map(|&(path, content)| parser::Ast::new(path, content, &loader))
+                .map(|&(path, content)| parser::Ast::new(path, content, &loader, false))
                 .collect(),
             ..Default::default()
         };

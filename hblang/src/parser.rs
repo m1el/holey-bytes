@@ -70,10 +70,16 @@ pub struct Parser<'a, 'b> {
     trailing_sep: bool,
     idents: Vec<ScopeIdent>,
     captured: Vec<Ident>,
+    loose: bool,
 }
 
 impl<'a, 'b> Parser<'a, 'b> {
-    pub fn new(arena: &'b Arena<'a>, symbols: &'b mut Symbols, loader: Loader<'b>) -> Self {
+    pub fn new(
+        arena: &'b Arena<'a>,
+        symbols: &'b mut Symbols,
+        loader: Loader<'b>,
+        loose: bool,
+    ) -> Self {
         let mut lexer = Lexer::new("");
         Self {
             loader,
@@ -86,6 +92,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             trailing_sep: false,
             idents: Vec::new(),
             captured: Vec::new(),
+            loose,
         }
     }
 
@@ -213,7 +220,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
 
         let index = self.idents.binary_search_by_key(&id, |s| s.ident).expect("fck up");
-        if std::mem::replace(&mut self.idents[index].declared, true) {
+        if std::mem::replace(&mut self.idents[index].declared, true) && !self.loose {
             self.report_pos(
                 pos,
                 format_args!("redeclaration of identifier: {}", self.lexer.slice(ident::range(id))),
@@ -316,11 +323,12 @@ impl<'a, 'b> Parser<'a, 'b> {
                     }
                     token.start
                 },
+                trailing_comma: std::mem::take(&mut self.trailing_sep),
             },
             T::Ident | T::CtIdent => {
                 let (id, index) = self.resolve_ident(token);
                 let name = self.move_str(token);
-                E::Ident { pos: token.start, name, id, index }
+                E::Ident { pos: token.start, is_ct: token.kind == T::CtIdent, name, id, index }
             }
             T::If => E::If {
                 pos: token.start,
@@ -348,7 +356,13 @@ impl<'a, 'b> Parser<'a, 'b> {
                         let (id, index) = s.resolve_ident(name);
                         s.declare(name.start, id, None);
                         s.expect_advance(T::Colon);
-                        Arg { name: s.move_str(name), id, index, ty: s.expr() }
+                        Arg {
+                            name: s.move_str(name),
+                            is_ct: name.kind == T::CtIdent,
+                            id,
+                            index,
+                            ty: s.expr(),
+                        }
                     })
                 },
                 ret: {
@@ -461,7 +475,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                         s.expr()
                     } else {
                         let (id, index) = s.resolve_ident(name_tok);
-                        Expr::Ident { pos: name_tok.start, id, name, index }
+                        Expr::Ident { pos: name_tok.start, is_ct: false, id, name, index }
                     },
                 }
             }),
@@ -566,6 +580,7 @@ pub fn find_symbol(symbols: &[Symbol], id: Ident) -> &Symbol {
 pub struct Arg<'a> {
     pub name: &'a str,
     pub id: Ident,
+    pub is_ct: bool,
     pub index: IdentIndex,
     pub ty: Expr<'a>,
 }
@@ -592,18 +607,20 @@ macro_rules! generate_expr {
                 }
             }
 
-           pub fn used_bytes(&self) -> usize {
-               match self {$(
-                   Self::$variant { $($field,)* } => {
-                        #[allow(clippy::size_of_ref)]
-                        let fields = [$(($field as *const _ as usize - self as *const _ as usize, std::mem::size_of_val($field)),)*];
-                        let (last, size) = fields.iter().copied().max().unwrap();
-                        last + size
-                   },
-              )*}
-           }
+            pub fn used_bytes(&self) -> usize {
+                match self {$(
+                    Self::$variant { $($field,)* } => {
+                         #[allow(clippy::size_of_ref)]
+                         let fields = [$(($field as *const _ as usize - self as *const _ as usize, std::mem::size_of_val($field)),)*];
+                         let (last, size) = fields.iter().copied().max().unwrap();
+                         last + size
+                    },
+               )*}
+            }
         }
     };
+
+    (@filed_names $variant:ident $ident1:ident) => { Self::$variant { $ident1: a } };
 
     (@first ($($first:tt)*), $($rest:tt)*) => { $($first)* };
     (@last ($($ign:tt)*), $($rest:tt)*) => { $($rest)* };
@@ -616,7 +633,7 @@ generate_expr! {
     pub enum Expr<'a> {
         Ct {
             pos: Pos,
-            value: &'a Expr<'a>,
+            value: &'a Self,
         },
         String {
             pos: Pos,
@@ -649,6 +666,7 @@ generate_expr! {
         },
         Ident {
             pos:   Pos,
+            is_ct: bool,
             id:    Ident,
             name:  &'a str,
             index: IdentIndex,
@@ -685,6 +703,7 @@ generate_expr! {
             pos:      Pos,
             fields:   &'a [(&'a str, Self)],
             captured: &'a [Ident],
+            trailing_comma: bool,
         },
         Ctor {
             pos:    Pos,
@@ -809,6 +828,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         thread_local! {
             static INDENT: Cell<usize> = const { Cell::new(0) };
+            static DISPLAY_BUFFER: Cell<String> = const { Cell::new(String::new()) };
         }
 
         fn fmt_list<T>(
@@ -874,7 +894,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
             Consecutive => Expr::UnOp { .. },
         }
 
-        let source = unsafe { &*FMT_SOURCE.with(|s| s.get()) };
+        let source: &str = unsafe { &*FMT_SOURCE.with(|s| s.get()) };
 
         match *self {
             Self::Ct { value, .. } => write!(f, "$: {}", value),
@@ -886,9 +906,11 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 write!(f, "@{name}(")?;
                 fmt_list(f, false, ")", args, std::fmt::Display::fmt)
             }
-            Self::Struct { fields, .. } => {
+            Self::Struct { fields, trailing_comma, .. } => {
                 write!(f, "struct {{")?;
-                fmt_list(f, true, "}", fields, |(name, val), f| write!(f, "{name}: {val}",))
+                fmt_list(f, trailing_comma, "}", fields, |(name, val), f| {
+                    write!(f, "{name}: {val}",)
+                })
             }
             Self::Ctor { ty, fields, trailing_comma, .. } => {
                 if let Some(ty) = ty {
@@ -912,8 +934,8 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 fmt_list(f, trailing_comma, ")", fields, std::fmt::Display::fmt)
             }
             Self::Slice { item, size, .. } => match size {
-                Some(size) => write!(f, "[{size}]{item}"),
-                None => write!(f, "[]{item}"),
+                Some(size) => write!(f, "[{item}; {size}]"),
+                None => write!(f, "[{item}]"),
             },
             Self::Index { base, index } => write!(f, "{base}[{index}]"),
             Self::UnOp { op, val, .. } => write!(f, "{op}{}", Unary(val)),
@@ -929,7 +951,12 @@ impl<'a> std::fmt::Display for Expr<'a> {
             Self::Loop { body, .. } => write!(f, "loop {body}"),
             Self::Closure { ret, body, args, .. } => {
                 write!(f, "fn(")?;
-                fmt_list(f, false, "", args, |arg, f| write!(f, "{}: {}", arg.name, arg.ty))?;
+                fmt_list(f, false, "", args, |arg, f| {
+                    if arg.is_ct {
+                        write!(f, "$")?;
+                    }
+                    write!(f, "{}: {}", arg.name, arg.ty)
+                })?;
                 write!(f, "): {ret} {body}")?;
                 Ok(())
             }
@@ -939,7 +966,8 @@ impl<'a> std::fmt::Display for Expr<'a> {
             }
             Self::Return { val: Some(val), .. } => write!(f, "return {val}"),
             Self::Return { val: None, .. } => write!(f, "return"),
-            Self::Ident { name, .. } => write!(f, "{name}"),
+            Self::Ident { name, is_ct: true, .. } => write!(f, "${name}"),
+            Self::Ident { name, is_ct: false, .. } => write!(f, "{name}"),
             Self::Block { stmts, .. } => {
                 write!(f, "{{")?;
                 writeln!(f)?;
@@ -956,7 +984,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
                             if insert_needed_semicolon(rest) {
                                 write!(f, ";")?;
                             }
-                            for _ in 1..preserve_newlines(&source[..expr.pos() as usize]) {
+                            if preserve_newlines(&source[..expr.pos() as usize]) > 1 {
                                 writeln!(f)?;
                             }
                         }
@@ -974,13 +1002,25 @@ impl<'a> std::fmt::Display for Expr<'a> {
             Self::Number { value, .. } => write!(f, "{value}"),
             Self::Bool { value, .. } => write!(f, "{value}"),
             Self::BinOp {
-                left: left @ Self::Ident { id, .. },
+                left,
                 op: TokenKind::Assign,
-                right: Self::BinOp { left: Self::Ident { id: oid, .. }, op, right },
-            } if id == oid => {
+                right: Self::BinOp { left: lleft, op, right },
+            } if DISPLAY_BUFFER.with(|cb| {
+                use std::fmt::Write;
+                let mut b = cb.take();
+                write!(b, "{lleft}").unwrap();
+                let len = b.len();
+                write!(b, "{left}").unwrap();
+                let (lleft, left) = b.split_at(len);
+                let res = lleft == left;
+                b.clear();
+                cb.set(b);
+                res
+            }) =>
+            {
                 write!(f, "{left} {op}= {right}")
             }
-            Self::BinOp { left, right, op } => {
+            Self::BinOp { right, op, left } => {
                 let display_branch = |f: &mut std::fmt::Formatter, expr: &Self| {
                     if let Self::BinOp { op: lop, .. } = expr
                         && op.precedence() > lop.precedence()
@@ -992,7 +1032,24 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 };
 
                 display_branch(f, left)?;
-                write!(f, " {op} ")?;
+                if let Some(mut prev) = source.get(..right.pos() as usize) {
+                    prev = prev.trim_end();
+                    let estimate_bound =
+                        prev.rfind(|c: char| c.is_ascii_whitespace()).map_or(prev.len(), |i| i + 1);
+                    let exact_bound = lexer::Lexer::new(&prev[estimate_bound..]).last().start;
+                    prev = &prev[..exact_bound as usize + estimate_bound];
+                    if preserve_newlines(prev) > 0 {
+                        writeln!(f)?;
+                        for _ in 0..INDENT.with(|i| i.get()) + 1 {
+                            write!(f, "\t")?;
+                        }
+                        write!(f, "{op} ")?;
+                    } else {
+                        write!(f, " {op} ")?;
+                    }
+                } else {
+                    write!(f, " {op} ")?;
+                }
                 display_branch(f, right)
             }
         }
@@ -1000,8 +1057,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
 }
 
 pub fn preserve_newlines(source: &str) -> usize {
-    let trailing_whitespace = &source[source.trim_end().len()..];
-    trailing_whitespace.chars().filter(|&c| c == '\n').count().min(2)
+    source[source.trim_end().len()..].chars().filter(|&c| c == '\n').count()
 }
 
 pub fn insert_needed_semicolon(source: &str) -> bool {
@@ -1028,10 +1084,10 @@ impl AstInner<[Symbol]> {
             .0
     }
 
-    fn new(content: &str, path: &str, loader: Loader) -> NonNull<Self> {
+    fn new(content: &str, path: &str, loader: Loader, loose: bool) -> NonNull<Self> {
         let arena = Arena::default();
         let mut syms = Vec::new();
-        let mut parser = Parser::new(&arena, &mut syms, loader);
+        let mut parser = Parser::new(&arena, &mut syms, loader, loose);
         let exprs = parser.file(content, path) as *const [Expr<'static>];
 
         syms.sort_unstable_by_key(|s| s.name);
@@ -1063,8 +1119,8 @@ impl AstInner<[Symbol]> {
 pub struct Ast(NonNull<AstInner<[Symbol]>>);
 
 impl Ast {
-    pub fn new(path: &str, content: &str, loader: Loader) -> Self {
-        Self(AstInner::new(content, path, loader))
+    pub fn new(path: &str, content: &str, loader: Loader, loose: bool) -> Self {
+        Self(AstInner::new(content, path, loader, loose))
     }
 
     pub fn exprs(&self) -> &[Expr] {
@@ -1094,7 +1150,7 @@ impl std::fmt::Display for Ast {
 
 impl Default for Ast {
     fn default() -> Self {
-        Self(AstInner::new("", "", &no_loader))
+        Self(AstInner::new("", "", &no_loader, false))
     }
 }
 
@@ -1268,16 +1324,11 @@ impl Drop for ArenaChunk {
 }
 
 #[cfg(test)]
-mod test {
-    fn format(ident: &str, input: &str) {
-        let ast = super::Ast::new(ident, input, &super::no_loader);
-        let mut output = String::new();
-        super::with_fmt_source(input, || {
-            for expr in ast.exprs() {
-                use std::fmt::Write;
-                writeln!(output, "{expr}").unwrap();
-            }
-        });
+pub mod test {
+    pub fn format(ident: &str, input: &str) {
+        let ast = super::Ast::new(ident, input, &|_, _| Ok(0), true);
+        let mut output = Vec::new();
+        crate::format_to(&ast, input, &mut output).unwrap();
 
         let input_path = format!("formatter_{ident}.expected");
         let output_path = format!("formatter_{ident}.actual");
@@ -1308,13 +1359,13 @@ mod test {
 
     test! {
         comments => "// comment\n// comment\n\n// comment\n\n\
-            /* comment */\n/* comment */\n\n/* comment */\n";
-        some_ordinary_code => "loft := fn(): int return loft(1, 2, 3);\n";
+            /* comment */\n/* comment */\n\n/* comment */";
+        some_ordinary_code => "loft := fn(): int return loft(1, 2, 3)";
         some_arg_per_line_code => "loft := fn(): int return loft(\
-            \n\t1,\n\t2,\n\t3,\n);\n";
-        some_ordinary_struct => "loft := fn(): int return loft.{a: 1, b: 2};\n";
+            \n\t1,\n\t2,\n\t3,\n)";
+        some_ordinary_struct => "loft := fn(): int return loft.{a: 1, b: 2}";
         some_ordinary_fild_per_lin_struct => "loft := fn(): int return loft.{\
-            \n\ta: 1,\n\tb: 2,\n};\n";
-        code_block => "loft := fn(): int {\n\tloft();\n\treturn 1;\n}\n";
+            \n\ta: 1,\n\tb: 2,\n}";
+        code_block => "loft := fn(): int {\n\tloft()\n\treturn 1\n}";
     }
 }
