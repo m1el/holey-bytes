@@ -3227,14 +3227,13 @@ mod tests {
             }
         }
 
-        let input = find_block(input, ident).trim();
-
-        parser::test::format(ident, input);
+        let input = find_block(input, ident);
 
         let mut module_map = Vec::new();
         let mut last_start = 0;
         let mut last_module_name = "test";
         for (i, m) in input.match_indices("// in module: ") {
+            parser::test::format(ident, input[last_start..i].trim());
             module_map.push((last_module_name, &input[last_start..i]));
             let (module_name, _) = input[i + m.len()..].split_once('\n').unwrap();
             last_module_name = module_name;
@@ -3253,7 +3252,7 @@ mod tests {
         let mut codegen = super::Codegen {
             files: module_map
                 .iter()
-                .map(|&(path, content)| parser::Ast::new(path, content, &loader, false))
+                .map(|&(path, content)| parser::Ast::new(path, content, &loader))
                 .collect(),
             ..Default::default()
         };

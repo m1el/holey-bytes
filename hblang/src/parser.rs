@@ -70,16 +70,10 @@ pub struct Parser<'a, 'b> {
     trailing_sep: bool,
     idents: Vec<ScopeIdent>,
     captured: Vec<Ident>,
-    loose: bool,
 }
 
 impl<'a, 'b> Parser<'a, 'b> {
-    pub fn new(
-        arena: &'b Arena<'a>,
-        symbols: &'b mut Symbols,
-        loader: Loader<'b>,
-        loose: bool,
-    ) -> Self {
+    pub fn new(arena: &'b Arena<'a>, symbols: &'b mut Symbols, loader: Loader<'b>) -> Self {
         let mut lexer = Lexer::new("");
         Self {
             loader,
@@ -92,7 +86,6 @@ impl<'a, 'b> Parser<'a, 'b> {
             trailing_sep: false,
             idents: Vec::new(),
             captured: Vec::new(),
-            loose,
         }
     }
 
@@ -220,7 +213,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
 
         let index = self.idents.binary_search_by_key(&id, |s| s.ident).expect("fck up");
-        if std::mem::replace(&mut self.idents[index].declared, true) && !self.loose {
+        if std::mem::replace(&mut self.idents[index].declared, true) {
             self.report_pos(
                 pos,
                 format_args!("redeclaration of identifier: {}", self.lexer.slice(ident::range(id))),
@@ -1084,10 +1077,10 @@ impl AstInner<[Symbol]> {
             .0
     }
 
-    fn new(content: &str, path: &str, loader: Loader, loose: bool) -> NonNull<Self> {
+    fn new(content: &str, path: &str, loader: Loader) -> NonNull<Self> {
         let arena = Arena::default();
         let mut syms = Vec::new();
-        let mut parser = Parser::new(&arena, &mut syms, loader, loose);
+        let mut parser = Parser::new(&arena, &mut syms, loader);
         let exprs = parser.file(content, path) as *const [Expr<'static>];
 
         syms.sort_unstable_by_key(|s| s.name);
@@ -1119,8 +1112,8 @@ impl AstInner<[Symbol]> {
 pub struct Ast(NonNull<AstInner<[Symbol]>>);
 
 impl Ast {
-    pub fn new(path: &str, content: &str, loader: Loader, loose: bool) -> Self {
-        Self(AstInner::new(content, path, loader, loose))
+    pub fn new(path: &str, content: &str, loader: Loader) -> Self {
+        Self(AstInner::new(content, path, loader))
     }
 
     pub fn exprs(&self) -> &[Expr] {
@@ -1150,7 +1143,7 @@ impl std::fmt::Display for Ast {
 
 impl Default for Ast {
     fn default() -> Self {
-        Self(AstInner::new("", "", &no_loader, false))
+        Self(AstInner::new("", "", &no_loader))
     }
 }
 
@@ -1326,7 +1319,7 @@ impl Drop for ArenaChunk {
 #[cfg(test)]
 pub mod test {
     pub fn format(ident: &str, input: &str) {
-        let ast = super::Ast::new(ident, input, &|_, _| Ok(0), true);
+        let ast = super::Ast::new(ident, input, &|_, _| Ok(0));
         let mut output = Vec::new();
         crate::format_to(&ast, input, &mut output).unwrap();
 
