@@ -1001,7 +1001,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
 
 pub fn insert_needed_semicolon(source: &str) -> bool {
     let kind = lexer::Lexer::new(source).next().kind;
-    kind.precedence().is_some() || matches!(kind, TokenKind::Struct | TokenKind::Tupl)
+    kind.precedence().is_some() || matches!(kind, TokenKind::Ctor | TokenKind::Tupl)
 }
 
 #[repr(C)]

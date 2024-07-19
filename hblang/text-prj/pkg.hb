@@ -1,5 +1,6 @@
-global := 10;
+global := 10
+
 
 fib := fn(n: int): int {
-	return n + 1;
+	return n + 1
 }
