@@ -891,7 +891,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
             Self::Ct { value, .. } => write!(f, "$: {}", value),
             Self::String { literal, .. } => write!(f, "{}", literal),
             Self::Comment { literal, .. } => write!(f, "{}", literal.trim_end()),
-            Self::Mod { path, .. } => write!(f, "@mod(\"{path}\")"),
+            Self::Mod { path, .. } => write!(f, "@use(\"{path}\")"),
             Self::Field { target, name: field } => write!(f, "{}.{field}", Postfix(target)),
             Self::Directive { name, args, .. } => {
                 write!(f, "@{name}(")?;
