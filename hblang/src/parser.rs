@@ -2,7 +2,7 @@ use {
     crate::{
         codegen,
         ident::{self, Ident},
-        lexer::{Lexer, LineMap, Token, TokenKind},
+        lexer::{self, Lexer, LineMap, Token, TokenKind},
         log,
     },
     std::{
@@ -874,8 +874,8 @@ impl<'a> std::fmt::Display for Expr<'a> {
             Consecutive => Expr::UnOp { .. },
         }
 
+        let source = unsafe { &*FMT_SOURCE.with(|s| s.get()) };
         {
-            let source = unsafe { &*FMT_SOURCE.with(|s| s.get()) };
             let pos = self.pos();
 
             if let Some(before) = source.get(..pos as usize) {
@@ -959,11 +959,17 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 writeln!(f)?;
                 INDENT.with(|i| i.set(i.get() + 1));
                 let res = (|| {
-                    for stmt in stmts {
+                    for (i, stmt) in stmts.iter().enumerate() {
                         for _ in 0..INDENT.with(|i| i.get()) {
                             write!(f, "\t")?;
                         }
-                        writeln!(f, "{stmt};")?;
+                        write!(f, "{stmt}")?;
+                        if let Some(expr) = stmts.get(i + 1)
+                            && let Some(rest) = source.get(expr.pos() as usize..)
+                            && lexer::Lexer::new(rest).next().kind.precedence().is_some()
+                        {
+                            write!(f, ";")?;
+                        }
                     }
                     Ok(())
                 })();
