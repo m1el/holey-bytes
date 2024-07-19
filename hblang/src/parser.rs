@@ -951,8 +951,8 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 write!(f, "{}(", Postfix(func))?;
                 fmt_list(f, trailing_comma, ")", args, std::fmt::Display::fmt)
             }
-            Self::Return { val: Some(val), .. } => write!(f, "return {val}"),
-            Self::Return { val: None, .. } => write!(f, "return"),
+            Self::Return { val: Some(val), .. } => write!(f, "return {val};"),
+            Self::Return { val: None, .. } => write!(f, "return;"),
             Self::Ident { name, .. } => write!(f, "{name}"),
             Self::Block { stmts, .. } => {
                 write!(f, "{{")?;
@@ -963,7 +963,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
                         for _ in 0..INDENT.with(|i| i.get()) {
                             write!(f, "\t")?;
                         }
-                        writeln!(f, "{stmt};")?;
+                        writeln!(f, "{stmt}")?;
                     }
                     Ok(())
                 })();
