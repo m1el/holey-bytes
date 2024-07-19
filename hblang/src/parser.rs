@@ -970,6 +970,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
                         {
                             write!(f, ";")?;
                         }
+                        writeln!(f)?;
                     }
                     Ok(())
                 })();
