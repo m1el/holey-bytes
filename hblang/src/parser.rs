@@ -942,9 +942,6 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 write!(f, "fn(")?;
                 fmt_list(f, false, "", args, |arg, f| write!(f, "{}: {}", arg.name, arg.ty))?;
                 write!(f, "): {ret} {body}")?;
-                if !matches!(body, Self::Block { .. }) {
-                    write!(f, ";")?;
-                }
                 Ok(())
             }
             Self::Call { func, args, trailing_comma } => {
@@ -966,9 +963,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
                         write!(f, "{stmt}")?;
                         if let Some(expr) = stmts.get(i + 1)
                             && let Some(rest) = source.get(expr.pos() as usize..)
-                            && let kind = lexer::Lexer::new(rest).next().kind
-                            && (kind.precedence().is_some()
-                                || matches!(kind, TokenKind::Struct | TokenKind::Tupl))
+                            && insert_needed_semicolon(rest)
                         {
                             write!(f, ";")?;
                         }
@@ -1002,6 +997,11 @@ impl<'a> std::fmt::Display for Expr<'a> {
             }
         }
     }
+}
+
+pub fn insert_needed_semicolon(source: &str) -> bool {
+    let kind = lexer::Lexer::new(source).next().kind;
+    kind.precedence().is_some() || matches!(kind, TokenKind::Struct | TokenKind::Tupl)
 }
 
 #[repr(C)]
