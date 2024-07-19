@@ -1713,7 +1713,6 @@ impl Codegen {
                     ty::Kind::Builtin(ty::TYPE) => {
                         self.ci.free_loc(tal.loc);
                         self.pop_local_snap(checkpoint);
-                        self.report_log(target.pos(), format_args!("field: {expr}"));
                         match ty::Kind::from_ty(self.ty(target)) {
                             ty::Kind::Module(idx) => {
                                 match self.find_or_declare(target.pos(), idx, Err(field), "") {
@@ -1886,7 +1885,6 @@ impl Codegen {
                 let loc = self.alloc_ret(sig.ret, ctx);
 
                 if should_momize {
-                    self.report_log(expr.pos(), format_args!("momized call: {expr}"));
                     self.output.write_trap(trap::Trap::MomizedCall(trap::MomizedCall { func }));
                 }
 
