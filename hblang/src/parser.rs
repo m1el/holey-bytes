@@ -333,7 +333,11 @@ impl<'a, 'b> Parser<'a, 'b> {
             T::Continue => E::Continue { pos: token.start },
             T::Return => E::Return {
                 pos: token.start,
-                val: (self.token.kind != T::Semi).then(|| self.ptr_expr()),
+                val: (!matches!(
+                    self.token.kind,
+                    T::Semi | T::RBrace | T::RBrack | T::RParen | T::Comma
+                ))
+                .then(|| self.ptr_expr()),
             },
             T::Fn => E::Closure {
                 pos: token.start,
