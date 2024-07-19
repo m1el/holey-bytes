@@ -353,7 +353,7 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     type Task = (u32, PathBuf, Option<std::process::Command>);
 
     let seen = Mutex::new(HashMap::<PathBuf, u32>::default());
-    let tasks = TaskQueue::<Task>::new(extra_threads);
+    let tasks = TaskQueue::<Task>::new(extra_threads + 1);
     let ast = Mutex::new(Vec::<io::Result<Ast>>::new());
 
     let loader = |path: &str, from: &str| {
@@ -430,6 +430,7 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     let thread = || {
         let mut buffer = Vec::new();
         while let Some(task @ (indx, ..)) = tasks.pop() {
+            dbg!();
             let res = execute_task(task, &mut buffer);
             buffer.clear();
 
@@ -444,7 +445,11 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     seen.lock().unwrap().insert(path.clone(), 0);
     tasks.push((0, path, None));
 
-    std::thread::scope(|s| (0..extra_threads + 1).for_each(|_| _ = s.spawn(thread)));
+    if extra_threads == 0 {
+        thread();
+    } else {
+        std::thread::scope(|s| (0..extra_threads + 1).for_each(|_| _ = s.spawn(thread)));
+    }
 
     ast.into_inner().unwrap().into_iter().collect::<io::Result<Vec<_>>>()
 }
