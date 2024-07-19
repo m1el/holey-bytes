@@ -8,12 +8,27 @@ use {
         parser::{self, find_symbol, idfl, CtorField, Expr, ExprRef, FileId, Pos},
         HashMap,
     },
+    core::panic,
     std::{ops::Range, rc::Rc},
 };
 
 type Offset = u32;
 type Size = u32;
 type ArrayLen = u32;
+
+fn load_value(ptr: *const u8, size: u32) -> u64 {
+    let mut dst = [0u8; 8];
+    dst[..size as usize].copy_from_slice(unsafe { std::slice::from_raw_parts(ptr, size as usize) });
+    u64::from_ne_bytes(dst)
+}
+
+fn ensure_loaded(value: CtValue, derefed: bool, size: u32) -> u64 {
+    if derefed {
+        load_value(value.0 as *const u8, size)
+    } else {
+        value.0
+    }
+}
 
 mod stack {
     use {
@@ -293,6 +308,7 @@ pub mod ty {
             let (a, b) = (oa.strip_pointer(), ob.strip_pointer());
             Some(match () {
                 _ if oa == ob => oa,
+                _ if oa.is_pointer() && ob.is_pointer() => return None,
                 _ if a.is_signed() && b.is_signed() || a.is_unsigned() && b.is_unsigned() => ob,
                 _ if a.is_unsigned() && b.is_signed() && a.repr() - U8 < b.repr() - I8 => ob,
                 _ if oa.is_integer() && ob.is_pointer() => ob,
@@ -309,9 +325,9 @@ pub mod ty {
         }
     }
 
-    impl From<[u8; 8]> for Id {
-        fn from(id: [u8; 8]) -> Self {
-            Self(unsafe { NonZeroU32::new_unchecked(u64::from_ne_bytes(id) as _) })
+    impl From<u64> for Id {
+        fn from(id: u64) -> Self {
+            Self(unsafe { NonZeroU32::new_unchecked(id as _) })
         }
     }
 
@@ -566,15 +582,15 @@ impl Value {
     }
 
     fn void() -> Self {
-        Self { ty: ty::VOID.into(), loc: Loc::imm(0) }
+        Self { ty: ty::VOID.into(), loc: Loc::ct(0) }
     }
 
     fn imm(value: u64) -> Self {
-        Self { ty: ty::UINT.into(), loc: Loc::imm(value) }
+        Self { ty: ty::UINT.into(), loc: Loc::ct(value) }
     }
 
     fn ty(ty: ty::Id) -> Self {
-        Self { ty: ty::TYPE.into(), loc: Loc::ct((ty.repr() as u64).to_ne_bytes()) }
+        Self { ty: ty::TYPE.into(), loc: Loc::ct(ty.repr() as u64) }
     }
 }
 
@@ -604,10 +620,14 @@ impl<'a> From<Loc> for LocCow<'a> {
     }
 }
 
+#[repr(packed)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+struct CtValue(u64);
+
 #[derive(Debug, PartialEq, Eq)]
-pub enum Loc {
+enum Loc {
     Rt { derefed: bool, reg: reg::Id, stack: Option<stack::Id>, offset: Offset },
-    Ct { value: [u8; 8] },
+    Ct { derefed: bool, value: CtValue },
 }
 
 impl Loc {
@@ -621,21 +641,22 @@ impl Loc {
         Self::Rt { derefed: false, reg, stack: None, offset: 0 }
     }
 
-    fn imm(value: u64) -> Self {
-        Self::ct(value.to_ne_bytes())
+    fn ct(value: u64) -> Self {
+        Self::Ct { value: CtValue(value), derefed: false }
     }
 
-    fn ct(value: [u8; 8]) -> Self {
-        Self::Ct { value }
+    fn ct_ptr(value: u64) -> Self {
+        Self::Ct { value: CtValue(value), derefed: true }
     }
 
     fn ty(ty: ty::Id) -> Self {
-        Self::imm(ty.repr() as _)
+        Self::ct(ty.repr() as _)
     }
 
     fn offset(mut self, offset: u32) -> Self {
         match &mut self {
             Self::Rt { offset: off, .. } => *off += offset,
+            Self::Ct { derefed: false, value } => value.0 += offset as u64,
             _ => unreachable!("offseting constant"),
         }
         self
@@ -649,7 +670,7 @@ impl Loc {
                 stack: stack.as_ref().map(stack::Id::as_ref),
                 offset,
             },
-            Loc::Ct { value } => Self::Ct { value },
+            Loc::Ct { value, derefed } => Self::Ct { derefed, value },
         }
     }
 
@@ -679,7 +700,10 @@ impl Loc {
 
     fn to_ty(&self) -> Option<ty::Id> {
         match *self {
-            Self::Ct { value } => Some(ty::Id::from(value)),
+            Self::Ct { derefed: false, value } => Some(ty::Id::from(value.0)),
+            Self::Ct { derefed: true, value } => {
+                Some(unsafe { std::ptr::read(value.0 as *const u8 as _) })
+            }
             Self::Rt { .. } => None,
         }
     }
@@ -693,7 +717,7 @@ impl From<reg::Id> for Loc {
 
 impl Default for Loc {
     fn default() -> Self {
-        Self::Ct { value: [0; 8] }
+        Self::ct(0)
     }
 }
 
@@ -712,7 +736,7 @@ struct Variable {
 struct ItemCtx {
     file: FileId,
     id: ty::Kind,
-    ret: ty::Id,
+    ret: Option<ty::Id>,
     ret_reg: reg::Id,
 
     task_base: usize,
@@ -737,7 +761,7 @@ impl ItemCtx {
                 stack: stack.as_ref().map(|s| self.stack.dup_id(s)),
                 offset,
             },
-            Loc::Ct { value } => Loc::Ct { value },
+            ref loc => loc.as_ref(),
         }
     }
 
@@ -1114,10 +1138,9 @@ impl Output {
         self.strings.truncate(snap.strings);
     }
 
-    fn write_trap(&mut self, trap: Trap) {
-        let len = self.code.len();
-        self.code.resize(len + std::mem::size_of::<Trap>(), 0);
-        unsafe { std::ptr::write_unaligned(self.code.as_mut_ptr().add(len) as _, trap) }
+    fn write_trap(&mut self, kind: trap::Trap) {
+        self.emit(eca());
+        self.code.extend(kind.as_slice());
     }
 
     fn snap(&mut self) -> Snapshot {
@@ -1245,8 +1268,61 @@ impl Default for Comptime {
     }
 }
 
-enum Trap {
-    MakeStruct { file: FileId, struct_expr: ExprRef },
+mod trap {
+    use {
+        super::ty,
+        crate::parser::{ExprRef, FileId},
+    };
+
+    macro_rules! gen_trap {
+        (
+            #[derive(Trap)]
+            $vis:vis enum $name:ident {
+                $($variant:ident {
+                    $($fname:ident: $fty:ty,)*
+                },)*
+            }
+        ) => {
+            #[repr(u8)]
+            $vis enum $name {
+                $($variant($variant),)*
+            }
+
+            impl $name {
+                $vis fn size(&self) -> usize {
+                    1 + match self {
+                        $(Self::$variant(_) => std::mem::size_of::<$variant>(),)*
+                    }
+                }
+            }
+
+            $(
+                #[repr(packed)]
+                $vis struct $variant {
+                    $($vis $fname: $fty,)*
+                }
+            )*
+        };
+    }
+
+    gen_trap! {
+        #[derive(Trap)]
+        pub enum Trap {
+            MakeStruct {
+                file: FileId,
+                struct_expr: ExprRef,
+            },
+            MomizedCall {
+                func: ty::Func,
+            },
+        }
+    }
+
+    impl Trap {
+        pub fn as_slice(&self) -> &[u8] {
+            unsafe { std::slice::from_raw_parts(self as *const _ as _, self.size()) }
+        }
+    }
 }
 
 struct StringReloc {
@@ -1324,7 +1400,10 @@ impl Codegen {
 
                     self.stack_offset(2, STACK_PTR, Some(&stack), 0);
                     let val = self.eca(
-                        Trap::MakeStruct { file: self.ci.file, struct_expr: ExprRef::new(expr) },
+                        trap::Trap::MakeStruct(trap::MakeStruct {
+                            file: self.ci.file,
+                            struct_expr: ExprRef::new(expr),
+                        }),
                         ty::TYPE,
                     );
                     self.ci.free_loc(Loc::stack(stack));
@@ -1487,7 +1566,7 @@ impl Codegen {
                 return self.expr_ctx(val, ctx);
             }
             E::Bool { value, .. } => {
-                Some(Value { ty: ty::BOOL.into(), loc: Loc::imm(value as u64) })
+                Some(Value { ty: ty::BOOL.into(), loc: Loc::ct(value as u64) })
             }
             E::String { pos, mut literal } => {
                 literal = literal.trim_matches('"');
@@ -1634,6 +1713,7 @@ impl Codegen {
                     ty::Kind::Builtin(ty::TYPE) => {
                         self.ci.free_loc(tal.loc);
                         self.pop_local_snap(checkpoint);
+                        self.report_log(target.pos(), format_args!("field: {expr}"));
                         match ty::Kind::from_ty(self.ty(target)) {
                             ty::Kind::Module(idx) => {
                                 match self.find_or_declare(target.pos(), idx, Err(field), "") {
@@ -1693,27 +1773,34 @@ impl Codegen {
                     ),
                 }
             }
+            E::BinOp { left, op: T::Decl, right } if self.has_ct(left) => {
+                let slot_base = self.ct.vm.read_reg(reg::STACK_PTR).0;
+                let (cnt, ty) = self.eval_const_low(right, None);
+                if self.assign_ct_pattern(left, ty, cnt as _) {
+                    self.ct.vm.write_reg(reg::STACK_PTR, slot_base);
+                }
+                Some(Value::void())
+            }
             E::BinOp { left, op: T::Decl, right } => {
                 let value = self.expr(right)?;
-
                 self.assign_pattern(left, value)
             }
             E::Call { func: fast, args, .. } => {
                 log::dbg!("call {fast}");
                 let func_ty = self.ty(fast);
-                let ty::Kind::Func(mut func_id) = func_ty.expand() else {
+                let ty::Kind::Func(mut func) = func_ty.expand() else {
                     self.report(fast.pos(), "can't call this, maybe in the future");
                 };
 
-                let func = self.tys.funcs[func_id as usize];
-                let ast = self.files[func.file as usize].clone();
+                let fuc = self.tys.funcs[func as usize];
+                let ast = self.files[fuc.file as usize].clone();
                 let E::BinOp { right: &E::Closure { args: cargs, ret, .. }, .. } =
-                    func.expr.get(&ast).unwrap()
+                    fuc.expr.get(&ast).unwrap()
                 else {
                     unreachable!();
                 };
 
-                let sig = if let Some(sig) = func.sig {
+                let sig = if let Some(sig) = fuc.sig {
                     sig
                 } else {
                     let scope = self.ci.vars.len();
@@ -1745,14 +1832,17 @@ impl Codegen {
                     let ret = self.ty(ret);
                     self.ci.vars.truncate(scope);
 
-                    let sym = SymKey { file: !args.repr(), ident: func_id };
+                    let sym = SymKey {
+                        file: !args.repr(),
+                        ident: ty::Kind::Func(func).compress().repr(),
+                    };
                     let ct = || {
                         let func_id = self.tys.funcs.len();
                         self.tys.funcs.push(Func {
-                            file: func.file,
+                            file: fuc.file,
                             offset: task::id(func_id),
                             sig: Some(Sig { args, ret }),
-                            expr: func.expr,
+                            expr: fuc.expr,
                         });
 
                         self.tasks.push(Some(FTask {
@@ -1763,7 +1853,7 @@ impl Codegen {
 
                         ty::Kind::Func(func_id as _).compress()
                     };
-                    func_id = self.tys.syms.entry(sym).or_insert_with(ct).expand().inner();
+                    func = self.tys.syms.entry(sym).or_insert_with(ct).expand().inner();
 
                     Sig { args, ret }
                 };
@@ -1771,6 +1861,7 @@ impl Codegen {
                 let mut parama = self.tys.parama(sig.ret);
                 let mut values = Vec::with_capacity(args.len());
                 let mut sig_args = sig.args.range();
+                let mut should_momize = !args.is_empty() && sig.ret == ty::Id::from(ty::TYPE);
                 for (arg, carg) in args.iter().zip(cargs) {
                     let ty = self.tys.args[sig_args.next().unwrap()];
                     let sym = parser::find_symbol(&ast.symbols, carg.id);
@@ -1783,6 +1874,7 @@ impl Codegen {
                     let varg = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
                     self.pass_arg(&varg, &mut parama);
                     values.push(varg.loc);
+                    should_momize = false;
                 }
 
                 for value in values {
@@ -1793,9 +1885,18 @@ impl Codegen {
 
                 let loc = self.alloc_ret(sig.ret, ctx);
 
+                if should_momize {
+                    self.report_log(expr.pos(), format_args!("momized call: {expr}"));
+                    self.output.write_trap(trap::Trap::MomizedCall(trap::MomizedCall { func }));
+                }
+
                 let reloc = Reloc::new(self.local_offset(), 3, 4);
-                self.output.funcs.push((func_id, reloc));
+                self.output.funcs.push((func, reloc));
                 self.output.emit(jal(RET_ADDR, ZERO, 0));
+
+                if should_momize {
+                    self.output.emit(tx());
+                }
 
                 self.load_ret(sig.ret, &loc);
                 return Some(Value { ty: sig.ret, loc });
@@ -1826,15 +1927,19 @@ impl Codegen {
                 ty::Kind::Global(id) => self.handle_global(id),
                 tk => Some(Value::ty(tk.compress())),
             },
-            E::Return { val, .. } => {
+            E::Return { pos, val, .. } => {
                 if let Some(val) = val {
-                    let size = self.tys.size_of(self.ci.ret);
+                    let size = self.ci.ret.map_or(17, |ty| self.tys.size_of(ty));
                     let loc = match size {
                         0 => Loc::default(),
                         1..=16 => Loc::reg(1),
                         _ => Loc::reg(self.ci.ret_reg.as_ref()).into_derefed(),
                     };
-                    self.expr_ctx(val, Ctx::default().with_ty(self.ci.ret).with_loc(loc))?;
+                    let ty = self.expr_ctx(val, Ctx { ty: self.ci.ret, loc: Some(loc) })?.ty;
+                    match self.ci.ret {
+                        None => self.ci.ret = Some(ty),
+                        Some(ret) => _ = self.assert_ty(pos, ty, ret),
+                    }
                 }
                 self.ci.ret_relocs.push(Reloc::new(self.local_offset(), 1, 4));
                 self.output.emit(jmp(0));
@@ -1848,7 +1953,7 @@ impl Codegen {
             }
             E::Number { value, .. } => Some(Value {
                 ty: ctx.ty.map(ty::Id::strip_pointer).unwrap_or(ty::INT.into()),
-                loc: Loc::imm(value),
+                loc: Loc::ct(value),
             }),
             E::If { cond, then, else_, .. } => {
                 log::dbg!("if-cond");
@@ -1978,10 +2083,16 @@ impl Codegen {
                 let size = self.tys.size_of(ty);
                 let signed = ty.is_signed();
 
-                if let Loc::Ct { value } = right.loc
+                if let Loc::Ct { value: CtValue(mut imm), derefed } = right.loc
                     && let Some(oper) = Self::imm_math_op(op, signed, size)
                 {
-                    let mut imm = u64::from_ne_bytes(value);
+                    if derefed {
+                        let mut dst = [0u8; 8];
+                        dst[..size as usize].copy_from_slice(unsafe {
+                            std::slice::from_raw_parts(imm as _, rsize as usize)
+                        });
+                        imm = u64::from_ne_bytes(dst);
+                    }
                     if matches!(op, T::Add | T::Sub)
                         && let ty::Kind::Ptr(ty) = ty::Kind::from_ty(ty)
                     {
@@ -2045,15 +2156,7 @@ impl Codegen {
                 unimplemented!("{:#?}", op)
             }
             E::Comment { .. } => Some(Value::void()),
-            ast => self.report(
-                ast.pos(),
-                format_args!(
-                    "compiler does not (yet) konw how to handle:\n\
-                    {ast:}\n\
-                    info for weak people:\n\
-                    {ast:#?}"
-                ),
-            ),
+            ref ast => self.report_unhandled_ast(ast, "expression"),
         }?;
 
         if let Some(ty) = ctx.ty {
@@ -2064,17 +2167,25 @@ impl Codegen {
             Some(dest) => {
                 let ty = ctx.ty.unwrap_or(value.ty);
                 self.store_typed(value.loc, dest, ty);
-                Value { ty, loc: Loc::imm(0) }
+                Value { ty, loc: Loc::ct(0) }
             }
             None => value,
         })
     }
 
+    fn has_ct(&self, expr: &Expr) -> bool {
+        expr.has_ct(&self.cfile().symbols)
+    }
+
     fn eval_const(&mut self, expr: &Expr, ty: impl Into<ty::Id>) -> u64 {
+        self.eval_const_low(expr, Some(ty.into())).0
+    }
+
+    fn eval_const_low(&mut self, expr: &Expr, mut ty: Option<ty::Id>) -> (u64, ty::Id) {
         let mut ci = ItemCtx {
             file: self.ci.file,
             id: self.ci.id,
-            ret: ty.into(),
+            ret: ty,
             ..self.pool.cis.pop().unwrap_or_default()
         };
         ci.vars.append(&mut self.ci.vars);
@@ -2082,14 +2193,18 @@ impl Codegen {
         let loc = self.ct_eval(ci, |s, prev| {
             s.output.emit_prelude();
 
-            if s.expr_ctx(
-                &Expr::Return { pos: 0, val: Some(expr) },
-                Ctx::default().with_ty(s.ci.ret),
-            )
-            .is_some()
-            {
+            if s.ci.ret.map_or(true, |r| s.tys.size_of(r) > 16) {
+                let reg = s.ci.regs.allocate();
+                s.output.emit(instrs::cp(reg.get(), 1));
+                s.ci.ret_reg = reg;
+            };
+
+            let ctx = Ctx { loc: None, ty: s.ci.ret };
+            if s.expr_ctx(&Expr::Return { pos: 0, val: Some(expr) }, ctx).is_some() {
                 s.report(expr.pos(), "we fucked up");
             };
+
+            ty = s.ci.ret;
 
             let stash = s.complete_call_graph();
 
@@ -2105,7 +2220,29 @@ impl Codegen {
         });
 
         match loc {
-            Ok(i) | Err(i) => self.ct.vm.read_reg(i).cast::<u64>(),
+            Ok(i) | Err(i) => {
+                (self.ct.vm.read_reg(i).cast::<u64>(), ty.expect("you have died (in brahmaputra)"))
+            }
+        }
+    }
+
+    fn assign_ct_pattern(&mut self, pat: &Expr, ty: ty::Id, offset: *mut u8) -> bool {
+        let size = self.tys.size_of(ty);
+        match *pat {
+            Expr::Ident { id, .. }
+                if find_symbol(&self.cfile().symbols, id).flags & idfl::REFERENCED == 0
+                    && size <= 8 =>
+            {
+                let loc = Loc::ct(load_value(offset, size));
+                self.ci.vars.push(Variable { id, value: Value { ty, loc } });
+                true
+            }
+            Expr::Ident { id, .. } => {
+                let var = Variable { id, value: Value { ty, loc: Loc::ct_ptr(offset as _) } };
+                self.ci.vars.push(var);
+                false
+            }
+            ref pat => self.report_unhandled_ast(pat, "comptime pattern"),
         }
     }
 
@@ -2134,15 +2271,7 @@ impl Codegen {
 
                 self.ci.free_loc(right.loc);
             }
-            pat => self.report(
-                pat.pos(),
-                format_args!(
-                    "compiler does not (yet) konw how to handle:\n\
-                    {pat:}\n\
-                    info for weak people:\n\
-                    {pat:#?}"
-                ),
-            ),
+            ref pat => self.report_unhandled_ast(pat, "pattern"),
         };
 
         Some(Value::void())
@@ -2226,10 +2355,10 @@ impl Codegen {
         let signed = ty.is_signed();
         let lhs = self.loc_to_reg(left, size);
 
-        if let Loc::Ct { value } = right
+        if let Loc::Ct { value, derefed: false } = right
             && let Some(op) = Self::imm_math_op(op, signed, size)
         {
-            self.output.emit(op(lhs.get(), lhs.get(), u64::from_ne_bytes(value)));
+            self.output.emit(op(lhs.get(), lhs.get(), value.0));
             return Some(if let Some(value) = ctx.into_value() {
                 self.store_typed(Loc::reg(lhs.as_ref()), value.loc, value.ty);
                 Value::void()
@@ -2395,11 +2524,12 @@ impl Codegen {
         let sig = func.sig.unwrap();
         let ast = self.files[file as usize].clone();
         let expr = func.expr.get(&ast).unwrap();
+        let ct_stack_base = self.ct.vm.read_reg(reg::STACK_PTR).0;
 
         let repl = ItemCtx {
             file,
             id: ty::Kind::Func(id),
-            ret: sig.ret,
+            ret: Some(sig.ret),
             ..self.pool.cis.pop().unwrap_or_default()
         };
         let prev_ci = std::mem::replace(&mut self.ci, repl);
@@ -2420,7 +2550,7 @@ impl Codegen {
         self.output.emit_prelude();
 
         log::dbg!("fn-args");
-        let mut parama = self.tys.parama(self.ci.ret);
+        let mut parama = self.tys.parama(sig.ret);
         let mut sig_args = sig.args.range();
         for arg in args.iter() {
             let ty = self.tys.args[sig_args.next().unwrap()];
@@ -2432,7 +2562,7 @@ impl Codegen {
             self.ci.vars.push(Variable { id: arg.id, value: Value { ty, loc } });
         }
 
-        if self.tys.size_of(self.ci.ret) > 16 {
+        if self.tys.size_of(sig.ret) > 16 {
             let reg = self.ci.regs.allocate();
             self.output.emit(instrs::cp(reg.get(), 1));
             self.ci.ret_reg = reg;
@@ -2457,6 +2587,7 @@ impl Codegen {
         self.ci.regs.free(std::mem::take(&mut self.ci.ret_reg));
         self.tys.funcs[id as usize].offset = self.ci.snap.code as Offset;
         self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
+        self.ct.vm.write_reg(reg::STACK_PTR, ct_stack_base);
     }
 
     fn load_arg(&mut self, flags: parser::IdentFlags, ty: ty::Id, parama: &mut ParamAlloc) -> Loc {
@@ -2484,8 +2615,7 @@ impl Codegen {
         dst
     }
 
-    fn eca(&mut self, trap: Trap, ret: impl Into<ty::Id>) -> Value {
-        self.output.emit(eca());
+    fn eca(&mut self, trap: trap::Trap, ret: impl Into<ty::Id>) -> Value {
         self.output.write_trap(trap);
         Value { ty: ret.into(), loc: Loc::reg(1) }
     }
@@ -2582,24 +2712,26 @@ impl Codegen {
         dst.as_ref().assert_valid();
 
         match (src.as_ref(), dst.as_ref()) {
-            (&Loc::Ct { value }, lpat!(true, reg, off, ref sta)) => {
+            (&Loc::Ct { value, derefed }, lpat!(true, reg, off, ref sta)) => {
                 let ct = self.ci.regs.allocate();
-                self.output.emit(li64(ct.get(), u64::from_ne_bytes(value)));
+                self.output.emit(li64(ct.get(), ensure_loaded(value, derefed, size)));
                 let off = self.opt_stack_reloc(sta.as_ref(), off, 3);
                 self.output.emit(st(ct.get(), reg.get(), off, size as _));
                 self.ci.regs.free(ct);
             }
-            (&Loc::Ct { value }, lpat!(false, reg, 0, None)) => {
-                self.output.emit(li64(reg.get(), u64::from_ne_bytes(value)))
+            (&Loc::Ct { value, derefed }, lpat!(false, reg, 0, None)) => {
+                self.output.emit(li64(reg.get(), ensure_loaded(value, derefed, size)))
             }
-            (&Loc::Ct { value }, lpat!(false, reg, 8, None)) if reg.get() == 1 && size == 8 => {
-                self.output.emit(li64(reg.get() + 1, u64::from_ne_bytes(value)));
+            (&Loc::Ct { value, derefed }, lpat!(false, reg, 8, None))
+                if reg.get() == 1 && size == 8 =>
+            {
+                self.output.emit(li64(reg.get() + 1, ensure_loaded(value, derefed, size)));
             }
-            (&Loc::Ct { value }, lpat!(false, reg, off, None)) if reg.get() == 1 => {
+            (&Loc::Ct { value, derefed }, lpat!(false, reg, off, None)) if reg.get() == 1 => {
                 let freg = reg.get() + (off / 8) as u8;
                 let mask = !(((1u64 << (8 * size)) - 1) << (8 * (off % 8)));
                 self.output.emit(andi(freg, freg, mask));
-                let value = u64::from_ne_bytes(value) << (8 * (off % 8));
+                let value = ensure_loaded(value, derefed, size) << (8 * (off % 8));
                 self.output.emit(ori(freg, freg, value));
             }
             (lpat!(true, src, soff, ref ssta), lpat!(true, dst, doff, ref dsta)) => {
@@ -2710,19 +2842,19 @@ impl Codegen {
 
     // TODO: sometimes its better to do this in bulk
     fn ty(&mut self, expr: &Expr) -> ty::Id {
-        ty::Id::from(self.eval_const(expr, ty::TYPE).to_ne_bytes())
+        ty::Id::from(self.eval_const(expr, ty::TYPE))
     }
 
     fn handle_ecall(&mut self) {
-        let arr = self.ct.vm.pc.get() as *const Trap;
-        let trap = unsafe { std::ptr::read_unaligned(arr) };
-        self.ct.vm.pc = self.ct.vm.pc.wrapping_add(std::mem::size_of::<Trap>());
+        let trap = unsafe { &*(self.ct.vm.pc.get() as *const trap::Trap) };
+        self.ct.vm.pc = self.ct.vm.pc.wrapping_add(trap.size());
 
-        let local_pc = (self.ct.vm.pc.get() as usize - self.output.code.as_ptr() as usize)
+        let mut extra_jump = 0;
+        let mut local_pc = (self.ct.vm.pc.get() as usize - self.output.code.as_ptr() as usize)
             .checked_sub(self.ci.snap.code);
 
-        match trap {
-            Trap::MakeStruct { file, struct_expr } => {
+        match *trap {
+            trap::Trap::MakeStruct(trap::MakeStruct { file, struct_expr }) => {
                 let cfile = self.files[file as usize].clone();
                 let &Expr::Struct { fields, captured, .. } = struct_expr.get(&cfile).unwrap()
                 else {
@@ -2741,7 +2873,7 @@ impl Codegen {
                     unsafe { std::ptr::copy_nonoverlapping(values, imm.as_mut_ptr(), size) };
                     self.ci.vars.push(Variable {
                         id,
-                        value: Value::new(ty, Loc::imm(u64::from_ne_bytes(imm))),
+                        value: Value::new(ty, Loc::ct(u64::from_ne_bytes(imm))),
                     });
                 }
 
@@ -2749,12 +2881,24 @@ impl Codegen {
                 self.ci.vars.truncate(prev_len);
                 self.ct.vm.write_reg(1, stru.repr() as u64);
             }
+            trap::Trap::MomizedCall(trap::MomizedCall { func }) => {
+                let sym = SymKey { file: u32::MAX, ident: ty::Kind::Func(func).compress().repr() };
+                if let Some(&ty) = self.tys.syms.get(&sym) {
+                    self.ct.vm.write_reg(1, ty.repr());
+                    extra_jump = jal(0, 0, 0).0 + tx().0;
+                } else {
+                    local_pc = None;
+                    self.run_vm();
+                    self.tys.syms.insert(sym, self.ct.vm.read_reg(1).0.into());
+                }
+            }
         }
 
         if let Some(lpc) = local_pc {
             let offset = lpc + self.ci.snap.code + self.output.code.as_ptr() as usize;
             self.ct.vm.pc = hbvm::mem::Address::new(offset as _);
         }
+        self.ct.vm.pc += extra_jump;
     }
 
     fn find_or_declare(
@@ -2912,21 +3056,29 @@ impl Codegen {
         self.ci.regs.init();
 
         let ret = compile(self, &mut prev_ci);
+        let mut rr = std::mem::take(&mut self.ci.ret_reg);
+        let is_on_stack = !rr.is_ref();
+        if !rr.is_ref() {
+            self.output.emit(instrs::cp(1, rr.get()));
+            let rref = rr.as_ref();
+            self.ci.regs.free(std::mem::replace(&mut rr, rref));
+        }
 
         if ret.is_ok() {
+            if is_on_stack {
+                let size =
+                    self.tys.size_of(self.ci.ret.expect("you have died (colaterall fuck up)"));
+                let slot = self.ct.vm.read_reg(reg::STACK_PTR).0;
+                self.ct.vm.write_reg(reg::STACK_PTR, slot.wrapping_add(size as _));
+                self.ct.vm.write_reg(1, slot);
+            }
+
             self.link();
             self.output.trunc(&Snapshot { code: self.output.code.len(), ..self.ci.snap });
             log::dbg!("{} {}", self.output.code.len(), self.ci.snap.code);
             let entry = &mut self.output.code[self.ci.snap.code] as *mut _ as _;
             let prev_pc = std::mem::replace(&mut self.ct.vm.pc, hbvm::mem::Address::new(entry));
-            loop {
-                match self.ct.vm.run().unwrap() {
-                    hbvm::VmRunOk::End => break,
-                    hbvm::VmRunOk::Timer => unreachable!(),
-                    hbvm::VmRunOk::Ecall => self.handle_ecall(),
-                    hbvm::VmRunOk::Breakpoint => unreachable!(),
-                }
-            }
+            self.run_vm();
             self.ct.vm.pc = prev_pc;
         }
 
@@ -2941,11 +3093,23 @@ impl Codegen {
         ret
     }
 
+    fn run_vm(&mut self) {
+        loop {
+            match self.ct.vm.run().unwrap() {
+                hbvm::VmRunOk::End => break,
+                hbvm::VmRunOk::Timer => unreachable!(),
+                hbvm::VmRunOk::Ecall => self.handle_ecall(),
+                hbvm::VmRunOk::Breakpoint => unreachable!(),
+            }
+        }
+    }
+
     fn ty_display(&self, ty: ty::Id) -> ty::Display {
         ty::Display::new(&self.tys, &self.files, ty)
     }
 
     #[must_use]
+    #[track_caller]
     fn assert_ty(&self, pos: Pos, ty: ty::Id, expected: ty::Id) -> ty::Id {
         if let Some(res) = ty.try_upcast(expected) {
             res
@@ -2956,10 +3120,28 @@ impl Codegen {
         }
     }
 
-    fn report(&self, pos: Pos, msg: impl std::fmt::Display) -> ! {
+    fn report_log(&self, pos: Pos, msg: impl std::fmt::Display) {
         let (line, col) = self.cfile().nlines.line_col(pos);
         println!("{}:{}:{}: {}", self.cfile().path, line, col, msg);
+    }
+
+    #[track_caller]
+    fn report(&self, pos: Pos, msg: impl std::fmt::Display) -> ! {
+        self.report_log(pos, msg);
         unreachable!();
+    }
+
+    #[track_caller]
+    fn report_unhandled_ast(&self, ast: &Expr, hint: &str) -> ! {
+        self.report(
+            ast.pos(),
+            format_args!(
+                "compiler does not (yet) konw how to handle ({hint}):\n\
+            {ast:}\n\
+            info for weak people:\n\
+            {ast:#?}"
+            ),
+        )
     }
 
     fn cfile(&self) -> &parser::Ast {
@@ -3142,5 +3324,6 @@ mod tests {
         struct_patterns => README;
         arrays => README;
         struct_return_from_module_function => README;
+        comptime_pointers => README;
     }
 }

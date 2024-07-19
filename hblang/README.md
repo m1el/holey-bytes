@@ -326,6 +326,19 @@ pass := fn(arr: ^[int; 3]): int {
 
 ### Incomplete Examples
 
+#### comptime_pointers
+```hb
+main := fn(): int {
+	$integer := 7;
+	modify(&integer);
+	return integer;
+}
+
+modify := fn($num: ^int): void {
+	$: *num = 0;
+}
+```
+
 #### generic_types
 ```hb
 MALLOC_SYS_CALL := 69

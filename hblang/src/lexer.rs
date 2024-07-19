@@ -115,6 +115,8 @@ pub enum TokenKind {
     Number,
     Eof,
 
+    Ct,
+
     Return,
     If,
     Else,
@@ -321,6 +323,7 @@ impl<'a> Lexer<'a> {
                 b'.' if self.advance_if(b'(') => T::Tupl,
                 b'&' if self.advance_if(b'&') => T::And,
                 b'|' if self.advance_if(b'|') => T::Or,
+                b'$' if self.advance_if(b':') => T::Ct,
                 b'@' | b'$' => {
                     start += 1;
                     advance_ident(self);

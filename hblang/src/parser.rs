@@ -266,6 +266,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         let prev_boundary = self.ns_bound;
         let prev_captured = self.captured.len();
         let mut expr = match token.kind {
+            T::Ct => E::Ct { pos: token.start, value: self.ptr_expr() },
             T::Directive if self.lexer.slice(token.range()) == "use" => {
                 self.expect_advance(TokenKind::LParen);
                 let str = self.expect_advance(TokenKind::DQuote);
@@ -613,6 +614,10 @@ macro_rules! generate_expr {
 generate_expr! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum Expr<'a> {
+        Ct {
+            pos: Pos,
+            value: &'a Expr<'a>,
+        },
         String {
             pos: Pos,
             literal: &'a str,
@@ -729,6 +734,14 @@ impl<'a> Expr<'a> {
             Self::Ident { id, name, .. } if iden == Ok(id) || iden == Err(name) => Some(id),
             Self::Ctor { fields, .. } => fields.iter().find_map(|f| f.value.declares(iden)),
             _ => None,
+        }
+    }
+
+    pub fn has_ct(&self, symbols: &[Symbol]) -> bool {
+        match *self {
+            Self::Ident { id, .. } => find_symbol(symbols, id).flags & idfl::COMPTIME != 0,
+            Self::Ctor { fields, .. } => fields.iter().any(|f| f.value.has_ct(symbols)),
+            _ => false,
         }
     }
 
@@ -875,6 +888,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
         }
 
         match *self {
+            Self::Ct { value, .. } => write!(f, "$: {}", value),
             Self::String { literal, .. } => write!(f, "{}", literal),
             Self::Comment { literal, .. } => write!(f, "{}", literal.trim_end()),
             Self::Mod { path, .. } => write!(f, "@mod(\"{path}\")"),
