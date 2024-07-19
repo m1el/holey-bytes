@@ -992,7 +992,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 display_branch(f, right)?;
 
                 if matches!(op, TokenKind::Decl | TokenKind::Assign)
-                    && INDENT.with(|idnf| !idnf.get()) == 0
+                    && INDENT.with(|idnf| idnf.get()) == 0
                     && !matches!(right, Self::Closure { .. })
                 {
                     write!(f, ";")?;
