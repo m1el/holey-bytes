@@ -557,9 +557,13 @@ pub fn run_compiler(
                 write!(out, "{expr}")?;
                 if let Some(expr) = ast.exprs().get(i + 1)
                     && let Some(rest) = source.get(expr.pos() as usize..)
-                    && parser::insert_needed_semicolon(rest)
                 {
-                    write!(out, ";")?;
+                    if parser::insert_needed_semicolon(rest) {
+                        write!(out, ";")?;
+                    }
+                    for _ in 1..parser::preserve_newlines(&source[..expr.pos() as usize]) {
+                        writeln!(out)?;
+                    }
                 }
                 writeln!(out)?;
             }

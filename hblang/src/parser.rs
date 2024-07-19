@@ -875,17 +875,6 @@ impl<'a> std::fmt::Display for Expr<'a> {
         }
 
         let source = unsafe { &*FMT_SOURCE.with(|s| s.get()) };
-        {
-            let pos = self.pos();
-
-            if let Some(before) = source.get(..pos as usize) {
-                let trailing_whitespace = &before[before.trim_end().len()..];
-                let ncount = trailing_whitespace.chars().filter(|&c| c == '\n').count();
-                if ncount > 1 {
-                    writeln!(f)?;
-                }
-            }
-        }
 
         match *self {
             Self::Ct { value, .. } => write!(f, "$: {}", value),
@@ -963,9 +952,13 @@ impl<'a> std::fmt::Display for Expr<'a> {
                         write!(f, "{stmt}")?;
                         if let Some(expr) = stmts.get(i + 1)
                             && let Some(rest) = source.get(expr.pos() as usize..)
-                            && insert_needed_semicolon(rest)
                         {
-                            write!(f, ";")?;
+                            if insert_needed_semicolon(rest) {
+                                write!(f, ";")?;
+                            }
+                            for _ in 1..preserve_newlines(&source[..expr.pos() as usize]) {
+                                writeln!(f)?;
+                            }
                         }
                         writeln!(f)?;
                     }
@@ -1004,6 +997,11 @@ impl<'a> std::fmt::Display for Expr<'a> {
             }
         }
     }
+}
+
+pub fn preserve_newlines(source: &str) -> usize {
+    let trailing_whitespace = &source[source.trim_end().len()..];
+    trailing_whitespace.chars().filter(|&c| c == '\n').count().min(2)
 }
 
 pub fn insert_needed_semicolon(source: &str) -> bool {
