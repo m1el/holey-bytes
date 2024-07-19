@@ -3135,9 +3135,9 @@ impl Codegen {
             ast.pos(),
             format_args!(
                 "compiler does not (yet) know how to handle ({hint}):\n\
-            {ast:}\n\
-            info for weak people:\n\
-            {ast:#?}"
+                {ast:}\n\
+                info for weak people:\n\
+                {ast:#?}"
             ),
         )
     }

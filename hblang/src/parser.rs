@@ -989,7 +989,13 @@ impl<'a> std::fmt::Display for Expr<'a> {
 
                 display_branch(f, left)?;
                 write!(f, " {op} ")?;
-                display_branch(f, right)
+                display_branch(f, right)?;
+
+                if matches!(op, TokenKind::Decl | TokenKind::Assign) {
+                    write!(f, ";")?;
+                }
+
+                Ok(())
             }
         }
     }
