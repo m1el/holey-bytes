@@ -3134,7 +3134,7 @@ impl Codegen {
         self.report(
             ast.pos(),
             format_args!(
-                "compiler does not (yet) konw how to handle ({hint}):\n\
+                "compiler does not (yet) know how to handle ({hint}):\n\
             {ast:}\n\
             info for weak people:\n\
             {ast:#?}"
