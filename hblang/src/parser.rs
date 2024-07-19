@@ -980,6 +980,13 @@ impl<'a> std::fmt::Display for Expr<'a> {
             }
             Self::Number { value, .. } => write!(f, "{value}"),
             Self::Bool { value, .. } => write!(f, "{value}"),
+            Self::BinOp {
+                left: left @ Self::Ident { id, .. },
+                op: TokenKind::Assign,
+                right: Self::BinOp { left: Self::Ident { id: oid, .. }, op, right },
+            } if id == oid => {
+                write!(f, "{left} {op}= {right}")
+            }
             Self::BinOp { left, right, op } => {
                 let display_branch = |f: &mut std::fmt::Formatter, expr: &Self| {
                     if let Self::BinOp { op: lop, .. } = expr
