@@ -966,7 +966,9 @@ impl<'a> std::fmt::Display for Expr<'a> {
                         write!(f, "{stmt}")?;
                         if let Some(expr) = stmts.get(i + 1)
                             && let Some(rest) = source.get(expr.pos() as usize..)
-                            && lexer::Lexer::new(rest).next().kind.precedence().is_some()
+                            && let kind = lexer::Lexer::new(rest).next().kind
+                            && (kind.precedence().is_some()
+                                || matches!(kind, TokenKind::Struct | TokenKind::Tupl))
                         {
                             write!(f, ";")?;
                         }
