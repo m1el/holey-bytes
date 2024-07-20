@@ -510,7 +510,10 @@ main := fn(): int {
 
 // in module: bar.hb
 
-foo := fn(): struct {x: int, y: u32, z: u32} {
+
+foo := fn(): Foo {
 	return .{x: 3, y: 2, z: 2}
 }
+
+Foo := struct {x: int, y: u32, z: u32}
 ```

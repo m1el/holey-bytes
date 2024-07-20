@@ -2648,6 +2648,7 @@ impl Codegen {
                 assert_eq!(offset, 0, "TODO");
                 if reg.is_ref() {
                     let new_reg = self.ci.regs.allocate();
+                    debug_assert_ne!(reg.get(), 0);
                     self.output.emit(cp(new_reg.get(), reg.get()));
                     reg = new_reg;
                 }
@@ -2750,6 +2751,7 @@ impl Codegen {
             }
             (lpat!(false, src, 0, None), lpat!(false, dst, 0, None)) => {
                 if src != dst {
+                    debug_assert_ne!(src.get(), 0);
                     self.output.emit(cp(dst.get(), src.get()));
                 }
             }
@@ -2912,7 +2914,7 @@ impl Codegen {
         name: Result<Ident, &str>,
         lit_name: &str,
     ) -> ty::Kind {
-        log::dbg!("find_or_declare: {lit_name}");
+        log::dbg!("find_or_declare: {lit_name} {file}");
         let f = self.files[file as usize].clone();
         let Some((expr, ident)) = f.find_decl(name) else {
             match name {
@@ -2921,6 +2923,8 @@ impl Codegen {
                 Err(name) => unimplemented!("somehow we did not handle: {name:?}"),
             }
         };
+
+        log::dbg!("foo: {expr}");
 
         if let Some(existing) = self.tys.syms.get(&SymKey { file, ident }) {
             if let ty::Kind::Func(id) = existing.expand()
@@ -2934,6 +2938,7 @@ impl Codegen {
             return existing.expand();
         }
 
+        let prev_file = std::mem::replace(&mut self.ci.file, file);
         let sym = match expr {
             Expr::BinOp {
                 left: &Expr::Ident { .. },
@@ -2959,7 +2964,9 @@ impl Codegen {
                         self.tasks.push(Some(FTask { file, id }));
 
                         let args = self.pack_args(pos, arg_base);
+                        log::dbg!("eval ret");
                         let ret = self.ty(ret);
+
                         Some(Sig { args, ret })
                     },
                     expr: ExprRef::new(expr),
@@ -2992,6 +2999,7 @@ impl Codegen {
             }
             e => unimplemented!("{e:#?}"),
         };
+        self.ci.file = prev_file;
         self.tys.syms.insert(SymKey { ident, file }, sym.compress());
         sym
     }
