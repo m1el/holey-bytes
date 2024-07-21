@@ -98,9 +98,9 @@ pub enum TokenKind {
     Dot = b'.',
     Div = b'/',
     // Unused = 2-6
-    Shr = b'<' - 5,
+    Shl = b'<' - 5,
     // Unused = 8
-    Shl = b'>' - 5,
+    Shr = b'>' - 5,
     Colon = b':',
     Semi = b';',
     Lt = b'<',
@@ -159,14 +159,14 @@ pub enum TokenKind {
     ModAss = b'%' + 128,
     XorAss = b'^' + 128,
     BandAss = b'&' + 128,
-    ShlAss = b'0' + 128,
-    ShrAss = b'1' + 128,
+    ShrAss = b'>' - 5 + 128,
+    ShlAss = b'<' - 5 + 128,
 }
 
 impl TokenKind {
     pub fn ass_op(self) -> Option<Self> {
         let id = (self as u8).saturating_sub(128);
-        if ascii_mask(b"|+-*/%^&01") & (1u128 << id) == 0 {
+        if ascii_mask(b"|+-*/%^&79") & (1u128 << id) == 0 {
             return None;
         }
         Some(unsafe { std::mem::transmute::<u8, Self>(id) })

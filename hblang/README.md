@@ -517,3 +517,29 @@ foo := fn(): Foo {
 
 Foo := struct {x: int, y: u32, z: u32}
 ```
+
+#### sort_something_viredly
+```hb
+main := fn(): int {
+	foo := sqrt
+	return 0
+}
+
+sqrt := fn(x: int): int {
+	temp := 0
+	g := 0
+	b := 32768
+	bshift := 15
+	loop if b == 0 break else {
+		bshift -= 1
+		temp = b + (g << 1)
+		temp <<= bshift
+		if x >= temp {
+			g += b
+			x -= temp
+		}
+		b >>= 1
+	}
+	return g
+}
+```

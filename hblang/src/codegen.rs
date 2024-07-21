@@ -3247,7 +3247,8 @@ mod tests {
             last_module_name = module_name;
             last_start = i + m.len() + module_name.len() + 1;
         }
-        module_map.push((last_module_name, &input[last_start..]));
+        parser::test::format(ident, input[last_start..].trim());
+        module_map.push((last_module_name, input[last_start..].trim()));
 
         let loader = |path: &str, _: &str| {
             module_map
@@ -3338,5 +3339,6 @@ mod tests {
         arrays => README;
         struct_return_from_module_function => README;
         comptime_pointers => README;
+        sort_something_viredly => README;
     }
 }
