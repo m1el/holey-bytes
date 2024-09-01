@@ -2525,6 +2525,7 @@ impl Codegen {
 
     fn handle_task(&mut self, FTask { file, id }: FTask) {
         let func = self.tys.funcs[id as usize];
+        debug_assert!(func.file == file);
         let sig = func.sig.unwrap();
         let ast = self.files[file as usize].clone();
         let expr = func.expr.get(&ast).unwrap();
@@ -2954,7 +2955,7 @@ impl Codegen {
                 op: TokenKind::Decl,
                 right: &Expr::Closure { pos, args, ret, .. },
             } => {
-                let id = self.tys.funcs.len() as _;
+                let mut push_task = false;
                 let func = Func {
                     file,
                     offset: task::id(self.tasks.len()),
@@ -2970,7 +2971,7 @@ impl Codegen {
                             self.tys.args.push(ty);
                         }
 
-                        self.tasks.push(Some(FTask { file, id }));
+                        push_task = true;
 
                         let args = self.pack_args(pos, arg_base);
                         log::dbg!("eval ret");
@@ -2978,8 +2979,17 @@ impl Codegen {
 
                         Some(Sig { args, ret })
                     },
-                    expr: ExprRef::new(expr),
+                    expr: {
+                        let refr = ExprRef::new(expr);
+                        debug_assert!(refr.get(&f).is_some());
+                        refr
+                    },
                 };
+
+                let id = self.tys.funcs.len() as _;
+                if push_task {
+                    self.tasks.push(Some(FTask { file, id }));
+                }
                 self.tys.funcs.push(func);
 
                 ty::Kind::Func(id)
@@ -3108,7 +3118,6 @@ impl Codegen {
         self.output.trunc(&self.ci.snap);
         self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
         self.ci.snap = self.output.snap();
-        debug_assert_eq!(self.pool.cis.last().unwrap().snap, self.ci.snap);
         self.push_stash(stash);
 
         log::dbg!("eval-end");

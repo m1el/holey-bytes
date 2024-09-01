@@ -430,7 +430,6 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     let thread = || {
         let mut buffer = Vec::new();
         while let Some(task @ (indx, ..)) = tasks.pop() {
-            dbg!();
             let res = execute_task(task, &mut buffer);
             buffer.clear();
 
