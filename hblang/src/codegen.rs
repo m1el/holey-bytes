@@ -1935,11 +1935,11 @@ impl Codegen {
                 if let Some(val) = val {
                     let size = self.ci.ret.map_or(17, |ty| self.tys.size_of(ty));
                     let loc = match size {
-                        0 => Loc::default(),
-                        1..=16 => Loc::reg(1),
-                        _ => Loc::reg(self.ci.ret_reg.as_ref()).into_derefed(),
+                        0 => None,
+                        1..=16 => Some(Loc::reg(1)),
+                        _ => Some(Loc::reg(self.ci.ret_reg.as_ref()).into_derefed()),
                     };
-                    let ty = self.expr_ctx(val, Ctx { ty: self.ci.ret, loc: Some(loc) })?.ty;
+                    let ty = self.expr_ctx(val, Ctx { ty: self.ci.ret, loc })?.ty;
                     match self.ci.ret {
                         None => self.ci.ret = Some(ty),
                         Some(ret) => _ = self.assert_ty(pos, ty, ret),
@@ -2626,6 +2626,15 @@ impl Codegen {
 
     fn alloc_ret(&mut self, ret: ty::Id, ctx: Ctx) -> Loc {
         let size = self.tys.size_of(ret);
+        if size == 0 {
+            debug_assert!(ctx.loc.is_none(), "{}", self.ty_display(ret));
+            return Loc::default();
+        }
+
+        if ctx.loc.is_some() && size < 16 {
+            return ctx.loc.unwrap();
+        }
+
         match size {
             0 => Loc::default(),
             1..=8 => Loc::reg(1),
@@ -3030,6 +3039,8 @@ impl Codegen {
         let ret_loc = unsafe { self.output.code.as_mut_ptr().add(offset) };
         self.ct.vm.write_reg(1, ret_loc as u64);
 
+        self.ci.free_loc(ret.loc);
+
         Global { ty: ret.ty, offset: offset as _ }
     }
 
@@ -3341,5 +3352,7 @@ mod tests {
         //comptime_pointers => README;
         sort_something_viredly => README;
         hex_octal_binary_literals => README;
+        comptime_min_reg_leak => README;
+
     }
 }

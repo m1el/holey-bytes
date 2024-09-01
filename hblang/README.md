@@ -454,6 +454,21 @@ main := fn(): int {
 
 ### Purely Testing Examples
 
+#### comptime_min_reg_leak
+```hb
+SIZEOF_INT := 32
+SHIFT := SIZEOF_INT - 1
+min := fn(a: int, b: int): int {
+	c := a - b
+	return b + (c & c >> SHIFT)
+}
+a := min(100, 50)
+
+main := fn(): int {
+	return a
+}
+```
+
 #### different_types
 ```hb
 Color := struct {
