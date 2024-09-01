@@ -2,7 +2,7 @@ use {
     crate::{
         codegen,
         ident::{self, Ident},
-        lexer::{self, Lexer, LineMap, Token, TokenKind},
+        lexer::{self, Lexer, Token, TokenKind},
         log,
     },
     std::{
@@ -1065,7 +1065,7 @@ pub struct AstInner<T: ?Sized> {
     exprs: *const [Expr<'static>],
 
     pub path: Box<str>,
-    pub nlines: LineMap,
+    pub file: Box<str>,
     pub symbols: T,
 }
 
@@ -1077,11 +1077,11 @@ impl AstInner<[Symbol]> {
             .0
     }
 
-    fn new(content: &str, path: &str, loader: Loader) -> NonNull<Self> {
+    fn new(content: String, path: &str, loader: Loader) -> NonNull<Self> {
         let arena = Arena::default();
         let mut syms = Vec::new();
         let mut parser = Parser::new(&arena, &mut syms, loader);
-        let exprs = parser.file(content, path) as *const [Expr<'static>];
+        let exprs = parser.file(&content, path) as *const [Expr<'static>];
 
         syms.sort_unstable_by_key(|s| s.name);
 
@@ -1096,7 +1096,7 @@ impl AstInner<[Symbol]> {
                 mem: arena.chunk.into_inner(),
                 exprs,
                 path: path.into(),
-                nlines: LineMap::new(content),
+                file: content.into(),
                 symbols: (),
             });
             std::ptr::addr_of_mut!((*inner).symbols)
@@ -1112,7 +1112,7 @@ impl AstInner<[Symbol]> {
 pub struct Ast(NonNull<AstInner<[Symbol]>>);
 
 impl Ast {
-    pub fn new(path: &str, content: &str, loader: Loader) -> Self {
+    pub fn new(path: &str, content: String, loader: Loader) -> Self {
         Self(AstInner::new(content, path, loader))
     }
 
@@ -1143,7 +1143,7 @@ impl std::fmt::Display for Ast {
 
 impl Default for Ast {
     fn default() -> Self {
-        Self(AstInner::new("", "", &no_loader))
+        Self(AstInner::new(String::new(), "", &no_loader))
     }
 }
 
@@ -1319,7 +1319,7 @@ impl Drop for ArenaChunk {
 #[cfg(test)]
 pub mod test {
     pub fn format(ident: &str, input: &str) {
-        let ast = super::Ast::new(ident, input, &|_, _| Ok(0));
+        let ast = super::Ast::new(ident, input.to_owned(), &|_, _| Ok(0));
         let mut output = Vec::new();
         crate::format_to(&ast, input, &mut output).unwrap();
 

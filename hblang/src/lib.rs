@@ -424,7 +424,7 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
         let mut file = std::fs::File::open(path)?;
         file.read_to_end(buffer)?;
         let src = std::str::from_utf8(buffer).map_err(InvalidFileData)?;
-        Ok(Ast::new(path, src, &loader))
+        Ok(Ast::new(path, src.to_owned(), &loader))
     };
 
     let thread = || {
