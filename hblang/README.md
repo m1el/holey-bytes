@@ -456,16 +456,19 @@ main := fn(): int {
 
 #### comptime_min_reg_leak
 ```hb
+a := @use("math.hb").min(100, 50)
+
+main := fn(): int {
+	return a
+}
+
+// in module: math.hb
+
 SIZEOF_INT := 32
 SHIFT := SIZEOF_INT - 1
 min := fn(a: int, b: int): int {
 	c := a - b
 	return b + (c & c >> SHIFT)
-}
-a := min(100, 50)
-
-main := fn(): int {
-	return a
 }
 ```
 
@@ -572,5 +575,40 @@ main := fn(): int {
 		return 0
 	}
 	return 1
+}
+```
+
+#### structs_in_registers
+```hb
+ColorBGRA := struct {b: u8, g: u8, r: u8, a: u8}
+MAGENTA := ColorBGRA.{b: 205, g: 0, r: 205, a: 255}
+
+main := fn(): int {
+	color := MAGENTA
+	return color.r
+}
+```
+
+#### comptime_function_from_another_file
+```hb
+stn := @use("stn.hb")
+
+CONST_A := 100
+CONST_B := 50
+a := stn.math.min(CONST_A, CONST_B)
+
+main := fn(): int {
+	return a
+}
+
+// in module: stn.hb
+math := @use("math.hb")
+
+// in module: math.hb
+SIZEOF_INT := 32
+SHIFT := SIZEOF_INT - 1
+min := fn(a: int, b: int): int {
+	c := a - b
+	return b + (c & c >> SHIFT)
 }
 ```

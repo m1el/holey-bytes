@@ -1852,7 +1852,7 @@ impl Codegen {
 
                         self.tasks.push(Some(FTask {
                             // FIXME: this will fuck us
-                            file: self.ci.file,
+                            file: fuc.file,
                             id: func_id as _,
                         }));
 
@@ -2929,7 +2929,7 @@ impl Codegen {
             match name {
                 Ok(_) => self.report(pos, format_args!("undefined indentifier: {lit_name}")),
                 Err("main") => self.report(pos, format_args!("missing main function: {f}")),
-                Err(name) => unimplemented!("somehow we did not handle: {name:?}"),
+                Err(name) => self.report(pos, format_args!("undefined indentifier: {name}")),
             }
         };
 
@@ -3353,6 +3353,7 @@ mod tests {
         sort_something_viredly => README;
         hex_octal_binary_literals => README;
         comptime_min_reg_leak => README;
-
+       // structs_in_registers => README;
+        comptime_function_from_another_file => README;
     }
 }
