@@ -543,3 +543,18 @@ sqrt := fn(x: int): int {
 	return g
 }
 ```
+
+#### hex_octal_binary_literals
+```hb
+main := fn(): int {
+	hex := 0xFF
+	decimal := 255
+	octal := 0o377
+	binary := 0b11111111
+
+	if hex == decimal & octal == decimal & binary == decimal {
+		return 0
+	}
+	return 1
+}
+```

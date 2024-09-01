@@ -3340,5 +3340,6 @@ mod tests {
         struct_return_from_module_function => README;
         comptime_pointers => README;
         sort_something_viredly => README;
+        hex_octal_binary_literals => README;
     }
 }

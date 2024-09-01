@@ -389,22 +389,23 @@ impl<'a, 'b> Parser<'a, 'b> {
                 pos: token.start,
                 stmts: self.collect_list(T::Semi, T::RBrace, Self::expr),
             },
-            T::Number => E::Number {
-                pos: token.start,
-                value: {
-                    let slice = self.lexer.slice(token.range());
-                    let (slice, radix) = match &slice.get(0..2) {
-                        Some("0x") => (slice.trim_start_matches("0x"), 16),
-                        Some("0b") => (slice.trim_start_matches("0b"), 16),
-                        Some("0o") => (slice.trim_start_matches("0o"), 16),
-                        _ => (slice, 10),
-                    };
-                    match u64::from_str_radix(slice, radix) {
+            T::Number => {
+                let slice = self.lexer.slice(token.range());
+                let (slice, radix) = match &slice.get(0..2) {
+                    Some("0x") => (slice.trim_start_matches("0x"), Radix::Hex),
+                    Some("0b") => (slice.trim_start_matches("0b"), Radix::Binary),
+                    Some("0o") => (slice.trim_start_matches("0o"), Radix::Octal),
+                    _ => (slice, Radix::Decimal),
+                };
+                E::Number {
+                    pos: token.start,
+                    value: match u64::from_str_radix(slice, radix as u32) {
                         Ok(value) => value,
                         Err(e) => self.report(format_args!("invalid number: {e}")),
-                    }
-                },
-            },
+                    },
+                    radix,
+                }
+            }
             T::LParen => {
                 let expr = self.expr();
                 self.expect_advance(T::RParen);
@@ -629,6 +630,15 @@ macro_rules! generate_expr {
     (@last ($($last:tt)*),) => { $($last)* };
 }
 
+#[repr(u32)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Radix {
+    Hex = 16,
+    Octal = 8,
+    Binary = 2,
+    Decimal = 10,
+}
+
 // it would be real nice if we could use relative pointers and still pattern match easily
 generate_expr! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -680,6 +690,7 @@ generate_expr! {
         Number {
             pos:   Pos,
             value: u64,
+            radix: Radix,
         },
         BinOp {
             left:  &'a Self,
@@ -1001,7 +1012,12 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 write!(f, "}}")?;
                 res
             }
-            Self::Number { value, .. } => write!(f, "{value}"),
+            Self::Number { value, radix, .. } => match radix {
+                Radix::Decimal => write!(f, "{value}"),
+                Radix::Hex => write!(f, "{value:#X}"),
+                Radix::Octal => write!(f, "{value:#o}"),
+                Radix::Binary => write!(f, "{value:#b}"),
+            },
             Self::Bool { value, .. } => write!(f, "{value}"),
             Self::BinOp {
                 left,

@@ -293,19 +293,19 @@ impl<'a> Lexer<'a> {
             let kind = match c {
                 ..=b' ' => continue,
                 b'0' if self.advance_if(b'x') => {
-                    while let Some(b'0'..=b'9') = self.peek() {
+                    while let Some(b'0'..=b'9' | b'A'..=b'F' | b'a'..=b'f') = self.peek() {
                         self.advance();
                     }
                     T::Number
                 }
                 b'0' if self.advance_if(b'b') => {
-                    while let Some(b'0'..=b'9') = self.peek() {
+                    while let Some(b'0' | b'1') = self.peek() {
                         self.advance();
                     }
                     T::Number
                 }
                 b'0' if self.advance_if(b'o') => {
-                    while let Some(b'0'..=b'9') = self.peek() {
+                    while let Some(b'0'..=b'7') = self.peek() {
                         self.advance();
                     }
                     T::Number
