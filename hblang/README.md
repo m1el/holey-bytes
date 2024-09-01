@@ -47,7 +47,7 @@ main := fn(): int {
 #### arithmetic
 ```hb
 main := fn(): int {
-	return 10 - 20 / 2 + 4 * (2 + 2) - 4 * 4 + 1
+	return 10 - 20 / 2 + 4 * (2 + 2) - 4 * 4 + 1 << 0
 }
 ```
 
@@ -71,6 +71,7 @@ add_one := fn(x: int): int {
 // commant is an item
 main := fn(): int {
 	// comment is a statement
+
 	foo(/* comment is an exprression /* if you are crazy */ */)
 	return 0
 }
