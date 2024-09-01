@@ -391,9 +391,18 @@ impl<'a, 'b> Parser<'a, 'b> {
             },
             T::Number => E::Number {
                 pos: token.start,
-                value: match self.lexer.slice(token.range()).parse() {
-                    Ok(value) => value,
-                    Err(e) => self.report(format_args!("invalid number: {e}")),
+                value: {
+                    let slice = self.lexer.slice(token.range());
+                    let (slice, radix) = match &slice.get(0..2) {
+                        Some("0x") => (slice.trim_start_matches("0x"), 16),
+                        Some("0b") => (slice.trim_start_matches("0b"), 16),
+                        Some("0o") => (slice.trim_start_matches("0o"), 16),
+                        _ => (slice, 10),
+                    };
+                    match u64::from_str_radix(slice, radix) {
+                        Ok(value) => value,
+                        Err(e) => self.report(format_args!("invalid number: {e}")),
+                    }
                 },
             },
             T::LParen => {
