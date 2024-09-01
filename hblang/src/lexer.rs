@@ -304,6 +304,12 @@ impl<'a> Lexer<'a> {
                     }
                     T::Number
                 }
+                b'0' if self.advance_if(b'o') => {
+                    while let Some(b'0'..=b'9') = self.peek() {
+                        self.advance();
+                    }
+                    T::Number
+                }
                 b'0'..=b'9' => {
                     while let Some(b'0'..=b'9') = self.peek() {
                         self.advance();
