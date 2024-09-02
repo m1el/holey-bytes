@@ -678,10 +678,23 @@ rect_line := fn(buffer: Buffer, pos: Point, tr: Transform, color: ColorBGRA, thi
 	return
 }
 
+random := @use("random.hb")
+
+example := fn(): void {
+	loop {
+		random_x := @inline(random.integer, 0, 1024)
+		random_y := random.integer(0, 768)
+		a := @inline(screenidx, random_x, random_y)
+		break
+	}
+	return
+}
+
 main := fn(): int {
 	line(.(), .(0, 0), .(0, 0), .(0, 0), 10)
 	rect_line(.(), .(0, 0), .(0, 0), .(0, 0), 10)
-	return
+	example()
+	return 0
 }
 
 // in module: screen.hb
@@ -690,4 +703,14 @@ screenidx := fn(orange: int): int {
 	return orange
 }
 
+// in module: random.hb
+
+integer := fn(min: int, max: int): int {
+	rng := @eca(int, 3, 4)
+
+	if min != 0 | max != 0 {
+		return rng % (max - min + 1) + min
+	}
+	return rng
+}
 ```

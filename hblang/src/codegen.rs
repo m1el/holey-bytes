@@ -8,7 +8,7 @@ use {
         parser::{self, find_symbol, idfl, CtorField, Expr, ExprRef, FileId, Pos},
         HashMap,
     },
-    std::{ops::Range, rc::Rc, usize},
+    std::{ops::Range, rc::Rc, u32, usize},
 };
 
 type Offset = u32;
@@ -1981,7 +1981,7 @@ impl Codegen {
                 tk => Some(Value::ty(tk.compress())),
             },
             E::Return { pos, val, .. } => {
-                if let Some(val) = val {
+                let ty = if let Some(val) = val {
                     let size = self.ci.ret.map_or(17, |ty| self.tys.size_of(ty));
                     let loc = match size {
                         _ if self.ci.inline_ret_loc != Loc::default() => {
@@ -1991,12 +1991,16 @@ impl Codegen {
                         1..=16 => Some(Loc::reg(1)),
                         _ => Some(Loc::reg(self.ci.ret_reg.as_ref()).into_derefed()),
                     };
-                    let ty = self.expr_ctx(val, Ctx { ty: self.ci.ret, loc })?.ty;
-                    match self.ci.ret {
-                        None => self.ci.ret = Some(ty),
-                        Some(ret) => _ = self.assert_ty(pos, ty, ret),
-                    }
+                    self.expr_ctx(val, Ctx { ty: self.ci.ret, loc })?.ty
+                } else {
+                    ty::VOID.into()
+                };
+
+                match self.ci.ret {
+                    None => self.ci.ret = Some(ty),
+                    Some(ret) => _ = self.assert_ty(pos, ty, ret),
                 }
+
                 self.ci.ret_relocs.push(Reloc::new(self.local_offset(), 1, 4));
                 self.output.emit(jmp(0));
                 None
@@ -3050,6 +3054,7 @@ impl Codegen {
         if let Some(existing) = self.tys.syms.get(&SymKey { file, ident }) {
             if let ty::Kind::Func(id) = existing.expand()
                 && let func = &mut self.tys.funcs[id as usize]
+                && func.offset != u32::MAX
                 && let Err(idx) = task::unpack(func.offset)
             {
                 func.offset = task::id(self.tasks.len());
@@ -3438,6 +3443,7 @@ mod tests {
                         let layout = std::alloc::Layout::from_size_align(size, align).unwrap();
                         unsafe { std::alloc::dealloc(ptr as *mut u8, layout) };
                     }
+                    3 => vm.write_reg(1, 42),
                     unknown => unreachable!("unknown ecall: {unknown:?}"),
                 },
                 Ok(ev) => writeln!(output, "ev: {:?}", ev).unwrap(),
