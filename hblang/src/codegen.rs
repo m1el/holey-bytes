@@ -8,8 +8,7 @@ use {
         parser::{self, find_symbol, idfl, CtorField, Expr, ExprRef, FileId, Pos},
         HashMap,
     },
-    core::panic,
-    std::{ops::Range, rc::Rc},
+    std::{ops::Range, rc::Rc, usize},
 };
 
 type Offset = u32;
@@ -635,6 +634,13 @@ impl Loc {
         Self::Rt { stack: Some(stack), reg: reg::STACK_PTR.into(), derefed: true, offset: 0 }
     }
 
+    fn get_reg(&self) -> reg::Id {
+        match self {
+            Self::Rt { reg, .. } => reg.as_ref(),
+            _ => unreachable!(),
+        }
+    }
+
     fn reg(reg: impl Into<reg::Id>) -> Self {
         let reg = reg.into();
         assert!(reg.get() != 0);
@@ -778,6 +784,15 @@ impl ItemCtx {
             reloc.offset += base;
             debug_assert!(reloc.offset < len);
         }
+
+        if let Some(last_ret) = self.ret_relocs.last()
+            && last_ret.offset as usize == output.code.len() - 5
+        {
+            output.code.truncate(output.code.len() - 5);
+            self.ret_relocs.pop();
+        }
+
+        let len = output.code.len() as Offset;
 
         self.stack.finalize_leaked();
         for rel in self.stack_relocs.drain(..) {
@@ -1044,6 +1059,24 @@ pub struct Snapshot {
     funcs: usize,
     globals: usize,
     strings: usize,
+}
+
+impl Snapshot {
+    fn _sub(&mut self, other: &Self) {
+        self.code -= other.code;
+        self.string_data -= other.string_data;
+        self.funcs -= other.funcs;
+        self.globals -= other.globals;
+        self.strings -= other.strings;
+    }
+
+    fn _add(&mut self, other: &Self) {
+        self.code += other.code;
+        self.string_data += other.string_data;
+        self.funcs += other.funcs;
+        self.globals += other.globals;
+        self.strings += other.strings;
+    }
 }
 
 #[derive(Default)]
@@ -1348,6 +1381,7 @@ impl Codegen {
     pub fn generate(&mut self) {
         self.output.emit_entry_prelude();
         self.find_or_declare(0, 0, Err("main"), "");
+        self.make_func_reachable(0);
         self.complete_call_graph_low();
         self.link();
     }
@@ -1474,6 +1508,53 @@ impl Codegen {
                 let val = self.ty(val);
                 Some(Value::ty(self.tys.make_ptr(val)))
             }
+            E::Directive { name: "inline", args: [func_ast, args @ ..], .. } => {
+                let ty::Kind::Func(mut func) = self.ty(func_ast).expand() else {
+                    self.report(func_ast.pos(), "first argument of inline needs to be a function");
+                };
+
+                let fuc = self.tys.funcs[func as usize];
+                let fast = self.files[fuc.file as usize].clone();
+                let E::BinOp { right: &E::Closure { args: cargs, body, .. }, .. } =
+                    fuc.expr.get(&fast).unwrap()
+                else {
+                    unreachable!();
+                };
+
+                let scope = self.ci.vars.len();
+                let sig = self.compute_signature(&mut func, func_ast.pos(), args)?;
+
+                if scope == self.ci.vars.len() {
+                    for ((arg, ty), carg) in
+                        args.iter().zip(sig.args.view(&self.tys.args).to_owned()).zip(cargs)
+                    {
+                        let loc = self.expr_ctx(arg, Ctx::default().with_ty(ty))?.loc;
+                        self.ci.vars.push(Variable { id: carg.id, value: Value { ty, loc } });
+                    }
+                }
+
+                let ret_reloc_base = self.ci.ret_relocs.len();
+
+                let loc = self.alloc_ret(sig.ret, ctx, false);
+                let prev_ret_reg = std::mem::replace(&mut self.ci.ret_reg, loc.get_reg());
+                self.expr(body);
+                self.ci.ret_reg = prev_ret_reg;
+
+                //if let Some(last_ret) = self.ci.ret_relocs.last()
+                //    && last_ret.offset as usize + self.ci.snap.code == self.output.code.len() - 5
+                //{
+                //    self.output.code.truncate(self.output.code.len() - 5);
+                //    self.ci.ret_relocs.pop();
+                //}
+                let len = self.output.code.len() as u32;
+                for mut rel in self.ci.ret_relocs.drain(ret_reloc_base..) {
+                    rel.offset += self.ci.snap.code as u32;
+                    rel.shifted = true;
+                    rel.apply_jump(&mut self.output.code, len);
+                }
+
+                return Some(Value { ty: sig.ret, loc });
+            }
             E::Directive { name: "TypeOf", args: [expr], .. } => {
                 let snap = self.output.snap();
                 let value = self.expr(expr).unwrap();
@@ -1495,7 +1576,7 @@ impl Codegen {
                     self.ci.free_loc(value);
                 }
 
-                let loc = self.alloc_ret(ty, ctx);
+                let loc = self.alloc_ret(ty, ctx, false);
 
                 self.output.emit(eca());
 
@@ -1797,70 +1878,25 @@ impl Codegen {
                     self.report(fast.pos(), "can't call this, maybe in the future");
                 };
 
+                // TODO: this will be usefull but not now
+                let scope = self.ci.vars.len();
+                //let mut snap = self.output.snap();
+                //snap.sub(&self.ci.snap);
+                //let prev_stack_rel = self.ci.stack_relocs.len();
+                //let prev_ret_rel = self.ci.ret_relocs.len();
+                let sig = self.compute_signature(&mut func, expr.pos(), args)?;
+                //self.ci.ret_relocs.truncate(prev_ret_rel);
+                //self.ci.stack_relocs.truncate(prev_stack_rel);
+                //snap.add(&self.ci.snap);
+                //self.output.trunc(&snap);
+                self.ci.vars.truncate(scope);
+
                 let fuc = self.tys.funcs[func as usize];
                 let ast = self.files[fuc.file as usize].clone();
-                let E::BinOp { right: &E::Closure { args: cargs, ret, .. }, .. } =
+                let E::BinOp { right: &E::Closure { args: cargs, .. }, .. } =
                     fuc.expr.get(&ast).unwrap()
                 else {
                     unreachable!();
-                };
-
-                let sig = if let Some(sig) = fuc.sig {
-                    sig
-                } else {
-                    let scope = self.ci.vars.len();
-                    let arg_base = self.tys.args.len();
-
-                    for (arg, carg) in args.iter().zip(cargs) {
-                        let ty = self.ty(&carg.ty);
-                        log::dbg!("arg: {}", self.ty_display(ty));
-                        self.tys.args.push(ty);
-                        let sym = parser::find_symbol(&ast.symbols, carg.id);
-                        let loc = if sym.flags & idfl::COMPTIME == 0 {
-                            // FIXME: could fuck us
-                            Loc::default()
-                        } else {
-                            debug_assert_eq!(
-                                ty,
-                                ty::TYPE.into(),
-                                "TODO: we dont support anything except type generics"
-                            );
-                            let arg = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
-                            self.tys.args.push(arg.loc.to_ty().unwrap());
-                            arg.loc
-                        };
-
-                        self.ci.vars.push(Variable { id: carg.id, value: Value { ty, loc } });
-                    }
-
-                    let args = self.pack_args(expr.pos(), arg_base);
-                    let ret = self.ty(ret);
-                    self.ci.vars.truncate(scope);
-
-                    let sym = SymKey {
-                        file: !args.repr(),
-                        ident: ty::Kind::Func(func).compress().repr(),
-                    };
-                    let ct = || {
-                        let func_id = self.tys.funcs.len();
-                        self.tys.funcs.push(Func {
-                            file: fuc.file,
-                            offset: task::id(func_id),
-                            sig: Some(Sig { args, ret }),
-                            expr: fuc.expr,
-                        });
-
-                        self.tasks.push(Some(FTask {
-                            // FIXME: this will fuck us
-                            file: fuc.file,
-                            id: func_id as _,
-                        }));
-
-                        ty::Kind::Func(func_id as _).compress()
-                    };
-                    func = self.tys.syms.entry(sym).or_insert_with(ct).expand().inner();
-
-                    Sig { args, ret }
                 };
 
                 let mut parama = self.tys.parama(sig.ret);
@@ -1888,7 +1924,7 @@ impl Codegen {
 
                 log::dbg!("call ctx: {ctx:?}");
 
-                let loc = self.alloc_ret(sig.ret, ctx);
+                let loc = self.alloc_ret(sig.ret, ctx, false);
 
                 if should_momize {
                     self.output.write_trap(trap::Trap::MomizedCall(trap::MomizedCall { func }));
@@ -1897,6 +1933,7 @@ impl Codegen {
                 let reloc = Reloc::new(self.local_offset(), 3, 4);
                 self.output.funcs.push((func, reloc));
                 self.output.emit(jal(RET_ADDR, ZERO, 0));
+                self.make_func_reachable(func);
 
                 if should_momize {
                     self.output.emit(tx());
@@ -2174,6 +2211,63 @@ impl Codegen {
                 Value { ty, loc: Loc::ct(0) }
             }
             None => value,
+        })
+    }
+
+    fn compute_signature(&mut self, func: &mut ty::Func, pos: Pos, args: &[Expr]) -> Option<Sig> {
+        let fuc = self.tys.funcs[*func as usize];
+        let fast = self.files[fuc.file as usize].clone();
+        let Expr::BinOp { right: &Expr::Closure { args: cargs, ret, .. }, .. } =
+            fuc.expr.get(&fast).unwrap()
+        else {
+            unreachable!();
+        };
+
+        Some(if let Some(sig) = fuc.sig {
+            sig
+        } else {
+            let arg_base = self.tys.args.len();
+
+            for (arg, carg) in args.iter().zip(cargs) {
+                let ty = self.ty(&carg.ty);
+                log::dbg!("arg: {}", self.ty_display(ty));
+                self.tys.args.push(ty);
+                let sym = parser::find_symbol(&fast.symbols, carg.id);
+                let loc = if sym.flags & idfl::COMPTIME == 0 {
+                    // FIXME: could fuck us
+                    Loc::default()
+                } else {
+                    debug_assert_eq!(
+                        ty,
+                        ty::TYPE.into(),
+                        "TODO: we dont support anything except type generics"
+                    );
+                    let arg = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
+                    self.tys.args.push(arg.loc.to_ty().unwrap());
+                    arg.loc
+                };
+
+                self.ci.vars.push(Variable { id: carg.id, value: Value { ty, loc } });
+            }
+
+            let args = self.pack_args(pos, arg_base);
+            let ret = self.ty(ret);
+
+            let sym = SymKey { file: !args.repr(), ident: ty::Kind::Func(*func).compress().repr() };
+            let ct = || {
+                let func_id = self.tys.funcs.len();
+                self.tys.funcs.push(Func {
+                    file: fuc.file,
+                    offset: u32::MAX,
+                    sig: Some(Sig { args, ret }),
+                    expr: fuc.expr,
+                });
+
+                ty::Kind::Func(func_id as _).compress()
+            };
+            *func = self.tys.syms.entry(sym).or_insert_with(ct).expand().inner();
+
+            Sig { args, ret }
         })
     }
 
@@ -2625,7 +2719,7 @@ impl Codegen {
         Value { ty: ret.into(), loc: Loc::reg(1) }
     }
 
-    fn alloc_ret(&mut self, ret: ty::Id, ctx: Ctx) -> Loc {
+    fn alloc_ret(&mut self, ret: ty::Id, ctx: Ctx, custom_ret_reg: bool) -> Loc {
         let size = self.tys.size_of(ret);
         if size == 0 {
             debug_assert!(ctx.loc.is_none(), "{}", self.ty_display(ret));
@@ -2638,9 +2732,10 @@ impl Codegen {
 
         match size {
             0 => Loc::default(),
+            1..=8 if custom_ret_reg => Loc::reg(self.ci.regs.allocate()),
             1..=8 => Loc::reg(1),
             9..=16 => Loc::stack(self.ci.stack.allocate(size)),
-            _ => {
+            17.. => {
                 let loc = ctx.loc.unwrap_or_else(|| Loc::stack(self.ci.stack.allocate(size)));
                 let Loc::Rt { reg, stack, offset, .. } = &loc else {
                     todo!("old man with the beard looks at the sky scared");
@@ -2955,10 +3050,8 @@ impl Codegen {
                 op: TokenKind::Decl,
                 right: &Expr::Closure { pos, args, ret, .. },
             } => {
-                let mut push_task = false;
                 let func = Func {
                     file,
-                    offset: task::id(self.tasks.len()),
                     sig: 'b: {
                         let arg_base = self.tys.args.len();
                         for arg in args {
@@ -2971,8 +3064,6 @@ impl Codegen {
                             self.tys.args.push(ty);
                         }
 
-                        push_task = true;
-
                         let args = self.pack_args(pos, arg_base);
                         log::dbg!("eval ret");
                         let ret = self.ty(ret);
@@ -2984,12 +3075,10 @@ impl Codegen {
                         debug_assert!(refr.get(&f).is_some());
                         refr
                     },
+                    offset: u32::MAX,
                 };
 
                 let id = self.tys.funcs.len() as _;
-                if push_task {
-                    self.tasks.push(Some(FTask { file, id }));
-                }
                 self.tys.funcs.push(func);
 
                 ty::Kind::Func(id)
@@ -3021,6 +3110,14 @@ impl Codegen {
         self.ci.file = prev_file;
         self.tys.syms.insert(SymKey { ident, file }, sym.compress());
         sym
+    }
+
+    fn make_func_reachable(&mut self, func: ty::Func) {
+        let fuc = &mut self.tys.funcs[func as usize];
+        if fuc.offset == u32::MAX {
+            fuc.offset = task::id(self.tasks.len() as _);
+            self.tasks.push(Some(FTask { file: fuc.file, id: func }));
+        }
     }
 
     fn generate_global(&mut self, expr: &Expr) -> Global {
@@ -3364,5 +3461,6 @@ mod tests {
         comptime_min_reg_leak => README;
        // structs_in_registers => README;
         comptime_function_from_another_file => README;
+        inline => README;
     }
 }

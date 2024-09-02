@@ -239,7 +239,7 @@ main := fn(): int {
 	align_of_Type_in_bytes := @alignof(foo.Type)
 	hardcoded_pointer := @as(^u8, @bitcast(10))
 	ecall_that_returns_int := @eca(int, 1, foo.Type.(10, 20), 5, 6)
-	return 0
+	return @inline(foo.foo)
 }
 
 // in module: foo.hb
@@ -248,6 +248,8 @@ Type := struct {
 	brah: int,
 	blah: int,
 }
+
+foo := fn(): int return 0
 ```
 
 - `@use(<string>)`: imports a module based of string, the string is passed to a loader that can be customized, default loader uses following syntax:
@@ -257,7 +259,8 @@ Type := struct {
 - `@intcast(<expr>)`: needs to be used when conversion of `@TypeOf(<expr>)` would loose precision (widening of integers is implicit)
 - `@sizeof(<ty>), @alignof(<ty>)`: I think explaining this would insult your intelligence
 - `@bitcast(<expr>)`: tell compiler to assume `@TypeOf(<expr>)` is whatever is inferred, so long as size and alignment did not change
-- `@eca(<ty>, <expr>...)`: invoke `eca` instruction, where `<ty>` is the type this will return and `<expr>...` are arguments passed to the call
+- `@eca(<ty>, ...<expr>)`: invoke `eca` instruction, where `<ty>` is the type this will return and `<expr>...` are arguments passed to the call
+- `@inline(<func>, ...<args>)`: equivalent to `<func>(...<args>)` but function is guaranteed to inline, compiler will otherwise never inline
 
 #### c_strings
 ```hb
@@ -321,6 +324,17 @@ main := fn(): int {
 
 pass := fn(arr: ^[int; 3]): int {
 	return arr[0] + arr[1] + arr[arr[1]]
+}
+```
+
+#### inline
+```hb
+main := fn(): int {
+	return @inline(foo, 1, 2, 3) - 6
+}
+
+foo := fn(a: int, b: int, c: int): int {
+	return a + b + c
 }
 ```
 
