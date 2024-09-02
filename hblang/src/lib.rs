@@ -37,6 +37,7 @@ macro_rules! run_tests {
 
 pub mod codegen;
 pub mod parser;
+pub mod son;
 
 mod instrs;
 mod lexer;

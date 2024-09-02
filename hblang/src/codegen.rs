@@ -8,7 +8,7 @@ use {
         parser::{self, find_symbol, idfl, CtorField, Expr, ExprRef, FileId, Pos},
         HashMap,
     },
-    std::{ops::Range, rc::Rc, u32, usize},
+    std::{ops::Range, rc::Rc},
 };
 
 type Offset = u32;
@@ -632,13 +632,6 @@ enum Loc {
 impl Loc {
     fn stack(stack: stack::Id) -> Self {
         Self::Rt { stack: Some(stack), reg: reg::STACK_PTR.into(), derefed: true, offset: 0 }
-    }
-
-    fn get_reg(&self) -> reg::Id {
-        match self {
-            Self::Rt { reg, .. } => reg.as_ref(),
-            _ => reg::Id::from(0),
-        }
     }
 
     fn reg(reg: impl Into<reg::Id>) -> Self {
