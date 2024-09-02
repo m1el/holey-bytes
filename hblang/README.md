@@ -626,3 +626,40 @@ min := fn(a: int, b: int): int {
 	return b + (c & c >> SHIFT)
 }
 ```
+
+#### inline_test
+```hb
+Point := struct {x: int, y: int}
+Buffer := struct {}
+ColorBGRA := Point
+
+line := fn(buffer: Buffer, p0: Point, p1: Point, color: ColorBGRA, thickness: int): void {
+	if true {
+		if p0.x > p1.x {
+			@inline(line_low, buffer, p1, p0, color)
+		} else {
+			@inline(line_low, buffer, p0, p1, color)
+		}
+	} else {
+		if p0.y > p1.y {
+			@inline(line_high, buffer, p1, p0, color)
+		} else {
+			@inline(line_high, buffer, p0, p1, color)
+		}
+	}
+	return
+}
+
+line_low := fn(buffer: Buffer, p0: Point, p1: Point, color: ColorBGRA): void {
+	return
+}
+
+line_high := fn(buffer: Buffer, p0: Point, p1: Point, color: ColorBGRA): void {
+	return
+}
+
+main := fn(): int {
+	line(.(), .(0, 0), .(0, 0), .(0, 0), 10)
+	return
+}
+```

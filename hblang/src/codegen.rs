@@ -637,7 +637,7 @@ impl Loc {
     fn get_reg(&self) -> reg::Id {
         match self {
             Self::Rt { reg, .. } => reg.as_ref(),
-            _ => unreachable!(),
+            _ => reg::Id::from(0),
         }
     }
 
@@ -744,6 +744,7 @@ struct ItemCtx {
     id: ty::Kind,
     ret: Option<ty::Id>,
     ret_reg: reg::Id,
+    inline_ret_loc: Loc,
 
     task_base: usize,
     snap: Snapshot,
@@ -1535,17 +1536,17 @@ impl Codegen {
 
                 let ret_reloc_base = self.ci.ret_relocs.len();
 
-                let loc = self.alloc_ret(sig.ret, ctx, false);
-                let prev_ret_reg = std::mem::replace(&mut self.ci.ret_reg, loc.get_reg());
+                let loc = self.alloc_ret(sig.ret, ctx, true);
+                let prev_ret_reg = std::mem::replace(&mut self.ci.inline_ret_loc, loc);
                 self.expr(body);
-                self.ci.ret_reg = prev_ret_reg;
+                let loc = std::mem::replace(&mut self.ci.inline_ret_loc, prev_ret_reg);
 
-                //if let Some(last_ret) = self.ci.ret_relocs.last()
-                //    && last_ret.offset as usize + self.ci.snap.code == self.output.code.len() - 5
-                //{
-                //    self.output.code.truncate(self.output.code.len() - 5);
-                //    self.ci.ret_relocs.pop();
-                //}
+                if let Some(last_ret) = self.ci.ret_relocs.last()
+                    && last_ret.offset as usize + self.ci.snap.code == self.output.code.len() - 5
+                {
+                    self.output.code.truncate(self.output.code.len() - 5);
+                    self.ci.ret_relocs.pop();
+                }
                 let len = self.output.code.len() as u32;
                 for mut rel in self.ci.ret_relocs.drain(ret_reloc_base..) {
                     rel.offset += self.ci.snap.code as u32;
@@ -1975,6 +1976,9 @@ impl Codegen {
                 if let Some(val) = val {
                     let size = self.ci.ret.map_or(17, |ty| self.tys.size_of(ty));
                     let loc = match size {
+                        _ if self.ci.inline_ret_loc != Loc::default() => {
+                            Some(self.ci.inline_ret_loc.as_ref())
+                        }
                         0 => None,
                         1..=16 => Some(Loc::reg(1)),
                         _ => Some(Loc::reg(self.ci.ret_reg.as_ref()).into_derefed()),
@@ -2006,6 +2010,7 @@ impl Codegen {
                 let jump_offset = self.local_offset();
                 self.output.emit(jeq(reg.get(), 0, 0));
                 self.ci.free_loc(cond.loc);
+                self.ci.regs.free(reg);
 
                 log::dbg!("if-then");
                 let then_unreachable = self.expr(then).is_none();
@@ -3465,5 +3470,6 @@ mod tests {
        // structs_in_registers => README;
         comptime_function_from_another_file => README;
         inline => README;
+        inline_test => README;
     }
 }
