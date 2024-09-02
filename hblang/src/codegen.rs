@@ -1545,6 +1545,10 @@ impl Codegen {
                 self.ci.file = prev_file;
                 self.ci.ret = prev_ret;
 
+                for var in self.ci.vars.drain(scope..).collect::<Vec<_>>() {
+                    self.ci.free_loc(var.value.loc);
+                }
+
                 if let Some(last_ret) = self.ci.ret_relocs.last()
                     && last_ret.offset as usize + self.ci.snap.code == self.output.code.len() - 5
                 {

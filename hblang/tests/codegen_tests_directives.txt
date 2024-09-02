@@ -1,4 +1,4 @@
 ev: Ecall
-code size: 239
+code size: 234
 ret: 0
 status: Ok(())
