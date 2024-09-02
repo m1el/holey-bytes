@@ -1326,17 +1326,17 @@ impl ArenaChunk {
 
 impl Drop for ArenaChunk {
     fn drop(&mut self) {
-        log::inf!(
-            "dropping chunk of size: {}",
-            (Self::LAYOUT.size() - (self.end as usize - self.base as usize))
-                * !self.end.is_null() as usize
-        );
+        //log::inf!(
+        //    "dropping chunk of size: {}",
+        //    (Self::LAYOUT.size() - (self.end as usize - self.base as usize))
+        //        * !self.end.is_null() as usize
+        //);
         let mut current = self.base;
         while !current.is_null() {
             let next = Self::next(current);
             unsafe { std::alloc::dealloc(current, Self::LAYOUT) };
             current = next;
-            log::dbg!("deallocating full chunk");
+            //log::dbg!("deallocating full chunk");
         }
     }
 }
