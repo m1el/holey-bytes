@@ -1549,7 +1549,10 @@ impl Codegen {
                 let len = self.output.code.len() as u32;
                 for mut rel in self.ci.ret_relocs.drain(ret_reloc_base..) {
                     rel.offset += self.ci.snap.code as u32;
-                    rel.shifted = true;
+                    #[cfg(debug_assertions)]
+                    {
+                        rel.shifted = true;
+                    }
                     rel.apply_jump(&mut self.output.code, len);
                 }
 
