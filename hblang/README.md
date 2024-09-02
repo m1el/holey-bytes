@@ -631,6 +631,7 @@ min := fn(a: int, b: int): int {
 ```hb
 Point := struct {x: int, y: int}
 Buffer := struct {}
+Transform := Point
 ColorBGRA := Point
 
 line := fn(buffer: Buffer, p0: Point, p1: Point, color: ColorBGRA, thickness: int): void {
@@ -658,8 +659,35 @@ line_high := fn(buffer: Buffer, p0: Point, p1: Point, color: ColorBGRA): void {
 	return
 }
 
-main := fn(): int {
-	line(.(), .(0, 0), .(0, 0), .(0, 0), 10)
+screenidx := @use("screen.hb").screenidx
+
+rect_line := fn(buffer: Buffer, pos: Point, tr: Transform, color: ColorBGRA, thickness: int): void {
+	t := 0
+	y := 0
+	x := 0
+	loop if t == thickness break else {
+		y = pos.y
+		x = pos.x
+		loop if y == pos.y + tr.x break else {
+			a := 1 + @inline(screenidx, 10)
+			a = 1 + @inline(screenidx, 2)
+			y += 1
+		}
+		t += 1
+	}
 	return
 }
+
+main := fn(): int {
+	line(.(), .(0, 0), .(0, 0), .(0, 0), 10)
+	rect_line(.(), .(0, 0), .(0, 0), .(0, 0), 10)
+	return
+}
+
+// in module: screen.hb
+
+screenidx := fn(orange: int): int {
+	return orange
+}
+
 ```

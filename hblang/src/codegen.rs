@@ -1538,8 +1538,12 @@ impl Codegen {
 
                 let loc = self.alloc_ret(sig.ret, ctx, true);
                 let prev_ret_reg = std::mem::replace(&mut self.ci.inline_ret_loc, loc);
+                let prev_file = std::mem::replace(&mut self.ci.file, fuc.file);
+                let prev_ret = std::mem::replace(&mut self.ci.ret, Some(sig.ret));
                 self.expr(body);
                 let loc = std::mem::replace(&mut self.ci.inline_ret_loc, prev_ret_reg);
+                self.ci.file = prev_file;
+                self.ci.ret = prev_ret;
 
                 if let Some(last_ret) = self.ci.ret_relocs.last()
                     && last_ret.offset as usize + self.ci.snap.code == self.output.code.len() - 5
