@@ -871,6 +871,7 @@ struct Func {
 struct Global {
     offset: Offset,
     ty: ty::Id,
+    runtime: bool,
 }
 
 struct Field {
@@ -3126,7 +3127,11 @@ impl Codegen {
             } => ty::Kind::Struct(self.build_struct(fields)),
             Expr::BinOp { left, op: TokenKind::Decl, right } => {
                 let gid = self.tys.globals.len() as ty::Global;
-                self.tys.globals.push(Global { offset: u32::MAX, ty: Default::default() });
+                self.tys.globals.push(Global {
+                    offset: u32::MAX,
+                    ty: Default::default(),
+                    runtime: false,
+                });
 
                 let ci = ItemCtx {
                     file,
@@ -3185,7 +3190,7 @@ impl Codegen {
 
         self.ci.free_loc(ret.loc);
 
-        Global { ty: ret.ty, offset: offset as _ }
+        Global { ty: ret.ty, offset: offset as _, runtime: false }
     }
 
     fn dunp_imported_fns(&mut self) {
