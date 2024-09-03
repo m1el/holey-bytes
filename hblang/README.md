@@ -18,6 +18,7 @@ Holey-Bytes-Language (hblang for short) (*.hb) is the only true language targeti
 
 hblang knows what it isn't, because it knows what it is, hblang computes this by sub...
 
+
 ## Examples
 
 Examples are also used in tests. To add an example that runs during testing add:
@@ -624,6 +625,16 @@ SHIFT := SIZEOF_INT - 1
 min := fn(a: int, b: int): int {
 	c := a - b
 	return b + (c & c >> SHIFT)
+}
+```
+
+### Just Testing Optimizations
+
+#### const_folding_with_arg
+```hb
+main := fn(arg: int): int {
+	// reduces to 0
+	return arg + 0 - arg * 1 + arg + 1 + arg + 2 + arg + 3 - arg * 3 - 6
 }
 ```
 

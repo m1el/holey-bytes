@@ -2006,7 +2006,7 @@ impl Codegen {
             }
             E::Number { value, .. } => Some(Value {
                 ty: ctx.ty.map(ty::Id::strip_pointer).unwrap_or(ty::INT.into()),
-                loc: Loc::ct(value),
+                loc: Loc::ct(value as u64),
             }),
             E::If { cond, then, else_, .. } => {
                 log::dbg!("if-cond");

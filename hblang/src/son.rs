@@ -1,13 +1,13 @@
 #![allow(dead_code)]
 use {
     crate::{
-        ident::Ident,
-        instrs::{self},
-        lexer::{self},
+        ident::{self, Ident},
+        lexer::{self, TokenKind},
         log,
-        parser::{self, Expr, ExprRef, FileId, Pos},
+        parser::{self, idfl, Expr, ExprRef, FileId, Pos},
         HashMap,
     },
+    core::fmt,
     std::{
         mem,
         ops::{self, Range},
@@ -16,20 +16,22 @@ use {
 };
 
 type Nid = u32;
+const NILL: u32 = u32::MAX;
 
-pub struct PoolVec<T> {
-    values: Vec<PoolSlot<T>>,
+pub struct Nodes {
+    values: Vec<PoolSlot>,
     free: u32,
+    lookup: HashMap<(Kind, [Nid; MAX_INPUTS]), Nid>,
 }
 
-impl<T> Default for PoolVec<T> {
+impl Default for Nodes {
     fn default() -> Self {
-        Self { values: Default::default(), free: u32::MAX }
+        Self { values: Default::default(), free: u32::MAX, lookup: Default::default() }
     }
 }
 
-impl<T> PoolVec<T> {
-    pub fn add(&mut self, value: T) -> u32 {
+impl Nodes {
+    pub fn add(&mut self, value: Node) -> u32 {
         if self.free == u32::MAX {
             self.free = self.values.len() as _;
             self.values.push(PoolSlot::Next(u32::MAX));
@@ -43,7 +45,7 @@ impl<T> PoolVec<T> {
         free
     }
 
-    pub fn remove(&mut self, id: u32) -> T {
+    pub fn remove_low(&mut self, id: u32) -> Node {
         let value = match mem::replace(&mut self.values[id as usize], PoolSlot::Next(self.free)) {
             PoolSlot::Value(value) => value,
             PoolSlot::Next(_) => unreachable!(),
@@ -56,10 +58,287 @@ impl<T> PoolVec<T> {
         self.values.clear();
         self.free = u32::MAX;
     }
+
+    fn new_node<const SIZE: usize>(
+        &mut self,
+        ty: impl Into<ty::Id>,
+        kind: Kind,
+        inps: [Nid; SIZE],
+    ) -> Nid {
+        let mut inputs = [NILL; MAX_INPUTS];
+        inputs[..inps.len()].copy_from_slice(&inps);
+
+        if let Some(&id) = self.lookup.get(&(kind, inputs)) {
+            debug_assert_eq!(self[id].kind, kind);
+            debug_assert_eq!(self[id].inputs, inputs);
+            return id;
+        }
+
+        let id = self.add(Node {
+            inputs,
+            kind,
+            depth: u32::MAX,
+            lock_rc: 0,
+            ty: ty.into(),
+            outputs: vec![],
+        });
+
+        let prev = self.lookup.insert((kind, inputs), id);
+        debug_assert_eq!(prev, None);
+
+        self.add_deps(id, &inps);
+        if let Some(opt) = self.peephole(id) {
+            debug_assert_ne!(opt, id);
+            self.lock(opt);
+            self.remove(id);
+            self.unlock(opt);
+            opt
+        } else {
+            id
+        }
+    }
+
+    fn lock(&mut self, target: Nid) {
+        self[target].lock_rc += 1;
+    }
+
+    fn unlock(&mut self, target: Nid) {
+        self[target].lock_rc -= 1;
+    }
+
+    fn remove(&mut self, target: Nid) {
+        if !self[target].is_dangling() {
+            return;
+        }
+        for i in 0..self[target].inputs().len() {
+            let inp = self[target].inputs[i];
+            let index = self[inp].outputs.iter().position(|&p| p == target).unwrap();
+            self[inp].outputs.swap_remove(index);
+            self.remove(inp);
+        }
+        let res = self.lookup.remove(&(self[target].kind, self[target].inputs));
+        debug_assert_eq!(res, Some(target));
+        self.remove_low(target);
+    }
+
+    fn peephole(&mut self, target: Nid) -> Option<Nid> {
+        match self[target].kind {
+            Kind::Start => {}
+            Kind::End => {}
+            Kind::BinOp { op } => return self.peephole_binop(target, op),
+            Kind::Return => {}
+            Kind::Tuple { index } => {}
+            Kind::ConstInt { value } => {}
+        }
+        None
+    }
+
+    fn peephole_binop(&mut self, target: Nid, op: TokenKind) -> Option<Nid> {
+        use TokenKind as T;
+        let [mut lhs, mut rhs, ..] = self[target].inputs;
+
+        if lhs == rhs {
+            match op {
+                T::Sub => {
+                    return Some(self.new_node(self[target].ty, Kind::ConstInt { value: 0 }, []));
+                }
+                T::Add => {
+                    let rhs = self.new_node(self[target].ty, Kind::ConstInt { value: 2 }, []);
+                    return Some(
+                        self.new_node(self[target].ty, Kind::BinOp { op: T::Mul }, [lhs, rhs]),
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        if let (Kind::ConstInt { value: a }, Kind::ConstInt { value: b }) =
+            (self[lhs].kind, self[rhs].kind)
+        {
+            return Some(self.new_node(
+                self[target].ty,
+                Kind::ConstInt { value: op.apply(a, b) },
+                [],
+            ));
+        }
+
+        let mut changed = false;
+        if op.is_comutative() && self[lhs].kind < self[rhs].kind {
+            std::mem::swap(&mut lhs, &mut rhs);
+            changed = true;
+        }
+
+        if let Kind::ConstInt { value } = self[rhs].kind {
+            match (op, value) {
+                (T::Add | T::Sub | T::Shl, 0) | (T::Mul | T::Div, 1) => return Some(lhs),
+                (T::Mul, 0) => return Some(rhs),
+                _ => {}
+            }
+        }
+
+        if op.is_comutative() && self[lhs].kind == (Kind::BinOp { op }) {
+            if let Kind::ConstInt { value: a } = self[self[lhs].inputs[1]].kind
+                && let Kind::ConstInt { value: b } = self[rhs].kind
+            {
+                let new_rhs =
+                    self.new_node(self[target].ty, Kind::ConstInt { value: op.apply(a, b) }, []);
+                return Some(self.new_node(self[target].ty, Kind::BinOp { op }, [
+                    self[lhs].inputs[0],
+                    new_rhs,
+                ]));
+            }
+
+            if self.is_const(self[lhs].inputs[1]) {
+                let new_lhs =
+                    self.new_node(self[target].ty, Kind::BinOp { op }, [self[lhs].inputs[0], rhs]);
+                return Some(self.new_node(self[target].ty, Kind::BinOp { op }, [
+                    new_lhs,
+                    self[lhs].inputs[1],
+                ]));
+            }
+        }
+
+        if op == T::Add
+            && self[lhs].kind == (Kind::BinOp { op: T::Mul })
+            && self[lhs].inputs[0] == rhs
+            && let Kind::ConstInt { value } = self[self[lhs].inputs[1]].kind
+        {
+            let new_rhs = self.new_node(self[target].ty, Kind::ConstInt { value: value + 1 }, []);
+            return Some(
+                self.new_node(self[target].ty, Kind::BinOp { op: T::Mul }, [rhs, new_rhs]),
+            );
+        }
+
+        if op == T::Sub && self[lhs].kind == (Kind::BinOp { op }) {
+            // (a - b) - c => a - (b + c)
+            let [a, b, ..] = self[lhs].inputs;
+            let c = rhs;
+            let new_rhs = self.new_node(self[target].ty, Kind::BinOp { op: T::Add }, [b, c]);
+            return Some(self.new_node(self[target].ty, Kind::BinOp { op }, [a, new_rhs]));
+        }
+
+        if changed {
+            return Some(self.new_node(self[target].ty, self[target].kind, [lhs, rhs]));
+        }
+
+        None
+    }
+
+    fn is_const(&self, id: Nid) -> bool {
+        matches!(self[id].kind, Kind::ConstInt { .. })
+    }
+
+    fn replace(&mut self, target: Nid, with: Nid) {
+        //for i in 0..self[target].inputs().len() {
+        //    let inp = self[target].inputs[i];
+        //    let index = self[inp].outputs.iter().position(|&p| p == target).unwrap();
+        //    self[inp].outputs[index] = with;
+        //}
+
+        for i in 0..self[target].outputs.len() {
+            let out = self[target].outputs[i];
+            let index = self[out].inputs().iter().position(|&p| p == target).unwrap();
+            let rpl = self.modify_input(out, index, with);
+            self[with].outputs.push(rpl);
+        }
+
+        self.remove_low(target);
+    }
+
+    fn modify_input(&mut self, target: Nid, inp_index: usize, with: Nid) -> Nid {
+        let out = self.lookup.remove(&(self[target].kind, self[target].inputs));
+        debug_assert!(out == Some(target));
+        debug_assert_ne!(self[target].inputs[inp_index], with);
+
+        self[target].inputs[inp_index] = with;
+        if let Err(other) = self.lookup.try_insert((self[target].kind, self[target].inputs), target)
+        {
+            let rpl = *other.entry.get();
+            self.replace(target, rpl);
+            return rpl;
+        }
+
+        target
+    }
+
+    fn add_deps(&mut self, id: Nid, deps: &[Nid]) {
+        for &d in deps {
+            debug_assert_ne!(d, id);
+            self[d].outputs.push(id);
+        }
+    }
+
+    fn unlock_free(&mut self, id: Nid) {
+        self[id].lock_rc -= 1;
+        if self[id].is_dangling() {
+            self.remove_low(id);
+        }
+    }
+
+    fn fmt(&self, f: &mut fmt::Formatter, node: Nid, rcs: &mut [usize]) -> fmt::Result {
+        let mut is_ready = || {
+            if rcs[node as usize] == 0 {
+                return false;
+            }
+            rcs[node as usize] = rcs[node as usize].saturating_sub(1);
+            rcs[node as usize] == 0
+        };
+
+        match self[node].kind {
+            Kind::BinOp { op } => {
+                write!(f, "(")?;
+                self.fmt(f, self[node].inputs[0], rcs)?;
+                write!(f, " {op} ")?;
+                self.fmt(f, self[node].inputs[1], rcs)?;
+                write!(f, ")")?;
+            }
+            Kind::Return => {
+                write!(f, "{}: return [{:?}] ", node, self[node].inputs[0])?;
+                self.fmt(f, self[node].inputs[1], rcs)?;
+                writeln!(f)?;
+                self.fmt(f, self[node].inputs[2], rcs)?;
+            }
+            Kind::ConstInt { value } => write!(f, "{}", value)?,
+            Kind::End => {
+                if is_ready() {
+                    writeln!(f, "{}: {:?}", node, self[node].kind)?;
+                }
+            }
+            Kind::Tuple { index } => {
+                if index != 0 && self[self[node].inputs[0]].kind == Kind::Start {
+                    write!(f, "{:?}.{}", self[self[node].inputs[0]].kind, index)?;
+                } else if is_ready() {
+                    writeln!(f, "{}: {:?}", node, self[node].kind)?;
+                    for &o in &self[node].outputs {
+                        if self.is_cfg(o) {
+                            self.fmt(f, o, rcs)?;
+                        }
+                    }
+                }
+            }
+            Kind::Start => 'b: {
+                if !is_ready() {
+                    break 'b;
+                }
+
+                writeln!(f, "{}: {:?}", node, self[node].kind)?;
+
+                for &o in &self[node].outputs {
+                    self.fmt(f, o, rcs)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn is_cfg(&self, o: Nid) -> bool {
+        matches!(self[o].kind, Kind::Start | Kind::End | Kind::Return | Kind::Tuple { .. })
+    }
 }
 
-impl<T> ops::Index<u32> for PoolVec<T> {
-    type Output = T;
+impl ops::Index<u32> for Nodes {
+    type Output = Node;
 
     fn index(&self, index: u32) -> &Self::Output {
         match &self.values[index as usize] {
@@ -69,7 +348,7 @@ impl<T> ops::Index<u32> for PoolVec<T> {
     }
 }
 
-impl<T> ops::IndexMut<u32> for PoolVec<T> {
+impl ops::IndexMut<u32> for Nodes {
     fn index_mut(&mut self, index: u32) -> &mut Self::Output {
         match &mut self.values[index as usize] {
             PoolSlot::Value(value) => value,
@@ -78,28 +357,75 @@ impl<T> ops::IndexMut<u32> for PoolVec<T> {
     }
 }
 
-enum PoolSlot<T> {
-    Value(T),
+#[derive(Debug)]
+enum PoolSlot {
+    Value(Node),
     Next(u32),
 }
 
-pub enum Inputs {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum Kind {
     Start,
     End,
-    BinOp { op: lexer::TokenKind, lhs: Nid, rhs: Nid },
-    Return { value: Nid, cfg: Nid },
-    Tuple { on: Nid, index: Nid },
+    Return,
     ConstInt { value: i64 },
+    Tuple { index: u32 },
+    BinOp { op: lexer::TokenKind },
 }
 
+impl Kind {
+    fn disc(&self) -> u8 {
+        unsafe { *(self as *const _ as *const u8) }
+    }
+}
+
+const MAX_INPUTS: usize = 3;
+
+#[derive(Debug)]
 pub struct Node {
-    pub inputs: Inputs,
+    pub inputs: [Nid; MAX_INPUTS],
+    pub kind: Kind,
     pub depth: u32,
+    pub lock_rc: u32,
     pub ty: ty::Id,
     pub outputs: Vec<Nid>,
 }
 
-pub type Nodes = PoolVec<Node>;
+impl Node {
+    fn is_dangling(&self) -> bool {
+        self.outputs.len() + self.lock_rc as usize == 0
+    }
+
+    fn inputs(&self) -> &[Nid] {
+        let len = self.inputs.iter().position(|&n| n == NILL).unwrap_or(MAX_INPUTS);
+        &self.inputs[..len]
+    }
+
+    fn inputs_mut(&mut self) -> &mut [Nid] {
+        let len = self.inputs.iter().position(|&n| n == NILL).unwrap_or(MAX_INPUTS);
+        &mut self.inputs[..len]
+    }
+}
+
+impl fmt::Display for Nodes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.fmt(
+            f,
+            0,
+            &mut self
+                .values
+                .iter()
+                .map(|s| match s {
+                    PoolSlot::Value(Node { kind: Kind::Start, .. }) => 1,
+                    PoolSlot::Value(Node { kind: Kind::End, ref outputs, .. }) => outputs.len(),
+                    PoolSlot::Value(val) => val.inputs().len(),
+                    PoolSlot::Next(_) => 0,
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+}
 
 type Offset = u32;
 type Size = u32;
@@ -411,6 +737,14 @@ mod ty {
             }
         }
     }
+
+    pub fn bin_ret(ty: Id, op: TokenKind) -> Id {
+        use TokenKind as T;
+        match op {
+            T::Lt | T::Gt | T::Le | T::Ge | T::Ne | T::Eq => BOOL.into(),
+            _ => ty,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -430,10 +764,14 @@ struct ItemCtx {
     file: FileId,
     id: ty::Kind,
     ret: Option<ty::Id>,
+    start: Nid,
+    end: Nid,
+    cfg: Nid,
 
     task_base: usize,
     snap: Snapshot,
 
+    nodes: Nodes,
     loops: Vec<Loop>,
     vars: Vec<Variable>,
 }
@@ -685,76 +1023,13 @@ struct Ctx {
 
 impl Ctx {
     pub fn with_ty(self, ty: impl Into<ty::Id>) -> Self {
-        Self { ty: Some(ty.into()), ..self }
+        Self { ty: Some(ty.into()) }
     }
 }
 
 #[derive(Default)]
 struct Pool {
     cis: Vec<ItemCtx>,
-}
-
-#[derive(Default)]
-pub struct LoggedMem {
-    pub mem: hbvm::mem::HostMemory,
-}
-
-impl hbvm::mem::Memory for LoggedMem {
-    unsafe fn load(
-        &mut self,
-        addr: hbvm::mem::Address,
-        target: *mut u8,
-        count: usize,
-    ) -> Result<(), hbvm::mem::LoadError> {
-        log::dbg!(
-            "load: {:x} {:?}",
-            addr.get(),
-            core::slice::from_raw_parts(addr.get() as *const u8, count)
-                .iter()
-                .rev()
-                .map(|&b| format!("{b:02x}"))
-                .collect::<String>()
-        );
-        self.mem.load(addr, target, count)
-    }
-
-    unsafe fn store(
-        &mut self,
-        addr: hbvm::mem::Address,
-        source: *const u8,
-        count: usize,
-    ) -> Result<(), hbvm::mem::StoreError> {
-        log::dbg!(
-            "store: {:x} {:?}",
-            addr.get(),
-            core::slice::from_raw_parts(source, count)
-                .iter()
-                .rev()
-                .map(|&b| format!("{b:02x}"))
-                .collect::<String>()
-        );
-        self.mem.store(addr, source, count)
-    }
-
-    unsafe fn prog_read<T: Copy>(&mut self, addr: hbvm::mem::Address) -> T {
-        log::dbg!(
-            "read-typed: {:x} {} {:?}",
-            addr.get(),
-            std::any::type_name::<T>(),
-            if core::mem::size_of::<T>() == 1
-                && let Some(nm) =
-                    instrs::NAMES.get(std::ptr::read(addr.get() as *const u8) as usize)
-            {
-                nm.to_string()
-            } else {
-                core::slice::from_raw_parts(addr.get() as *const u8, core::mem::size_of::<T>())
-                    .iter()
-                    .map(|&b| format!("{:02x}", b))
-                    .collect::<String>()
-            }
-        );
-        self.mem.prog_read(addr)
-    }
 }
 
 #[derive(Default)]
@@ -770,7 +1045,16 @@ pub struct Codegen {
 impl Codegen {
     pub fn generate(&mut self) {
         self.find_or_declare(0, 0, None, "main");
+        self.make_func_reachable(0);
         self.complete_call_graph_low();
+    }
+
+    fn make_func_reachable(&mut self, func: ty::Func) {
+        let fuc = &mut self.tys.funcs[func as usize];
+        if fuc.offset == u32::MAX {
+            fuc.offset = task::id(self.tasks.len() as _);
+            self.tasks.push(Some(FTask { file: fuc.file, id: func }));
+        }
     }
 
     fn expr(&mut self, expr: &Expr) -> Option<Nid> {
@@ -787,7 +1071,80 @@ impl Codegen {
     }
 
     fn expr_ctx(&mut self, expr: &Expr, ctx: Ctx) -> Option<Nid> {
-        self.report_unhandled_ast(expr, "bruh");
+        match *expr {
+            Expr::Comment { .. } => Some(NILL),
+            Expr::Ident { pos, id, .. } => {
+                let msg = "i know nothing about this name gal which is vired\
+                            because we parsed succesfully";
+                Some(
+                    self.ci
+                        .vars
+                        .iter()
+                        .find(|v| v.id == id)
+                        .unwrap_or_else(|| self.report(pos, msg))
+                        .value,
+                )
+            }
+            Expr::BinOp { left, op, right } => {
+                let lhs = self.expr_ctx(left, ctx)?;
+                self.ci.nodes.lock(lhs);
+                let rhs = self.expr_ctx(right, Ctx::default().with_ty(self.tof(lhs)));
+                self.ci.nodes.unlock(lhs);
+                let rhs = rhs?;
+                let ty = self.assert_ty(left.pos(), self.tof(rhs), self.tof(lhs), false);
+                let id =
+                    self.ci.nodes.new_node(ty::bin_ret(ty, op), Kind::BinOp { op }, [lhs, rhs]);
+                Some(id)
+            }
+            Expr::Return { pos, val } => {
+                let ty = if let Some(val) = val {
+                    let value = self.expr_ctx(val, Ctx { ty: self.ci.ret })?;
+                    let inps = [self.ci.cfg, value, self.ci.end];
+                    self.ci.cfg = self.ci.nodes.new_node(ty::VOID, Kind::Return, inps);
+                    self.tof(value)
+                } else {
+                    ty::VOID.into()
+                };
+
+                let expected = *self.ci.ret.get_or_insert(ty);
+                _ = self.assert_ty(pos, ty, expected, true);
+
+                None
+            }
+            Expr::Block { stmts, .. } => {
+                let base = self.ci.vars.len();
+
+                let mut ret = Some(NILL);
+                for stmt in stmts {
+                    ret = ret.and(self.expr(stmt));
+                    if let Some(id) = ret {
+                        _ = self.assert_ty(stmt.pos(), self.tof(id), ty::VOID.into(), true);
+                    } else {
+                        break;
+                    }
+                }
+
+                for var in self.ci.vars.drain(base..) {
+                    self.ci.nodes.unlock_free(var.value);
+                }
+
+                ret
+            }
+            Expr::Number { value, .. } => Some(self.ci.nodes.new_node(
+                ctx.ty.unwrap_or(ty::UINT.into()),
+                Kind::ConstInt { value },
+                [],
+            )),
+            ref e => self.report_unhandled_ast(e, "bruh"),
+        }
+    }
+
+    #[inline(always)]
+    fn tof(&self, id: Nid) -> ty::Id {
+        if id == NILL {
+            return ty::VOID.into();
+        }
+        self.ci.nodes[id].ty
     }
 
     //#[must_use]
@@ -805,12 +1162,60 @@ impl Codegen {
     }
 
     fn handle_task(&mut self, FTask { file, id }: FTask) {
-        todo!();
+        let func = self.tys.funcs[id as usize];
+        debug_assert!(func.file == file);
+        let sig = func.sig.unwrap();
+        let ast = self.files[file as usize].clone();
+        let expr = func.expr.get(&ast).unwrap();
+
+        let repl = ItemCtx {
+            file,
+            id: ty::Kind::Func(id),
+            ret: Some(sig.ret),
+            ..self.pool.cis.pop().unwrap_or_default()
+        };
+        let prev_ci = std::mem::replace(&mut self.ci, repl);
+
+        self.ci.start = self.ci.nodes.new_node(ty::VOID, Kind::Start, []);
+        self.ci.end = self.ci.nodes.new_node(ty::VOID, Kind::End, []);
+        self.ci.cfg = self.ci.nodes.new_node(ty::VOID, Kind::Tuple { index: 0 }, [self.ci.start]);
+
+        let Expr::BinOp {
+            left: Expr::Ident { .. },
+            op: TokenKind::Decl,
+            right: &Expr::Closure { body, args, .. },
+        } = expr
+        else {
+            unreachable!("{expr}")
+        };
+
+        let mut sig_args = sig.args.range();
+        for (arg, index) in args.iter().zip(1u32..) {
+            let ty = self.tys.args[sig_args.next().unwrap()];
+            let value = self.ci.nodes.new_node(ty, Kind::Tuple { index }, [self.ci.start]);
+            self.ci.nodes.lock(value);
+            let sym = parser::find_symbol(&ast.symbols, arg.id);
+            assert!(sym.flags & idfl::COMPTIME == 0, "TODO");
+            self.ci.vars.push(Variable { id: arg.id, value });
+        }
+
+        if self.expr(body).is_some() {
+            self.report(body.pos(), "expected all paths in the fucntion to return");
+        }
+
+        for var in self.ci.vars.drain(..) {
+            self.ci.nodes.unlock(var.value);
+        }
+
+        //self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
     }
 
     // TODO: sometimes its better to do this in bulk
     fn ty(&mut self, expr: &Expr) -> ty::Id {
-        todo!()
+        match *expr {
+            Expr::Ident { id, .. } if ident::is_null(id) => id.into(),
+            ref e => self.report_unhandled_ast(e, "type"),
+        }
     }
 
     fn find_or_declare(
@@ -820,7 +1225,89 @@ impl Codegen {
         name: Option<Ident>,
         lit_name: &str,
     ) -> ty::Kind {
-        todo!()
+        log::dbg!("find_or_declare: {lit_name} {file}");
+
+        let f = self.files[file as usize].clone();
+        let Some((expr, ident)) = f.find_decl(name.ok_or(lit_name)) else {
+            match name.ok_or(lit_name) {
+                Ok(name) => {
+                    let name = self.cfile().ident_str(name);
+                    self.report(pos, format_args!("undefined indentifier: {name}"))
+                }
+                Err("main") => self.report(
+                    pos,
+                    format_args!(
+                        "missing main function in '{}', compiler can't \
+                        emmit libraries since such concept is not defined",
+                        f.path
+                    ),
+                ),
+                Err(name) => self.report(pos, format_args!("undefined indentifier: {name}")),
+            }
+        };
+
+        if let Some(existing) = self.tys.syms.get(&SymKey { file, ident }) {
+            if let ty::Kind::Func(id) = existing.expand()
+                && let func = &mut self.tys.funcs[id as usize]
+                && func.offset != u32::MAX
+                && let Err(idx) = task::unpack(func.offset)
+            {
+                func.offset = task::id(self.tasks.len());
+                let task = self.tasks[idx].take();
+                self.tasks.push(task);
+            }
+            return existing.expand();
+        }
+
+        let prev_file = std::mem::replace(&mut self.ci.file, file);
+        let sym = match expr {
+            Expr::BinOp {
+                left: &Expr::Ident { .. },
+                op: TokenKind::Decl,
+                right: &Expr::Closure { pos, args, ret, .. },
+            } => {
+                let func = Func {
+                    file,
+                    sig: '_b: {
+                        let arg_base = self.tys.args.len();
+                        for arg in args {
+                            let sym = parser::find_symbol(&f.symbols, arg.id);
+                            assert!(sym.flags & idfl::COMPTIME == 0, "TODO");
+                            let ty = self.ty(&arg.ty);
+                            self.tys.args.push(ty);
+                        }
+
+                        let args = self.pack_args(pos, arg_base);
+                        let ret = self.ty(ret);
+
+                        Some(Sig { args, ret })
+                    },
+                    expr: {
+                        let refr = ExprRef::new(expr);
+                        debug_assert!(refr.get(&f).is_some());
+                        refr
+                    },
+                    offset: u32::MAX,
+                };
+
+                let id = self.tys.funcs.len() as _;
+                self.tys.funcs.push(func);
+
+                ty::Kind::Func(id)
+            }
+            Expr::BinOp {
+                left: &Expr::Ident { .. },
+                op: TokenKind::Decl,
+                right: Expr::Struct { fields, .. },
+            } => ty::Kind::Struct(self.build_struct(fields)),
+            Expr::BinOp { .. } => {
+                todo!()
+            }
+            e => unimplemented!("{e:#?}"),
+        };
+        self.ci.file = prev_file;
+        self.tys.syms.insert(SymKey { ident, file }, sym.compress());
+        sym
     }
 
     fn ty_display(&self, ty: ty::Id) -> ty::Display {
@@ -829,8 +1316,10 @@ impl Codegen {
 
     #[must_use]
     #[track_caller]
-    fn assert_ty(&self, pos: Pos, ty: ty::Id, expected: ty::Id) -> ty::Id {
-        if let Some(res) = ty.try_upcast(expected) {
+    fn assert_ty(&self, pos: Pos, ty: ty::Id, expected: ty::Id, preserve_expected: bool) -> ty::Id {
+        if let Some(res) = ty.try_upcast(expected)
+            && (!preserve_expected || res == expected)
+        {
             res
         } else {
             let ty = self.ty_display(ty);
@@ -947,10 +1436,15 @@ mod tests {
         };
 
         codegen.generate();
+
+        use std::fmt::Write;
+
+        write!(output, "{}", codegen.ci.nodes).unwrap();
     }
 
     crate::run_tests! { generate:
         arithmetic => README;
+        const_folding_with_arg => README;
         //variables => README;
         //functions => README;
         //comments => README;

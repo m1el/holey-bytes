@@ -77,7 +77,7 @@ macro_rules! gen_token_kind {
     };
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum TokenKind {
     Not = b'!',
@@ -169,6 +169,22 @@ impl TokenKind {
         }
         Some(unsafe { std::mem::transmute::<u8, Self>(id) })
     }
+
+    pub fn is_comutative(self) -> bool {
+        use TokenKind as S;
+        matches!(self, S::Eq | S::Ne | S::Bor | S::Xor | S::Band | S::Add | S::Mul)
+    }
+
+    pub fn apply(self, a: i64, b: i64) -> i64 {
+        match self {
+            TokenKind::Add => a.wrapping_add(b),
+            TokenKind::Sub => a.wrapping_sub(b),
+            TokenKind::Mul => a.wrapping_mul(b),
+            TokenKind::Div => a.wrapping_div(b),
+            TokenKind::Shl => a.wrapping_shl(b as _),
+            s => todo!("{s}"),
+        }
+    }
 }
 
 gen_token_kind! {
@@ -192,8 +208,10 @@ gen_token_kind! {
         #[punkt]
         Ctor   = ".{",
         Tupl   = ".(",
+        // #define OP: each `#[prec]` delimeters a level of precedence from lowest to highest
         #[ops]
         #[prec]
+        // this also includess all `<op>=` tokens
         Decl   = ":=",
         Assign = "=",
         #[prec]

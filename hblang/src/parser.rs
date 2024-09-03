@@ -399,7 +399,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 };
                 E::Number {
                     pos: token.start,
-                    value: match u64::from_str_radix(slice, radix as u32) {
+                    value: match i64::from_str_radix(slice, radix as u32) {
                         Ok(value) => value,
                         Err(e) => self.report(format_args!("invalid number: {e}")),
                     },
@@ -592,11 +592,13 @@ macro_rules! generate_expr {
     ($(#[$meta:meta])* $vis:vis enum $name:ident<$lt:lifetime> {$(
         $(#[$field_meta:meta])*
         $variant:ident {
+
             $($field:ident: $ty:ty,)*
         },
     )*}) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         $vis enum $name<$lt> {$(
+            $(#[$field_meta])*
             $variant {
                 $($field: $ty,)*
             },
@@ -639,43 +641,54 @@ pub enum Radix {
     Decimal = 10,
 }
 
-// it would be real nice if we could use relative pointers and still pattern match easily
 generate_expr! {
+    /// `LIST(start, sep, end, elem) => start { elem sep } [elem] end`
+    /// `OP := grep for `#define OP:`
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum Expr<'a> {
+        /// `'ct' Expr`
         Ct {
             pos: Pos,
             value: &'a Self,
         },
+        /// `'"([^"]|\\")"'`
         String {
             pos: Pos,
             literal: &'a str,
         },
+        /// `'//[^\n]' | '/*' { '([^/*]|*/)*' | Comment } '*/'
         Comment {
             pos: Pos,
             literal: &'a str,
         },
+        /// `'break'`
         Break {
             pos: Pos,
         },
+        /// `'continue'`
         Continue {
             pos: Pos,
         },
+        /// `'fn' LIST('(', ',', ')', Ident ':' Expr) ':' Expr Expr`
         Closure {
             pos:  Pos,
             args: &'a [Arg<'a>],
             ret:  &'a Self,
             body: &'a Self,
         },
+        /// `Expr LIST('(', ',', ')', Expr)`
         Call {
             func: &'a Self,
             args: &'a [Self],
             trailing_comma: bool,
         },
+        /// `'return' [Expr]`
         Return {
             pos: Pos,
             val: Option<&'a Self>,
         },
+        /// note: ':unicode:' is any utf-8 character except ascii
+        /// `'[a-zA-Z_:unicode:][a-zA-Z0-9_:unicode:]*'`
         Ident {
             pos:   Pos,
             is_ct: bool,
@@ -683,75 +696,91 @@ generate_expr! {
             name:  &'a str,
             index: IdentIndex,
         },
+        /// `LIST('{', [';'], '}', Expr)`
         Block {
             pos:   Pos,
             stmts: &'a [Self],
         },
+        /// `'0b[01]+' | '0o[0-7]+' | '[0-9]+' | '0b[01]+'`
         Number {
             pos:   Pos,
-            value: u64,
+            value: i64,
             radix: Radix,
         },
+        /// node: precedence defined in `OP` applies
+        /// `Expr OP Expr`
         BinOp {
             left:  &'a Self,
             op:    TokenKind,
             right: &'a Self,
         },
+        /// `'if' Expr Expr [else Expr]`
         If {
             pos:   Pos,
             cond:  &'a Self,
             then:  &'a Self,
             else_: Option<&'a Self>,
         },
+        /// `'loop' Expr`
         Loop {
             pos:  Pos,
             body: &'a Self,
         },
+        /// `('&' | '*' | '^') Expr`
         UnOp {
             pos: Pos,
             op:  TokenKind,
             val: &'a Self,
         },
+        /// `'struct' LIST('{', ',', '}', Ident ':' Expr)`
         Struct {
             pos:      Pos,
             fields:   &'a [(&'a str, Self)],
             captured: &'a [Ident],
             trailing_comma: bool,
         },
+        /// `[Expr] LIST('.{', ',', '}', Ident [':' Expr])`
         Ctor {
             pos:    Pos,
             ty:     Option<&'a Self>,
             fields: &'a [CtorField<'a>],
             trailing_comma: bool,
         },
+        /// `[Expr] LIST('.(', ',', ')', Ident [':' Expr])`
         Tupl {
             pos:    Pos,
             ty:     Option<&'a Self>,
             fields: &'a [Self],
             trailing_comma: bool,
         },
+        /// `'[' Expr [';' Expr] ']'`
         Slice {
             pos: Pos,
             size: Option<&'a Self>,
             item: &'a Self,
         },
+        /// `Expr '[' Expr ']'`
         Index {
             base: &'a Self,
             index: &'a Self,
         },
+        /// `Expr '.' Ident`
         Field {
             target: &'a Self,
             name:  &'a str,
         },
+        /// `'true' | 'false'`
         Bool {
             pos:   Pos,
             value: bool,
         },
+        /// `'@' Ident List('(', ',', ')', Expr)`
         Directive {
             pos:  u32,
             name: &'a str,
             args: &'a [Self],
         },
+        /// `'@use' '(' String ')'`
         Mod {
             pos:  Pos,
             id:   FileId,
@@ -1154,6 +1183,10 @@ impl Ast {
             Expr::BinOp { left, op: TokenKind::Decl, .. } => left.declares(id).map(|id| (expr, id)),
             _ => None,
         })
+    }
+
+    pub fn ident_str(&self, ident: Ident) -> &str {
+        &self.file[ident::range(ident)]
     }
 }
 
