@@ -1,3 +1,184 @@
+integer:
+    ADDI64 r254, r254, -56d
+    ST r31, r254, 0a, 56h
+    CP r32, r2
+    CP r33, r3
+    LI64 r2, 3d
+    LI64 r3, 4d
+    ECA 
+    CP r34, r1
+    CP r35, r32
+    LI64 r36, 0d
+    CMPS r35, r35, r36
+    CMPUI r35, r35, 0d
+    CP r36, r33
+    LI64 r37, 0d
+    CMPS r36, r36, r37
+    CMPUI r36, r36, 0d
+    OR r35, r35, r36
+    JEQ r35, r0, :0
+    CP r35, r34
+    CP r36, r32
+    SUB64 r33, r33, r36
+    ADDI64 r33, r33, 1d
+    DIRS64 r0, r35, r35, r33
+    ADD64 r35, r35, r32
+    CP r1, r35
+    JMP :1
+ 0: CP r1, r34
+ 1: LD r31, r254, 0a, 56h
+    ADDI64 r254, r254, 56d
+    JALA r0, r31, 0a
+line:
+    ADDI64 r254, r254, -80d
+    ST r31, r254, 48a, 32h
+    ST r2, r254, 0a, 16h
+    ST r4, r254, 16a, 16h
+    ST r6, r254, 32a, 16h
+    CP r32, r8
+    LI64 r33, 1d
+    JEQ r33, r0, :0
+    LD r33, r254, 0a, 8h
+    LD r34, r254, 16a, 8h
+    CMPS r33, r33, r34
+    CMPUI r33, r33, 1d
+    NOT r33, r33
+    JEQ r33, r0, :1
+    JMP :1
+ 1: JMP :2
+ 0: LD r33, r254, 8a, 8h
+    LD r34, r254, 24a, 8h
+    CMPS r33, r33, r34
+    CMPUI r33, r33, 1d
+    NOT r33, r33
+    JEQ r33, r0, :2
+    JMP :2
+ 2: LD r31, r254, 48a, 32h
+    ADDI64 r254, r254, 80d
+    JALA r0, r31, 0a
+example:
+    ADDI64 r254, r254, -48d
+    ST r31, r254, 0a, 48h
+    LI64 r2, 3d
+    LI64 r3, 4d
+    ECA 
+    CP r33, r1
+    LI64 r34, 0d
+    LI64 r35, 0d
+    CMPS r34, r34, r35
+    CMPUI r34, r34, 0d
+    LI64 r35, 1024d
+    LI64 r36, 0d
+    CMPS r35, r35, r36
+    CMPUI r35, r35, 0d
+    OR r34, r34, r35
+    JEQ r34, r0, :0
+    CP r34, r33
+    LI64 r35, 1024d
+    ADDI64 r35, r35, 0d
+    ADDI64 r35, r35, 1d
+    DIRS64 r0, r34, r34, r35
+    ADDI64 r34, r34, 0d
+    CP r32, r34
+    JMP :1
+ 0: CP r32, r33
+ 1: LI64 r2, 0d
+    LI64 r3, 768d
+    JAL r31, r0, :integer
+    CP r33, r1
+    CP r34, r32
+    JMP :2
+ 2: LD r31, r254, 0a, 48h
+    ADDI64 r254, r254, 48d
+    JALA r0, r31, 0a
+main:
+    ADDI64 r254, r254, -64d
+    ST r31, r254, 48a, 16h
+    LI64 r32, 0d
+    ST r32, r254, 0a, 8h
+    LI64 r32, 0d
+    ST r32, r254, 8a, 8h
+    LD r2, r254, 0a, 16h
+    LI64 r32, 0d
+    ST r32, r254, 16a, 8h
+    LI64 r32, 0d
+    ST r32, r254, 24a, 8h
+    LD r4, r254, 16a, 16h
+    LI64 r32, 0d
+    ST r32, r254, 32a, 8h
+    LI64 r32, 0d
+    ST r32, r254, 40a, 8h
+    LD r6, r254, 32a, 16h
+    LI64 r8, 10d
+    JAL r31, r0, :line
+    LI64 r32, 0d
+    ST r32, r254, 0a, 8h
+    LI64 r32, 0d
+    ST r32, r254, 8a, 8h
+    LD r2, r254, 0a, 16h
+    LI64 r32, 0d
+    ST r32, r254, 16a, 8h
+    LI64 r32, 0d
+    ST r32, r254, 24a, 8h
+    LD r4, r254, 16a, 16h
+    LI64 r32, 0d
+    ST r32, r254, 32a, 8h
+    LI64 r32, 0d
+    ST r32, r254, 40a, 8h
+    LD r6, r254, 32a, 16h
+    LI64 r8, 10d
+    JAL r31, r0, :rect_line
+    JAL r31, r0, :example
+    LI64 r1, 0d
+    LD r31, r254, 48a, 16h
+    ADDI64 r254, r254, 64d
+    JALA r0, r31, 0a
+rect_line:
+    ADDI64 r254, r254, -112d
+    ST r31, r254, 48a, 64h
+    ST r2, r254, 0a, 16h
+    ST r4, r254, 16a, 16h
+    ST r6, r254, 32a, 16h
+    CP r32, r8
+    LI64 r33, 0d
+    LI64 r34, 0d
+    LI64 r35, 0d
+ 5: CP r36, r33
+    CP r37, r32
+    CMPS r36, r36, r37
+    CMPUI r36, r36, 0d
+    NOT r36, r36
+    JEQ r36, r0, :0
+    JMP :1
+ 0: LD r34, r254, 8a, 8h
+    LD r35, r254, 0a, 8h
+ 4: CP r36, r34
+    LD r37, r254, 8a, 8h
+    LD r38, r254, 16a, 8h
+    ADD64 r37, r37, r38
+    CMPS r36, r36, r37
+    CMPUI r36, r36, 0d
+    NOT r36, r36
+    JEQ r36, r0, :2
+    JMP :3
+ 2: LI64 r36, 1d
+    LI64 r37, 10d
+    ADD64 r36, r36, r37
+    LI64 r37, 1d
+    LI64 r38, 2d
+    ADD64 r37, r37, r38
+    CP r36, r37
+    CP r36, r34
+    ADDI64 r36, r36, 1d
+    CP r34, r36
+    JMP :4
+ 3: CP r36, r33
+    ADDI64 r36, r36, 1d
+    CP r33, r36
+    JMP :5
+ 1: LD r31, r254, 48a, 64h
+    ADDI64 r254, r254, 112d
+    JALA r0, r31, 0a
 code size: 1521
 ret: 0
 status: Ok(())

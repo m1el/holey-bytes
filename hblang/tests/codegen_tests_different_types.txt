@@ -1,3 +1,64 @@
+main:
+    ADDI64 r254, r254, -48d
+    ST r31, r254, 24a, 24h
+    LI64 r32, 255d
+    ST r32, r254, 0a, 1h
+    LI64 r32, 0d
+    ST r32, r254, 1a, 1h
+    LI64 r32, 0d
+    ST r32, r254, 2a, 1h
+    LI64 r32, 255d
+    ST r32, r254, 3a, 1h
+    LI64 r32, 0d
+    ST r32, r254, 4a, 4h
+    LI64 r32, 2d
+    ST r32, r254, 8a, 4h
+    ADDI64 r32, r254, 0d
+    ADDI64 r33, r254, 12d
+    BMC r32, r33, 12h
+    LI64 r33, 1d
+    ADDI64 r32, r254, 16d
+    MULI64 r33, r33, 4d
+    ADD64 r32, r32, r33
+    CP r33, r0
+    LD r33, r32, 0a, 4h
+    LI64 r32, 2d
+    CMPU r33, r33, r32
+    CMPUI r33, r33, 0d
+    JEQ r33, r0, :0
+    LI64 r1, 0d
+    JMP :1
+ 0: ADDI64 r33, r254, 20d
+    ADDI64 r33, r33, -4d
+    CP r32, r0
+    LD r32, r33, 0a, 4h
+    LI64 r33, 0d
+    CMPU r32, r32, r33
+    CMPUI r32, r32, 0d
+    JEQ r32, r0, :2
+    LI64 r1, 64d
+    JMP :1
+ 2: CP r32, r0
+    LD r32, r254, 16a, 4h
+    CP r33, r0
+    LD r33, r254, 20a, 4h
+    ADD32 r32, r32, r33
+    CP r33, r0
+    LD r33, r254, 12a, 1h
+    ADD32 r32, r32, r33
+    CP r33, r0
+    LD r33, r254, 13a, 1h
+    ADD32 r32, r32, r33
+    CP r33, r0
+    LD r33, r254, 14a, 1h
+    ADD32 r32, r32, r33
+    CP r33, r0
+    LD r33, r254, 15a, 1h
+    ADD32 r32, r32, r33
+    CP r1, r32
+ 1: LD r31, r254, 24a, 24h
+    ADDI64 r254, r254, 48d
+    JALA r0, r31, 0a
 code size: 531
 ret: 512
 status: Ok(())

@@ -1,3 +1,76 @@
+main:
+    ADDI64 r254, r254, -136d
+    ST r31, r254, 112a, 24h
+    LI64 r32, 1d
+    ST r32, r254, 32a, 8h
+    LI64 r32, 2d
+    ST r32, r254, 40a, 8h
+    LI64 r32, 3d
+    ST r32, r254, 16a, 8h
+    LI64 r32, 4d
+    ST r32, r254, 24a, 8h
+    LD r32, r254, 32a, 8h
+    LD r33, r254, 16a, 8h
+    ADD64 r32, r32, r33
+    ST r32, r254, 48a, 8h
+    LD r32, r254, 40a, 8h
+    LD r33, r254, 24a, 8h
+    ADD64 r32, r32, r33
+    ST r32, r254, 56a, 8h
+    LD r32, r254, 16a, 8h
+    LD r33, r254, 32a, 8h
+    SUB64 r32, r32, r33
+    ST r32, r254, 64a, 8h
+    LD r32, r254, 24a, 8h
+    LD r33, r254, 40a, 8h
+    SUB64 r32, r32, r33
+    ST r32, r254, 72a, 8h
+    LI64 r32, 0d
+    ST r32, r254, 0a, 8h
+    LI64 r32, 0d
+    ST r32, r254, 8a, 8h
+    LD r32, r254, 0a, 8h
+    LD r33, r254, 16a, 8h
+    SUB64 r32, r32, r33
+    ST r32, r254, 80a, 8h
+    LD r32, r254, 8a, 8h
+    LD r33, r254, 24a, 8h
+    SUB64 r32, r32, r33
+    ST r32, r254, 88a, 8h
+    ADDI64 r32, r254, 32d
+    ADDI64 r33, r254, 96d
+    BMC r32, r33, 16h
+    LD r33, r254, 80a, 8h
+    LD r32, r254, 48a, 8h
+    ADD64 r33, r33, r32
+    ST r33, r254, 80a, 8h
+    LD r33, r254, 88a, 8h
+    LD r32, r254, 56a, 8h
+    ADD64 r33, r33, r32
+    ST r33, r254, 88a, 8h
+    LD r33, r254, 96a, 8h
+    LD r32, r254, 64a, 8h
+    ADD64 r33, r33, r32
+    ST r33, r254, 96a, 8h
+    LD r33, r254, 104a, 8h
+    LD r32, r254, 72a, 8h
+    ADD64 r33, r33, r32
+    ST r33, r254, 104a, 8h
+    LD r33, r254, 80a, 8h
+    LD r32, r254, 96a, 8h
+    ADD64 r33, r33, r32
+    ST r33, r254, 96a, 8h
+    LD r33, r254, 88a, 8h
+    LD r32, r254, 104a, 8h
+    ADD64 r33, r33, r32
+    ST r33, r254, 104a, 8h
+    LD r33, r254, 96a, 8h
+    LD r32, r254, 104a, 8h
+    ADD64 r33, r33, r32
+    CP r1, r33
+    LD r31, r254, 112a, 24h
+    ADDI64 r254, r254, 136d
+    JALA r0, r31, 0a
 code size: 781
 ret: 10
 status: Ok(())

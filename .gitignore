@@ -2,5 +2,6 @@
 /hbbytecode/src/opcode.rs
 /hbbytecode/src/ops.rs
 /hblang/src/instrs.rs
+/hblang/src/disasm.rs
 /.rgignore
 rust-ice-*

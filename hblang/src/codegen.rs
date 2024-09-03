@@ -863,7 +863,9 @@ struct Func {
     file: FileId,
     expr: ExprRef,
     sig: Option<Sig>,
+    runtime: bool,
     offset: Offset,
+    size: Size,
 }
 
 struct Global {
@@ -1281,6 +1283,7 @@ const VM_STACK_SIZE: usize = 1024 * 1024 * 2;
 
 struct Comptime {
     vm: hbvm::Vm<LoggedMem, 0>,
+    depth: usize,
     _stack: Box<[u8; VM_STACK_SIZE]>,
 }
 
@@ -1291,7 +1294,21 @@ impl Default for Comptime {
         let ptr = unsafe { stack.as_mut_ptr().cast::<u8>().add(VM_STACK_SIZE) as u64 };
         log::dbg!("stack_ptr: {:x}", ptr);
         vm.write_reg(STACK_PTR, ptr);
-        Self { vm, _stack: unsafe { stack.assume_init() } }
+        Self { vm, depth: 0, _stack: unsafe { stack.assume_init() } }
+    }
+}
+
+impl Comptime {
+    fn active(&self) -> bool {
+        self.depth != 0
+    }
+
+    fn enter(&mut self) {
+        self.depth += 1;
+    }
+
+    fn exit(&mut self) {
+        self.depth -= 1;
     }
 }
 
@@ -1380,7 +1397,7 @@ impl Codegen {
         self.link();
     }
 
-    pub fn dump(mut self, out: &mut impl std::io::Write) -> std::io::Result<()> {
+    pub fn dump(&mut self, out: &mut impl std::io::Write) -> std::io::Result<()> {
         let reloc = Reloc::shifted(0, 3, 4);
         self.output.funcs.push((0, reloc));
         self.link();
@@ -2272,6 +2289,8 @@ impl Codegen {
                 self.tys.funcs.push(Func {
                     file: fuc.file,
                     offset: u32::MAX,
+                    size: 0,
+                    runtime: false,
                     sig: Some(Sig { args, ret }),
                     expr: fuc.expr,
                 });
@@ -2698,6 +2717,7 @@ impl Codegen {
         self.output.emit(jala(ZERO, RET_ADDR, 0));
         self.ci.regs.free(std::mem::take(&mut self.ci.ret_reg));
         self.tys.funcs[id as usize].offset = self.ci.snap.code as Offset;
+        self.tys.funcs[id as usize].size = self.local_offset();
         self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
         self.ct.vm.write_reg(reg::STACK_PTR, ct_stack_base);
     }
@@ -3089,7 +3109,9 @@ impl Codegen {
                         debug_assert!(refr.get(&f).is_some());
                         refr
                     },
+                    runtime: false,
                     offset: u32::MAX,
+                    size: 0,
                 };
 
                 let id = self.tys.funcs.len() as _;
@@ -3128,6 +3150,7 @@ impl Codegen {
 
     fn make_func_reachable(&mut self, func: ty::Func) {
         let fuc = &mut self.tys.funcs[func as usize];
+        fuc.runtime |= !self.ct.active();
         if fuc.offset == u32::MAX {
             fuc.offset = task::id(self.tasks.len() as _);
             self.tasks.push(Some(FTask { file: fuc.file, id: func }));
@@ -3191,6 +3214,7 @@ impl Codegen {
         compile: impl FnOnce(&mut Self, &mut ItemCtx) -> Result<T, E>,
     ) -> Result<T, E> {
         log::dbg!("eval");
+        self.ct.enter();
         let stash = self.pop_stash();
 
         let mut prev_ci = std::mem::replace(&mut self.ci, ci);
@@ -3231,6 +3255,7 @@ impl Codegen {
         self.ci.snap = self.output.snap();
         self.push_stash(stash);
 
+        self.ct.exit();
         log::dbg!("eval-end");
 
         ret
@@ -3336,7 +3361,11 @@ impl Codegen {
 mod tests {
     use {
         super::parser,
-        crate::{codegen::LoggedMem, log, parser::FileId},
+        crate::{
+            codegen::LoggedMem,
+            log,
+            parser::{Expr, FileId},
+        },
         std::io,
     };
 
@@ -3400,7 +3429,24 @@ mod tests {
         let mut out = Vec::new();
         codegen.dump(&mut out).unwrap();
 
-        log::dbg!("code: {}", String::from_utf8_lossy(&out));
+        let mut sluce = out.as_slice();
+        let functions = codegen
+            .tys
+            .funcs
+            .iter()
+            .filter(|f| f.offset != u32::MAX && f.runtime)
+            .map(|f| {
+                let file = &codegen.files[f.file as usize];
+                let Expr::BinOp { left: &Expr::Ident { name, .. }, .. } = f.expr.get(file).unwrap()
+                else {
+                    unreachable!()
+                };
+                (f.offset, (name, f.size))
+            })
+            .collect::<crate::HashMap<_, _>>();
+        if crate::disasm(&mut sluce, &functions, output).is_err() {
+            panic!("{} {:?}", output, sluce);
+        }
 
         use std::fmt::Write;
 

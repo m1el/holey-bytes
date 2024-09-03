@@ -3,7 +3,6 @@ use {
         codegen,
         ident::{self, Ident},
         lexer::{self, Lexer, Token, TokenKind},
-        log,
     },
     std::{
         cell::{Cell, UnsafeCell},

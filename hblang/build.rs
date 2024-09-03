@@ -1,76 +1,135 @@
 #![feature(iter_next_chunk)]
-use std::fmt::Write;
+use std::{collections::HashSet, fmt::Write};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=../hbbytecode/instructions.in");
 
+    gen_instrs()?;
+
+    Ok(())
+}
+
+fn gen_instrs() -> Result<(), Box<dyn std::error::Error>> {
     let mut generated = String::new();
 
     writeln!(generated, "#![allow(dead_code)] #![allow(clippy::upper_case_acronyms)]")?;
-    gen_max_size(&mut generated)?;
-    gen_encodes(&mut generated)?;
-    gen_structs(&mut generated)?;
-    gen_name_list(&mut generated)?;
 
-    std::fs::write("src/instrs.rs", generated)?;
+    '_max_size: {
+        let max = instructions()
+            .map(
+                |[_, _, ty, _]| {
+                    if ty == "N" {
+                        1
+                    } else {
+                        iter_args(ty).map(arg_to_width).sum::<usize>() + 1
+                    }
+                },
+            )
+            .max()
+            .unwrap();
 
-    Ok(())
-}
-
-fn gen_name_list(generated: &mut String) -> Result<(), Box<dyn std::error::Error>> {
-    writeln!(generated, "pub const NAMES: [&str; {}] = [", instructions().count())?;
-    for [_, name, _, _] in instructions() {
-        writeln!(generated, "    \"{}\",", name.to_lowercase())?;
+        writeln!(generated, "pub const MAX_SIZE: usize = {max};")?;
     }
-    writeln!(generated, "];")?;
 
-    Ok(())
-}
+    '_encoders: {
+        for [op, name, ty, doc] in instructions() {
+            writeln!(generated, "/// {}", doc.trim_matches('"'))?;
+            let name = name.to_lowercase();
+            let args = comma_sep(
+                iter_args(ty)
+                    .enumerate()
+                    .map(|(i, c)| format!("{}{i}: {}", arg_to_name(c), arg_to_type(c))),
+            );
+            writeln!(generated, "pub fn {name}({args}) -> (usize, [u8; MAX_SIZE]) {{")?;
+            let arg_names =
+                comma_sep(iter_args(ty).enumerate().map(|(i, c)| format!("{}{i}", arg_to_name(c))));
+            writeln!(generated, "    unsafe {{ crate::encode({ty}({op}, {arg_names})) }}")?;
+            writeln!(generated, "}}")?;
+        }
+    }
 
-fn gen_max_size(generated: &mut String) -> Result<(), Box<dyn std::error::Error>> {
-    let max = instructions()
-        .map(|[_, _, ty, _]| {
-            if ty == "N" {
-                1
-            } else {
-                iter_args(ty).map(|(_, c)| arg_to_width(c)).sum::<usize>() + 1
+    '_structs: {
+        let mut seen = std::collections::HashSet::new();
+        for [_, _, ty, _] in instructions() {
+            if !seen.insert(ty) {
+                continue;
             }
-        })
-        .max()
-        .unwrap();
+            let types = comma_sep(iter_args(ty).map(arg_to_type).map(|s| s.to_string()));
+            writeln!(generated, "#[repr(packed)] pub struct {ty}(u8, {types});")?;
+        }
+    }
 
-    writeln!(generated, "pub const MAX_SIZE: usize = {};", max)?;
+    '_name_list: {
+        writeln!(generated, "pub const NAMES: [&str; {}] = [", instructions().count())?;
+        for [_, name, _, _] in instructions() {
+            writeln!(generated, "    \"{}\",", name.to_lowercase())?;
+        }
+        writeln!(generated, "];")?;
+    }
 
-    Ok(())
-}
+    let instr = "Instr";
+    let oper = "Oper";
 
-fn gen_encodes(generated: &mut String) -> Result<(), Box<dyn std::error::Error>> {
-    for [op, name, ty, doc] in instructions() {
-        writeln!(generated, "/// {}", doc.trim_matches('"'))?;
-        let name = name.to_lowercase();
-        let args = comma_sep(
-            iter_args(ty).map(|(i, c)| format!("{}{i}: {}", arg_to_name(c), arg_to_type(c))),
-        );
-        writeln!(generated, "pub fn {name}({args}) -> (usize, [u8; MAX_SIZE]) {{")?;
-        let arg_names = comma_sep(iter_args(ty).map(|(i, c)| format!("{}{i}", arg_to_name(c))));
-        writeln!(generated, "    unsafe {{ crate::encode({ty}({op}, {arg_names})) }}")?;
+    '_instr_enum: {
+        writeln!(generated, "#[derive(Debug, Clone, Copy, PartialEq, Eq)] #[repr(u8)]")?;
+        writeln!(generated, "pub enum {instr} {{")?;
+        for [id, name, ..] in instructions() {
+            writeln!(generated, "    {name} = {id},")?;
+        }
         writeln!(generated, "}}")?;
     }
 
-    Ok(())
-}
-
-fn gen_structs(generated: &mut String) -> Result<(), Box<dyn std::error::Error>> {
-    let mut seen = std::collections::HashSet::new();
-    for [_, _, ty, _] in instructions() {
-        if !seen.insert(ty) {
-            continue;
+    '_arg_kind: {
+        writeln!(generated, "#[derive(Debug, Clone, Copy, PartialEq, Eq)]")?;
+        writeln!(generated, "pub enum {oper} {{")?;
+        let mut seen = HashSet::new();
+        for ty in instructions().flat_map(|[.., ty, _]| iter_args(ty)) {
+            if !seen.insert(ty) {
+                continue;
+            }
+            writeln!(generated, "    {ty}({}),", arg_to_type(ty))?;
         }
-        let types = comma_sep(iter_args(ty).map(|(_, c)| arg_to_type(c).to_string()));
-        writeln!(generated, "#[repr(packed)] pub struct {ty}(u8, {types});")?;
+        writeln!(generated, "}}")?;
     }
 
+    '_parse_opers: {
+        writeln!(
+            generated,
+            "/// This assumes the instruction byte is still at the beginning of the buffer"
+        )?;
+        writeln!(generated, "pub fn parse_args(bytes: &mut &[u8], kind: {instr}, buf: &mut Vec<{oper}>) -> Option<()> {{")?;
+        writeln!(generated, "    match kind {{")?;
+        let mut instrs = instructions().collect::<Vec<_>>();
+        instrs.sort_unstable_by_key(|&[.., ty, _]| ty);
+        for group in instrs.chunk_by(|[.., a, _], [.., b, _]| a == b) {
+            let ty = group[0][2];
+            for &[_, name, ..] in group {
+                writeln!(generated, "        | {instr}::{name}")?;
+            }
+            generated.pop();
+            writeln!(generated, " => {{")?;
+            if iter_args(ty).count() != 0 {
+                writeln!(generated, "            let data = unsafe {{ std::ptr::read(bytes.take(..std::mem::size_of::<{ty}>())?.as_ptr() as *const {ty}) }};")?;
+                writeln!(
+                    generated,
+                    "            buf.extend([{}]);",
+                    comma_sep(
+                        iter_args(ty).zip(1u32..).map(|(t, i)| format!("{oper}::{t}(data.{i})"))
+                    )
+                )?;
+            } else {
+                writeln!(generated, "            bytes.take(..std::mem::size_of::<{ty}>())?;")?;
+            }
+
+            writeln!(generated, "        }}")?;
+        }
+        writeln!(generated, "    }}")?;
+        writeln!(generated, "    Some(())")?;
+        writeln!(generated, "}}")?;
+    }
+
+    std::fs::write("src/instrs.rs", generated)?;
     Ok(())
 }
 
@@ -119,6 +178,6 @@ fn arg_to_name(arg: char) -> &'static str {
     }
 }
 
-fn iter_args(ty: &'static str) -> impl Iterator<Item = (usize, char)> {
-    ty.chars().enumerate().filter(|(_, c)| *c != 'N')
+fn iter_args(ty: &'static str) -> impl Iterator<Item = char> {
+    ty.chars().filter(|c| *c != 'N')
 }

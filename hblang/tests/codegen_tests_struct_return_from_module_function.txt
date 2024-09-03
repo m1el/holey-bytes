@@ -1,3 +1,38 @@
+main:
+    ADDI64 r254, r254, -40d
+    ST r31, r254, 16a, 24h
+    LI64 r32, 7d
+    JAL r31, r0, :foo
+    ST r1, r254, 0a, 16h
+    LD r33, r254, 0a, 8h
+    SUB64 r32, r32, r33
+    JAL r31, r0, :foo
+    ST r1, r254, 0a, 16h
+    CP r33, r0
+    LD r33, r254, 8a, 4h
+    SXT32 r33, r33
+    SUB64 r32, r32, r33
+    JAL r31, r0, :foo
+    ST r1, r254, 0a, 16h
+    CP r33, r0
+    LD r33, r254, 12a, 4h
+    SXT32 r33, r33
+    SUB64 r32, r32, r33
+    CP r1, r32
+    LD r31, r254, 16a, 24h
+    ADDI64 r254, r254, 40d
+    JALA r0, r31, 0a
+foo:
+    ADDI64 r254, r254, -8d
+    ST r31, r254, 0a, 8h
+    LI64 r1, 3d
+    ANDI r2, r2, -4294967296d
+    ORI r2, r2, 2d
+    ANDI r2, r2, 4294967295d
+    ORI r2, r2, 8589934592d
+    LD r31, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
+    JALA r0, r31, 0a
 code size: 320
 ret: 0
 status: Ok(())

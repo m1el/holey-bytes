@@ -1,3 +1,15 @@
+main:
+    ADDI64 r254, r254, -24d
+    ST r31, r254, 0a, 24h
+    LI64 r33, 1d
+    ADDI64 r33, r33, 2d
+    ADDI64 r33, r33, 3d
+    CP r32, r33
+    ADDI64 r32, r32, -6d
+    CP r1, r32
+    LD r31, r254, 0a, 24h
+    ADDI64 r254, r254, 24d
+    JALA r0, r31, 0a
 code size: 116
 ret: 0
 status: Ok(())
