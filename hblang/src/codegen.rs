@@ -8,7 +8,7 @@ use {
         parser::{self, find_symbol, idfl, CtorField, Expr, ExprRef, FileId, Pos},
         HashMap,
     },
-    std::{fmt::Display, ops::Range, rc::Rc},
+    std::{fmt::Display, ops::Range, rc::Rc, usize},
 };
 
 type Offset = u32;
@@ -3275,12 +3275,19 @@ impl Codegen {
                         )
                     }),
             )
-            .chain(
-                self.output
-                    .strings
-                    .iter()
-                    .map(|s| (s.range.start, ("string", s.range.len() as _, DisasmItem::Global))),
-            )
+            .chain(self.output.strings.iter().map(|s| {
+                (
+                    s.range.start,
+                    (
+                        std::str::from_utf8(
+                            &self.output.code[s.range.start as usize..s.range.end as usize - 1],
+                        )
+                        .unwrap_or("!!!!invalid string"),
+                        s.range.len() as _,
+                        DisasmItem::Global,
+                    ),
+                )
+            }))
             .collect::<HashMap<_, _>>();
         crate::disasm(&mut sluce, &functions, output, |bin| {
             if self.ct.active()
