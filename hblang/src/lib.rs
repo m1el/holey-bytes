@@ -21,6 +21,7 @@ use {
     parser::Ast,
     std::{
         collections::{hash_map, VecDeque},
+        default,
         io::{self, Read},
         path::{Path, PathBuf},
         sync::Mutex,
@@ -129,11 +130,20 @@ unsafe fn encode<T>(instr: T) -> (usize, [u8; instrs::MAX_SIZE]) {
     std::ptr::write(buf.as_mut_ptr() as *mut T, instr);
     (std::mem::size_of::<T>(), buf)
 }
+
+#[cfg(test)]
+#[derive(Clone, Copy)]
+enum DisasmItem {
+    Func,
+    Global,
+}
+
 #[cfg(test)]
 fn disasm(
     binary: &mut &[u8],
-    functions: &HashMap<u32, (&str, u32)>,
+    functions: &HashMap<u32, (&str, u32, DisasmItem)>,
     out: &mut String,
+    mut eca_handler: impl FnMut(&mut &[u8]),
 ) -> std::fmt::Result {
     use self::instrs::Instr;
 
@@ -146,11 +156,18 @@ fn disasm(
 
     let mut labels = HashMap::<u32, u32>::default();
     let mut buf = Vec::<instrs::Oper>::new();
+    let mut has_cycle = false;
+    let mut has_oob = false;
 
-    '_offset_pass: for (&off, &(_name, len)) in functions.iter() {
+    '_offset_pass: for (&off, &(_name, len, kind)) in functions.iter() {
+        if matches!(kind, DisasmItem::Global) {
+            continue;
+        }
+
         let prev = *binary;
 
         binary.take(..off as usize).unwrap();
+
         let mut label_count = 0;
         while let Some(&byte) = binary.first() {
             let inst = instr_from_byte(byte)?;
@@ -167,18 +184,27 @@ fn disasm(
                     _ => continue,
                 };
 
+                has_cycle |= rel == 0;
+
                 let global_offset: u32 = (offset + rel).try_into().unwrap();
                 if functions.get(&global_offset).is_some() {
                     continue;
                 }
                 label_count += labels.try_insert(global_offset, label_count).is_ok() as u32;
             }
+
+            if matches!(inst, Instr::ECA) {
+                eca_handler(binary);
+            }
         }
 
         *binary = prev;
     }
 
-    '_dump: for (&off, &(name, len)) in functions.iter() {
+    '_dump: for (&off, &(name, len, kind)) in functions.iter() {
+        if matches!(kind, DisasmItem::Global) {
+            continue;
+        }
         let prev = *binary;
 
         use std::fmt::Write;
@@ -224,18 +250,35 @@ fn disasm(
                 };
 
                 let global_offset: u32 = (offset + rel).try_into().unwrap();
-                if let Some(&(name, _)) = functions.get(&global_offset) {
+                if let Some(&(name, ..)) = functions.get(&global_offset) {
                     write!(out, ":{name}")?;
                 } else {
+                    let local_has_oob = global_offset < off
+                        || global_offset > off + len
+                        || instr_from_byte(prev[global_offset as usize]).is_err()
+                        || prev[global_offset as usize] == 0;
+                    has_oob |= local_has_oob;
                     let label = labels.get(&global_offset).unwrap();
-                    write!(out, ":{label}")?;
+                    if local_has_oob {
+                        write!(out, "!!!!!!!!!{rel}")?;
+                    } else {
+                        write!(out, ":{label}")?;
+                    }
                 }
             }
 
             writeln!(out)?;
+
+            if matches!(inst, Instr::ECA) {
+                eca_handler(binary);
+            }
         }
 
         *binary = prev;
+    }
+
+    if has_oob || has_cycle {
+        return Err(std::fmt::Error);
     }
 
     Ok(())

@@ -1,11 +1,11 @@
 main:
     ADDI64 r254, r254, -24d
     ST r31, r254, 0a, 24h
-    LRA r32, r0, :0
+    LRA r32, r0, :string
     CP r2, r32
     JAL r31, r0, :str_len
     CP r32, r1
-    LRA r33, r0, :1
+    LRA r33, r0, :string
     CP r2, r33
     JAL r31, r0, :str_len
     CP r33, r1

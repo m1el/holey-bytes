@@ -8,7 +8,7 @@ use {
         parser::{self, find_symbol, idfl, CtorField, Expr, ExprRef, FileId, Pos},
         HashMap,
     },
-    std::{ops::Range, rc::Rc},
+    std::{ops::Range, rc::Rc, u32},
 };
 
 type Offset = u32;
@@ -517,29 +517,11 @@ struct Reloc {
     offset: Offset,
     sub_offset: u8,
     width: u8,
-    #[cfg(debug_assertions)]
-    shifted: bool,
 }
 
 impl Reloc {
     fn new(offset: u32, sub_offset: u8, width: u8) -> Self {
-        Self {
-            offset,
-            sub_offset,
-            width,
-            #[cfg(debug_assertions)]
-            shifted: false,
-        }
-    }
-
-    fn shifted(offset: u32, sub_offset: u8, width: u8) -> Self {
-        Self {
-            offset,
-            sub_offset,
-            width,
-            #[cfg(debug_assertions)]
-            shifted: true,
-        }
+        Self { offset, sub_offset, width }
     }
 
     fn apply_stack_offset(&self, code: &mut [u8], stack: &stack::Alloc) {
@@ -556,14 +538,14 @@ impl Reloc {
         ((id >> 32) as u32, id as u32)
     }
 
-    fn apply_jump(&self, code: &mut [u8], to: u32) {
+    fn apply_jump(mut self, code: &mut [u8], to: u32, from: u32) -> i64 {
+        self.offset += from;
         let offset = to as i64 - self.offset as i64;
         self.write_offset(code, offset);
+        offset
     }
 
     fn write_offset(&self, code: &mut [u8], offset: i64) {
-        #[cfg(debug_assertions)]
-        assert!(self.shifted);
         let bytes = offset.to_ne_bytes();
         let slice = &mut code[self.offset as usize + self.sub_offset as usize..];
         slice[..self.width as usize].copy_from_slice(&bytes[..self.width as usize]);
@@ -766,21 +748,10 @@ impl ItemCtx {
     }
 
     fn finalize(&mut self, output: &mut Output) {
-        let len = output.code.len() as Offset;
         let base = self.snap.code as Offset;
-        for reloc in output.reloc_iter_mut(&self.snap).chain(&mut self.ret_relocs) {
-            #[cfg(debug_assertions)]
-            {
-                if std::mem::replace(&mut reloc.shifted, true) {
-                    panic!("reloc visited twice");
-                }
-            }
-            reloc.offset += base;
-            debug_assert!(reloc.offset < len);
-        }
 
         if let Some(last_ret) = self.ret_relocs.last()
-            && last_ret.offset as usize == output.code.len() - 5
+            && (last_ret.offset + base) as usize == output.code.len() - 5
         {
             output.code.truncate(output.code.len() - 5);
             self.ret_relocs.pop();
@@ -794,7 +765,8 @@ impl ItemCtx {
         }
 
         for rel in self.ret_relocs.drain(..) {
-            rel.apply_jump(&mut output.code, len);
+            let off = rel.apply_jump(&mut output.code, len, base);
+            debug_assert!(off > 0);
         }
 
         self.finalize_frame(output);
@@ -872,6 +844,8 @@ struct Global {
     offset: Offset,
     ty: ty::Id,
     runtime: bool,
+    _file: FileId,
+    _name: Ident,
 }
 
 struct Field {
@@ -918,6 +892,25 @@ struct Types {
 }
 
 impl Types {
+    pub fn offset_of_item(&self, item: ty::Kind, ct_hint: Option<u32>) -> Option<Offset> {
+        task::unpack(match item {
+            ty::Kind::Func(f) => self.funcs[f as usize].offset,
+            ty::Kind::Global(g) => self.globals[g as usize].offset,
+            ty::Kind::Builtin(u32::MAX) => ct_hint?,
+            _ => unreachable!(),
+        })
+        .ok()
+    }
+
+    pub fn is_runtime_item(&self, item: ty::Kind) -> bool {
+        match item {
+            ty::Kind::Func(f) => self.funcs[f as usize].runtime,
+            ty::Kind::Global(f) => self.globals[f as usize].runtime,
+            ty::Kind::Builtin(u32::MAX) => false,
+            _ => unreachable!(),
+        }
+    }
+
     fn parama(&self, ret: impl Into<ty::Id>) -> ParamAlloc {
         ParamAlloc(2 + (9..=16).contains(&self.size_of(ret.into())) as u8..12)
     }
@@ -1053,8 +1046,7 @@ struct FTask {
 pub struct Snapshot {
     code: usize,
     string_data: usize,
-    funcs: usize,
-    globals: usize,
+    relocs: usize,
     strings: usize,
 }
 
@@ -1062,26 +1054,29 @@ impl Snapshot {
     fn _sub(&mut self, other: &Self) {
         self.code -= other.code;
         self.string_data -= other.string_data;
-        self.funcs -= other.funcs;
-        self.globals -= other.globals;
+        self.relocs -= other.relocs;
         self.strings -= other.strings;
     }
 
     fn _add(&mut self, other: &Self) {
         self.code += other.code;
         self.string_data += other.string_data;
-        self.funcs += other.funcs;
-        self.globals += other.globals;
+        self.relocs += other.relocs;
         self.strings += other.strings;
     }
+}
+
+struct OutReloc {
+    from: ty::Kind,
+    to: ty::Kind,
+    rel: Reloc,
 }
 
 #[derive(Default)]
 struct Output {
     code: Vec<u8>,
     string_data: Vec<u8>,
-    funcs: Vec<(ty::Func, Reloc)>,
-    globals: Vec<(ty::Global, Reloc)>,
+    relocs: Vec<OutReloc>,
     strings: Vec<StringReloc>,
 }
 
@@ -1118,14 +1113,6 @@ impl Output {
         self.emit(tx());
     }
 
-    fn reloc_iter_mut(&mut self, snap: &Snapshot) -> impl Iterator<Item = &mut Reloc> {
-        self.globals[snap.globals..]
-            .iter_mut()
-            .chain(&mut self.funcs[snap.funcs..])
-            .map(|(_, rel)| rel)
-            .chain(self.strings[snap.strings..].iter_mut().map(|rl| &mut rl.reloc))
-    }
-
     fn append(&mut self, val: &mut Self) {
         val.pop(self, &Snapshot::default());
     }
@@ -1135,26 +1122,7 @@ impl Output {
 
         stash.code.extend(self.code.drain(snap.code..));
         stash.string_data.extend(self.string_data.drain(snap.string_data..));
-        stash.funcs.extend(self.funcs.drain(snap.funcs..).inspect(|(_, rel)| {
-            #[cfg(debug_assertions)]
-            assert!(!rel.shifted);
-            debug_assert!(
-                rel.offset as usize + init_code < stash.code.len(),
-                "{} {} {}",
-                rel.offset,
-                init_code,
-                stash.code.len()
-            )
-        }));
-        stash.globals.extend(self.globals.drain(snap.globals..).inspect(|(_, rel)| {
-            log::dbg!(
-                "reloc: {rel:?} {init_code} {} {} {}",
-                stash.code.len(),
-                self.code.len(),
-                snap.code
-            );
-            debug_assert!(rel.offset as usize + init_code < stash.code.len())
-        }));
+        stash.relocs.extend(self.relocs.drain(snap.relocs..));
         stash.strings.extend(self.strings.drain(snap.strings..).inspect(|str| {
             debug_assert!(str.reloc.offset as usize + init_code < stash.code.len())
         }));
@@ -1163,13 +1131,13 @@ impl Output {
     fn trunc(&mut self, snap: &Snapshot) {
         self.code.truncate(snap.code);
         self.string_data.truncate(snap.string_data);
-        self.globals.truncate(snap.globals);
-        self.funcs.truncate(snap.funcs);
+        self.relocs.truncate(snap.relocs);
         self.strings.truncate(snap.strings);
     }
 
     fn write_trap(&mut self, kind: trap::Trap) {
         self.emit(eca());
+        self.code.push(255);
         self.code.extend(kind.as_slice());
     }
 
@@ -1177,8 +1145,7 @@ impl Output {
         Snapshot {
             code: self.code.len(),
             string_data: self.string_data.len(),
-            funcs: self.funcs.len(),
-            globals: self.globals.len(),
+            relocs: self.relocs.len(),
             strings: self.strings.len(),
         }
     }
@@ -1283,7 +1250,7 @@ impl hbvm::mem::Memory for LoggedMem {
 const VM_STACK_SIZE: usize = 1024 * 1024 * 2;
 
 struct Comptime {
-    vm: hbvm::Vm<LoggedMem, 0>,
+    vm: hbvm::Vm<LoggedMem, { 1024 * 10 }>,
     depth: usize,
     _stack: Box<[u8; VM_STACK_SIZE]>,
 }
@@ -1293,7 +1260,6 @@ impl Default for Comptime {
         let mut stack = Box::<[u8; VM_STACK_SIZE]>::new_uninit();
         let mut vm = hbvm::Vm::default();
         let ptr = unsafe { stack.as_mut_ptr().cast::<u8>().add(VM_STACK_SIZE) as u64 };
-        log::dbg!("stack_ptr: {:x}", ptr);
         vm.write_reg(STACK_PTR, ptr);
         Self { vm, depth: 0, _stack: unsafe { stack.assume_init() } }
     }
@@ -1371,10 +1337,10 @@ mod trap {
 }
 
 struct StringReloc {
+    // TODO: change to ty::Id
+    from: ty::Kind,
     reloc: Reloc,
     range: std::ops::Range<u32>,
-    #[cfg(debug_assertions)]
-    shifted: bool,
 }
 
 #[derive(Default)]
@@ -1399,8 +1365,7 @@ impl Codegen {
     }
 
     pub fn dump(&mut self, out: &mut impl std::io::Write) -> std::io::Result<()> {
-        let reloc = Reloc::shifted(0, 3, 4);
-        self.output.funcs.push((0, reloc));
+        Reloc::new(0, 3, 4).apply_jump(&mut self.output.code, self.tys.funcs[0].offset, 0);
         self.link();
         out.write_all(&self.output.code)
     }
@@ -1567,13 +1532,8 @@ impl Codegen {
                     self.ci.ret_relocs.pop();
                 }
                 let len = self.output.code.len() as u32;
-                for mut rel in self.ci.ret_relocs.drain(ret_reloc_base..) {
-                    rel.offset += self.ci.snap.code as u32;
-                    #[cfg(debug_assertions)]
-                    {
-                        rel.shifted = true;
-                    }
-                    rel.apply_jump(&mut self.output.code, len);
+                for rel in self.ci.ret_relocs.drain(ret_reloc_base..) {
+                    rel.apply_jump(&mut self.output.code, len, self.ci.snap.code as u32);
                 }
 
                 return Some(Value { ty: sig.ret, loc });
@@ -1736,12 +1696,7 @@ impl Codegen {
 
                 let range = start as _..self.output.string_data.len() as _;
                 let reloc = Reloc::new(self.local_offset() as _, 3, 4);
-                self.output.strings.push(StringReloc {
-                    reloc,
-                    range,
-                    #[cfg(debug_assertions)]
-                    shifted: false,
-                });
+                self.output.strings.push(StringReloc { from: self.ci.id, reloc, range });
                 let reg = self.ci.regs.allocate();
                 self.output.emit(instrs::lra(reg.get(), 0, 0));
                 Some(Value::new(self.tys.make_ptr(ty::U8.into()), reg))
@@ -1945,16 +1900,18 @@ impl Codegen {
                     self.ci.free_loc(value);
                 }
 
-                log::dbg!("call ctx: {ctx:?}");
-
                 let loc = self.alloc_ret(sig.ret, ctx, false);
 
                 if should_momize {
                     self.output.write_trap(trap::Trap::MomizedCall(trap::MomizedCall { func }));
                 }
 
-                let reloc = Reloc::new(self.local_offset(), 3, 4);
-                self.output.funcs.push((func, reloc));
+                let rel = Reloc::new(self.local_offset(), 3, 4);
+                self.output.relocs.push(OutReloc {
+                    from: self.ci.id,
+                    to: ty::Kind::Func(func),
+                    rel,
+                });
                 self.output.emit(jal(RET_ADDR, ZERO, 0));
                 self.make_func_reachable(func);
 
@@ -2027,7 +1984,6 @@ impl Codegen {
                 loc: Loc::ct(value as u64),
             }),
             E::If { cond, then, else_, .. } => {
-                log::dbg!("if-cond");
                 let cond = self.expr_ctx(cond, Ctx::default().with_ty(ty::BOOL))?;
                 let reg = self.loc_to_reg(&cond.loc, 1);
                 let jump_offset = self.local_offset();
@@ -2035,14 +1991,12 @@ impl Codegen {
                 self.ci.free_loc(cond.loc);
                 self.ci.regs.free(reg);
 
-                log::dbg!("if-then");
                 let then_unreachable = self.expr(then).is_none();
                 let mut else_unreachable = false;
 
                 let mut jump = self.local_offset() as i64 - jump_offset as i64;
 
                 if let Some(else_) = else_ {
-                    log::dbg!("if-else");
                     let else_jump_offset = self.local_offset();
                     if !then_unreachable {
                         self.output.emit(jmp(0));
@@ -2053,19 +2007,15 @@ impl Codegen {
 
                     if !then_unreachable {
                         let jump = self.local_offset() as i64 - else_jump_offset as i64;
-                        log::dbg!("if-else-jump: {}", jump);
                         write_reloc(self.local_code(), else_jump_offset as usize + 1, jump, 4);
                     }
                 }
 
-                log::dbg!("if-then-jump: {}", jump);
                 write_reloc(self.local_code(), jump_offset as usize + 3, jump, 2);
 
                 (!then_unreachable || !else_unreachable).then_some(Value::void())
             }
             E::Loop { body, .. } => 'a: {
-                log::dbg!("loop");
-
                 let loop_start = self.local_offset();
                 self.ci.loops.push(Loop {
                     var_count: self.ci.vars.len() as _,
@@ -2074,18 +2024,19 @@ impl Codegen {
                 });
                 let body_unreachable = self.expr(body).is_none();
 
-                log::dbg!("loop-end");
                 if !body_unreachable {
                     let loop_end = self.local_offset();
                     self.output.emit(jmp(loop_start as i32 - loop_end as i32));
                 }
 
-                let loop_end = self.local_offset();
+                let loop_end = self.output.code.len() as u32;
 
                 let loopa = self.ci.loops.pop().unwrap();
                 let is_unreachable = loopa.reloc_base == self.ci.loop_relocs.len() as u32;
                 for reloc in self.ci.loop_relocs.drain(loopa.reloc_base as usize..) {
-                    reloc.apply_jump(&mut self.output.code[self.ci.snap.code..], loop_end);
+                    let off =
+                        reloc.apply_jump(&mut self.output.code, loop_end, self.ci.snap.code as _);
+                    debug_assert!(off > 0);
                 }
 
                 let mut vars = std::mem::take(&mut self.ci.vars);
@@ -2095,14 +2046,13 @@ impl Codegen {
                 self.ci.vars = vars;
 
                 if is_unreachable {
-                    log::dbg!("infinite loop");
                     break 'a None;
                 }
 
                 Some(Value::void())
             }
             E::Break { .. } => {
-                self.ci.loop_relocs.push(Reloc::shifted(self.local_offset(), 1, 4));
+                self.ci.loop_relocs.push(Reloc::new(self.local_offset(), 1, 4));
                 self.output.emit(jmp(0));
                 None
             }
@@ -2147,7 +2097,6 @@ impl Codegen {
                 let lsize = self.tys.size_of(left.ty);
 
                 let lhs = self.loc_to_reg(left.loc, lsize);
-                log::dbg!("{expr}");
                 let right = self.expr_ctx(right, Ctx::default().with_ty(left.ty))?;
                 let rsize = self.tys.size_of(right.ty);
 
@@ -2261,7 +2210,6 @@ impl Codegen {
 
             for (arg, carg) in args.iter().zip(cargs) {
                 let ty = self.ty(&carg.ty);
-                log::dbg!("arg: {}", self.ty_display(ty));
                 self.tys.args.push(ty);
                 let sym = parser::find_symbol(&fast.symbols, carg.id);
                 let loc = if sym.flags & idfl::COMPTIME == 0 {
@@ -2315,7 +2263,7 @@ impl Codegen {
     fn eval_const_low(&mut self, expr: &Expr, mut ty: Option<ty::Id>) -> (u64, ty::Id) {
         let mut ci = ItemCtx {
             file: self.ci.file,
-            id: self.ci.id,
+            id: ty::Kind::Builtin(u32::MAX),
             ret: ty,
             ..self.pool.cis.pop().unwrap_or_default()
         };
@@ -2340,8 +2288,6 @@ impl Codegen {
             let stash = s.complete_call_graph();
 
             s.push_stash(stash);
-
-            s.dunp_imported_fns();
 
             prev.vars.append(&mut s.ci.vars);
             s.ci.finalize(&mut s.output);
@@ -2587,11 +2533,11 @@ impl Codegen {
     fn handle_global(&mut self, id: ty::Global) -> Option<Value> {
         let ptr = self.ci.regs.allocate();
 
-        let reloc = Reloc::new(self.local_offset(), 3, 4);
+        let rel = Reloc::new(self.local_offset(), 3, 4);
         let global = &mut self.tys.globals[id as usize];
-        self.output.globals.push((id, reloc));
-        log::dbg!("{}", self.output.globals.len() - self.ci.snap.globals);
+        self.output.relocs.push(OutReloc { from: self.ci.id, to: ty::Kind::Global(id), rel });
         self.output.emit(instrs::lra(ptr.get(), 0, 0));
+        global.runtime |= !self.ct.active();
 
         Some(Value { ty: global.ty, loc: Loc::reg(ptr).into_derefed() })
     }
@@ -2626,6 +2572,7 @@ impl Codegen {
     }
 
     fn complete_call_graph_low(&mut self) {
+        let prev_strings = self.output.strings.len();
         while self.ci.task_base < self.tasks.len()
             && let Some(task_slot) = self.tasks.pop()
         {
@@ -2636,13 +2583,8 @@ impl Codegen {
         let base = self.output.code.len() as u32;
         let prev_data_len = self.output.string_data.len();
         self.output.code.append(&mut self.output.string_data);
-        for srel in self.output.strings.iter_mut() {
-            #[cfg(debug_assertions)]
-            {
-                if std::mem::replace(&mut srel.shifted, true) {
-                    panic!("str reloc visited twice");
-                }
-            }
+        // we drain these when linking
+        for srel in self.output.strings.iter_mut().skip(prev_strings) {
             debug_assert!(srel.range.end <= prev_data_len as u32);
             debug_assert!(srel.range.start <= srel.range.end);
             srel.range.start += base;
@@ -2669,7 +2611,7 @@ impl Codegen {
         self.ci.snap = self.output.snap();
 
         let Expr::BinOp {
-            left: Expr::Ident { name, .. },
+            left: Expr::Ident { .. },
             op: TokenKind::Decl,
             right: &Expr::Closure { body, args, .. },
         } = expr
@@ -2677,11 +2619,8 @@ impl Codegen {
             unreachable!("{expr}")
         };
 
-        log::dbg!("fn: {}", name);
-
         self.output.emit_prelude();
 
-        log::dbg!("fn-args");
         let mut parama = self.tys.parama(sig.ret);
         let mut sig_args = sig.args.range();
         for arg in args.iter() {
@@ -2702,7 +2641,6 @@ impl Codegen {
             self.ci.ret_reg = reg::Id::RET;
         }
 
-        log::dbg!("fn-body");
         if self.expr(body).is_some() {
             self.report(body.pos(), "expected all paths in the fucntion to return");
         }
@@ -2711,9 +2649,6 @@ impl Codegen {
             self.ci.free_loc(vars.value.loc);
         }
 
-        log::dbg!("fn-prelude, stack: {:x}", self.ci.stack.max_height);
-
-        log::dbg!("fn-relocs");
         self.ci.finalize(&mut self.output);
         self.output.emit(jala(ZERO, RET_ADDR, 0));
         self.ci.regs.free(std::mem::take(&mut self.ci.ret_reg));
@@ -2927,32 +2862,31 @@ impl Codegen {
     }
 
     fn stack_reloc(&mut self, stack: &stack::Id, off: Offset, sub_offset: u8) -> u64 {
-        log::dbg!("whaaaaatahack: {:b}", stack.repr());
         let offset = self.local_offset();
-        self.ci.stack_relocs.push(Reloc::shifted(offset, sub_offset, 8));
+        self.ci.stack_relocs.push(Reloc::new(offset, sub_offset, 8));
         Reloc::pack_srel(stack, off)
     }
 
     fn link(&mut self) {
-        // FIXME: this will cause problems relating snapshots
+        let ct_hint = self.ct.active().then_some(self.ci.snap.code as u32);
 
-        self.output.funcs.retain(|&(f, rel)| {
-            _ = task::unpack(self.tys.funcs[f as usize].offset)
-                .map(|off| rel.apply_jump(&mut self.output.code, off));
-            true
-        });
+        for reloc in &self.output.relocs {
+            if !self.tys.is_runtime_item(reloc.from) && !self.ct.active() {
+                continue;
+            }
 
-        self.output.globals.retain(|&(g, rel)| {
-            _ = task::unpack(self.tys.globals[g as usize].offset)
-                .map(|off| rel.apply_jump(&mut self.output.code, off));
-            true
-        });
+            let Some(to_offset) = self.tys.offset_of_item(reloc.to, ct_hint) else {
+                continue;
+            };
+
+            let from_offset = self.tys.offset_of_item(reloc.from, ct_hint).unwrap();
+            reloc.rel.apply_jump(&mut self.output.code, to_offset, from_offset);
+        }
 
         //self.compress_strings();
-        for srel in self.output.strings.drain(..) {
-            #[cfg(debug_assertions)]
-            assert!(srel.shifted);
-            srel.reloc.apply_jump(&mut self.output.code, srel.range.start);
+        for reloc in self.output.strings.iter() {
+            let from_offset = self.tys.offset_of_item(reloc.from, ct_hint).unwrap();
+            reloc.reloc.apply_jump(&mut self.output.code, reloc.range.start, from_offset);
         }
     }
 
@@ -2990,9 +2924,17 @@ impl Codegen {
         ty::Id::from(self.eval_const(expr, ty::TYPE))
     }
 
+    fn read_trap(addr: u64) -> Option<&'static trap::Trap> {
+        // TODO: make this debug only
+        if unsafe { *(addr as *const u8) } != 255 {
+            return None;
+        }
+        Some(unsafe { &*((addr + 1) as *const trap::Trap) })
+    }
+
     fn handle_ecall(&mut self) {
-        let trap = unsafe { &*(self.ct.vm.pc.get() as *const trap::Trap) };
-        self.ct.vm.pc = self.ct.vm.pc.wrapping_add(trap.size());
+        let trap = Self::read_trap(self.ct.vm.pc.get()).unwrap();
+        self.ct.vm.pc = self.ct.vm.pc.wrapping_add(trap.size() + 1);
 
         let mut extra_jump = 0;
         let mut local_pc = (self.ct.vm.pc.get() as usize - self.output.code.as_ptr() as usize)
@@ -3063,8 +3005,6 @@ impl Codegen {
             }
         };
 
-        log::dbg!("foo: {expr}");
-
         if let Some(existing) = self.tys.syms.get(&SymKey { file, ident }) {
             if let ty::Kind::Func(id) = existing.expand()
                 && let func = &mut self.tys.funcs[id as usize]
@@ -3100,7 +3040,6 @@ impl Codegen {
                         }
 
                         let args = self.pack_args(pos, arg_base);
-                        log::dbg!("eval ret");
                         let ret = self.ty(ret);
 
                         Some(Sig { args, ret })
@@ -3131,17 +3070,20 @@ impl Codegen {
                     offset: u32::MAX,
                     ty: Default::default(),
                     runtime: false,
+                    _file: file,
+                    _name: ident,
                 });
 
                 let ci = ItemCtx {
                     file,
-                    id: ty::Kind::Global(gid),
+                    id: ty::Kind::Builtin(u32::MAX),
                     ..self.pool.cis.pop().unwrap_or_default()
                 };
 
                 _ = left.find_pattern_path(ident, right, |expr| {
-                    self.tys.globals[gid as usize] =
-                        self.ct_eval(ci, |s, _| Ok::<_, !>(s.generate_global(expr))).into_ok();
+                    self.tys.globals[gid as usize] = self
+                        .ct_eval(ci, |s, _| Ok::<_, !>(s.generate_global(expr, file, ident)))
+                        .into_ok();
                 });
 
                 ty::Kind::Global(gid)
@@ -3162,7 +3104,7 @@ impl Codegen {
         }
     }
 
-    fn generate_global(&mut self, expr: &Expr) -> Global {
+    fn generate_global(&mut self, expr: &Expr, file: FileId, name: Ident) -> Global {
         self.output.emit_prelude();
 
         let ret = self.ci.regs.allocate();
@@ -3190,16 +3132,7 @@ impl Codegen {
 
         self.ci.free_loc(ret.loc);
 
-        Global { ty: ret.ty, offset: offset as _, runtime: false }
-    }
-
-    fn dunp_imported_fns(&mut self) {
-        for &(f, _) in &self.output.funcs[self.ci.snap.funcs..] {
-            let fnball = self.tys.funcs[f as usize];
-            let file = self.files[fnball.file as usize].clone();
-            let expr = fnball.expr.get(&file).unwrap();
-            log::dbg!("{expr}");
-        }
+        Global { ty: ret.ty, offset: offset as _, runtime: false, _file: file, _name: name }
     }
 
     fn pop_stash(&mut self) -> Output {
@@ -3248,9 +3181,14 @@ impl Codegen {
 
             self.link();
             self.output.trunc(&Snapshot { code: self.output.code.len(), ..self.ci.snap });
-            log::dbg!("{} {}", self.output.code.len(), self.ci.snap.code);
             let entry = &mut self.output.code[self.ci.snap.code] as *mut _ as _;
             let prev_pc = std::mem::replace(&mut self.ct.vm.pc, hbvm::mem::Address::new(entry));
+
+            #[cfg(test)]
+            {
+                self.disasm(&mut String::new());
+            }
+
             self.run_vm();
             self.ct.vm.pc = prev_pc;
         }
@@ -3264,6 +3202,85 @@ impl Codegen {
         log::dbg!("eval-end");
 
         ret
+    }
+
+    #[cfg(test)]
+    fn disasm(&mut self, output: &mut String) {
+        use crate::DisasmItem;
+        let mut sluce = self.output.code.as_slice();
+        let functions = self
+            .ct
+            .active()
+            .then_some((
+                self.ci.snap.code as u32,
+                (
+                    "target_fn",
+                    (self.output.code.len() - self.ci.snap.code) as u32,
+                    DisasmItem::Func,
+                ),
+            ))
+            .into_iter()
+            .chain(
+                self.tys
+                    .funcs
+                    .iter()
+                    .enumerate()
+                    .filter(|&(i, f)| {
+                        task::unpack(f.offset).is_ok()
+                            && (f.runtime || self.ct.active())
+                            && self.is_fully_linked(i as ty::Func)
+                    })
+                    .map(|(_, f)| {
+                        let file = &self.files[f.file as usize];
+                        let Expr::BinOp { left: &Expr::Ident { name, .. }, .. } =
+                            f.expr.get(file).unwrap()
+                        else {
+                            unreachable!()
+                        };
+                        (f.offset, (name, f.size, DisasmItem::Func))
+                    }),
+            )
+            .chain(
+                self.tys
+                    .globals
+                    .iter()
+                    .filter(|g| task::unpack(g.offset).is_ok() && (g.runtime || self.ct.active()))
+                    .map(|g| {
+                        let file = &self.files[g._file as usize];
+
+                        (
+                            g.offset,
+                            (file.ident_str(g._name), self.tys.size_of(g.ty), DisasmItem::Global),
+                        )
+                    }),
+            )
+            .chain(
+                self.output
+                    .strings
+                    .iter()
+                    .map(|s| (s.range.start, ("string", s.range.len() as _, DisasmItem::Global))),
+            )
+            .collect::<HashMap<_, _>>();
+        if crate::disasm(&mut sluce, &functions, output, |bin| {
+            if self.ct.active()
+                && let Some(trap) = Self::read_trap(bin.as_ptr() as u64)
+            {
+                bin.take(..trap.size() + 1).unwrap();
+            }
+        })
+        .is_err()
+        {
+            panic!("{} {:?}", output, sluce);
+        }
+    }
+
+    #[cfg(test)]
+    fn is_fully_linked(&self, func: ty::Func) -> bool {
+        self.output
+            .relocs
+            .iter()
+            .filter(|r| r.from == ty::Kind::Func(func))
+            .all(|r| self.tys.offset_of_item(r.to, None).is_some())
     }
 
     fn run_vm(&mut self) {
@@ -3333,8 +3350,7 @@ impl Codegen {
         Snapshot {
             code: self.output.code.len() - self.ci.snap.code,
             string_data: self.output.string_data.len() - self.ci.snap.string_data,
-            funcs: self.output.funcs.len() - self.ci.snap.funcs,
-            globals: self.output.globals.len() - self.ci.snap.globals,
+            relocs: self.output.relocs.len() - self.ci.snap.relocs,
             strings: self.output.strings.len() - self.ci.snap.strings,
         }
     }
@@ -3342,8 +3358,7 @@ impl Codegen {
     fn pop_local_snap(&mut self, snap: Snapshot) {
         self.output.code.truncate(snap.code + self.ci.snap.code);
         self.output.string_data.truncate(snap.string_data + self.ci.snap.string_data);
-        self.output.funcs.truncate(snap.funcs + self.ci.snap.funcs);
-        self.output.globals.truncate(snap.globals + self.ci.snap.globals);
+        self.output.relocs.truncate(snap.relocs + self.ci.snap.relocs);
         self.output.strings.truncate(snap.strings + self.ci.snap.strings);
     }
 
@@ -3366,11 +3381,7 @@ impl Codegen {
 mod tests {
     use {
         super::parser,
-        crate::{
-            codegen::LoggedMem,
-            log,
-            parser::{Expr, FileId},
-        },
+        crate::{codegen::LoggedMem, log, parser::FileId},
         std::io,
     };
 
@@ -3434,24 +3445,7 @@ mod tests {
         let mut out = Vec::new();
         codegen.dump(&mut out).unwrap();
 
-        let mut sluce = out.as_slice();
-        let functions = codegen
-            .tys
-            .funcs
-            .iter()
-            .filter(|f| f.offset != u32::MAX && f.runtime)
-            .map(|f| {
-                let file = &codegen.files[f.file as usize];
-                let Expr::BinOp { left: &Expr::Ident { name, .. }, .. } = f.expr.get(file).unwrap()
-                else {
-                    unreachable!()
-                };
-                (f.offset, (name, f.size))
-            })
-            .collect::<crate::HashMap<_, _>>();
-        if crate::disasm(&mut sluce, &functions, output).is_err() {
-            panic!("{} {:?}", output, sluce);
-        }
+        codegen.disasm(output);
 
         use std::fmt::Write;
 
