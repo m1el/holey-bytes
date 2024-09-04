@@ -2613,6 +2613,7 @@ impl Codegen {
             debug_assert!(srel.range.start <= srel.range.end);
             srel.range.start += base;
             srel.range.end += base;
+            srel.shifted = true;
         }
     }
 
