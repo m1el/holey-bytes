@@ -2,11 +2,11 @@ main:
     ADDI64 r254, r254, -72d
     ST r31, r254, 48a, 24h
     LI64 r32, 1d
-    ST r32, r254, 0a, 24h
+    ST r32, r254, 0a, 8h
     LI64 r32, 2d
-    ST r32, r254, 8a, 24h
+    ST r32, r254, 8a, 8h
     LI64 r32, 4d
-    ST r32, r254, 16a, 24h
+    ST r32, r254, 16a, 8h
     ADDI64 r32, r254, 0d
     ADDI64 r33, r254, 24d
     BMC r32, r33, 24h

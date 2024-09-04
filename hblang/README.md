@@ -733,7 +733,7 @@ some_func := fn($Elem: type): void {
 }
 
 main := fn(): void {
-	some_func(0)
+	some_func(u8)
 	return
 }
 ```

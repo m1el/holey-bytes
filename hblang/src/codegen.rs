@@ -1740,12 +1740,12 @@ impl Codegen {
                         }
                     }
                     ty::Kind::Slice(arr) => {
-                        let arr = &self.tys.arrays[arr as usize];
+                        let arr = self.tys.arrays[arr as usize];
                         let item_size = self.tys.size_of(arr.ty);
                         for (i, value) in fields.iter().enumerate() {
                             let loc = loc.as_ref().offset(i as u32 * item_size);
                             let value =
-                                self.expr_ctx(value, Ctx::default().with_loc(loc).with_ty(ty))?;
+                                self.expr_ctx(value, Ctx::default().with_loc(loc).with_ty(arr.ty))?;
                             self.ci.free_loc(value.loc);
                         }
                     }
