@@ -276,7 +276,7 @@ str_len := fn(str: ^u8): int {
 
 main := fn(): int {
 	// when string ends with '\0' its a C string and thus type is '^u8'
-	some_str := "abඞ\n\r\t\{ff}\{fff0f0ff}\0"
+	some_str := "abඞ\n\r\t\{35}\{36373839}\0"
 	len := str_len(some_str)
 	some_other_str := "fff\0"
 	lep := str_len(some_other_str)
