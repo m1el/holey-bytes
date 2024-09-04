@@ -695,7 +695,7 @@ example := fn(): void {
 	loop {
 		random_x := @inline(random.integer, 0, 1024)
 		random_y := random.integer(0, 768)
-		a := @inline(screenidx, random_x, random_y)
+		a := @inline(screenidx, random_x)
 		break
 	}
 	return
@@ -723,5 +723,17 @@ integer := fn(min: int, max: int): int {
 		return rng % (max - min + 1) + min
 	}
 	return rng
+}
+```
+
+#### some_generic_code
+```hb
+some_func := fn($Elem: type): void {
+	return
+}
+
+main := fn(): void {
+	some_func(0)
+	return
 }
 ```

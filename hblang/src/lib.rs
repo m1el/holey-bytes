@@ -21,7 +21,6 @@ use {
     parser::Ast,
     std::{
         collections::{hash_map, VecDeque},
-        default,
         io::{self, Read},
         path::{Path, PathBuf},
         sync::Mutex,
@@ -129,6 +128,11 @@ unsafe fn encode<T>(instr: T) -> (usize, [u8; instrs::MAX_SIZE]) {
     let mut buf = [0; instrs::MAX_SIZE];
     std::ptr::write(buf.as_mut_ptr() as *mut T, instr);
     (std::mem::size_of::<T>(), buf)
+}
+
+#[inline]
+fn decode<T>(binary: &mut &[u8]) -> Option<T> {
+    unsafe { Some(std::ptr::read(binary.take(..std::mem::size_of::<T>())?.as_ptr() as *const T)) }
 }
 
 #[cfg(test)]

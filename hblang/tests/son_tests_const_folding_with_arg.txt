@@ -1,0 +1,5 @@
+0: Start
+2: Tuple { index: 0 }
+7: return [2] 0
+1: End
+Start.1

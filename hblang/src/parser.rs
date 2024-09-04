@@ -1220,6 +1220,16 @@ impl ExprRef {
         // allocations
         Some(unsafe { { self.0 }.as_ref() })
     }
+
+    pub fn dangling() -> Self {
+        Self(NonNull::dangling())
+    }
+}
+
+impl Default for ExprRef {
+    fn default() -> Self {
+        Self::dangling()
+    }
 }
 
 unsafe impl Send for Ast {}

@@ -8,7 +8,7 @@ use {
         parser::{self, find_symbol, idfl, CtorField, Expr, ExprRef, FileId, Pos},
         HashMap,
     },
-    std::{ops::Range, rc::Rc, u32},
+    std::{fmt::Display, ops::Range, rc::Rc},
 };
 
 type Offset = u32;
@@ -1438,7 +1438,7 @@ impl Codegen {
                 let mut base_val = self.expr(base)?;
                 base_val.loc = self.make_loc_owned(base_val.loc, base_val.ty);
                 let index_val = self.expr(index)?;
-                _ = self.assert_ty(index.pos(), index_val.ty, ty::INT.into());
+                _ = self.assert_ty(index.pos(), index_val.ty, ty::INT.into(), "subsctipt");
 
                 if let ty::Kind::Ptr(ty) = base_val.ty.expand() {
                     base_val.ty = self.tys.ptrs[ty as usize].base;
@@ -1500,6 +1500,8 @@ impl Codegen {
 
                 let scope = self.ci.vars.len();
                 let sig = self.compute_signature(&mut func, func_ast.pos(), args)?;
+
+                self.assert_arg_count(expr.pos(), args.len(), cargs.len(), "inline function call");
 
                 if scope == self.ci.vars.len() {
                     for ((arg, ty), carg) in
@@ -1881,7 +1883,10 @@ impl Codegen {
                 let mut values = Vec::with_capacity(args.len());
                 let mut sig_args = sig.args.range();
                 let mut should_momize = !args.is_empty() && sig.ret == ty::Id::from(ty::TYPE);
-                for (arg, carg) in args.iter().zip(cargs) {
+
+                self.assert_arg_count(expr.pos(), args.len(), cargs.len(), "function call");
+
+                for (i, (arg, carg)) in args.iter().zip(cargs).enumerate() {
                     let ty = self.tys.args[sig_args.next().unwrap()];
                     let sym = parser::find_symbol(&ast.symbols, carg.id);
                     if sym.flags & idfl::COMPTIME != 0 {
@@ -1891,6 +1896,7 @@ impl Codegen {
 
                     // TODO: pass the arg as dest
                     let varg = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
+                    _ = self.assert_ty(arg.pos(), varg.ty, ty, format_args!("argument({i})"));
                     self.pass_arg(&varg, &mut parama);
                     values.push(varg.loc);
                     should_momize = false;
@@ -1966,7 +1972,7 @@ impl Codegen {
 
                 match self.ci.ret {
                     None => self.ci.ret = Some(ty),
-                    Some(ret) => _ = self.assert_ty(pos, ty, ret),
+                    Some(ret) => _ = self.assert_ty(pos, ty, ret, "return type"),
                 }
 
                 self.ci.ret_relocs.push(Reloc::new(self.local_offset(), 1, 4));
@@ -1979,8 +1985,21 @@ impl Codegen {
                 }
                 Some(Value::void())
             }
-            E::Number { value, .. } => Some(Value {
-                ty: ctx.ty.map(ty::Id::strip_pointer).unwrap_or(ty::INT.into()),
+            E::Number { value, pos, .. } => Some(Value {
+                ty: {
+                    let ty = ctx.ty.map(ty::Id::strip_pointer).unwrap_or(ty::INT.into());
+                    if !ty.is_integer() && !ty.is_pointer() {
+                        self.report(
+                            pos,
+                            format_args!(
+                                "this integer was inferred to be '{}' \
+                                which does not make sense",
+                                self.ty_display(ty)
+                            ),
+                        );
+                    }
+                    ty
+                },
                 loc: Loc::ct(value as u64),
             }),
             E::If { cond, then, else_, .. } => {
@@ -2090,7 +2109,7 @@ impl Codegen {
 
                 if let ty::Kind::Struct(_) = left.ty.expand() {
                     let right = self.expr_ctx(right, Ctx::default().with_ty(left.ty))?;
-                    _ = self.assert_ty(expr.pos(), left.ty, right.ty);
+                    _ = self.assert_ty(expr.pos(), right.ty, left.ty, "right struct operand");
                     return self.struct_op(op, left.ty, ctx, left.loc, right.loc);
                 }
 
@@ -2100,7 +2119,7 @@ impl Codegen {
                 let right = self.expr_ctx(right, Ctx::default().with_ty(left.ty))?;
                 let rsize = self.tys.size_of(right.ty);
 
-                let ty = self.assert_ty(expr.pos(), left.ty, right.ty);
+                let ty = self.assert_ty(expr.pos(), right.ty, left.ty, "right sclalar operand");
                 let size = self.tys.size_of(ty);
                 let signed = ty.is_signed();
 
@@ -2181,7 +2200,7 @@ impl Codegen {
         }?;
 
         if let Some(ty) = ctx.ty {
-            _ = self.assert_ty(expr.pos(), value.ty, ty);
+            _ = self.assert_ty(expr.pos(), value.ty, ty, "a thing");
         }
 
         Some(match ctx.loc {
@@ -3300,13 +3319,20 @@ impl Codegen {
 
     #[must_use]
     #[track_caller]
-    fn assert_ty(&self, pos: Pos, ty: ty::Id, expected: ty::Id) -> ty::Id {
+    fn assert_ty(&self, pos: Pos, ty: ty::Id, expected: ty::Id, hint: impl Display) -> ty::Id {
         if let Some(res) = ty.try_upcast(expected) {
             res
         } else {
             let ty = self.ty_display(ty);
             let expected = self.ty_display(expected);
-            self.report(pos, format_args!("expected {expected}, got {ty}"));
+            self.report(pos, format_args!("expected {hint} of type {expected}, got {ty}"));
+        }
+    }
+
+    fn assert_arg_count(&self, pos: Pos, got: usize, expected: usize, hint: impl Display) {
+        if got != expected {
+            let s = if expected != 1 { "s" } else { "" };
+            self.report(pos, format_args!("{hint} expected {expected} argument{s}, got {got}"))
         }
     }
 
@@ -3523,5 +3549,6 @@ mod tests {
         comptime_function_from_another_file => README;
         inline => README;
         inline_test => README;
+        some_generic_code => README;
     }
 }

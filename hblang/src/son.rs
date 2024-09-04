@@ -2,9 +2,14 @@
 use {
     crate::{
         ident::{self, Ident},
+        instrs,
         lexer::{self, TokenKind},
         log,
-        parser::{self, idfl, Expr, ExprRef, FileId, Pos},
+        parser::{
+            self,
+            idfl::{self, index},
+            Expr, ExprRef, FileId, Pos,
+        },
         HashMap,
     },
     core::fmt,
@@ -12,424 +17,85 @@ use {
         mem,
         ops::{self, Range},
         rc::Rc,
+        usize,
     },
 };
 
 type Nid = u32;
 const NILL: u32 = u32::MAX;
 
-pub struct Nodes {
-    values: Vec<PoolSlot>,
-    free: u32,
-    lookup: HashMap<(Kind, [Nid; MAX_INPUTS]), Nid>,
-}
+mod reg {
+    pub const STACK_PTR: Reg = 254;
+    pub const ZERO: Reg = 0;
+    pub const RET: Reg = 1;
+    pub const RET_ADDR: Reg = 31;
 
-impl Default for Nodes {
-    fn default() -> Self {
-        Self { values: Default::default(), free: u32::MAX, lookup: Default::default() }
-    }
-}
+    type Reg = u8;
 
-impl Nodes {
-    pub fn add(&mut self, value: Node) -> u32 {
-        if self.free == u32::MAX {
-            self.free = self.values.len() as _;
-            self.values.push(PoolSlot::Next(u32::MAX));
+    #[derive(Default, Debug, PartialEq, Eq)]
+    pub struct Id(Reg, bool);
+
+    impl Id {
+        pub const RET: Self = Id(RET, false);
+
+        pub fn get(&self) -> Reg {
+            self.0
         }
 
-        let free = self.free;
-        self.free = match mem::replace(&mut self.values[free as usize], PoolSlot::Value(value)) {
-            PoolSlot::Value(_) => unreachable!(),
-            PoolSlot::Next(free) => free,
-        };
-        free
-    }
-
-    pub fn remove_low(&mut self, id: u32) -> Node {
-        let value = match mem::replace(&mut self.values[id as usize], PoolSlot::Next(self.free)) {
-            PoolSlot::Value(value) => value,
-            PoolSlot::Next(_) => unreachable!(),
-        };
-        self.free = id;
-        value
-    }
-
-    pub fn clear(&mut self) {
-        self.values.clear();
-        self.free = u32::MAX;
-    }
-
-    fn new_node<const SIZE: usize>(
-        &mut self,
-        ty: impl Into<ty::Id>,
-        kind: Kind,
-        inps: [Nid; SIZE],
-    ) -> Nid {
-        let mut inputs = [NILL; MAX_INPUTS];
-        inputs[..inps.len()].copy_from_slice(&inps);
-
-        if let Some(&id) = self.lookup.get(&(kind, inputs)) {
-            debug_assert_eq!(self[id].kind, kind);
-            debug_assert_eq!(self[id].inputs, inputs);
-            return id;
+        pub fn as_ref(&self) -> Self {
+            Self(self.0, false)
         }
 
-        let id = self.add(Node {
-            inputs,
-            kind,
-            depth: u32::MAX,
-            lock_rc: 0,
-            ty: ty.into(),
-            outputs: vec![],
-        });
-
-        let prev = self.lookup.insert((kind, inputs), id);
-        debug_assert_eq!(prev, None);
-
-        self.add_deps(id, &inps);
-        if let Some(opt) = self.peephole(id) {
-            debug_assert_ne!(opt, id);
-            self.lock(opt);
-            self.remove(id);
-            self.unlock(opt);
-            opt
-        } else {
-            id
+        pub fn is_ref(&self) -> bool {
+            !self.1
         }
     }
 
-    fn lock(&mut self, target: Nid) {
-        self[target].lock_rc += 1;
-    }
-
-    fn unlock(&mut self, target: Nid) {
-        self[target].lock_rc -= 1;
-    }
-
-    fn remove(&mut self, target: Nid) {
-        if !self[target].is_dangling() {
-            return;
+    impl From<u8> for Id {
+        fn from(value: u8) -> Self {
+            Self(value, false)
         }
-        for i in 0..self[target].inputs().len() {
-            let inp = self[target].inputs[i];
-            let index = self[inp].outputs.iter().position(|&p| p == target).unwrap();
-            self[inp].outputs.swap_remove(index);
-            self.remove(inp);
-        }
-        let res = self.lookup.remove(&(self[target].kind, self[target].inputs));
-        debug_assert_eq!(res, Some(target));
-        self.remove_low(target);
     }
 
-    fn peephole(&mut self, target: Nid) -> Option<Nid> {
-        match self[target].kind {
-            Kind::Start => {}
-            Kind::End => {}
-            Kind::BinOp { op } => return self.peephole_binop(target, op),
-            Kind::Return => {}
-            Kind::Tuple { index } => {}
-            Kind::ConstInt { value } => {}
+    impl Drop for Id {
+        fn drop(&mut self) {
+            if !std::thread::panicking() && self.1 {
+                unreachable!("reg id leaked: {:?}", self.0);
+            }
         }
-        None
     }
 
-    fn peephole_binop(&mut self, target: Nid, op: TokenKind) -> Option<Nid> {
-        use TokenKind as T;
-        let [mut lhs, mut rhs, ..] = self[target].inputs;
+    #[derive(Default, PartialEq, Eq)]
+    pub struct Alloc {
+        free: Vec<Reg>,
+        max_used: Reg,
+    }
 
-        if lhs == rhs {
-            match op {
-                T::Sub => {
-                    return Some(self.new_node(self[target].ty, Kind::ConstInt { value: 0 }, []));
-                }
-                T::Add => {
-                    let rhs = self.new_node(self[target].ty, Kind::ConstInt { value: 2 }, []);
-                    return Some(
-                        self.new_node(self[target].ty, Kind::BinOp { op: T::Mul }, [lhs, rhs]),
-                    );
-                }
-                _ => {}
+    impl Alloc {
+        pub fn init(&mut self) {
+            self.free.clear();
+            self.free.extend((32..=253).rev());
+            self.max_used = RET_ADDR;
+        }
+
+        pub fn allocate(&mut self) -> Id {
+            let reg = self.free.pop().expect("TODO: we need to spill");
+            self.max_used = self.max_used.max(reg);
+            Id(reg, true)
+        }
+
+        pub fn free(&mut self, reg: Id) {
+            if reg.1 {
+                self.free.push(reg.0);
+                std::mem::forget(reg);
             }
         }
 
-        if let (Kind::ConstInt { value: a }, Kind::ConstInt { value: b }) =
-            (self[lhs].kind, self[rhs].kind)
-        {
-            return Some(self.new_node(
-                self[target].ty,
-                Kind::ConstInt { value: op.apply(a, b) },
-                [],
-            ));
-        }
-
-        let mut changed = false;
-        if op.is_comutative() && self[lhs].kind < self[rhs].kind {
-            std::mem::swap(&mut lhs, &mut rhs);
-            changed = true;
-        }
-
-        if let Kind::ConstInt { value } = self[rhs].kind {
-            match (op, value) {
-                (T::Add | T::Sub | T::Shl, 0) | (T::Mul | T::Div, 1) => return Some(lhs),
-                (T::Mul, 0) => return Some(rhs),
-                _ => {}
-            }
-        }
-
-        if op.is_comutative() && self[lhs].kind == (Kind::BinOp { op }) {
-            if let Kind::ConstInt { value: a } = self[self[lhs].inputs[1]].kind
-                && let Kind::ConstInt { value: b } = self[rhs].kind
-            {
-                let new_rhs =
-                    self.new_node(self[target].ty, Kind::ConstInt { value: op.apply(a, b) }, []);
-                return Some(self.new_node(self[target].ty, Kind::BinOp { op }, [
-                    self[lhs].inputs[0],
-                    new_rhs,
-                ]));
-            }
-
-            if self.is_const(self[lhs].inputs[1]) {
-                let new_lhs =
-                    self.new_node(self[target].ty, Kind::BinOp { op }, [self[lhs].inputs[0], rhs]);
-                return Some(self.new_node(self[target].ty, Kind::BinOp { op }, [
-                    new_lhs,
-                    self[lhs].inputs[1],
-                ]));
-            }
-        }
-
-        if op == T::Add
-            && self[lhs].kind == (Kind::BinOp { op: T::Mul })
-            && self[lhs].inputs[0] == rhs
-            && let Kind::ConstInt { value } = self[self[lhs].inputs[1]].kind
-        {
-            let new_rhs = self.new_node(self[target].ty, Kind::ConstInt { value: value + 1 }, []);
-            return Some(
-                self.new_node(self[target].ty, Kind::BinOp { op: T::Mul }, [rhs, new_rhs]),
-            );
-        }
-
-        if op == T::Sub && self[lhs].kind == (Kind::BinOp { op }) {
-            // (a - b) - c => a - (b + c)
-            let [a, b, ..] = self[lhs].inputs;
-            let c = rhs;
-            let new_rhs = self.new_node(self[target].ty, Kind::BinOp { op: T::Add }, [b, c]);
-            return Some(self.new_node(self[target].ty, Kind::BinOp { op }, [a, new_rhs]));
-        }
-
-        if changed {
-            return Some(self.new_node(self[target].ty, self[target].kind, [lhs, rhs]));
-        }
-
-        None
-    }
-
-    fn is_const(&self, id: Nid) -> bool {
-        matches!(self[id].kind, Kind::ConstInt { .. })
-    }
-
-    fn replace(&mut self, target: Nid, with: Nid) {
-        //for i in 0..self[target].inputs().len() {
-        //    let inp = self[target].inputs[i];
-        //    let index = self[inp].outputs.iter().position(|&p| p == target).unwrap();
-        //    self[inp].outputs[index] = with;
-        //}
-
-        for i in 0..self[target].outputs.len() {
-            let out = self[target].outputs[i];
-            let index = self[out].inputs().iter().position(|&p| p == target).unwrap();
-            let rpl = self.modify_input(out, index, with);
-            self[with].outputs.push(rpl);
-        }
-
-        self.remove_low(target);
-    }
-
-    fn modify_input(&mut self, target: Nid, inp_index: usize, with: Nid) -> Nid {
-        let out = self.lookup.remove(&(self[target].kind, self[target].inputs));
-        debug_assert!(out == Some(target));
-        debug_assert_ne!(self[target].inputs[inp_index], with);
-
-        self[target].inputs[inp_index] = with;
-        if let Err(other) = self.lookup.try_insert((self[target].kind, self[target].inputs), target)
-        {
-            let rpl = *other.entry.get();
-            self.replace(target, rpl);
-            return rpl;
-        }
-
-        target
-    }
-
-    fn add_deps(&mut self, id: Nid, deps: &[Nid]) {
-        for &d in deps {
-            debug_assert_ne!(d, id);
-            self[d].outputs.push(id);
-        }
-    }
-
-    fn unlock_free(&mut self, id: Nid) {
-        self[id].lock_rc -= 1;
-        if self[id].is_dangling() {
-            self.remove_low(id);
-        }
-    }
-
-    fn fmt(&self, f: &mut fmt::Formatter, node: Nid, rcs: &mut [usize]) -> fmt::Result {
-        let mut is_ready = || {
-            if rcs[node as usize] == 0 {
-                return false;
-            }
-            rcs[node as usize] = rcs[node as usize].saturating_sub(1);
-            rcs[node as usize] == 0
-        };
-
-        match self[node].kind {
-            Kind::BinOp { op } => {
-                write!(f, "(")?;
-                self.fmt(f, self[node].inputs[0], rcs)?;
-                write!(f, " {op} ")?;
-                self.fmt(f, self[node].inputs[1], rcs)?;
-                write!(f, ")")?;
-            }
-            Kind::Return => {
-                write!(f, "{}: return [{:?}] ", node, self[node].inputs[0])?;
-                self.fmt(f, self[node].inputs[1], rcs)?;
-                writeln!(f)?;
-                self.fmt(f, self[node].inputs[2], rcs)?;
-            }
-            Kind::ConstInt { value } => write!(f, "{}", value)?,
-            Kind::End => {
-                if is_ready() {
-                    writeln!(f, "{}: {:?}", node, self[node].kind)?;
-                }
-            }
-            Kind::Tuple { index } => {
-                if index != 0 && self[self[node].inputs[0]].kind == Kind::Start {
-                    write!(f, "{:?}.{}", self[self[node].inputs[0]].kind, index)?;
-                } else if is_ready() {
-                    writeln!(f, "{}: {:?}", node, self[node].kind)?;
-                    for &o in &self[node].outputs {
-                        if self.is_cfg(o) {
-                            self.fmt(f, o, rcs)?;
-                        }
-                    }
-                }
-            }
-            Kind::Start => 'b: {
-                if !is_ready() {
-                    break 'b;
-                }
-
-                writeln!(f, "{}: {:?}", node, self[node].kind)?;
-
-                for &o in &self[node].outputs {
-                    self.fmt(f, o, rcs)?;
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn is_cfg(&self, o: Nid) -> bool {
-        matches!(self[o].kind, Kind::Start | Kind::End | Kind::Return | Kind::Tuple { .. })
-    }
-}
-
-impl ops::Index<u32> for Nodes {
-    type Output = Node;
-
-    fn index(&self, index: u32) -> &Self::Output {
-        match &self.values[index as usize] {
-            PoolSlot::Value(value) => value,
-            PoolSlot::Next(_) => unreachable!(),
+        pub fn pushed_size(&self) -> usize {
+            ((self.max_used as usize).saturating_sub(RET_ADDR as usize) + 1) * 8
         }
     }
 }
-
-impl ops::IndexMut<u32> for Nodes {
-    fn index_mut(&mut self, index: u32) -> &mut Self::Output {
-        match &mut self.values[index as usize] {
-            PoolSlot::Value(value) => value,
-            PoolSlot::Next(_) => unreachable!(),
-        }
-    }
-}
-
-#[derive(Debug)]
-enum PoolSlot {
-    Value(Node),
-    Next(u32),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[repr(u8)]
-pub enum Kind {
-    Start,
-    End,
-    Return,
-    ConstInt { value: i64 },
-    Tuple { index: u32 },
-    BinOp { op: lexer::TokenKind },
-}
-
-impl Kind {
-    fn disc(&self) -> u8 {
-        unsafe { *(self as *const _ as *const u8) }
-    }
-}
-
-const MAX_INPUTS: usize = 3;
-
-#[derive(Debug)]
-pub struct Node {
-    pub inputs: [Nid; MAX_INPUTS],
-    pub kind: Kind,
-    pub depth: u32,
-    pub lock_rc: u32,
-    pub ty: ty::Id,
-    pub outputs: Vec<Nid>,
-}
-
-impl Node {
-    fn is_dangling(&self) -> bool {
-        self.outputs.len() + self.lock_rc as usize == 0
-    }
-
-    fn inputs(&self) -> &[Nid] {
-        let len = self.inputs.iter().position(|&n| n == NILL).unwrap_or(MAX_INPUTS);
-        &self.inputs[..len]
-    }
-
-    fn inputs_mut(&mut self) -> &mut [Nid] {
-        let len = self.inputs.iter().position(|&n| n == NILL).unwrap_or(MAX_INPUTS);
-        &mut self.inputs[..len]
-    }
-}
-
-impl fmt::Display for Nodes {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.fmt(
-            f,
-            0,
-            &mut self
-                .values
-                .iter()
-                .map(|s| match s {
-                    PoolSlot::Value(Node { kind: Kind::Start, .. }) => 1,
-                    PoolSlot::Value(Node { kind: Kind::End, ref outputs, .. }) => outputs.len(),
-                    PoolSlot::Value(val) => val.inputs().len(),
-                    PoolSlot::Next(_) => 0,
-                })
-                .collect::<Vec<_>>(),
-        )
-    }
-}
-
-type Offset = u32;
-type Size = u32;
-type ArrayLen = u32;
 
 mod ty {
     use {
@@ -747,11 +413,426 @@ mod ty {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+struct Nodes {
+    values: Vec<PoolSlot>,
+    free: u32,
+    lookup: HashMap<(Kind, [Nid; MAX_INPUTS]), Nid>,
+}
+
+impl Default for Nodes {
+    fn default() -> Self {
+        Self { values: Default::default(), free: u32::MAX, lookup: Default::default() }
+    }
+}
+
+impl Nodes {
+    fn add(&mut self, value: Node) -> u32 {
+        if self.free == u32::MAX {
+            self.free = self.values.len() as _;
+            self.values.push(PoolSlot::Next(u32::MAX));
+        }
+
+        let free = self.free;
+        self.free = match mem::replace(&mut self.values[free as usize], PoolSlot::Value(value)) {
+            PoolSlot::Value(_) => unreachable!(),
+            PoolSlot::Next(free) => free,
+        };
+        free
+    }
+
+    fn remove_low(&mut self, id: u32) -> Node {
+        let value = match mem::replace(&mut self.values[id as usize], PoolSlot::Next(self.free)) {
+            PoolSlot::Value(value) => value,
+            PoolSlot::Next(_) => unreachable!(),
+        };
+        self.free = id;
+        value
+    }
+
+    fn clear(&mut self) {
+        self.values.clear();
+        self.free = u32::MAX;
+    }
+
+    fn new_node<const SIZE: usize>(
+        &mut self,
+        ty: impl Into<ty::Id>,
+        kind: Kind,
+        inps: [Nid; SIZE],
+    ) -> Nid {
+        let mut inputs = [NILL; MAX_INPUTS];
+        inputs[..inps.len()].copy_from_slice(&inps);
+
+        if let Some(&id) = self.lookup.get(&(kind, inputs)) {
+            debug_assert_eq!(self[id].kind, kind);
+            debug_assert_eq!(self[id].inputs, inputs);
+            return id;
+        }
+
+        let id = self.add(Node {
+            inputs,
+            kind,
+            loc: Default::default(),
+            depth: u32::MAX,
+            lock_rc: 0,
+            ty: ty.into(),
+            outputs: vec![],
+        });
+
+        let prev = self.lookup.insert((kind, inputs), id);
+        debug_assert_eq!(prev, None);
+
+        self.add_deps(id, &inps);
+        if let Some(opt) = self.peephole(id) {
+            debug_assert_ne!(opt, id);
+            self.lock(opt);
+            self.remove(id);
+            self.unlock(opt);
+            opt
+        } else {
+            id
+        }
+    }
+
+    fn lock(&mut self, target: Nid) {
+        self[target].lock_rc += 1;
+    }
+
+    fn unlock(&mut self, target: Nid) {
+        self[target].lock_rc -= 1;
+    }
+
+    fn remove(&mut self, target: Nid) {
+        if !self[target].is_dangling() {
+            return;
+        }
+        for i in 0..self[target].inputs().len() {
+            let inp = self[target].inputs[i];
+            let index = self[inp].outputs.iter().position(|&p| p == target).unwrap();
+            self[inp].outputs.swap_remove(index);
+            self.remove(inp);
+        }
+        let res = self.lookup.remove(&(self[target].kind, self[target].inputs));
+        debug_assert_eq!(res, Some(target));
+        self.remove_low(target);
+    }
+
+    fn peephole(&mut self, target: Nid) -> Option<Nid> {
+        match self[target].kind {
+            Kind::Start => {}
+            Kind::End => {}
+            Kind::BinOp { op } => return self.peephole_binop(target, op),
+            Kind::Return => {}
+            Kind::Tuple { .. } => {}
+            Kind::ConstInt { .. } => {}
+        }
+        None
+    }
+
+    fn peephole_binop(&mut self, target: Nid, op: TokenKind) -> Option<Nid> {
+        use TokenKind as T;
+        let [mut lhs, mut rhs, ..] = self[target].inputs;
+
+        if lhs == rhs {
+            match op {
+                T::Sub => {
+                    return Some(self.new_node(self[target].ty, Kind::ConstInt { value: 0 }, []));
+                }
+                T::Add => {
+                    let rhs = self.new_node(self[target].ty, Kind::ConstInt { value: 2 }, []);
+                    return Some(
+                        self.new_node(self[target].ty, Kind::BinOp { op: T::Mul }, [lhs, rhs]),
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        if let (Kind::ConstInt { value: a }, Kind::ConstInt { value: b }) =
+            (self[lhs].kind, self[rhs].kind)
+        {
+            return Some(self.new_node(
+                self[target].ty,
+                Kind::ConstInt { value: op.apply(a, b) },
+                [],
+            ));
+        }
+
+        let mut changed = false;
+        if op.is_comutative() && self[lhs].kind < self[rhs].kind {
+            std::mem::swap(&mut lhs, &mut rhs);
+            changed = true;
+        }
+
+        if let Kind::ConstInt { value } = self[rhs].kind {
+            match (op, value) {
+                (T::Add | T::Sub | T::Shl, 0) | (T::Mul | T::Div, 1) => return Some(lhs),
+                (T::Mul, 0) => return Some(rhs),
+                _ => {}
+            }
+        }
+
+        if op.is_comutative() && self[lhs].kind == (Kind::BinOp { op }) {
+            if let Kind::ConstInt { value: a } = self[self[lhs].inputs[1]].kind
+                && let Kind::ConstInt { value: b } = self[rhs].kind
+            {
+                let new_rhs =
+                    self.new_node(self[target].ty, Kind::ConstInt { value: op.apply(a, b) }, []);
+                return Some(self.new_node(self[target].ty, Kind::BinOp { op }, [
+                    self[lhs].inputs[0],
+                    new_rhs,
+                ]));
+            }
+
+            if self.is_const(self[lhs].inputs[1]) {
+                let new_lhs =
+                    self.new_node(self[target].ty, Kind::BinOp { op }, [self[lhs].inputs[0], rhs]);
+                return Some(self.new_node(self[target].ty, Kind::BinOp { op }, [
+                    new_lhs,
+                    self[lhs].inputs[1],
+                ]));
+            }
+        }
+
+        if op == T::Add
+            && self[lhs].kind == (Kind::BinOp { op: T::Mul })
+            && self[lhs].inputs[0] == rhs
+            && let Kind::ConstInt { value } = self[self[lhs].inputs[1]].kind
+        {
+            let new_rhs = self.new_node(self[target].ty, Kind::ConstInt { value: value + 1 }, []);
+            return Some(
+                self.new_node(self[target].ty, Kind::BinOp { op: T::Mul }, [rhs, new_rhs]),
+            );
+        }
+
+        if op == T::Sub && self[lhs].kind == (Kind::BinOp { op }) {
+            // (a - b) - c => a - (b + c)
+            let [a, b, ..] = self[lhs].inputs;
+            let c = rhs;
+            let new_rhs = self.new_node(self[target].ty, Kind::BinOp { op: T::Add }, [b, c]);
+            return Some(self.new_node(self[target].ty, Kind::BinOp { op }, [a, new_rhs]));
+        }
+
+        if changed {
+            return Some(self.new_node(self[target].ty, self[target].kind, [lhs, rhs]));
+        }
+
+        None
+    }
+
+    fn is_const(&self, id: Nid) -> bool {
+        matches!(self[id].kind, Kind::ConstInt { .. })
+    }
+
+    fn replace(&mut self, target: Nid, with: Nid) {
+        //for i in 0..self[target].inputs().len() {
+        //    let inp = self[target].inputs[i];
+        //    let index = self[inp].outputs.iter().position(|&p| p == target).unwrap();
+        //    self[inp].outputs[index] = with;
+        //}
+
+        for i in 0..self[target].outputs.len() {
+            let out = self[target].outputs[i];
+            let index = self[out].inputs().iter().position(|&p| p == target).unwrap();
+            let rpl = self.modify_input(out, index, with);
+            self[with].outputs.push(rpl);
+        }
+
+        self.remove_low(target);
+    }
+
+    fn modify_input(&mut self, target: Nid, inp_index: usize, with: Nid) -> Nid {
+        let out = self.lookup.remove(&(self[target].kind, self[target].inputs));
+        debug_assert!(out == Some(target));
+        debug_assert_ne!(self[target].inputs[inp_index], with);
+
+        self[target].inputs[inp_index] = with;
+        if let Err(other) = self.lookup.try_insert((self[target].kind, self[target].inputs), target)
+        {
+            let rpl = *other.entry.get();
+            self.replace(target, rpl);
+            return rpl;
+        }
+
+        target
+    }
+
+    fn add_deps(&mut self, id: Nid, deps: &[Nid]) {
+        for &d in deps {
+            debug_assert_ne!(d, id);
+            self[d].outputs.push(id);
+        }
+    }
+
+    fn unlock_free(&mut self, id: Nid) {
+        self[id].lock_rc -= 1;
+        if self[id].is_dangling() {
+            self.remove_low(id);
+        }
+    }
+
+    fn fmt(&self, f: &mut fmt::Formatter, node: Nid, rcs: &mut [usize]) -> fmt::Result {
+        let mut is_ready = || {
+            if rcs[node as usize] == 0 {
+                return false;
+            }
+            rcs[node as usize] = rcs[node as usize].saturating_sub(1);
+            rcs[node as usize] == 0
+        };
+
+        match self[node].kind {
+            Kind::BinOp { op } => {
+                write!(f, "(")?;
+                self.fmt(f, self[node].inputs[0], rcs)?;
+                write!(f, " {op} ")?;
+                self.fmt(f, self[node].inputs[1], rcs)?;
+                write!(f, ")")?;
+            }
+            Kind::Return => {
+                write!(f, "{}: return [{:?}] ", node, self[node].inputs[0])?;
+                self.fmt(f, self[node].inputs[1], rcs)?;
+                writeln!(f)?;
+                self.fmt(f, self[node].inputs[2], rcs)?;
+            }
+            Kind::ConstInt { value } => write!(f, "{}", value)?,
+            Kind::End => {
+                if is_ready() {
+                    writeln!(f, "{}: {:?}", node, self[node].kind)?;
+                }
+            }
+            Kind::Tuple { index } => {
+                if index != 0 && self[self[node].inputs[0]].kind == Kind::Start {
+                    write!(f, "{:?}.{}", self[self[node].inputs[0]].kind, index)?;
+                } else if is_ready() {
+                    writeln!(f, "{}: {:?}", node, self[node].kind)?;
+                    for &o in &self[node].outputs {
+                        if self.is_cfg(o) {
+                            self.fmt(f, o, rcs)?;
+                        }
+                    }
+                }
+            }
+            Kind::Start => 'b: {
+                if !is_ready() {
+                    break 'b;
+                }
+
+                writeln!(f, "{}: {:?}", node, self[node].kind)?;
+
+                for &o in &self[node].outputs {
+                    self.fmt(f, o, rcs)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn is_cfg(&self, o: Nid) -> bool {
+        matches!(self[o].kind, Kind::Start | Kind::End | Kind::Return | Kind::Tuple { .. })
+    }
+}
+
+impl ops::Index<u32> for Nodes {
+    type Output = Node;
+
+    fn index(&self, index: u32) -> &Self::Output {
+        match &self.values[index as usize] {
+            PoolSlot::Value(value) => value,
+            PoolSlot::Next(_) => unreachable!(),
+        }
+    }
+}
+
+impl ops::IndexMut<u32> for Nodes {
+    fn index_mut(&mut self, index: u32) -> &mut Self::Output {
+        match &mut self.values[index as usize] {
+            PoolSlot::Value(value) => value,
+            PoolSlot::Next(_) => unreachable!(),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum PoolSlot {
+    Value(Node),
+    Next(u32),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum Kind {
+    Start,
+    End,
+    Return,
+    ConstInt { value: i64 },
+    Tuple { index: u32 },
+    BinOp { op: lexer::TokenKind },
+}
+
+impl Kind {
+    fn disc(&self) -> u8 {
+        unsafe { *(self as *const _ as *const u8) }
+    }
+}
+
+const MAX_INPUTS: usize = 3;
+
+#[derive(Debug)]
+struct Node {
+    inputs: [Nid; MAX_INPUTS],
+    kind: Kind,
+    loc: Loc,
+    depth: u32,
+    lock_rc: u32,
+    ty: ty::Id,
+    outputs: Vec<Nid>,
+}
+
+impl Node {
+    fn is_dangling(&self) -> bool {
+        self.outputs.len() + self.lock_rc as usize == 0
+    }
+
+    fn inputs(&self) -> &[Nid] {
+        let len = self.inputs.iter().position(|&n| n == NILL).unwrap_or(MAX_INPUTS);
+        &self.inputs[..len]
+    }
+
+    fn inputs_mut(&mut self) -> &mut [Nid] {
+        let len = self.inputs.iter().position(|&n| n == NILL).unwrap_or(MAX_INPUTS);
+        &mut self.inputs[..len]
+    }
+}
+
+impl fmt::Display for Nodes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.fmt(
+            f,
+            0,
+            &mut self
+                .values
+                .iter()
+                .map(|s| match s {
+                    PoolSlot::Value(Node { kind: Kind::Start, .. }) => 1,
+                    PoolSlot::Value(Node { kind: Kind::End, ref outputs, .. }) => outputs.len(),
+                    PoolSlot::Value(val) => val.inputs().len(),
+                    PoolSlot::Next(_) => 0,
+                })
+                .collect::<Vec<_>>(),
+        )
+    }
+}
+
+type Offset = u32;
+type Size = u32;
+type ArrayLen = u32;
+
+#[derive(Debug)]
 struct Loop {
     var_count: u32,
     offset: u32,
-    reloc_base: u32,
+    break_relocs: Vec<Reloc>,
 }
 
 struct Variable {
@@ -762,21 +843,33 @@ struct Variable {
 #[derive(Default)]
 struct ItemCtx {
     file: FileId,
-    id: ty::Kind,
+    id: ty::Id,
     ret: Option<ty::Id>,
+
+    task_base: usize,
+
+    nodes: Nodes,
     start: Nid,
     end: Nid,
     cfg: Nid,
 
-    task_base: usize,
-    snap: Snapshot,
-
-    nodes: Nodes,
     loops: Vec<Loop>,
     vars: Vec<Variable>,
+    regs: reg::Alloc,
+    ret_relocs: Vec<Reloc>,
+    relocs: Vec<TypedReloc>,
+    code: Vec<u8>,
 }
 
-impl ItemCtx {}
+impl ItemCtx {
+    fn emit(&mut self, instr: (usize, [u8; instrs::MAX_SIZE])) {
+        emit(&mut self.code, instr);
+    }
+}
+
+fn emit(out: &mut Vec<u8>, (len, instr): (usize, [u8; instrs::MAX_SIZE])) {
+    out.extend_from_slice(&instr[..len]);
+}
 
 fn write_reloc(doce: &mut [u8], offset: usize, value: i64, size: u16) {
     let value = value.to_ne_bytes();
@@ -801,17 +894,52 @@ struct Sig {
     ret: ty::Id,
 }
 
-#[derive(Clone, Copy)]
 struct Func {
     file: FileId,
     expr: ExprRef,
     sig: Option<Sig>,
     offset: Offset,
+    // TODO: change to indices into common vec
+    relocs: Vec<TypedReloc>,
+    code: Vec<u8>,
+}
+
+impl Default for Func {
+    fn default() -> Self {
+        Self {
+            file: u32::MAX,
+            expr: Default::default(),
+            sig: None,
+            offset: u32::MAX,
+            relocs: Default::default(),
+            code: Default::default(),
+        }
+    }
+}
+
+struct TypedReloc {
+    target: ty::Id,
+    reloc: Reloc,
 }
 
 struct Global {
-    offset: Offset,
     ty: ty::Id,
+    offset: Offset,
+    data: Vec<u8>,
+}
+
+impl Default for Global {
+    fn default() -> Self {
+        Self { ty: Default::default(), offset: u32::MAX, data: Default::default() }
+    }
+}
+
+// TODO: make into bit struct (width: u2, sub_offset: u3, offset: u27)
+#[derive(Clone, Copy, Debug)]
+struct Reloc {
+    offset: Offset,
+    sub_offset: u8,
+    width: u8,
 }
 
 struct Field {
@@ -989,33 +1117,6 @@ struct FTask {
     id: ty::Func,
 }
 
-#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Snapshot {
-    code: usize,
-    string_data: usize,
-    funcs: usize,
-    globals: usize,
-    strings: usize,
-}
-
-impl Snapshot {
-    fn _sub(&mut self, other: &Self) {
-        self.code -= other.code;
-        self.string_data -= other.string_data;
-        self.funcs -= other.funcs;
-        self.globals -= other.globals;
-        self.strings -= other.strings;
-    }
-
-    fn _add(&mut self, other: &Self) {
-        self.code += other.code;
-        self.string_data += other.string_data;
-        self.funcs += other.funcs;
-        self.globals += other.globals;
-        self.strings += other.strings;
-    }
-}
-
 #[derive(Default, Debug)]
 struct Ctx {
     ty: Option<ty::Id>,
@@ -1024,6 +1125,22 @@ struct Ctx {
 impl Ctx {
     pub fn with_ty(self, ty: impl Into<ty::Id>) -> Self {
         Self { ty: Some(ty.into()) }
+    }
+}
+
+#[derive(Debug, Default)]
+struct Loc {
+    reg: reg::Id,
+}
+
+#[derive(Default, Debug)]
+struct GenCtx {
+    loc: Option<Loc>,
+}
+
+impl GenCtx {
+    pub fn with_loc(self, loc: impl Into<Loc>) -> Self {
+        Self { loc: Some(loc.into()) }
     }
 }
 
@@ -1048,6 +1165,8 @@ impl Codegen {
         self.make_func_reachable(0);
         self.complete_call_graph_low();
     }
+
+    pub fn dump_reachable(&mut self, from: ty::Func, to: &mut Vec<u8>) {}
 
     fn make_func_reachable(&mut self, func: ty::Func) {
         let fuc = &mut self.tys.funcs[func as usize];
@@ -1162,7 +1281,7 @@ impl Codegen {
     }
 
     fn handle_task(&mut self, FTask { file, id }: FTask) {
-        let func = self.tys.funcs[id as usize];
+        let func = &self.tys.funcs[id as usize];
         debug_assert!(func.file == file);
         let sig = func.sig.unwrap();
         let ast = self.files[file as usize].clone();
@@ -1170,7 +1289,7 @@ impl Codegen {
 
         let repl = ItemCtx {
             file,
-            id: ty::Kind::Func(id),
+            id: ty::Kind::Func(id).compress(),
             ret: Some(sig.ret),
             ..self.pool.cis.pop().unwrap_or_default()
         };
@@ -1203,11 +1322,88 @@ impl Codegen {
             self.report(body.pos(), "expected all paths in the fucntion to return");
         }
 
-        for var in self.ci.vars.drain(..) {
+        for var in self.ci.vars.iter() {
             self.ci.nodes.unlock(var.value);
         }
 
-        //self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
+        '_open_function: {
+            self.ci.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, 0));
+            self.ci.emit(instrs::st(reg::RET_ADDR, reg::STACK_PTR, 0, 0));
+        }
+
+        self.ci.regs.init();
+
+        let mut params = self.tys.parama(sig.ret);
+        for var in self.ci.vars.drain(..) {
+            match self.tys.size_of(self.ci.nodes[var.value].ty) {
+                0 => {}
+                1..=8 => {
+                    let reg = self.ci.regs.allocate();
+                    emit(&mut self.ci.code, instrs::cp(reg.get(), params.next()));
+                    self.ci.nodes[var.value].loc = Loc { reg };
+                }
+                s => todo!("{s}"),
+            }
+        }
+
+        self.emit_control(self.ci.nodes[self.ci.start].outputs[0]);
+
+        '_close_function: {
+            let pushed = self.ci.regs.pushed_size() as i64;
+            let stack = 0;
+
+            write_reloc(&mut self.ci.code, 3, -(pushed + stack), 8);
+            write_reloc(&mut self.ci.code, 3 + 8 + 3, stack, 8);
+            write_reloc(&mut self.ci.code, 3 + 8 + 3 + 8, pushed, 2);
+
+            self.ci.emit(instrs::ld(reg::RET_ADDR, reg::STACK_PTR, stack as _, pushed as _));
+            self.ci.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, (pushed + stack) as _));
+        }
+
+        self.tys.funcs[id as usize].code.append(&mut self.ci.code);
+        self.tys.funcs[id as usize].relocs.append(&mut self.ci.relocs);
+        self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
+    }
+
+    fn emit_control(&mut self, ctrl: Nid) {
+        match self.ci.nodes[ctrl].kind {
+            Kind::Start => unreachable!(),
+            Kind::End => unreachable!(),
+            Kind::Return => {
+                let ret_loc = match self.tys.size_of(self.ci.ret.expect("TODO")) {
+                    0 => Loc::default(),
+                    1..=8 => Loc { reg: 1u8.into() },
+                    s => todo!("{s}"),
+                };
+
+                self.emit_expr(self.ci.nodes[ctrl].inputs[1], GenCtx::default().with_loc(ret_loc));
+            }
+            Kind::ConstInt { value } => unreachable!(),
+            Kind::Tuple { index } => {
+                debug_assert!(index == 0);
+                self.emit_control(self.ci.nodes[ctrl].outputs[0]);
+            }
+            Kind::BinOp { op } => unreachable!(),
+        }
+    }
+
+    fn emit_expr(&mut self, expr: Nid, ctx: GenCtx) {
+        match self.ci.nodes[expr].kind {
+            Kind::Start => unreachable!(),
+            Kind::End => unreachable!(),
+            Kind::Return => unreachable!(),
+            Kind::ConstInt { value } => {
+                if let Some(loc) = ctx.loc {
+                    self.ci.emit(instrs::li64(loc.reg.get(), value as _));
+                } else {
+                    let reg = self.ci.regs.allocate();
+                    self.ci.emit(instrs::li64(reg.get(), value as _));
+                    self.ci.nodes[expr].loc = Loc { reg };
+                }
+            }
+            Kind::Tuple { index } => unreachable!(),
+            Kind::BinOp { op } => unreachable!(),
+        }
     }
 
     // TODO: sometimes its better to do this in bulk
@@ -1287,7 +1483,7 @@ impl Codegen {
                         debug_assert!(refr.get(&f).is_some());
                         refr
                     },
-                    offset: u32::MAX,
+                    ..Default::default()
                 };
 
                 let id = self.tys.funcs.len() as _;

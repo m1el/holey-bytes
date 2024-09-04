@@ -110,7 +110,7 @@ fn gen_instrs() -> Result<(), Box<dyn std::error::Error>> {
             generated.pop();
             writeln!(generated, " => {{")?;
             if iter_args(ty).count() != 0 {
-                writeln!(generated, "            let data = unsafe {{ std::ptr::read(bytes.take(..std::mem::size_of::<{ty}>())?.as_ptr() as *const {ty}) }};")?;
+                writeln!(generated, "            let data = crate::decode::<{ty}>(bytes)?;")?;
                 writeln!(
                     generated,
                     "            buf.extend([{}]);",
@@ -119,7 +119,7 @@ fn gen_instrs() -> Result<(), Box<dyn std::error::Error>> {
                     )
                 )?;
             } else {
-                writeln!(generated, "            bytes.take(..std::mem::size_of::<{ty}>())?;")?;
+                writeln!(generated, "            crate::decode::<{ty}>(bytes)?;")?;
             }
 
             writeln!(generated, "        }}")?;
