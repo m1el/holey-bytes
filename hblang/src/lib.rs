@@ -81,6 +81,7 @@ mod log {
         Wrn,
         Inf,
         Dbg,
+        Trc,
     }
 
     pub const LOG_LEVEL: Level = match option_env!("LOG_LEVEL") {
@@ -89,6 +90,7 @@ mod log {
             b'w' => Level::Wrn,
             b'i' => Level::Inf,
             b'd' => Level::Dbg,
+            b't' => Level::Trc,
             _ => panic!("Invalid log level."),
         },
         None => {
@@ -118,9 +120,10 @@ mod log {
     macro_rules! wrn { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Wrn, $($arg)*) }; }
     macro_rules! inf { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Inf, $($arg)*) }; }
     macro_rules! dbg { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Dbg, $($arg)*) }; }
+    macro_rules! trc { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Trc, $($arg)*) }; }
 
     #[allow(unused_imports)]
-    pub(crate) use {dbg, err, inf, log, wrn};
+    pub(crate) use {dbg, err, inf, log, trc, wrn};
 }
 
 #[inline]
@@ -615,6 +618,7 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
 }
 
 type HashMap<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<FnvHasher>>;
+type _HashSet<K> = std::collections::HashSet<K, std::hash::BuildHasherDefault<FnvHasher>>;
 
 struct FnvHasher(u64);
 
@@ -654,7 +658,19 @@ pub fn run_test(
     }
 
     let mut output = String::new();
-    test(ident, input, &mut output);
+    {
+        struct DumpOut<'a>(&'a mut String);
+        impl Drop for DumpOut<'_> {
+            fn drop(&mut self) {
+                if std::thread::panicking() {
+                    println!("{}", self.0);
+                }
+            }
+        }
+
+        let dump = DumpOut(&mut output);
+        test(ident, input, dump.0);
+    }
 
     let mut root = PathBuf::from(
         std::env::var("PT_TEST_ROOT")

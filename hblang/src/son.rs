@@ -59,7 +59,7 @@ mod reg {
     impl Drop for Id {
         fn drop(&mut self) {
             if !std::thread::panicking() && self.1 {
-                unreachable!("reg id leaked: {:?}", self.0);
+                panic!("reg id leaked: {:?}", self.0);
             }
         }
     }
@@ -450,6 +450,7 @@ impl Nodes {
 
     fn clear(&mut self) {
         self.values.clear();
+        self.lookup.clear();
         self.free = u32::MAX;
     }
 
@@ -462,15 +463,15 @@ impl Nodes {
         let mut inputs = [NILL; MAX_INPUTS];
         inputs[..inps.len()].copy_from_slice(&inps);
 
-        if let Some(&id) = self.lookup.get(&(kind, inputs)) {
-            debug_assert_eq!(self[id].kind, kind);
+        if let Some(&id) = self.lookup.get(&(kind.clone(), inputs)) {
+            debug_assert_eq!(&self[id].kind, &kind);
             debug_assert_eq!(self[id].inputs, inputs);
             return id;
         }
 
         let id = self.add(Node {
             inputs,
-            kind,
+            kind: kind.clone(),
             loc: Default::default(),
             depth: u32::MAX,
             lock_rc: 0,
@@ -511,7 +512,7 @@ impl Nodes {
             self[inp].outputs.swap_remove(index);
             self.remove(inp);
         }
-        let res = self.lookup.remove(&(self[target].kind, self[target].inputs));
+        let res = self.lookup.remove(&(self[target].kind.clone(), self[target].inputs));
         debug_assert_eq!(res, Some(target));
         self.remove_low(target);
     }
@@ -524,6 +525,7 @@ impl Nodes {
             Kind::Return => {}
             Kind::Tuple { .. } => {}
             Kind::ConstInt { .. } => {}
+            Kind::Call { .. } => {}
         }
         None
     }
@@ -547,8 +549,8 @@ impl Nodes {
             }
         }
 
-        if let (Kind::ConstInt { value: a }, Kind::ConstInt { value: b }) =
-            (self[lhs].kind, self[rhs].kind)
+        if let (&Kind::ConstInt { value: a }, &Kind::ConstInt { value: b }) =
+            (&self[lhs].kind, &self[rhs].kind)
         {
             return Some(self.new_node(
                 self[target].ty,
@@ -613,7 +615,7 @@ impl Nodes {
         }
 
         if changed {
-            return Some(self.new_node(self[target].ty, self[target].kind, [lhs, rhs]));
+            return Some(self.new_node(self[target].ty, self[target].kind.clone(), [lhs, rhs]));
         }
 
         None
@@ -641,12 +643,13 @@ impl Nodes {
     }
 
     fn modify_input(&mut self, target: Nid, inp_index: usize, with: Nid) -> Nid {
-        let out = self.lookup.remove(&(self[target].kind, self[target].inputs));
+        let out = self.lookup.remove(&(self[target].kind.clone(), self[target].inputs));
         debug_assert!(out == Some(target));
         debug_assert_ne!(self[target].inputs[inp_index], with);
 
         self[target].inputs[inp_index] = with;
-        if let Err(other) = self.lookup.try_insert((self[target].kind, self[target].inputs), target)
+        if let Err(other) =
+            self.lookup.try_insert((self[target].kind.clone(), self[target].inputs), target)
         {
             let rpl = *other.entry.get();
             self.replace(target, rpl);
@@ -722,13 +725,46 @@ impl Nodes {
                     self.fmt(f, o, rcs)?;
                 }
             }
+            Kind::Call { func, ref args } => {
+                if is_ready() {
+                    write!(f, "{}: call {}(", node, func)?;
+                    for (i, &value) in args.iter().enumerate() {
+                        if i != 0 {
+                            write!(f, ", ")?;
+                        }
+                        self.fmt(f, value, rcs)?;
+                    }
+                    writeln!(f, ")")?;
+                    for &o in &self[node].outputs {
+                        if self.is_cfg(o) {
+                            self.fmt(f, o, rcs)?;
+                        }
+                    }
+                } else {
+                    write!(f, "call{node}")?;
+                }
+            }
         }
 
         Ok(())
     }
 
     fn is_cfg(&self, o: Nid) -> bool {
-        matches!(self[o].kind, Kind::Start | Kind::End | Kind::Return | Kind::Tuple { .. })
+        matches!(
+            self[o].kind,
+            Kind::Start | Kind::End | Kind::Return | Kind::Tuple { .. } | Kind::Call { .. }
+        )
+    }
+
+    fn check_final_integrity(&self) {
+        for slot in &self.values {
+            match slot {
+                PoolSlot::Value(node) => {
+                    debug_assert_eq!(node.lock_rc, 0);
+                }
+                PoolSlot::Next(_) => {}
+            }
+        }
     }
 }
 
@@ -758,7 +794,7 @@ enum PoolSlot {
     Next(u32),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum Kind {
     Start,
@@ -767,6 +803,7 @@ pub enum Kind {
     ConstInt { value: i64 },
     Tuple { index: u32 },
     BinOp { op: lexer::TokenKind },
+    Call { func: ty::Func, args: Vec<Nid> },
 }
 
 impl Kind {
@@ -864,6 +901,12 @@ impl ItemCtx {
     fn emit(&mut self, instr: (usize, [u8; instrs::MAX_SIZE])) {
         emit(&mut self.code, instr);
     }
+
+    fn free_loc(&mut self, loc: impl Into<Option<Loc>>) {
+        if let Some(loc) = loc.into() {
+            self.regs.free(loc.reg);
+        }
+    }
 }
 
 fn emit(out: &mut Vec<u8>, (len, instr): (usize, [u8; instrs::MAX_SIZE])) {
@@ -922,6 +965,8 @@ struct TypedReloc {
 }
 
 struct Global {
+    file: FileId,
+    name: Ident,
     ty: ty::Id,
     offset: Offset,
     data: Vec<u8>,
@@ -929,7 +974,13 @@ struct Global {
 
 impl Default for Global {
     fn default() -> Self {
-        Self { ty: Default::default(), offset: u32::MAX, data: Default::default() }
+        Self {
+            ty: Default::default(),
+            offset: u32::MAX,
+            data: Default::default(),
+            file: 0,
+            name: 0,
+        }
     }
 }
 
@@ -939,6 +990,25 @@ struct Reloc {
     offset: Offset,
     sub_offset: u8,
     width: u8,
+}
+
+impl Reloc {
+    fn new(offset: usize, sub_offset: u8, width: u8) -> Self {
+        Self { offset: offset as u32, sub_offset, width }
+    }
+
+    fn apply_jump(mut self, code: &mut [u8], to: u32, from: u32) -> i64 {
+        self.offset += from;
+        let offset = to as i64 - self.offset as i64;
+        self.write_offset(code, offset);
+        offset
+    }
+
+    fn write_offset(&self, code: &mut [u8], offset: i64) {
+        let bytes = offset.to_ne_bytes();
+        let slice = &mut code[self.offset as usize + self.sub_offset as usize..];
+        slice[..self.width as usize].copy_from_slice(&bytes[..self.width as usize]);
+    }
 }
 
 struct Field {
@@ -1131,6 +1201,11 @@ impl Ctx {
 struct Loc {
     reg: reg::Id,
 }
+impl Loc {
+    fn as_ref(&self) -> Loc {
+        Loc { reg: self.reg.as_ref() }
+    }
+}
 
 #[derive(Default, Debug)]
 struct GenCtx {
@@ -1165,7 +1240,82 @@ impl Codegen {
         self.complete_call_graph_low();
     }
 
-    pub fn dump_reachable(&mut self, from: ty::Func, to: &mut Vec<u8>) {}
+    fn assemble(&mut self, to: &mut Vec<u8>) {
+        emit(to, instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
+        emit(to, instrs::tx());
+        self.dump_reachable(0, to);
+        Reloc::new(0, 3, 4).apply_jump(to, self.tys.funcs[0].offset, 0);
+    }
+
+    fn dump_reachable(&mut self, from: ty::Func, to: &mut Vec<u8>) {
+        let mut frontier = vec![ty::Kind::Func(from).compress()];
+
+        while let Some(itm) = frontier.pop() {
+            match itm.expand() {
+                ty::Kind::Func(func) => {
+                    let fuc = &mut self.tys.funcs[func as usize];
+                    if task::unpack(fuc.offset).is_ok() {
+                        continue;
+                    }
+                    fuc.offset = to.len() as _;
+                    to.extend(&fuc.code);
+                    frontier.extend(fuc.relocs.iter().map(|r| r.target));
+                }
+                ty::Kind::Global(glob) => {
+                    let glb = &mut self.tys.globals[glob as usize];
+                    if task::unpack(glb.offset).is_ok() {
+                        continue;
+                    }
+                    glb.offset = to.len() as _;
+                    to.extend(&glb.data);
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        for fuc in &self.tys.funcs {
+            if task::unpack(fuc.offset).is_err() {
+                continue;
+            }
+
+            for rel in &fuc.relocs {
+                let offset = match rel.target.expand() {
+                    ty::Kind::Func(fun) => self.tys.funcs[fun as usize].offset,
+                    ty::Kind::Global(glo) => self.tys.globals[glo as usize].offset,
+                    _ => unreachable!(),
+                };
+                rel.reloc.apply_jump(to, offset, fuc.offset);
+            }
+        }
+    }
+
+    pub fn disasm(
+        &mut self,
+        mut sluce: &[u8],
+        output: &mut impl std::io::Write,
+    ) -> std::io::Result<()> {
+        use crate::DisasmItem;
+        let functions = self
+            .tys
+            .funcs
+            .iter()
+            .filter(|f| task::unpack(f.offset).is_ok())
+            .map(|f| {
+                let file = &self.files[f.file as usize];
+                let Expr::BinOp { left: &Expr::Ident { name, .. }, .. } = f.expr.get(file).unwrap()
+                else {
+                    unreachable!()
+                };
+                (f.offset, (name, f.code.len() as u32, DisasmItem::Func))
+            })
+            .chain(self.tys.globals.iter().filter(|g| task::unpack(g.offset).is_ok()).map(|g| {
+                let file = &self.files[g.file as usize];
+
+                (g.offset, (file.ident_str(g.name), self.tys.size_of(g.ty), DisasmItem::Global))
+            }))
+            .collect::<HashMap<_, _>>();
+        crate::disasm(&mut sluce, &functions, output, |_| {})
+    }
 
     fn make_func_reachable(&mut self, func: ty::Func) {
         let fuc = &mut self.tys.funcs[func as usize];
@@ -1189,19 +1339,35 @@ impl Codegen {
     }
 
     fn expr_ctx(&mut self, expr: &Expr, ctx: Ctx) -> Option<Nid> {
+        let msg = "i know nothing about this name gal which is vired \
+                            because we parsed succesfully";
         match *expr {
             Expr::Comment { .. } => Some(NILL),
-            Expr::Ident { pos, id, .. } => {
-                let msg = "i know nothing about this name gal which is vired\
-                            because we parsed succesfully";
-                Some(
-                    self.ci
-                        .vars
-                        .iter()
-                        .find(|v| v.id == id)
-                        .unwrap_or_else(|| self.report(pos, msg))
-                        .value,
-                )
+            Expr::Ident { pos, id, .. } => Some(
+                self.ci
+                    .vars
+                    .iter()
+                    .find(|v| v.id == id)
+                    .unwrap_or_else(|| self.report(pos, msg))
+                    .value,
+            ),
+            Expr::BinOp { left: &Expr::Ident { id, .. }, op: TokenKind::Decl, right } => {
+                let value = self.expr(right)?;
+                self.ci.nodes.lock(value);
+                self.ci.vars.push(Variable { id, value });
+                Some(NILL)
+            }
+            Expr::BinOp { left: &Expr::Ident { id, pos, .. }, op: TokenKind::Assign, right } => {
+                let value = self.expr(right)?;
+                self.ci.nodes.lock(value);
+
+                let Some(var) = self.ci.vars.iter_mut().find(|v| v.id == id) else {
+                    self.report(pos, msg);
+                };
+
+                let prev = std::mem::replace(&mut var.value, value);
+                self.ci.nodes.unlock_free(prev);
+                Some(NILL)
             }
             Expr::BinOp { left, op, right } => {
                 let lhs = self.expr_ctx(left, ctx)?;
@@ -1213,6 +1379,54 @@ impl Codegen {
                 let id =
                     self.ci.nodes.new_node(ty::bin_ret(ty, op), Kind::BinOp { op }, [lhs, rhs]);
                 Some(id)
+            }
+            Expr::Call { func: &Expr::Ident { pos, id, name, .. }, args, .. } => {
+                let func = self.find_or_declare(pos, self.ci.file, Some(id), name);
+                let ty::Kind::Func(func) = func else {
+                    self.report(
+                        pos,
+                        format_args!(
+                            "compiler cant (yet) call '{}'",
+                            self.ty_display(func.compress())
+                        ),
+                    );
+                };
+
+                let fuc = &self.tys.funcs[func as usize];
+                let sig = fuc.sig.expect("TODO: generic functions");
+                let ast = self.files[fuc.file as usize].clone();
+                let Expr::BinOp { right: &Expr::Closure { args: cargs, .. }, .. } =
+                    fuc.expr.get(&ast).unwrap()
+                else {
+                    unreachable!()
+                };
+
+                if args.len() != cargs.len() {
+                    let s = if cargs.len() == 1 { "" } else { "s" };
+                    self.report(
+                        pos,
+                        format_args!(
+                            "expected {} function argumenr{s}, got {}",
+                            cargs.len(),
+                            args.len()
+                        ),
+                    );
+                }
+
+                let mut inps = vec![];
+                for ((arg, _carg), tyx) in args.iter().zip(cargs).zip(sig.args.range()) {
+                    let ty = self.tys.args[tyx];
+                    let value = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
+                    _ = self.assert_ty(arg.pos(), self.tof(value), ty, true);
+                    inps.push(value);
+                }
+                self.ci.cfg =
+                    self.ci
+                        .nodes
+                        .new_node(sig.ret, Kind::Call { func, args: inps.clone() }, [self.ci.cfg]);
+                self.ci.nodes.add_deps(self.ci.cfg, &inps);
+
+                Some(self.ci.cfg)
             }
             Expr::Return { pos, val } => {
                 let ty = if let Some(val) = val {
@@ -1249,7 +1463,7 @@ impl Codegen {
                 ret
             }
             Expr::Number { value, .. } => Some(self.ci.nodes.new_node(
-                ctx.ty.unwrap_or(ty::UINT.into()),
+                ctx.ty.unwrap_or(ty::INT.into()),
                 Kind::ConstInt { value },
                 [],
             )),
@@ -1325,6 +1539,13 @@ impl Codegen {
             self.ci.nodes.unlock(var.value);
         }
 
+        #[cfg(debug_assertions)]
+        {
+            self.ci.nodes.check_final_integrity();
+        }
+
+        log::trc!("{}", self.ci.nodes);
+
         '_open_function: {
             self.ci.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, 0));
             self.ci.emit(instrs::st(reg::RET_ADDR, reg::STACK_PTR, 0, 0));
@@ -1332,16 +1553,22 @@ impl Codegen {
 
         self.ci.regs.init();
 
-        let mut params = self.tys.parama(sig.ret);
-        for var in self.ci.vars.drain(..) {
-            match self.tys.size_of(self.ci.nodes[var.value].ty) {
-                0 => {}
-                1..=8 => {
-                    let reg = self.ci.regs.allocate();
-                    emit(&mut self.ci.code, instrs::cp(reg.get(), params.next()));
-                    self.ci.nodes[var.value].loc = Loc { reg };
+        '_copy_args: {
+            let mut params = self.tys.parama(sig.ret);
+            for var in self.ci.vars.drain(..) {
+                if self.ci.nodes[var.value].outputs.is_empty() {
+                    continue;
                 }
-                s => todo!("{s}"),
+
+                match self.tys.size_of(self.ci.nodes[var.value].ty) {
+                    0 => {}
+                    1..=8 => {
+                        let reg = self.ci.regs.allocate();
+                        emit(&mut self.ci.code, instrs::cp(reg.get(), params.next()));
+                        self.ci.nodes[var.value].loc = Loc { reg };
+                    }
+                    s => todo!("{s}"),
+                }
             }
         }
 
@@ -1357,36 +1584,87 @@ impl Codegen {
 
             self.ci.emit(instrs::ld(reg::RET_ADDR, reg::STACK_PTR, stack as _, pushed as _));
             self.ci.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, (pushed + stack) as _));
+            self.ci.emit(instrs::jala(reg::ZERO, reg::RET_ADDR, 0));
         }
 
         self.tys.funcs[id as usize].code.append(&mut self.ci.code);
         self.tys.funcs[id as usize].relocs.append(&mut self.ci.relocs);
+        self.ci.nodes.clear();
         self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
     }
 
-    fn emit_control(&mut self, ctrl: Nid) {
-        match self.ci.nodes[ctrl].kind {
-            Kind::Start => unreachable!(),
-            Kind::End => unreachable!(),
-            Kind::Return => {
-                let ret_loc = match self.tys.size_of(self.ci.ret.expect("TODO")) {
-                    0 => Loc::default(),
-                    1..=8 => Loc { reg: 1u8.into() },
-                    s => todo!("{s}"),
-                };
+    fn emit_control(&mut self, mut ctrl: Nid) {
+        loop {
+            match self.ci.nodes[ctrl].kind.clone() {
+                Kind::Start => unreachable!(),
+                Kind::End => unreachable!(),
+                Kind::Return => {
+                    let ret_loc = match self.tys.size_of(self.ci.ret.expect("TODO")) {
+                        0 => Loc::default(),
+                        1..=8 => Loc { reg: 1u8.into() },
+                        s => todo!("{s}"),
+                    };
 
-                self.emit_expr(self.ci.nodes[ctrl].inputs[1], GenCtx::default().with_loc(ret_loc));
+                    let dst = self.emit_expr(
+                        self.ci.nodes[ctrl].inputs[1],
+                        GenCtx::default().with_loc(ret_loc),
+                    );
+                    self.ci.free_loc(dst);
+
+                    break;
+                }
+                Kind::ConstInt { .. } => unreachable!(),
+                Kind::Tuple { index } => {
+                    debug_assert!(index == 0);
+                    ctrl = self.ci.nodes[ctrl].outputs[0];
+                }
+                Kind::BinOp { .. } => unreachable!(),
+                Kind::Call { func, args } => {
+                    let ret = self.tof(ctrl);
+
+                    let mut parama = self.tys.parama(ret);
+                    for &arg in args.iter() {
+                        let dst = match self.tys.size_of(self.tof(arg)) {
+                            0 => continue,
+                            1..=8 => Loc { reg: parama.next().into() },
+                            s => todo!("{s}"),
+                        };
+                        let dst = self.emit_expr(arg, GenCtx::default().with_loc(dst));
+                        self.ci.free_loc(dst);
+                    }
+
+                    let ret_loc = match self.tys.size_of(ret) {
+                        0 => Loc::default(),
+                        1..=8 => Loc { reg: 1u8.into() },
+                        s => todo!("{s}"),
+                    };
+
+                    let reloc = Reloc::new(self.ci.code.len(), 3, 4);
+                    self.ci
+                        .relocs
+                        .push(TypedReloc { target: ty::Kind::Func(func).compress(), reloc });
+                    self.ci.emit(instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
+                    self.make_func_reachable(func);
+
+                    // TODO: allocate return register
+                    let loc = Loc { reg: self.ci.regs.allocate() };
+                    self.ci.emit(instrs::cp(loc.reg.get(), ret_loc.reg.get()));
+
+                    self.ci.nodes[ctrl].loc = loc;
+                    self.ci.nodes[ctrl].lock_rc += 1;
+
+                    ctrl = *self.ci.nodes[ctrl]
+                        .outputs
+                        .iter()
+                        .find(|&&o| self.ci.nodes.is_cfg(o))
+                        .unwrap();
+                }
             }
-            Kind::ConstInt { value } => unreachable!(),
-            Kind::Tuple { index } => {
-                debug_assert!(index == 0);
-                self.emit_control(self.ci.nodes[ctrl].outputs[0]);
-            }
-            Kind::BinOp { op } => unreachable!(),
         }
     }
 
-    fn emit_expr(&mut self, expr: Nid, ctx: GenCtx) {
+    #[must_use = "dont forget to drop the location"]
+    fn emit_expr(&mut self, expr: Nid, ctx: GenCtx) -> Option<Loc> {
         match self.ci.nodes[expr].kind {
             Kind::Start => unreachable!(),
             Kind::End => unreachable!(),
@@ -1400,9 +1678,75 @@ impl Codegen {
                     self.ci.nodes[expr].loc = Loc { reg };
                 }
             }
-            Kind::Tuple { index } => unreachable!(),
-            Kind::BinOp { op } => unreachable!(),
+            Kind::Tuple { index } => {
+                debug_assert!(index != 0);
+            }
+            Kind::BinOp { op } => {
+                let ty = self.tof(expr);
+                let [left, right, ..] = self.ci.nodes[expr].inputs;
+                let mut ldst = self.emit_expr(left, GenCtx::default());
+                let mut rdst = self.emit_expr(right, GenCtx::default());
+
+                let op = Self::math_op(op, ty.is_signed(), self.tys.size_of(ty))
+                    .expect("TODO: what now?");
+
+                let loc = ctx
+                    .loc
+                    .or_else(|| ldst.take())
+                    .or_else(|| rdst.take())
+                    .unwrap_or_else(|| Loc { reg: self.ci.regs.allocate() });
+
+                self.ci.free_loc(ldst);
+                self.ci.free_loc(rdst);
+
+                self.ci.emit(op(
+                    loc.reg.get(),
+                    self.ci.nodes[left].loc.reg.get(),
+                    self.ci.nodes[right].loc.reg.get(),
+                ));
+                self.ci.nodes[expr].loc = loc;
+            }
+            Kind::Call { .. } => {}
         }
+
+        self.ci.nodes[expr].lock_rc += 1;
+        if self.ci.nodes[expr].lock_rc as usize == self.ci.nodes[expr].outputs.len() {
+            let re = self.ci.nodes[expr].loc.as_ref();
+            return Some(std::mem::replace(&mut self.ci.nodes[expr].loc, re));
+        }
+
+        None
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn math_op(
+        op: TokenKind,
+        signed: bool,
+        size: u32,
+    ) -> Option<fn(u8, u8, u8) -> (usize, [u8; instrs::MAX_SIZE])> {
+        use {instrs::*, TokenKind as T};
+
+        macro_rules! div { ($($op:ident),*) => {[$(|a, b, c| $op(a, reg::ZERO, b, c)),*]}; }
+        macro_rules! rem { ($($op:ident),*) => {[$(|a, b, c| $op(reg::ZERO, a, b, c)),*]}; }
+
+        let ops = match op {
+            T::Add => [add8, add16, add32, add64],
+            T::Sub => [sub8, sub16, sub32, sub64],
+            T::Mul => [mul8, mul16, mul32, mul64],
+            T::Div if signed => div!(dirs8, dirs16, dirs32, dirs64),
+            T::Div => div!(diru8, diru16, diru32, diru64),
+            T::Mod if signed => rem!(dirs8, dirs16, dirs32, dirs64),
+            T::Mod => rem!(diru8, diru16, diru32, diru64),
+            T::Band => return Some(and),
+            T::Bor => return Some(or),
+            T::Xor => return Some(xor),
+            T::Shl => [slu8, slu16, slu32, slu64],
+            T::Shr if signed => [srs8, srs16, srs32, srs64],
+            T::Shr => [sru8, sru16, sru32, sru64],
+            _ => return None,
+        };
+
+        Some(ops[size.ilog2() as usize])
     }
 
     // TODO: sometimes its better to do this in bulk
@@ -1420,7 +1764,7 @@ impl Codegen {
         name: Option<Ident>,
         lit_name: &str,
     ) -> ty::Kind {
-        log::dbg!("find_or_declare: {lit_name} {file}");
+        log::trc!("find_or_declare: {lit_name} {file}");
 
         let f = self.files[file as usize].clone();
         let Some((expr, ident)) = f.find_decl(name.ok_or(lit_name)) else {
@@ -1566,10 +1910,76 @@ impl Codegen {
     }
 }
 
+#[derive(Default)]
+pub struct LoggedMem {
+    pub mem: hbvm::mem::HostMemory,
+}
+
+impl hbvm::mem::Memory for LoggedMem {
+    unsafe fn load(
+        &mut self,
+        addr: hbvm::mem::Address,
+        target: *mut u8,
+        count: usize,
+    ) -> Result<(), hbvm::mem::LoadError> {
+        log::trc!(
+            "load: {:x} {:?}",
+            addr.get(),
+            core::slice::from_raw_parts(addr.get() as *const u8, count)
+                .iter()
+                .rev()
+                .map(|&b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+        self.mem.load(addr, target, count)
+    }
+
+    unsafe fn store(
+        &mut self,
+        addr: hbvm::mem::Address,
+        source: *const u8,
+        count: usize,
+    ) -> Result<(), hbvm::mem::StoreError> {
+        log::trc!(
+            "store: {:x} {:?}",
+            addr.get(),
+            core::slice::from_raw_parts(source, count)
+                .iter()
+                .rev()
+                .map(|&b| format!("{b:02x}"))
+                .collect::<String>()
+        );
+        self.mem.store(addr, source, count)
+    }
+
+    unsafe fn prog_read<T: Copy>(&mut self, addr: hbvm::mem::Address) -> T {
+        log::trc!(
+            "read-typed: {:x} {} {:?}",
+            addr.get(),
+            std::any::type_name::<T>(),
+            if core::mem::size_of::<T>() == 1
+                && let Some(nm) =
+                    instrs::NAMES.get(std::ptr::read(addr.get() as *const u8) as usize)
+            {
+                nm.to_string()
+            } else {
+                core::slice::from_raw_parts(addr.get() as *const u8, core::mem::size_of::<T>())
+                    .iter()
+                    .map(|&b| format!("{:02x}", b))
+                    .collect::<String>()
+            }
+        );
+        self.mem.prog_read(addr)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use {
-        crate::parser::{self, FileId},
+        crate::{
+            parser::{self, FileId},
+            son::LoggedMem,
+        },
         std::io,
     };
 
@@ -1632,16 +2042,68 @@ mod tests {
 
         codegen.generate();
 
-        use std::fmt::Write;
+        let mut out = Vec::new();
+        codegen.assemble(&mut out);
 
-        write!(output, "{}", codegen.ci.nodes).unwrap();
+        let mut buf = Vec::<u8>::new();
+        let err = codegen.disasm(&out, &mut buf);
+        output.push_str(String::from_utf8(buf).unwrap().as_str());
+        if let Err(e) = err {
+            writeln!(output, "!!! asm is invalid: {e}").unwrap();
+            return;
+        }
+
+        let mut stack = [0_u64; 128];
+
+        let mut vm = unsafe {
+            hbvm::Vm::<_, 0>::new(
+                LoggedMem::default(),
+                hbvm::mem::Address::new(out.as_ptr() as u64),
+            )
+        };
+
+        vm.write_reg(super::reg::STACK_PTR, unsafe { stack.as_mut_ptr().add(stack.len()) } as u64);
+
+        use std::fmt::Write;
+        let stat = loop {
+            match vm.run() {
+                Ok(hbvm::VmRunOk::End) => break Ok(()),
+                Ok(hbvm::VmRunOk::Ecall) => match vm.read_reg(2).0 {
+                    1 => writeln!(output, "ev: Ecall").unwrap(), // compatibility with a test
+                    69 => {
+                        let [size, align] = [vm.read_reg(3).0 as usize, vm.read_reg(4).0 as usize];
+                        let layout = std::alloc::Layout::from_size_align(size, align).unwrap();
+                        let ptr = unsafe { std::alloc::alloc(layout) };
+                        vm.write_reg(1, ptr as u64);
+                    }
+                    96 => {
+                        let [ptr, size, align] = [
+                            vm.read_reg(3).0 as usize,
+                            vm.read_reg(4).0 as usize,
+                            vm.read_reg(5).0 as usize,
+                        ];
+
+                        let layout = std::alloc::Layout::from_size_align(size, align).unwrap();
+                        unsafe { std::alloc::dealloc(ptr as *mut u8, layout) };
+                    }
+                    3 => vm.write_reg(1, 42),
+                    unknown => unreachable!("unknown ecall: {unknown:?}"),
+                },
+                Ok(ev) => writeln!(output, "ev: {:?}", ev).unwrap(),
+                Err(e) => break Err(e),
+            }
+        };
+
+        writeln!(output, "code size: {}", out.len()).unwrap();
+        writeln!(output, "ret: {:?}", vm.read_reg(1).0).unwrap();
+        writeln!(output, "status: {:?}", stat).unwrap();
     }
 
     crate::run_tests! { generate:
         arithmetic => README;
         const_folding_with_arg => README;
-        //variables => README;
-        //functions => README;
+        variables => README;
+        functions => README;
         //comments => README;
         //if_statements => README;
         //loops => README;

@@ -1,4 +1,10 @@
-0: Start
-2: Tuple { index: 0 }
-4: return [2] 1
-1: End
+main:
+    ADDI64 r254, r254, -8d
+    ST r31, r254, 0a, 8h
+    LI64 r1, 1d
+    LD r31, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
+    JALA r0, r31, 0a
+code size: 77
+ret: 1
+status: Ok(())

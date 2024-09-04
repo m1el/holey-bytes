@@ -8,7 +8,7 @@ use {
         parser::{self, find_symbol, idfl, CtorField, Expr, ExprRef, FileId, Pos},
         HashMap,
     },
-    std::{fmt::Display, ops::Range, rc::Rc, usize},
+    std::{fmt::Display, ops::Range, rc::Rc},
 };
 
 type Offset = u32;
