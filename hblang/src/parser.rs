@@ -398,10 +398,10 @@ impl<'a, 'b> Parser<'a, 'b> {
                 };
                 E::Number {
                     pos: token.start,
-                    value: match i64::from_str_radix(slice, radix as u32) {
+                    value: match u64::from_str_radix(slice, radix as u32) {
                         Ok(value) => value,
                         Err(e) => self.report(format_args!("invalid number: {e}")),
-                    },
+                    } as i64,
                     radix,
                 }
             }
