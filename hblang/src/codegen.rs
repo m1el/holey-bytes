@@ -1341,6 +1341,7 @@ struct StringReloc {
     from: ty::Kind,
     reloc: Reloc,
     range: std::ops::Range<u32>,
+    shifted: bool,
 }
 
 #[derive(Default)]
@@ -1698,7 +1699,12 @@ impl Codegen {
 
                 let range = start as _..self.output.string_data.len() as _;
                 let reloc = Reloc::new(self.local_offset() as _, 3, 4);
-                self.output.strings.push(StringReloc { from: self.ci.id, reloc, range });
+                self.output.strings.push(StringReloc {
+                    from: self.ci.id,
+                    reloc,
+                    range,
+                    shifted: false,
+                });
                 let reg = self.ci.regs.allocate();
                 self.output.emit(instrs::lra(reg.get(), 0, 0));
                 Some(Value::new(self.tys.make_ptr(ty::U8.into()), reg))
@@ -2591,7 +2597,6 @@ impl Codegen {
     }
 
     fn complete_call_graph_low(&mut self) {
-        let prev_strings = self.output.strings.len();
         while self.ci.task_base < self.tasks.len()
             && let Some(task_slot) = self.tasks.pop()
         {
@@ -2603,7 +2608,7 @@ impl Codegen {
         let prev_data_len = self.output.string_data.len();
         self.output.code.append(&mut self.output.string_data);
         // we drain these when linking
-        for srel in self.output.strings.iter_mut().skip(prev_strings) {
+        for srel in self.output.strings.iter_mut().filter(|s| !s.shifted) {
             debug_assert!(srel.range.end <= prev_data_len as u32);
             debug_assert!(srel.range.start <= srel.range.end);
             srel.range.start += base;
