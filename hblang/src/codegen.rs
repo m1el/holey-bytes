@@ -3205,7 +3205,10 @@ impl Codegen {
 
             #[cfg(test)]
             {
-                self.disasm(&mut String::new());
+                let mut vc = Vec::<u8>::new();
+                if self.disasm(&mut vc).is_err() {
+                    panic!("{}", String::from_utf8(vc).unwrap());
+                }
             }
 
             self.run_vm();
@@ -3223,8 +3226,7 @@ impl Codegen {
         ret
     }
 
-    #[cfg(test)]
-    fn disasm(&mut self, output: &mut String) {
+    pub fn disasm(&mut self, output: &mut impl std::io::Write) -> std::io::Result<()> {
         use crate::DisasmItem;
         let mut sluce = self.output.code.as_slice();
         let functions = self
@@ -3280,20 +3282,15 @@ impl Codegen {
                     .map(|s| (s.range.start, ("string", s.range.len() as _, DisasmItem::Global))),
             )
             .collect::<HashMap<_, _>>();
-        if crate::disasm(&mut sluce, &functions, output, |bin| {
+        crate::disasm(&mut sluce, &functions, output, |bin| {
             if self.ct.active()
                 && let Some(trap) = Self::read_trap(bin.as_ptr() as u64)
             {
                 bin.take(..trap.size() + 1).unwrap();
             }
         })
-        .is_err()
-        {
-            panic!("{} {:?}", output, sluce);
-        }
     }
 
-    #[cfg(test)]
     fn is_fully_linked(&self, func: ty::Func) -> bool {
         self.output
             .relocs
@@ -3471,7 +3468,12 @@ mod tests {
         let mut out = Vec::new();
         codegen.dump(&mut out).unwrap();
 
-        codegen.disasm(output);
+        let mut buf = Vec::<u8>::new();
+        let err = codegen.disasm(&mut buf);
+        output.push_str(String::from_utf8(buf).unwrap().as_str());
+        if err.is_err() {
+            return;
+        }
 
         use std::fmt::Write;
 

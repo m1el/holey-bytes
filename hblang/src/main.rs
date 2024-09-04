@@ -15,6 +15,7 @@ fn main() -> std::io::Result<()> {
         hblang::Options {
             fmt: args.contains(&"--fmt"),
             fmt_current: args.contains(&"--fmt-current"),
+            dump_asm: args.contains(&"--dump-asm"),
             extra_threads: args
                 .iter()
                 .position(|&a| a == "--threads")

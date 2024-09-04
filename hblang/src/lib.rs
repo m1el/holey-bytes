@@ -135,27 +135,25 @@ fn decode<T>(binary: &mut &[u8]) -> Option<T> {
     unsafe { Some(std::ptr::read(binary.take(..std::mem::size_of::<T>())?.as_ptr() as *const T)) }
 }
 
-#[cfg(test)]
 #[derive(Clone, Copy)]
 enum DisasmItem {
     Func,
     Global,
 }
 
-#[cfg(test)]
 fn disasm(
     binary: &mut &[u8],
     functions: &HashMap<u32, (&str, u32, DisasmItem)>,
-    out: &mut String,
+    out: &mut impl std::io::Write,
     mut eca_handler: impl FnMut(&mut &[u8]),
-) -> std::fmt::Result {
+) -> std::io::Result<()> {
     use self::instrs::Instr;
 
-    fn instr_from_byte(b: u8) -> Result<Instr, std::fmt::Error> {
+    fn instr_from_byte(b: u8) -> std::io::Result<Instr> {
         if b as usize >= instrs::NAMES.len() {
-            return Err(std::fmt::Error);
+            return Err(std::io::ErrorKind::InvalidData.into());
         }
-        unsafe { std::mem::transmute(b) }
+        Ok(unsafe { std::mem::transmute::<u8, Instr>(b) })
     }
 
     let mut labels = HashMap::<u32, u32>::default();
@@ -179,7 +177,7 @@ fn disasm(
             if offset as u32 == off + len {
                 break;
             }
-            instrs::parse_args(binary, inst, &mut buf).ok_or(std::fmt::Error)?;
+            instrs::parse_args(binary, inst, &mut buf).ok_or(std::io::ErrorKind::OutOfMemory)?;
 
             for op in buf.drain(..) {
                 let rel = match op {
@@ -211,18 +209,16 @@ fn disasm(
         }
         let prev = *binary;
 
-        use std::fmt::Write;
-
         writeln!(out, "{name}:")?;
 
         binary.take(..off as usize).unwrap();
         while let Some(&byte) = binary.first() {
-            let inst = instr_from_byte(byte)?;
+            let inst = instr_from_byte(byte).unwrap();
             let offset: i32 = (prev.len() - binary.len()).try_into().unwrap();
             if offset as u32 == off + len {
                 break;
             }
-            instrs::parse_args(binary, inst, &mut buf).ok_or(std::fmt::Error)?;
+            instrs::parse_args(binary, inst, &mut buf).unwrap();
 
             if let Some(label) = labels.get(&offset.try_into().unwrap()) {
                 write!(out, "{:>2}: ", label)?;
@@ -281,8 +277,12 @@ fn disasm(
         *binary = prev;
     }
 
-    if has_oob || has_cycle {
-        return Err(std::fmt::Error);
+    if has_oob {
+        return Err(std::io::ErrorKind::InvalidInput.into());
+    }
+
+    if has_cycle {
+        return Err(std::io::ErrorKind::TimedOut.into());
     }
 
     Ok(())
@@ -700,6 +700,7 @@ pub fn run_test(
 pub struct Options {
     pub fmt: bool,
     pub fmt_current: bool,
+    pub dump_asm: bool,
     pub extra_threads: usize,
 }
 
@@ -752,13 +753,17 @@ pub fn run_compiler(
     } else if options.fmt_current {
         let ast = parsed.into_iter().next().unwrap();
         let source = std::fs::read_to_string(&*ast.path)?;
-        format_to(&ast, &source, &mut std::io::stdout())?;
+        format_to(&ast, &source, out)?;
     } else {
         let mut codegen = codegen::Codegen::default();
         codegen.files = parsed;
 
         codegen.generate();
-        codegen.dump(out)?;
+        if options.dump_asm {
+            codegen.disasm(out)?;
+        } else {
+            codegen.dump(out)?;
+        }
     }
 
     Ok(())

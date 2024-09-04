@@ -7,7 +7,7 @@ use {
         log,
         parser::{
             self,
-            idfl::{self, index},
+            idfl::{self},
             Expr, ExprRef, FileId, Pos,
         },
         HashMap,
@@ -17,7 +17,6 @@ use {
         mem,
         ops::{self, Range},
         rc::Rc,
-        usize,
     },
 };
 
