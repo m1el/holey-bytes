@@ -1,10 +1,3 @@
-check_platform:
-    ADDI64 r254, r254, -8d
-    ST r31, r254, 0a, 8h
-    JAL r31, r0, :x86_fb_ptr
-    LD r31, r254, 0a, 8h
-    ADDI64 r254, r254, 8d
-    JALA r0, r31, 0a
 main:
     ADDI64 r254, r254, -64d
     ST r31, r254, 0a, 64h
@@ -59,6 +52,13 @@ set_pixel:
     LI64 r1, 0d
     LD r31, r254, 0a, 32h
     ADDI64 r254, r254, 32d
+    JALA r0, r31, 0a
+check_platform:
+    ADDI64 r254, r254, -8d
+    ST r31, r254, 0a, 8h
+    JAL r31, r0, :x86_fb_ptr
+    LD r31, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
 x86_fb_ptr:
     ADDI64 r254, r254, -8d

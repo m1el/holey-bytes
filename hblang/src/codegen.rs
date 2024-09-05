@@ -8,7 +8,7 @@ use {
         parser::{self, find_symbol, idfl, CtorField, Expr, ExprRef, FileId, Pos},
         HashMap,
     },
-    std::{fmt::Display, ops::Range, rc::Rc},
+    std::{collections::BTreeMap, fmt::Display, ops::Range, rc::Rc},
 };
 
 type Offset = u32;
@@ -3294,7 +3294,7 @@ impl Codegen {
                     ),
                 )
             }))
-            .collect::<HashMap<_, _>>();
+            .collect::<BTreeMap<_, _>>();
         crate::disasm(&mut sluce, &functions, output, |bin| {
             if self.ct.active()
                 && let Some(trap) = Self::read_trap(bin.as_ptr() as u64)

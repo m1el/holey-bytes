@@ -1,13 +1,3 @@
-add:
-    ADDI64 r254, r254, -24d
-    ST r31, r254, 0a, 24h
-    CP r32, r2
-    CP r33, r3
-    ADD32 r32, r32, r33
-    CP r1, r32
-    LD r31, r254, 0a, 24h
-    ADDI64 r254, r254, 24d
-    JALA r0, r31, 0a
 main:
     ADDI64 r254, r254, -24d
     ST r31, r254, 0a, 24h
@@ -31,6 +21,16 @@ add:
     CP r32, r2
     CP r33, r3
     ADD64 r32, r32, r33
+    CP r1, r32
+    LD r31, r254, 0a, 24h
+    ADDI64 r254, r254, 24d
+    JALA r0, r31, 0a
+add:
+    ADDI64 r254, r254, -24d
+    ST r31, r254, 0a, 24h
+    CP r32, r2
+    CP r33, r3
+    ADD32 r32, r32, r33
     CP r1, r32
     LD r31, r254, 0a, 24h
     ADDI64 r254, r254, 24d

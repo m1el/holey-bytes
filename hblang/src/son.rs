@@ -14,9 +14,11 @@ use {
     },
     core::fmt,
     std::{
+        collections::BTreeMap,
         mem,
         ops::{self, Range},
-        rc::Rc,
+        rc::{self, Rc},
+        u32,
     },
 };
 
@@ -24,6 +26,8 @@ type Nid = u32;
 const NILL: u32 = u32::MAX;
 
 mod reg {
+    use crate::log;
+
     pub const STACK_PTR: Reg = 254;
     pub const ZERO: Reg = 0;
     pub const RET: Reg = 1;
@@ -59,7 +63,7 @@ mod reg {
     impl Drop for Id {
         fn drop(&mut self) {
             if !std::thread::panicking() && self.1 {
-                panic!("reg id leaked: {:?}", self.0);
+                log::err!("reg id leaked: {:?}", self.0);
             }
         }
     }
@@ -279,6 +283,8 @@ mod ty {
         I16;
         I32;
         INT;
+        LEFT_UNREACHABLE;
+        RIGHT_UNREACHABLE;
     }
 
     macro_rules! type_kind {
@@ -526,6 +532,9 @@ impl Nodes {
             Kind::Tuple { .. } => {}
             Kind::ConstInt { .. } => {}
             Kind::Call { .. } => {}
+            Kind::If => {}
+            Kind::Region => {}
+            Kind::Phi => {}
         }
         None
     }
@@ -692,9 +701,11 @@ impl Nodes {
             }
             Kind::Return => {
                 write!(f, "{}: return [{:?}] ", node, self[node].inputs[0])?;
-                self.fmt(f, self[node].inputs[1], rcs)?;
+                if self[node].inputs[2] != NILL {
+                    self.fmt(f, self[node].inputs[2], rcs)?;
+                }
                 writeln!(f)?;
-                self.fmt(f, self[node].inputs[2], rcs)?;
+                self.fmt(f, self[node].inputs[1], rcs)?;
             }
             Kind::ConstInt { value } => write!(f, "{}", value)?,
             Kind::End => {
@@ -744,6 +755,9 @@ impl Nodes {
                     write!(f, "call{node}")?;
                 }
             }
+            Kind::If => todo!(),
+            Kind::Region => todo!(),
+            Kind::Phi => todo!(),
         }
 
         Ok(())
@@ -799,8 +813,11 @@ enum PoolSlot {
 pub enum Kind {
     Start,
     End,
+    If,
+    Region,
     Return,
     ConstInt { value: i64 },
+    Phi,
     Tuple { index: u32 },
     BinOp { op: lexer::TokenKind },
     Call { func: ty::Func, args: Vec<Nid> },
@@ -871,6 +888,7 @@ struct Loop {
     break_relocs: Vec<Reloc>,
 }
 
+#[derive(Clone, Copy)]
 struct Variable {
     id: Ident,
     value: Nid,
@@ -887,7 +905,9 @@ struct ItemCtx {
     nodes: Nodes,
     start: Nid,
     end: Nid,
-    cfg: Nid,
+    ctrl: Nid,
+
+    call_count: usize,
 
     loops: Vec<Loop>,
     vars: Vec<Variable>,
@@ -1313,7 +1333,7 @@ impl Codegen {
 
                 (g.offset, (file.ident_str(g.name), self.tys.size_of(g.ty), DisasmItem::Global))
             }))
-            .collect::<HashMap<_, _>>();
+            .collect::<BTreeMap<_, _>>();
         crate::disasm(&mut sluce, &functions, output, |_| {})
     }
 
@@ -1380,7 +1400,74 @@ impl Codegen {
                     self.ci.nodes.new_node(ty::bin_ret(ty, op), Kind::BinOp { op }, [lhs, rhs]);
                 Some(id)
             }
+            Expr::If { pos, cond, then, else_ } => {
+                let cond = self.expr_ctx(cond, Ctx::default().with_ty(ty::BOOL))?;
+
+                let if_node = self.ci.nodes.new_node(ty::VOID, Kind::If, [self.ci.ctrl, cond]);
+
+                'b: {
+                    let branch = match self.tof(if_node).expand().inner() {
+                        ty::LEFT_UNREACHABLE => else_,
+                        ty::RIGHT_UNREACHABLE => Some(then),
+                        _ => break 'b,
+                    };
+
+                    self.ci.nodes.lock(self.ci.ctrl);
+                    self.ci.nodes.remove(if_node);
+                    self.ci.nodes.unlock(self.ci.ctrl);
+
+                    if let Some(branch) = branch {
+                        return self.expr(branch);
+                    } else {
+                        return Some(NILL);
+                    }
+                }
+
+                let else_scope = self.ci.vars.clone();
+
+                self.ci.ctrl =
+                    self.ci.nodes.new_node(ty::VOID, Kind::Tuple { index: 0 }, [if_node]);
+                let lcntrl = self.expr(then).map_or(NILL, |_| self.ci.ctrl);
+
+                let then_scope = std::mem::replace(&mut self.ci.vars, else_scope);
+                self.ci.ctrl =
+                    self.ci.nodes.new_node(ty::VOID, Kind::Tuple { index: 1 }, [if_node]);
+                let rcntrl = if let Some(else_) = else_ {
+                    self.expr(else_).map_or(NILL, |_| self.ci.ctrl)
+                } else {
+                    self.ci.ctrl
+                };
+
+                if lcntrl == NILL && rcntrl == NILL {
+                    return None;
+                } else if lcntrl == NILL {
+                    return Some(NILL);
+                } else if rcntrl == NILL {
+                    self.ci.vars = then_scope;
+                    return Some(NILL);
+                }
+
+                let region = self.ci.nodes.new_node(ty::VOID, Kind::Region, [lcntrl, rcntrl]);
+
+                for (else_var, then_var) in self.ci.vars.iter_mut().zip(then_scope) {
+                    if else_var.value == then_var.value {
+                        continue;
+                    }
+
+                    let ty = self.ci.nodes[else_var.value].ty;
+                    debug_assert_eq!(
+                        ty, self.ci.nodes[then_var.value].ty,
+                        "TODO: typecheck properly"
+                    );
+
+                    let inps = [region, then_var.value, else_var.value];
+                    else_var.value = self.ci.nodes.new_node(ty, Kind::Phi, inps);
+                }
+
+                Some(NILL)
+            }
             Expr::Call { func: &Expr::Ident { pos, id, name, .. }, args, .. } => {
+                self.ci.call_count += 1;
                 let func = self.find_or_declare(pos, self.ci.file, Some(id), name);
                 let ty::Kind::Func(func) = func else {
                     self.report(
@@ -1416,27 +1503,37 @@ impl Codegen {
                 let mut inps = vec![];
                 for ((arg, _carg), tyx) in args.iter().zip(cargs).zip(sig.args.range()) {
                     let ty = self.tys.args[tyx];
+                    if self.tys.size_of(ty) == 0 {
+                        continue;
+                    }
                     let value = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
                     _ = self.assert_ty(arg.pos(), self.tof(value), ty, true);
                     inps.push(value);
                 }
-                self.ci.cfg =
+                self.ci.ctrl =
                     self.ci
                         .nodes
-                        .new_node(sig.ret, Kind::Call { func, args: inps.clone() }, [self.ci.cfg]);
-                self.ci.nodes.add_deps(self.ci.cfg, &inps);
+                        .new_node(sig.ret, Kind::Call { func, args: inps.clone() }, [self.ci.ctrl]);
+                self.ci.nodes.add_deps(self.ci.ctrl, &inps);
 
-                Some(self.ci.cfg)
+                Some(self.ci.ctrl)
             }
             Expr::Return { pos, val } => {
-                let ty = if let Some(val) = val {
+                let (ty, value) = if let Some(val) = val {
                     let value = self.expr_ctx(val, Ctx { ty: self.ci.ret })?;
-                    let inps = [self.ci.cfg, value, self.ci.end];
-                    self.ci.cfg = self.ci.nodes.new_node(ty::VOID, Kind::Return, inps);
-                    self.tof(value)
+
+                    (self.tof(value), value)
                 } else {
-                    ty::VOID.into()
+                    (ty::VOID.into(), NILL)
                 };
+
+                if value == NILL {
+                    let inps = [self.ci.ctrl, self.ci.end];
+                    self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Return, inps);
+                } else {
+                    let inps = [self.ci.ctrl, self.ci.end, value];
+                    self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Return, inps);
+                }
 
                 let expected = *self.ci.ret.get_or_insert(ty);
                 _ = self.assert_ty(pos, ty, expected, true);
@@ -1494,7 +1591,8 @@ impl Codegen {
     }
 
     fn handle_task(&mut self, FTask { file, id }: FTask) {
-        let func = &self.tys.funcs[id as usize];
+        let func = &mut self.tys.funcs[id as usize];
+        func.offset = u32::MAX - 1;
         debug_assert!(func.file == file);
         let sig = func.sig.unwrap();
         let ast = self.files[file as usize].clone();
@@ -1510,7 +1608,7 @@ impl Codegen {
 
         self.ci.start = self.ci.nodes.new_node(ty::VOID, Kind::Start, []);
         self.ci.end = self.ci.nodes.new_node(ty::VOID, Kind::End, []);
-        self.ci.cfg = self.ci.nodes.new_node(ty::VOID, Kind::Tuple { index: 0 }, [self.ci.start]);
+        self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Tuple { index: 0 }, [self.ci.start]);
 
         let Expr::BinOp {
             left: Expr::Ident { .. },
@@ -1574,6 +1672,18 @@ impl Codegen {
 
         self.emit_control(self.ci.nodes[self.ci.start].outputs[0]);
 
+        if let Some(last_ret) = self.ci.ret_relocs.last()
+            && last_ret.offset as usize == self.ci.code.len() - 5
+        {
+            self.ci.code.truncate(self.ci.code.len() - 5);
+            self.ci.ret_relocs.pop();
+        }
+
+        let end = self.ci.code.len();
+        for ret_rel in self.ci.ret_relocs.drain(..) {
+            ret_rel.apply_jump(&mut self.ci.code, end as _, 0);
+        }
+
         '_close_function: {
             let pushed = self.ci.regs.pushed_size() as i64;
             let stack = 0;
@@ -1593,29 +1703,27 @@ impl Codegen {
         self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
     }
 
-    fn emit_control(&mut self, mut ctrl: Nid) {
+    fn emit_control(&mut self, mut ctrl: Nid) -> Option<Nid> {
         loop {
             match self.ci.nodes[ctrl].kind.clone() {
                 Kind::Start => unreachable!(),
                 Kind::End => unreachable!(),
                 Kind::Return => {
-                    let ret_loc = match self.tys.size_of(self.ci.ret.expect("TODO")) {
-                        0 => Loc::default(),
-                        1..=8 => Loc { reg: 1u8.into() },
-                        s => todo!("{s}"),
-                    };
-
-                    let dst = self.emit_expr(
-                        self.ci.nodes[ctrl].inputs[1],
-                        GenCtx::default().with_loc(ret_loc),
-                    );
-                    self.ci.free_loc(dst);
-
-                    break;
+                    if let Some(&ret) = self.ci.nodes[ctrl].inputs().get(2) {
+                        let ret_loc = match self.tys.size_of(self.ci.ret.expect("TODO")) {
+                            0 => Loc::default(),
+                            1..=8 => Loc { reg: 1u8.into() },
+                            s => todo!("{s}"),
+                        };
+                        let dst = self.emit_expr(ret, GenCtx::default().with_loc(ret_loc));
+                        self.ci.free_loc(dst);
+                    }
+                    self.ci.ret_relocs.push(Reloc::new(self.ci.code.len(), 1, 4));
+                    self.ci.emit(instrs::jmp(0));
+                    break None;
                 }
                 Kind::ConstInt { .. } => unreachable!(),
-                Kind::Tuple { index } => {
-                    debug_assert!(index == 0);
+                Kind::Tuple { .. } => {
                     ctrl = self.ci.nodes[ctrl].outputs[0];
                 }
                 Kind::BinOp { .. } => unreachable!(),
@@ -1633,12 +1741,6 @@ impl Codegen {
                         self.ci.free_loc(dst);
                     }
 
-                    let ret_loc = match self.tys.size_of(ret) {
-                        0 => Loc::default(),
-                        1..=8 => Loc { reg: 1u8.into() },
-                        s => todo!("{s}"),
-                    };
-
                     let reloc = Reloc::new(self.ci.code.len(), 3, 4);
                     self.ci
                         .relocs
@@ -1646,12 +1748,30 @@ impl Codegen {
                     self.ci.emit(instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
                     self.make_func_reachable(func);
 
-                    // TODO: allocate return register
-                    let loc = Loc { reg: self.ci.regs.allocate() };
-                    self.ci.emit(instrs::cp(loc.reg.get(), ret_loc.reg.get()));
+                    self.ci.call_count -= 1;
 
-                    self.ci.nodes[ctrl].loc = loc;
-                    self.ci.nodes[ctrl].lock_rc += 1;
+                    'b: {
+                        let ret_loc = match self.tys.size_of(ret) {
+                            0 => break 'b,
+                            1..=8 => Loc { reg: 1u8.into() },
+                            s => todo!("{s}"),
+                        };
+
+                        if self.ci.nodes[ctrl].outputs.len() == 1 {
+                            break 'b;
+                        }
+
+                        let loc;
+                        if self.ci.call_count != 0 {
+                            loc = Loc { reg: self.ci.regs.allocate() };
+                            self.ci.emit(instrs::cp(loc.reg.get(), ret_loc.reg.get()));
+                        } else {
+                            loc = ret_loc;
+                        }
+
+                        self.ci.nodes[ctrl].loc = loc;
+                        self.ci.nodes[ctrl].lock_rc += 1;
+                    }
 
                     ctrl = *self.ci.nodes[ctrl]
                         .outputs
@@ -1659,6 +1779,106 @@ impl Codegen {
                         .find(|&&o| self.ci.nodes.is_cfg(o))
                         .unwrap();
                 }
+                Kind::If => {
+                    let cond = self.ci.nodes[ctrl].inputs[1];
+
+                    let jump_offset: i64;
+                    match self.ci.nodes[cond].kind {
+                        Kind::BinOp { op: TokenKind::Le } => {
+                            let [left, right, ..] = self.ci.nodes[cond].inputs;
+                            let ldst = self.emit_expr(left, GenCtx::default());
+                            let rdst = self.emit_expr(right, GenCtx::default());
+                            jump_offset = self.ci.code.len() as _;
+                            let op = if self.ci.nodes[left].ty.is_signed() {
+                                instrs::jgts
+                            } else {
+                                instrs::jgtu
+                            };
+                            self.ci.emit(op(
+                                self.ci.nodes[left].loc.reg.get(),
+                                self.ci.nodes[right].loc.reg.get(),
+                                0,
+                            ));
+                            self.ci.free_loc(ldst);
+                            self.ci.free_loc(rdst);
+                        }
+                        _ => {
+                            let cdst = self.emit_expr(cond, GenCtx::default());
+                            let cond = self.ci.nodes[cond].loc.reg.get();
+                            jump_offset = self.ci.code.len() as _;
+                            self.ci.emit(instrs::jeq(cond, reg::ZERO, 0));
+                            self.ci.free_loc(cdst);
+                        }
+                    }
+
+                    let left_unreachable = self.emit_control(self.ci.nodes[ctrl].outputs[0]);
+                    let mut skip_then_offset = self.ci.code.len() as i64;
+                    if let Some(region) = left_unreachable {
+                        for i in 0..self.ci.nodes[region].outputs.len() {
+                            let o = self.ci.nodes[region].outputs[i];
+                            if self.ci.nodes[o].kind != Kind::Phi {
+                                continue;
+                            }
+                            let out = self.ci.nodes[o].inputs[1];
+                            let dst = self.emit_expr(out, GenCtx::default());
+                            self.ci.nodes[o].loc = dst.unwrap_or_else(|| {
+                                let reg = self.ci.regs.allocate();
+                                self.ci
+                                    .emit(instrs::cp(reg.get(), self.ci.nodes[out].loc.reg.get()));
+                                Loc { reg }
+                            });
+                        }
+
+                        self.ci.emit(instrs::jmp(0));
+                    }
+
+                    let right_base = self.ci.code.len();
+                    let right_unreachable = self.emit_control(self.ci.nodes[ctrl].outputs[1]);
+                    if let Some(region) = left_unreachable {
+                        for i in 0..self.ci.nodes[region].outputs.len() {
+                            let o = self.ci.nodes[region].outputs[i];
+                            if self.ci.nodes[o].kind != Kind::Phi {
+                                continue;
+                            }
+                            let out = self.ci.nodes[o].inputs[2];
+                            // TODO: this can be improved if we juggle ownership of the Phi inputs
+                            let dst = self.emit_expr(out, GenCtx::default());
+                            self.ci.free_loc(dst);
+                            self.ci.emit(instrs::cp(
+                                self.ci.nodes[o].loc.reg.get(),
+                                self.ci.nodes[out].loc.reg.get(),
+                            ));
+                        }
+
+                        let right_end = self.ci.code.len();
+                        if right_base == right_end {
+                            self.ci.code.truncate(skip_then_offset as _);
+                        } else {
+                            write_reloc(
+                                &mut self.ci.code,
+                                skip_then_offset as usize + 1,
+                                right_end as i64 - skip_then_offset,
+                                4,
+                            );
+                            skip_then_offset += instrs::jmp(69).0 as i64;
+                        }
+                    }
+
+                    write_reloc(
+                        &mut self.ci.code,
+                        jump_offset as usize + 3,
+                        skip_then_offset - jump_offset,
+                        2,
+                    );
+
+                    if left_unreachable.is_none() && right_unreachable.is_none() {
+                        break None;
+                    }
+
+                    debug_assert_eq!(left_unreachable, right_unreachable);
+                }
+                Kind::Region => break Some(ctrl),
+                Kind::Phi => todo!(),
             }
         }
     }
@@ -1685,28 +1905,46 @@ impl Codegen {
                 let ty = self.tof(expr);
                 let [left, right, ..] = self.ci.nodes[expr].inputs;
                 let mut ldst = self.emit_expr(left, GenCtx::default());
-                let mut rdst = self.emit_expr(right, GenCtx::default());
 
-                let op = Self::math_op(op, ty.is_signed(), self.tys.size_of(ty))
-                    .expect("TODO: what now?");
+                if let Kind::ConstInt { value } = self.ci.nodes[right].kind
+                    && let Some(op) = Self::imm_math_op(op, ty.is_signed(), self.tys.size_of(ty))
+                {
+                    let loc = ctx
+                        .loc
+                        .or_else(|| ldst.take())
+                        .unwrap_or_else(|| Loc { reg: self.ci.regs.allocate() });
 
-                let loc = ctx
-                    .loc
-                    .or_else(|| ldst.take())
-                    .or_else(|| rdst.take())
-                    .unwrap_or_else(|| Loc { reg: self.ci.regs.allocate() });
+                    self.ci.free_loc(ldst);
 
-                self.ci.free_loc(ldst);
-                self.ci.free_loc(rdst);
+                    self.ci.emit(op(loc.reg.get(), self.ci.nodes[left].loc.reg.get(), value as _));
+                    self.ci.nodes[expr].loc = loc;
+                } else {
+                    let mut rdst = self.emit_expr(right, GenCtx::default());
 
-                self.ci.emit(op(
-                    loc.reg.get(),
-                    self.ci.nodes[left].loc.reg.get(),
-                    self.ci.nodes[right].loc.reg.get(),
-                ));
-                self.ci.nodes[expr].loc = loc;
+                    let op = Self::math_op(op, ty.is_signed(), self.tys.size_of(ty))
+                        .expect("TODO: what now?");
+
+                    let loc = ctx
+                        .loc
+                        .or_else(|| ldst.take())
+                        .or_else(|| rdst.take())
+                        .unwrap_or_else(|| Loc { reg: self.ci.regs.allocate() });
+
+                    self.ci.free_loc(ldst);
+                    self.ci.free_loc(rdst);
+
+                    self.ci.emit(op(
+                        loc.reg.get(),
+                        self.ci.nodes[left].loc.reg.get(),
+                        self.ci.nodes[right].loc.reg.get(),
+                    ));
+                    self.ci.nodes[expr].loc = loc;
+                }
             }
             Kind::Call { .. } => {}
+            Kind::If => todo!(),
+            Kind::Region => todo!(),
+            Kind::Phi => todo!(),
         }
 
         self.ci.nodes[expr].lock_rc += 1;
@@ -1716,6 +1954,45 @@ impl Codegen {
         }
 
         None
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn imm_math_op(
+        op: TokenKind,
+        signed: bool,
+        size: u32,
+    ) -> Option<fn(u8, u8, u64) -> (usize, [u8; instrs::MAX_SIZE])> {
+        use {instrs::*, TokenKind as T};
+
+        macro_rules! def_op {
+            ($name:ident |$a:ident, $b:ident, $c:ident| $($tt:tt)*) => {
+                macro_rules! $name {
+                    ($$($$op:ident),*) => {
+                        [$$(
+                            |$a, $b, $c: u64| $$op($($tt)*),
+                        )*]
+                    }
+                }
+            };
+        }
+
+        def_op!(basic_op | a, b, c | a, b, c as _);
+        def_op!(sub_op | a, b, c | a, b, c.wrapping_neg() as _);
+
+        let ops = match op {
+            T::Add => basic_op!(addi8, addi16, addi32, addi64),
+            T::Sub => sub_op!(addi8, addi16, addi32, addi64),
+            T::Mul => basic_op!(muli8, muli16, muli32, muli64),
+            T::Band => return Some(andi),
+            T::Bor => return Some(ori),
+            T::Xor => return Some(xori),
+            T::Shr if signed => basic_op!(srui8, srui16, srui32, srui64),
+            T::Shr => basic_op!(srui8, srui16, srui32, srui64),
+            T::Shl => basic_op!(slui8, slui16, slui32, slui64),
+            _ => return None,
+        };
+
+        Some(ops[size.ilog2() as usize])
     }
 
     #[allow(clippy::type_complexity)]
@@ -1788,8 +2065,8 @@ impl Codegen {
         if let Some(existing) = self.tys.syms.get(&SymKey { file, ident }) {
             if let ty::Kind::Func(id) = existing.expand()
                 && let func = &mut self.tys.funcs[id as usize]
-                && func.offset != u32::MAX
                 && let Err(idx) = task::unpack(func.offset)
+                && idx < self.tasks.len()
             {
                 func.offset = task::id(self.tasks.len());
                 let task = self.tasks[idx].take();
@@ -2104,8 +2381,8 @@ mod tests {
         const_folding_with_arg => README;
         variables => README;
         functions => README;
-        //comments => README;
-        //if_statements => README;
+        comments => README;
+        if_statements => README;
         //loops => README;
         //fb_driver => README;
         //pointers => README;

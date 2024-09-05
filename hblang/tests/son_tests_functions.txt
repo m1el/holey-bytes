@@ -1,34 +1,31 @@
 main:
-    ADDI64 r254, r254, -24d
-    ST r31, r254, 0a, 24h
+    ADDI64 r254, r254, -16d
+    ST r31, r254, 0a, 16h
     LI64 r2, 10d
     JAL r31, r0, :add_one
     CP r32, r1
     LI64 r2, 20d
     JAL r31, r0, :add_two
-    CP r33, r1
-    ADD64 r1, r33, r32
-    LD r31, r254, 0a, 24h
-    ADDI64 r254, r254, 24d
-    JALA r0, r31, 0a
-add_one:
-    ADDI64 r254, r254, -24d
-    ST r31, r254, 0a, 24h
-    CP r32, r2
-    LI64 r33, 1d
-    ADD64 r1, r32, r33
-    LD r31, r254, 0a, 24h
-    ADDI64 r254, r254, 24d
+    ADD64 r1, r1, r32
+    LD r31, r254, 0a, 16h
+    ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
 add_two:
-    ADDI64 r254, r254, -24d
-    ST r31, r254, 0a, 24h
+    ADDI64 r254, r254, -16d
+    ST r31, r254, 0a, 16h
     CP r32, r2
-    LI64 r33, 2d
-    ADD64 r1, r32, r33
-    LD r31, r254, 0a, 24h
-    ADDI64 r254, r254, 24d
+    ADDI64 r1, r32, 2d
+    LD r31, r254, 0a, 16h
+    ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
-code size: 263
+add_one:
+    ADDI64 r254, r254, -16d
+    ST r31, r254, 0a, 16h
+    CP r32, r2
+    ADDI64 r1, r32, 1d
+    LD r31, r254, 0a, 16h
+    ADDI64 r254, r254, 16d
+    JALA r0, r31, 0a
+code size: 254
 ret: 33
 status: Ok(())

@@ -20,7 +20,7 @@
 use {
     parser::Ast,
     std::{
-        collections::{hash_map, VecDeque},
+        collections::{hash_map, BTreeMap, VecDeque},
         io::{self, Read},
         path::{Path, PathBuf},
         sync::Mutex,
@@ -146,7 +146,7 @@ enum DisasmItem {
 
 fn disasm(
     binary: &mut &[u8],
-    functions: &HashMap<u32, (&str, u32, DisasmItem)>,
+    functions: &BTreeMap<u32, (&str, u32, DisasmItem)>,
     out: &mut impl std::io::Write,
     mut eca_handler: impl FnMut(&mut &[u8]),
 ) -> std::io::Result<()> {
