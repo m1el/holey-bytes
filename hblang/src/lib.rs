@@ -109,9 +109,9 @@ mod log {
             }
         };
 
-        ($level:expr, $($arg:expr),*) => {
+        ($level:expr, $($arg:expr),+) => {
             if $level <= $crate::log::LOG_LEVEL {
-                $(eprintln!("[{}{}{}][{:?}]: {} = {:?}", line!(), column!(), file!(), $level, stringify!($arg), $arg);)*
+                $(eprintln!("[{}:{}:{}][{:?}]: {} = {:?}", line!(), column!(), file!(), $level, stringify!($arg), $arg);)*
             }
         };
     }

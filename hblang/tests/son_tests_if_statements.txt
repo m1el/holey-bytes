@@ -17,12 +17,12 @@ fib:
  0: ADDI64 r2, r32, -1d
     JAL r31, r0, :fib
     CP r34, r1
-    ADDI64 r2, r32, -2d
+    SUB64 r2, r32, r33
     JAL r31, r0, :fib
     ADD64 r1, r1, r34
  1: LD r31, r254, 0a, 32h
     ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
-code size: 219
+code size: 212
 ret: 55
 status: Ok(())

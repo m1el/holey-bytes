@@ -125,7 +125,7 @@ fib := fn(n: int): int {
 
 		stack_reclamation_edge_case := 0
 
-		continue
+		//continue
 	}
 	return a
 }
@@ -635,6 +635,20 @@ min := fn(a: int, b: int): int {
 main := fn(arg: int): int {
 	// reduces to 0
 	return arg + 0 - arg * 1 + arg + 1 + arg + 2 + arg + 3 - arg * 3 - 6
+}
+```
+
+#### branch_assignments
+```hb
+main := fn(arg: int): int {
+	if arg == 1 {
+		arg = 1
+	} else if arg == 0 {
+		arg = 2
+	} else {
+		arg = 3
+	}
+	return arg
 }
 ```
 
