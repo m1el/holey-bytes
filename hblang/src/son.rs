@@ -18,7 +18,6 @@ use {
         mem,
         ops::{self, Range},
         rc::Rc,
-        usize,
     },
 };
 
@@ -97,6 +96,10 @@ mod reg {
 
         pub fn pushed_size(&self) -> usize {
             ((self.max_used as usize).saturating_sub(RET_ADDR as usize) + 1) * 8
+        }
+
+        pub fn mark_leaked(&mut self, reg: u8) {
+            self.meta.0[reg as usize].rc = u16::MAX;
         }
     }
 }
@@ -780,7 +783,13 @@ impl Nodes {
     fn is_cfg(&self, o: Nid) -> bool {
         matches!(
             self[o].kind,
-            Kind::Start | Kind::End | Kind::Return | Kind::Tuple { .. } | Kind::Call { .. }
+            Kind::Start
+                | Kind::End
+                | Kind::Return
+                | Kind::Tuple { .. }
+                | Kind::Call { .. }
+                | Kind::Region
+                | Kind::Loop
         )
     }
 
@@ -948,6 +957,7 @@ struct Variable {
 
 struct ColorMeta {
     rc: u32,
+    depth: u32,
     loc: Loc,
 }
 
@@ -968,6 +978,7 @@ struct ItemCtx {
     colors: Vec<ColorMeta>,
     call_count: usize,
     filled: Vec<Nid>,
+    delayed_frees: Vec<u32>,
 
     loops: Vec<Loop>,
     vars: Vec<Variable>,
@@ -979,11 +990,21 @@ struct ItemCtx {
 
 impl ItemCtx {
     fn next_color(&mut self) -> u32 {
-        self.colors.push(ColorMeta { rc: 0, loc: Default::default() });
+        self.colors.push(ColorMeta { rc: 0, depth: self.loop_depth, loc: Default::default() });
         self.colors.len() as _ // leave out 0 (sentinel)
     }
 
-    fn extend_color(&mut self, color: u32) {
+    fn set_next_color(&mut self, node: Nid) {
+        let color = self.next_color();
+        self.set_color(node, color);
+    }
+
+    fn set_color(&mut self, node: Nid, color: u32) {
+        if self.nodes[node].color != 0 {
+            debug_assert_ne!(self.nodes[node].color, color);
+            self.colors[self.nodes[node].color as usize - 1].rc -= 1;
+        }
+        self.nodes[node].color = color;
         self.colors[color as usize - 1].rc += 1;
     }
 
@@ -996,14 +1017,36 @@ impl ItemCtx {
             return;
         }
 
-        self.nodes[node].color = to;
-        // TODO:
-        // self.colors[to as usize - 1].rc -= 1;
-        // self.colors[from as usize - 1].rc -= 1;
+        self.set_color(node, to);
 
         for i in 0..self.nodes[node].inputs().len() {
             self.recolor(self.nodes[node].inputs[i], from, to);
         }
+    }
+
+    fn check_color_integrity(&self) {
+        let node_count = self
+            .nodes
+            .values
+            .iter()
+            .filter(|v| {
+                matches!(
+                    v,
+                    PoolSlot::Value(Node {
+                        kind: Kind::BinOp { .. }
+                            | Kind::Call { .. }
+                            | Kind::Phi
+                            | Kind::ConstInt { .. },
+                        ..
+                    })
+                ) || matches!(
+                    v,
+                    PoolSlot::Value(Node { kind: Kind::Tuple { index: 1.. }, inputs: [0, ..], .. })
+                )
+            })
+            .count();
+        let color_count = self.colors.iter().map(|c| c.rc).sum::<u32>();
+        debug_assert_eq!(node_count, color_count as usize);
     }
 
     fn emit(&mut self, instr: (usize, [u8; instrs::MAX_SIZE])) {
@@ -1728,9 +1771,11 @@ impl Codegen {
                     }
                 }
 
+                self.ci.nodes.lock(self.ci.ctrl);
                 for var in self.ci.vars.drain(base..) {
                     self.ci.nodes.unlock_remove(var.value);
                 }
+                self.ci.nodes.unlock(self.ci.ctrl);
 
                 ret
             }
@@ -1836,11 +1881,15 @@ impl Codegen {
         '_color_args: {
             for var in &orig_vars {
                 if var.id != u32::MAX {
-                    self.ci.nodes[var.value].color = self.ci.next_color();
+                    self.ci.set_next_color(var.value);
                 }
             }
         }
         self.color_control(self.ci.nodes[self.ci.start].outputs[0]);
+        #[cfg(debug_assertions)]
+        {
+            self.ci.check_color_integrity();
+        }
 
         self.ci.vars = orig_vars;
         self.emit_control(self.ci.nodes[self.ci.start].outputs[0]);
@@ -1892,6 +1941,7 @@ impl Codegen {
                             1..=8 => Loc { reg: 1 },
                             s => todo!("{s}"),
                         };
+                        self.ci.regs.mark_leaked(1);
                     }
                     return None;
                 }
@@ -1903,10 +1953,10 @@ impl Codegen {
                 Kind::Call { args, .. } => {
                     for &arg in args.iter() {
                         _ = self.color_expr_consume(arg);
-                        self.ci.nodes[arg].color = self.ci.next_color(); // hack?
+                        self.ci.set_next_color(arg);
                     }
 
-                    self.ci.nodes[ctrl].color = self.ci.next_color();
+                    self.ci.set_next_color(ctrl);
 
                     ctrl = *self.ci.nodes[ctrl]
                         .outputs
@@ -1958,7 +2008,7 @@ impl Codegen {
 
                         _ = self.color_expr_consume(left);
                         self.ci.nodes[maybe_phy].depth = self.ci.loop_depth;
-                        self.ci.nodes[maybe_phy].color = self.ci.next_color();
+                        self.ci.set_next_color(maybe_phy);
                     }
 
                     self.ci.nodes[ctrl].lock_rc = self.ci.code.len() as _;
@@ -2004,7 +2054,7 @@ impl Codegen {
             //    self.ci.recolor(right, c, self.ci.nodes[maybe_phy].color);
             //}
         } else {
-            self.ci.nodes[maybe_phy].color = match (lcolor, rcolor) {
+            let color = match (lcolor, rcolor) {
                 (None, None) => self.ci.next_color(),
                 (None, Some(c)) | (Some(c), None) => c,
                 (Some(lc), Some(rc)) => {
@@ -2012,6 +2062,7 @@ impl Codegen {
                     lc
                 }
             };
+            self.ci.set_color(maybe_phy, color);
         }
     }
 
@@ -2029,17 +2080,16 @@ impl Codegen {
             Kind::Start => unreachable!(),
             Kind::End => unreachable!(),
             Kind::Return => unreachable!(),
-            Kind::ConstInt { .. } => self.ci.nodes[expr].color = self.ci.next_color(),
+            Kind::ConstInt { .. } => self.ci.set_next_color(expr),
             Kind::Tuple { index } => {
                 debug_assert!(index != 0);
             }
-            Kind::BinOp { op } => {
+            Kind::BinOp { .. } => {
                 let [left, right, ..] = self.ci.nodes[expr].inputs;
                 let lcolor = self.color_expr_consume(left);
                 let rcolor = self.color_expr_consume(right);
-
-                self.ci.nodes[expr].color =
-                    lcolor.or(rcolor).unwrap_or_else(|| self.ci.next_color());
+                let color = lcolor.or(rcolor).unwrap_or_else(|| self.ci.next_color());
+                self.ci.set_color(expr, color);
             }
             Kind::Call { .. } => {}
             Kind::If => todo!(),
@@ -2086,6 +2136,7 @@ impl Codegen {
                             1..=8 => Loc { reg: parama.next() },
                             s => todo!("{s}"),
                         };
+                        self.ci.regs.mark_leaked(node_loc!(self, arg).reg);
                         self.emit_expr_consume(arg);
                     }
 
@@ -2156,7 +2207,7 @@ impl Codegen {
                     let filled_base = self.ci.filled.len();
                     let left_unreachable = self.emit_control(self.ci.nodes[ctrl].outputs[0]);
                     for fld in self.ci.filled.drain(filled_base..) {
-                        self.ci.nodes[fld].lock_rc = 1;
+                        self.ci.nodes[fld].depth = 0;
                     }
                     let mut skip_then_offset = self.ci.code.len() as i64;
                     if let Some(region) = left_unreachable {
@@ -2179,7 +2230,7 @@ impl Codegen {
                     let right_unreachable = self.emit_control(self.ci.nodes[ctrl].outputs[1]);
 
                     for fld in self.ci.filled.drain(filled_base..) {
-                        self.ci.nodes[fld].lock_rc = 1;
+                        self.ci.nodes[fld].depth = 0;
                     }
                     if let Some(region) = left_unreachable {
                         for i in 0..self.ci.nodes[region].outputs.len() {
@@ -2245,6 +2296,7 @@ impl Codegen {
                     }
 
                     self.ci.nodes[ctrl].lock_rc = self.ci.code.len() as _;
+                    self.ci.loop_depth += 1;
 
                     let end = self.emit_control(
                         *self.ci.nodes[ctrl]
@@ -2280,6 +2332,15 @@ impl Codegen {
                         self.ci.nodes[ctrl].lock_rc as i32 - self.ci.code.len() as i32,
                     ));
 
+                    self.ci.loop_depth -= 1;
+                    for free in self.ci.delayed_frees.extract_if(|&mut color| {
+                        self.ci.colors[color as usize].depth == self.ci.loop_depth
+                    }) {
+                        let color = &self.ci.colors[free as usize];
+                        debug_assert_ne!(color.loc, Loc::default());
+                        self.ci.regs.free(color.loc.reg);
+                    }
+
                     return None;
                 }
             }
@@ -2290,13 +2351,14 @@ impl Codegen {
 
     fn emit_expr_consume(&mut self, expr: Nid) {
         self.emit_expr(expr);
-        self.use_expr(expr)
+        self.use_expr(expr);
     }
 
     fn emit_expr(&mut self, expr: Nid) {
-        if std::mem::take(&mut self.ci.nodes[expr].lock_rc) == 0 {
+        if self.ci.nodes[expr].depth == u32::MAX {
             return;
         }
+        self.ci.nodes[expr].depth = u32::MAX;
         self.ci.filled.push(expr);
 
         match self.ci.nodes[expr].kind {
@@ -2344,7 +2406,7 @@ impl Codegen {
 
                 if let Kind::ConstInt { value } = self.ci.nodes[right].kind
                     && (node_loc!(self, right) == Loc::default()
-                        || self.ci.nodes[right].lock_rc != 0)
+                        || self.ci.nodes[right].depth != u32::MAX)
                     && let Some(op) = Self::imm_math_op(op, ty.is_signed(), self.tys.size_of(ty))
                 {
                     let instr =
@@ -2372,7 +2434,24 @@ impl Codegen {
         }
     }
 
-    fn use_expr(&mut self, _expr: Nid) {}
+    fn use_expr(&mut self, expr: Nid) {
+        let node = &mut self.ci.nodes[expr];
+        node.lock_rc = node.lock_rc.saturating_sub(1);
+        if node.lock_rc != 0 {
+            return;
+        }
+
+        let color = &mut self.ci.colors[node.color as usize - 1];
+        color.rc -= 1;
+        if color.rc == 0 {
+            if color.depth != self.ci.loop_depth {
+                self.ci.delayed_frees.push(node.color);
+            } else {
+                debug_assert_ne!(color.loc, Loc::default(), "{:?}", node);
+                self.ci.regs.free(color.loc.reg);
+            }
+        }
+    }
 
     #[allow(clippy::type_complexity)]
     fn imm_math_op(
@@ -2564,13 +2643,15 @@ impl Codegen {
 
     fn report_log(&self, pos: Pos, msg: impl std::fmt::Display) {
         let str = &self.cfile().file;
-        let (line, col) = lexer::line_col(str.as_bytes(), pos);
+        let (line, mut col) = lexer::line_col(str.as_bytes(), pos);
         println!("{}:{}:{}: {}", self.cfile().path, line, col, msg);
 
-        let line = str[str[..pos as usize].rfind('\n').map_or(0, |i| i + 1)
-            ..str[pos as usize..].find('\n').unwrap_or(str.len())]
-            .replace("\t", "    ");
-        println!("{line}");
+        let line = &str[str[..pos as usize].rfind('\n').map_or(0, |i| i + 1)
+            ..str[pos as usize..].find('\n').unwrap_or(str.len()) + pos as usize];
+        col += line.matches('\t').count() * 3;
+
+        println!("{}", line.replace("\t", "    "));
+        println!("{}^", " ".repeat(col - 1))
     }
 
     #[track_caller]
@@ -2837,7 +2918,7 @@ mod tests {
         comments => README;
         if_statements => README;
         loops => README;
-        //fb_driver => README;
+        fb_driver => README;
         //pointers => README;
         //structs => README;
         //different_types => README;

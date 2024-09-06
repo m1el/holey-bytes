@@ -13,7 +13,8 @@
     ptr_metadata,
     slice_ptr_get,
     slice_take,
-    map_try_insert
+    map_try_insert,
+    extract_if
 )]
 #![allow(internal_features, clippy::format_collect)]
 

@@ -1,0 +1,58 @@
+main:
+    ADDI64 r254, r254, -96d
+    ST r31, r254, 0a, 96h
+    JAL r31, r0, :check_platform
+    LI64 r1, 0d
+    CP r32, r1
+    LI64 r33, 30d
+    CP r34, r33
+    LI64 r35, 100d
+    CP r36, r35
+    CP r37, r32
+    CP r38, r36
+ 4: ADDI64 r39, r34, 1d
+    JGTS r32, r39, :0
+    JAL r31, r0, :set_pixel
+    CP r40, r4
+    ADDI64 r41, r3, 1d
+    CP r42, r3
+    JMP :1
+ 0: JAL r31, r0, :set_pixel
+    CP r40, r4
+    CP r41, r1
+    ADDI64 r42, r3, 1d
+ 1: JNE r42, r40, :2
+    JMP :3
+ 2: CP r2, r41
+    CP r34, r33
+    CP r4, r35
+    CP r3, r42
+    CP r4, r40
+    JMP :4
+ 3: LD r31, r254, 0a, 96h
+    ADDI64 r254, r254, 96d
+    JALA r0, r31, 0a
+set_pixel:
+    ADDI64 r254, r254, -8d
+    ST r31, r254, 0a, 8h
+    LI64 r1, 0d
+    LD r31, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
+    JALA r0, r31, 0a
+check_platform:
+    ADDI64 r254, r254, -8d
+    ST r31, r254, 0a, 8h
+    JAL r31, r0, :x86_fb_ptr
+    LD r31, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
+    JALA r0, r31, 0a
+x86_fb_ptr:
+    ADDI64 r254, r254, -8d
+    ST r31, r254, 0a, 8h
+    LI64 r1, 100d
+    LD r31, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
+    JALA r0, r31, 0a
+code size: 422
+ret: 0
+status: Ok(())

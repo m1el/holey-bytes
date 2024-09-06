@@ -8,7 +8,7 @@ use {
         parser::{self, find_symbol, idfl, CtorField, Expr, ExprRef, FileId, Pos},
         HashMap,
     },
-    std::{collections::BTreeMap, fmt::Display, ops::Range, rc::Rc, usize},
+    std::{collections::BTreeMap, fmt::Display, ops::Range, rc::Rc},
 };
 
 type Offset = u32;
@@ -3429,6 +3429,7 @@ mod tests {
     use {
         super::parser,
         crate::{codegen::LoggedMem, log, parser::FileId},
+        core::panic,
         std::io,
     };
 
@@ -3536,6 +3537,10 @@ mod tests {
                     3 => vm.write_reg(1, 42),
                     unknown => unreachable!("unknown ecall: {unknown:?}"),
                 },
+                Ok(hbvm::VmRunOk::Timer) => {
+                    writeln!(output, "timed out").unwrap();
+                    break Ok(());
+                }
                 Ok(ev) => writeln!(output, "ev: {:?}", ev).unwrap(),
                 Err(e) => break Err(e),
             }

@@ -452,10 +452,10 @@ main := fn(): int {
 
 	loop {
 		if x <= height + 1 {
-			set_pixel(x, y, width)
+			_d := set_pixel(x, y, width)
 			x += 1
 		} else {
-			set_pixel(x, y, width)
+			_d := set_pixel(x, y, width)
 			x = 0
 			y += 1
 		}
