@@ -18,6 +18,7 @@ use {
         mem,
         ops::{self, Range},
         rc::Rc,
+        usize,
     },
 };
 
@@ -2562,8 +2563,14 @@ impl Codegen {
     }
 
     fn report_log(&self, pos: Pos, msg: impl std::fmt::Display) {
-        let (line, col) = lexer::line_col(self.cfile().file.as_bytes(), pos);
+        let str = &self.cfile().file;
+        let (line, col) = lexer::line_col(str.as_bytes(), pos);
         println!("{}:{}:{}: {}", self.cfile().path, line, col, msg);
+
+        let line = str[str[..pos as usize].rfind('\n').map_or(0, |i| i + 1)
+            ..str[pos as usize..].find('\n').unwrap_or(str.len())]
+            .replace("\t", "    ");
+        println!("{line}");
     }
 
     #[track_caller]

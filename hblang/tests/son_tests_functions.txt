@@ -11,20 +11,20 @@ main:
     ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
 add_two:
-    ADDI64 r254, r254, -16d
-    ST r31, r254, 0a, 16h
-    CP r32, r2
-    ADDI64 r1, r32, 2d
-    LD r31, r254, 0a, 16h
-    ADDI64 r254, r254, 16d
+    ADDI64 r254, r254, -8d
+    ST r31, r254, 0a, 8h
+    CP r1, r2
+    ADDI64 r1, r1, 2d
+    LD r31, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
 add_one:
-    ADDI64 r254, r254, -16d
-    ST r31, r254, 0a, 16h
-    CP r32, r2
-    ADDI64 r1, r32, 1d
-    LD r31, r254, 0a, 16h
-    ADDI64 r254, r254, 16d
+    ADDI64 r254, r254, -8d
+    ST r31, r254, 0a, 8h
+    CP r1, r2
+    ADDI64 r1, r1, 1d
+    LD r31, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
 code size: 254
 ret: 33

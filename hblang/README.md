@@ -751,3 +751,17 @@ main := fn(): void {
 	return
 }
 ```
+
+#### integer_inference_issues
+```hb
+.{integer_range} := @use("random.hb")
+main := fn(): void {
+	a := integer_range(0, 1000)
+	return
+}
+
+// in module: random.hb
+integer_range := fn(min: uint, max: int): uint {
+	return @eca(uint, 3, 4) % (@bitcast(max) - min + 1) + min
+}
+```

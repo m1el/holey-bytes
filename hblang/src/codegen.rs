@@ -8,7 +8,7 @@ use {
         parser::{self, find_symbol, idfl, CtorField, Expr, ExprRef, FileId, Pos},
         HashMap,
     },
-    std::{collections::BTreeMap, fmt::Display, ops::Range, rc::Rc},
+    std::{collections::BTreeMap, fmt::Display, ops::Range, rc::Rc, usize},
 };
 
 type Offset = u32;
@@ -1094,7 +1094,7 @@ impl Output {
 
     fn emit(&mut self, (len, instr): (usize, [u8; instrs::MAX_SIZE])) {
         let name = instrs::NAMES[instr[0] as usize];
-        log::dbg!(
+        log::trc!(
             "{:08x}: {}: {}",
             self.code.len(),
             name,
@@ -1196,7 +1196,7 @@ impl hbvm::mem::Memory for LoggedMem {
         target: *mut u8,
         count: usize,
     ) -> Result<(), hbvm::mem::LoadError> {
-        log::dbg!(
+        log::trc!(
             "load: {:x} {:?}",
             addr.get(),
             core::slice::from_raw_parts(addr.get() as *const u8, count)
@@ -1214,7 +1214,7 @@ impl hbvm::mem::Memory for LoggedMem {
         source: *const u8,
         count: usize,
     ) -> Result<(), hbvm::mem::StoreError> {
-        log::dbg!(
+        log::trc!(
             "store: {:x} {:?}",
             addr.get(),
             core::slice::from_raw_parts(source, count)
@@ -1227,7 +1227,7 @@ impl hbvm::mem::Memory for LoggedMem {
     }
 
     unsafe fn prog_read<T: Copy>(&mut self, addr: hbvm::mem::Address) -> T {
-        log::dbg!(
+        log::trc!(
             "read-typed: {:x} {} {:?}",
             addr.get(),
             std::any::type_name::<T>(),
@@ -1858,7 +1858,7 @@ impl Codegen {
                 self.assign_pattern(left, value)
             }
             E::Call { func: fast, args, .. } => {
-                log::dbg!("call {fast}");
+                log::trc!("call {fast}");
                 let func_ty = self.ty(fast);
                 let ty::Kind::Func(mut func) = func_ty.expand() else {
                     self.report(fast.pos(), "can't call this, maybe in the future");
@@ -2105,7 +2105,10 @@ impl Codegen {
                 Some(Value { ty: ty::BOOL.into(), loc: Loc::reg(lhs) })
             }
             E::BinOp { left, op, right } if op != T::Decl => 'ops: {
-                let left = self.expr(left)?;
+                let left = self.expr_ctx(left, Ctx {
+                    ty: ctx.ty.filter(|_| dbg!(dbg!(op).is_homogenous())),
+                    ..Default::default()
+                })?;
 
                 if op == T::Assign {
                     let value = self.expr_ctx(right, Ctx::from(left)).unwrap();
@@ -2206,7 +2209,7 @@ impl Codegen {
         }?;
 
         if let Some(ty) = ctx.ty {
-            _ = self.assert_ty(expr.pos(), value.ty, ty, "a thing");
+            _ = self.assert_ty(expr.pos(), value.ty, ty, format_args!("'{expr}'"));
         }
 
         Some(match ctx.loc {
@@ -3020,7 +3023,7 @@ impl Codegen {
         name: Result<Ident, &str>,
         lit_name: &str,
     ) -> ty::Kind {
-        log::dbg!("find_or_declare: {lit_name} {file}");
+        log::trc!("find_or_declare: {lit_name} {file}");
         let f = self.files[file as usize].clone();
         let Some((expr, ident)) = f.find_decl(name) else {
             match name {
@@ -3176,7 +3179,7 @@ impl Codegen {
         ci: ItemCtx,
         compile: impl FnOnce(&mut Self, &mut ItemCtx) -> Result<T, E>,
     ) -> Result<T, E> {
-        log::dbg!("eval");
+        log::trc!("eval");
         self.ct.enter();
         let stash = self.pop_stash();
 
@@ -3227,7 +3230,7 @@ impl Codegen {
         self.push_stash(stash);
 
         self.ct.exit();
-        log::dbg!("eval-end");
+        log::trc!("eval-end");
 
         ret
     }
@@ -3347,8 +3350,16 @@ impl Codegen {
     }
 
     fn report_log(&self, pos: Pos, msg: impl std::fmt::Display) {
-        let (line, col) = lexer::line_col(self.cfile().file.as_bytes(), pos);
+        let str = &self.cfile().file;
+        let (line, mut col) = lexer::line_col(str.as_bytes(), pos);
         println!("{}:{}:{}: {}", self.cfile().path, line, col, msg);
+
+        let line = &str[str[..pos as usize].rfind('\n').map_or(0, |i| i + 1)
+            ..str[pos as usize..].find('\n').unwrap_or(str.len()) + pos as usize];
+        col += line.matches('\t').count() * 3;
+
+        println!("{}", line.replace("\t", "    "));
+        println!("{}^", " ".repeat(col - 1))
     }
 
     #[track_caller]
@@ -3565,5 +3576,6 @@ mod tests {
         inline => README;
         inline_test => README;
         some_generic_code => README;
+        integer_inference_issues => README;
     }
 }

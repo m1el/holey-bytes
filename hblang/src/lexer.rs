@@ -185,6 +185,12 @@ impl TokenKind {
             s => todo!("{s}"),
         }
     }
+
+    pub fn is_homogenous(&self) -> bool {
+        self.precedence() != Self::Eq.precedence()
+            && self.precedence() != Self::Gt.precedence()
+            && self.precedence() != Self::Eof.precedence()
+    }
 }
 
 gen_token_kind! {
