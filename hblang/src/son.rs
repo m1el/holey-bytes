@@ -14,7 +14,9 @@ use {
     },
     core::fmt,
     std::{
+        cell::RefCell,
         collections::BTreeMap,
+        fmt::Display,
         mem,
         ops::{self, Range},
         rc::Rc,
@@ -28,7 +30,6 @@ macro_rules! node_loc {
 }
 
 type Nid = u32;
-const NILL: u32 = u32::MAX;
 
 mod reg {
 
@@ -165,7 +166,7 @@ mod ty {
         }
     }
 
-    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
     pub struct Id(NonZeroU32);
 
     impl Default for Id {
@@ -425,7 +426,7 @@ mod ty {
 struct Nodes {
     values: Vec<PoolSlot>,
     free: u32,
-    lookup: HashMap<(Kind, [Nid; MAX_INPUTS]), Nid>,
+    lookup: HashMap<(Kind, [Nid; MAX_INPUTS], ty::Id), Nid>,
 }
 
 impl Default for Nodes {
@@ -464,16 +465,17 @@ impl Nodes {
         self.free = u32::MAX;
     }
 
-    fn new_node<const SIZE: usize>(
+    fn new_node_nop<const SIZE: usize>(
         &mut self,
         ty: impl Into<ty::Id>,
         kind: Kind,
         inps: [Nid; SIZE],
     ) -> Nid {
-        let mut inputs = [NILL; MAX_INPUTS];
+        let mut inputs = [Nid::MAX; MAX_INPUTS];
         inputs[..inps.len()].copy_from_slice(&inps);
+        let ty = ty.into();
 
-        if let Some(&id) = self.lookup.get(&(kind.clone(), inputs)) {
+        if let Some(&id) = self.lookup.get(&(kind.clone(), inputs, ty)) {
             debug_assert_eq!(&self[id].kind, &kind);
             debug_assert_eq!(self[id].inputs, inputs);
             return id;
@@ -485,14 +487,24 @@ impl Nodes {
             color: 0,
             depth: u32::MAX,
             lock_rc: 0,
-            ty: ty.into(),
+            ty,
             outputs: vec![],
         });
 
-        let prev = self.lookup.insert((kind, inputs), id);
+        let prev = self.lookup.insert((kind, inputs, ty), id);
         debug_assert_eq!(prev, None);
 
         self.add_deps(id, &inps);
+        id
+    }
+
+    fn new_node<const SIZE: usize>(
+        &mut self,
+        ty: impl Into<ty::Id>,
+        kind: Kind,
+        inps: [Nid; SIZE],
+    ) -> Nid {
+        let id = self.new_node_nop(ty, kind, inps);
         if let Some(opt) = self.peephole(id) {
             debug_assert_ne!(opt, id);
             self.lock(opt);
@@ -505,17 +517,11 @@ impl Nodes {
     }
 
     fn lock(&mut self, target: Nid) {
-        if target == NILL {
-            return;
-        }
         self[target].lock_rc += 1;
     }
 
     #[track_caller]
     fn unlock(&mut self, target: Nid) {
-        if target == NILL {
-            return;
-        }
         self[target].lock_rc -= 1;
     }
 
@@ -530,7 +536,9 @@ impl Nodes {
             self[inp].outputs.swap_remove(index);
             self.remove(inp);
         }
-        let res = self.lookup.remove(&(self[target].kind.clone(), self[target].inputs));
+        let res =
+            self.lookup.remove(&(self[target].kind.clone(), self[target].inputs, self[target].ty));
+
         debug_assert_eq!(res, Some(target));
         self.remove_low(target);
         true
@@ -545,11 +553,21 @@ impl Nodes {
             Kind::Tuple { .. } => {}
             Kind::ConstInt { .. } => {}
             Kind::Call { .. } => {}
-            Kind::If => {}
+            Kind::If => return self.peephole_if(target),
             Kind::Region => {}
             Kind::Phi => {}
             Kind::Loop => {}
         }
+        None
+    }
+
+    fn peephole_if(&mut self, target: Nid) -> Option<Nid> {
+        let cond = self[target].inputs[1];
+        if let Kind::ConstInt { value } = self[cond].kind {
+            let ty = if value == 0 { ty::LEFT_UNREACHABLE } else { ty::RIGHT_UNREACHABLE };
+            return Some(self.new_node_nop(ty, Kind::If, [self[target].inputs[0], cond]));
+        }
+
         None
     }
 
@@ -660,14 +678,16 @@ impl Nodes {
     }
 
     fn modify_input(&mut self, target: Nid, inp_index: usize, with: Nid) -> Nid {
-        let out = self.lookup.remove(&(self[target].kind.clone(), self[target].inputs));
+        let out =
+            self.lookup.remove(&(self[target].kind.clone(), self[target].inputs, self[target].ty));
         debug_assert!(out == Some(target));
         debug_assert_ne!(self[target].inputs[inp_index], with);
 
         let prev = self[target].inputs[inp_index];
         self[target].inputs[inp_index] = with;
-        if let Err(other) =
-            self.lookup.try_insert((self[target].kind.clone(), self[target].inputs), target)
+        if let Err(other) = self
+            .lookup
+            .try_insert((self[target].kind.clone(), self[target].inputs, self[target].ty), target)
         {
             let rpl = *other.entry.get();
             self[target].inputs[inp_index] = prev;
@@ -691,9 +711,6 @@ impl Nodes {
 
     #[track_caller]
     fn unlock_remove(&mut self, id: Nid) -> bool {
-        if id == NILL {
-            return false;
-        }
         self[id].lock_rc -= 1;
         self.remove(id)
     }
@@ -717,7 +734,7 @@ impl Nodes {
             }
             Kind::Return => {
                 write!(f, "{}: return [{:?}] ", node, self[node].inputs[0])?;
-                if self[node].inputs[2] != NILL {
+                if self[node].inputs[2] != 0 {
                     self.fmt(f, self[node].inputs[2], rcs)?;
                 }
                 writeln!(f)?;
@@ -788,6 +805,7 @@ impl Nodes {
                 | Kind::Return
                 | Kind::Tuple { .. }
                 | Kind::Call { .. }
+                | Kind::If
                 | Kind::Region
                 | Kind::Loop
         )
@@ -907,13 +925,8 @@ impl Node {
     }
 
     fn inputs(&self) -> &[Nid] {
-        let len = self.inputs.iter().position(|&n| n == NILL).unwrap_or(MAX_INPUTS);
+        let len = self.inputs.iter().position(|&n| n == Nid::MAX).unwrap_or(MAX_INPUTS);
         &self.inputs[..len]
-    }
-
-    fn inputs_mut(&mut self) -> &mut [Nid] {
-        let len = self.inputs.iter().position(|&n| n == NILL).unwrap_or(MAX_INPUTS);
-        &mut self.inputs[..len]
     }
 }
 
@@ -1377,6 +1390,7 @@ pub struct Codegen {
     tys: Types,
     ci: ItemCtx,
     pool: Pool,
+    errors: RefCell<String>,
 }
 
 impl Codegen {
@@ -1488,16 +1502,15 @@ impl Codegen {
         let msg = "i know nothing about this name gal which is vired \
                             because we parsed succesfully";
         match *expr {
-            Expr::Comment { .. } => Some(NILL),
+            Expr::Comment { .. } => Some(0),
             Expr::Ident { pos, id, .. } => {
-                let index = self
-                    .ci
-                    .vars
-                    .iter()
-                    .position(|v| v.id == id)
-                    .unwrap_or_else(|| self.report(pos, msg));
+                let Some(index) = self.ci.vars.iter().position(|v| v.id == id) else {
+                    self.report(pos, msg);
+                    return Some(self.ci.end);
+                };
 
-                if self.ci.vars[index].value == NILL {
+                if self.ci.vars[index].value == 0 {
+                    self.ci.nodes.unlock(self.ci.vars[index].value);
                     let loob = self.ci.loops.last_mut().unwrap();
                     let inps = [loob.node, loob.scope[index].value, loob.scope[index].value];
                     self.ci.nodes.unlock(inps[1]);
@@ -1515,7 +1528,7 @@ impl Codegen {
                 let value = self.expr(right)?;
                 self.ci.nodes.lock(value);
                 self.ci.vars.push(Variable { id, value });
-                Some(NILL)
+                Some(0)
             }
             Expr::BinOp { left: &Expr::Ident { id, pos, .. }, op: TokenKind::Assign, right } => {
                 let value = self.expr(right)?;
@@ -1523,11 +1536,12 @@ impl Codegen {
 
                 let Some(var) = self.ci.vars.iter_mut().find(|v| v.id == id) else {
                     self.report(pos, msg);
+                    return Some(self.ci.end);
                 };
 
                 let prev = std::mem::replace(&mut var.value, value);
                 self.ci.nodes.unlock_remove(prev);
-                Some(NILL)
+                Some(0)
             }
             Expr::BinOp { left, op, right } => {
                 let lhs = self.expr_ctx(left, ctx)?;
@@ -1535,7 +1549,14 @@ impl Codegen {
                 let rhs = self.expr_ctx(right, Ctx::default().with_ty(self.tof(lhs)));
                 self.ci.nodes.unlock(lhs);
                 let rhs = rhs?;
-                let ty = self.assert_ty(left.pos(), self.tof(rhs), self.tof(lhs), false);
+                log::dbg!("{} {}", self.ty_display(self.tof(rhs)), self.ty_display(self.tof(lhs)));
+                let ty = self.assert_ty(
+                    left.pos(),
+                    self.tof(rhs),
+                    self.tof(lhs),
+                    false,
+                    "right operand",
+                );
                 let id =
                     self.ci.nodes.new_node(ty::bin_ret(ty, op), Kind::BinOp { op }, [lhs, rhs]);
                 Some(id)
@@ -1559,7 +1580,7 @@ impl Codegen {
                     if let Some(branch) = branch {
                         return self.expr(branch);
                     } else {
-                        return Some(NILL);
+                        return Some(0);
                     }
                 }
 
@@ -1570,33 +1591,33 @@ impl Codegen {
 
                 self.ci.ctrl =
                     self.ci.nodes.new_node(ty::VOID, Kind::Tuple { index: 0 }, [if_node]);
-                let lcntrl = self.expr(then).map_or(NILL, |_| self.ci.ctrl);
+                let lcntrl = self.expr(then).map_or(Nid::MAX, |_| self.ci.ctrl);
 
                 let then_scope = std::mem::replace(&mut self.ci.vars, else_scope);
                 self.ci.ctrl =
                     self.ci.nodes.new_node(ty::VOID, Kind::Tuple { index: 1 }, [if_node]);
                 let rcntrl = if let Some(else_) = else_ {
-                    self.expr(else_).map_or(NILL, |_| self.ci.ctrl)
+                    self.expr(else_).map_or(Nid::MAX, |_| self.ci.ctrl)
                 } else {
                     self.ci.ctrl
                 };
 
-                if lcntrl == NILL && rcntrl == NILL {
+                if lcntrl == Nid::MAX && rcntrl == Nid::MAX {
                     for then_var in then_scope {
                         self.ci.nodes.unlock_remove(then_var.value);
                     }
                     return None;
-                } else if lcntrl == NILL {
+                } else if lcntrl == Nid::MAX {
                     for then_var in then_scope {
                         self.ci.nodes.unlock_remove(then_var.value);
                     }
-                    return Some(NILL);
-                } else if rcntrl == NILL {
+                    return Some(0);
+                } else if rcntrl == Nid::MAX {
                     for else_var in &self.ci.vars {
                         self.ci.nodes.unlock_remove(else_var.value);
                     }
                     self.ci.vars = then_scope;
-                    return Some(NILL);
+                    return Some(0);
                 }
 
                 self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Region, [lcntrl, rcntrl]);
@@ -1620,39 +1641,41 @@ impl Codegen {
                     self.ci.nodes.lock(else_var.value);
                 }
 
-                Some(NILL)
+                Some(0)
             }
             Expr::Loop { body, .. } => {
                 self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Loop, [self.ci.ctrl; 2]);
                 self.ci.loops.push(Loop {
                     node: self.ci.ctrl,
-                    continue_: NILL,
+                    continue_: Nid::MAX,
                     continue_scope: vec![],
-                    break_: NILL,
+                    break_: Nid::MAX,
                     break_scope: vec![],
                     scope: self.ci.vars.clone(),
                 });
 
                 for var in &mut self.ci.vars {
-                    var.value = NILL;
+                    var.value = 0;
                 }
+                self.ci.nodes[0].lock_rc += self.ci.vars.len() as u32;
 
                 self.expr(body);
 
                 let Loop { node, continue_, continue_scope: _, break_, break_scope: _, scope } =
                     self.ci.loops.pop().unwrap();
 
-                assert!(continue_ == NILL, "TODO: handle continue");
+                assert!(continue_ == Nid::MAX, "TODO: handle continue");
 
                 self.ci.nodes.modify_input(node, 1, self.ci.ctrl);
 
                 self.ci.ctrl = break_;
-                if break_ == NILL {
+                if break_ == Nid::MAX {
                     return None;
                 }
 
                 for (loop_var, scope_var) in self.ci.vars.iter_mut().zip(scope) {
-                    if loop_var.value == NILL {
+                    if loop_var.value == 0 {
+                        self.ci.nodes.unlock(loop_var.value);
                         loop_var.value = scope_var.value;
                         continue;
                     }
@@ -1674,14 +1697,14 @@ impl Codegen {
                     self.ci.nodes.lock(loop_var.value);
                 }
 
-                Some(NILL)
+                Some(0)
             }
             Expr::Break { .. } => {
                 let loob = self.ci.loops.last_mut().unwrap();
 
-                debug_assert_eq!(loob.break_, NILL, "TODO: multile breaks");
+                debug_assert_eq!(loob.break_, Nid::MAX, "TODO: multile breaks");
                 loob.break_ = self.ci.ctrl;
-                self.ci.ctrl = NILL;
+                self.ci.ctrl = self.ci.end;
                 None
             }
             Expr::Call { func: &Expr::Ident { pos, id, name, .. }, args, .. } => {
@@ -1695,6 +1718,7 @@ impl Codegen {
                             self.ty_display(func.compress())
                         ),
                     );
+                    return Some(self.ci.end);
                 };
 
                 let fuc = &self.tys.funcs[func as usize];
@@ -1706,26 +1730,31 @@ impl Codegen {
                     unreachable!()
                 };
 
-                if args.len() != cargs.len() {
-                    let s = if cargs.len() == 1 { "" } else { "s" };
-                    self.report(
-                        pos,
-                        format_args!(
-                            "expected {} function argumenr{s}, got {}",
-                            cargs.len(),
-                            args.len()
-                        ),
-                    );
-                }
+                self.assert_report(
+                    args.len() == cargs.len(),
+                    pos,
+                    format_args!(
+                        "expected {} function argumenr{}, got {}",
+                        cargs.len(),
+                        if cargs.len() == 1 { "" } else { "s" },
+                        args.len()
+                    ),
+                );
 
                 let mut inps = vec![];
-                for ((arg, _carg), tyx) in args.iter().zip(cargs).zip(sig.args.range()) {
+                for ((arg, carg), tyx) in args.iter().zip(cargs).zip(sig.args.range()) {
                     let ty = self.tys.args[tyx];
                     if self.tys.size_of(ty) == 0 {
                         continue;
                     }
                     let value = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
-                    _ = self.assert_ty(arg.pos(), self.tof(value), ty, true);
+                    _ = self.assert_ty(
+                        arg.pos(),
+                        self.tof(value),
+                        ty,
+                        true,
+                        format_args!("argument {}", carg.name),
+                    );
                     inps.push(value);
                 }
                 self.ci.ctrl =
@@ -1742,30 +1771,31 @@ impl Codegen {
 
                     (self.tof(value), value)
                 } else {
-                    (ty::VOID.into(), NILL)
+                    (ty::VOID.into(), 0)
                 };
 
-                if value == NILL {
-                    let inps = [self.ci.ctrl, self.ci.end];
-                    self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Return, inps);
-                } else {
-                    let inps = [self.ci.ctrl, self.ci.end, value];
-                    self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Return, inps);
-                }
+                let inps = [self.ci.ctrl, self.ci.end, value];
+                self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Return, inps);
 
                 let expected = *self.ci.ret.get_or_insert(ty);
-                _ = self.assert_ty(pos, ty, expected, true);
+                _ = self.assert_ty(pos, ty, expected, true, "return value");
 
                 None
             }
             Expr::Block { stmts, .. } => {
                 let base = self.ci.vars.len();
 
-                let mut ret = Some(NILL);
+                let mut ret = Some(0);
                 for stmt in stmts {
                     ret = ret.and(self.expr(stmt));
                     if let Some(id) = ret {
-                        _ = self.assert_ty(stmt.pos(), self.tof(id), ty::VOID.into(), true);
+                        _ = self.assert_ty(
+                            stmt.pos(),
+                            self.tof(id),
+                            ty::VOID.into(),
+                            true,
+                            "statement",
+                        );
                     } else {
                         break;
                     }
@@ -1780,23 +1810,22 @@ impl Codegen {
                 ret
             }
             Expr::Number { value, .. } => Some(self.ci.nodes.new_node(
-                ctx.ty.unwrap_or(ty::INT.into()),
+                ctx.ty.filter(|ty| ty.is_integer() || ty.is_pointer()).unwrap_or(ty::INT.into()),
                 Kind::ConstInt { value },
                 [],
             )),
-            ref e => self.report_unhandled_ast(e, "bruh"),
+            ref e => {
+                self.report_unhandled_ast(e, "bruh");
+                Some(self.ci.end)
+            }
         }
     }
 
     #[inline(always)]
     fn tof(&self, id: Nid) -> ty::Id {
-        if id == NILL {
-            return ty::VOID.into();
-        }
         self.ci.nodes[id].ty
     }
 
-    //#[must_use]
     fn complete_call_graph(&mut self) {
         self.complete_call_graph_low();
     }
@@ -1827,7 +1856,7 @@ impl Codegen {
         let prev_ci = std::mem::replace(&mut self.ci, repl);
 
         self.ci.start = self.ci.nodes.new_node(ty::VOID, Kind::Start, []);
-        self.ci.end = self.ci.nodes.new_node(ty::VOID, Kind::End, []);
+        self.ci.end = self.ci.nodes.new_node(ty::NEVER, Kind::End, []);
         self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Tuple { index: 0 }, [self.ci.start]);
 
         let Expr::BinOp {
@@ -1864,60 +1893,62 @@ impl Codegen {
             }
         }
 
-        #[cfg(debug_assertions)]
-        {
-            self.ci.nodes.check_final_integrity();
-        }
+        if self.errors.borrow().is_empty() {
+            #[cfg(debug_assertions)]
+            {
+                self.ci.nodes.check_final_integrity();
+            }
 
-        log::trc!("{}", self.ci.nodes);
+            log::trc!("{}", self.ci.nodes);
 
-        '_open_function: {
-            self.ci.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, 0));
-            self.ci.emit(instrs::st(reg::RET_ADDR, reg::STACK_PTR, 0, 0));
-        }
+            '_open_function: {
+                self.ci.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, 0));
+                self.ci.emit(instrs::st(reg::RET_ADDR, reg::STACK_PTR, 0, 0));
+            }
 
-        self.ci.regs.init();
+            self.ci.regs.init();
 
-        '_color_args: {
-            for var in &orig_vars {
-                if var.id != u32::MAX {
-                    self.ci.set_next_color(var.value);
+            '_color_args: {
+                for var in &orig_vars {
+                    if var.id != u32::MAX {
+                        self.ci.set_next_color(var.value);
+                    }
                 }
             }
-        }
-        self.color_control(self.ci.nodes[self.ci.start].outputs[0]);
-        #[cfg(debug_assertions)]
-        {
-            self.ci.check_color_integrity();
-        }
+            self.color_control(self.ci.nodes[self.ci.start].outputs[0]);
+            #[cfg(debug_assertions)]
+            {
+                self.ci.check_color_integrity();
+            }
 
-        self.ci.vars = orig_vars;
-        self.emit_control(self.ci.nodes[self.ci.start].outputs[0]);
-        self.ci.vars.clear();
+            self.ci.vars = orig_vars;
+            self.emit_control(self.ci.nodes[self.ci.start].outputs[0]);
+            self.ci.vars.clear();
 
-        if let Some(last_ret) = self.ci.ret_relocs.last()
-            && last_ret.offset as usize == self.ci.code.len() - 5
-        {
-            self.ci.code.truncate(self.ci.code.len() - 5);
-            self.ci.ret_relocs.pop();
-        }
+            if let Some(last_ret) = self.ci.ret_relocs.last()
+                && last_ret.offset as usize == self.ci.code.len() - 5
+            {
+                self.ci.code.truncate(self.ci.code.len() - 5);
+                self.ci.ret_relocs.pop();
+            }
 
-        let end = self.ci.code.len();
-        for ret_rel in self.ci.ret_relocs.drain(..) {
-            ret_rel.apply_jump(&mut self.ci.code, end as _, 0);
-        }
+            let end = self.ci.code.len();
+            for ret_rel in self.ci.ret_relocs.drain(..) {
+                ret_rel.apply_jump(&mut self.ci.code, end as _, 0);
+            }
 
-        '_close_function: {
-            let pushed = self.ci.regs.pushed_size() as i64;
-            let stack = 0;
+            '_close_function: {
+                let pushed = self.ci.regs.pushed_size() as i64;
+                let stack = 0;
 
-            write_reloc(&mut self.ci.code, 3, -(pushed + stack), 8);
-            write_reloc(&mut self.ci.code, 3 + 8 + 3, stack, 8);
-            write_reloc(&mut self.ci.code, 3 + 8 + 3 + 8, pushed, 2);
+                write_reloc(&mut self.ci.code, 3, -(pushed + stack), 8);
+                write_reloc(&mut self.ci.code, 3 + 8 + 3, stack, 8);
+                write_reloc(&mut self.ci.code, 3 + 8 + 3 + 8, pushed, 2);
 
-            self.ci.emit(instrs::ld(reg::RET_ADDR, reg::STACK_PTR, stack as _, pushed as _));
-            self.ci.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, (pushed + stack) as _));
-            self.ci.emit(instrs::jala(reg::ZERO, reg::RET_ADDR, 0));
+                self.ci.emit(instrs::ld(reg::RET_ADDR, reg::STACK_PTR, stack as _, pushed as _));
+                self.ci.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, (pushed + stack) as _));
+                self.ci.emit(instrs::jala(reg::ZERO, reg::RET_ADDR, 0));
+            }
         }
 
         self.tys.funcs[id as usize].code.append(&mut self.ci.code);
@@ -1934,7 +1965,8 @@ impl Codegen {
                 Kind::Start => unreachable!(),
                 Kind::End => unreachable!(),
                 Kind::Return => {
-                    if let Some(&ret) = self.ci.nodes[ctrl].inputs().get(2) {
+                    let ret = self.ci.nodes[ctrl].inputs[2];
+                    if ret != 0 {
                         _ = self.color_expr_consume(ret);
                         node_loc!(self, ret) = match self.tys.size_of(self.ci.ret.expect("TODO")) {
                             0 => Loc::default(),
@@ -1961,6 +1993,7 @@ impl Codegen {
                     ctrl = *self.ci.nodes[ctrl]
                         .outputs
                         .iter()
+                        .inspect(|&&o| log::dbg!(self.ci.nodes[o].kind))
                         .find(|&&o| self.ci.nodes.is_cfg(o))
                         .unwrap();
                 }
@@ -2114,7 +2147,8 @@ impl Codegen {
                 Kind::Start => unreachable!(),
                 Kind::End => unreachable!(),
                 Kind::Return => {
-                    if let Some(&ret) = self.ci.nodes[ctrl].inputs().get(2) {
+                    let ret = self.ci.nodes[ctrl].inputs[2];
+                    if ret != 0 {
                         self.emit_expr_consume(ret);
                     }
                     self.ci.ret_relocs.push(Reloc::new(self.ci.code.len(), 1, 4));
@@ -2157,6 +2191,7 @@ impl Codegen {
                         };
 
                         if self.ci.nodes[ctrl].outputs.len() == 1 {
+                            log::dbg!("whata");
                             break 'b;
                         }
 
@@ -2527,7 +2562,10 @@ impl Codegen {
     fn ty(&mut self, expr: &Expr) -> ty::Id {
         match *expr {
             Expr::Ident { id, .. } if ident::is_null(id) => id.into(),
-            ref e => self.report_unhandled_ast(e, "type"),
+            ref e => {
+                self.report_unhandled_ast(e, "type");
+                ty::NEVER.into()
+            }
         }
     }
 
@@ -2557,6 +2595,7 @@ impl Codegen {
                 ),
                 Err(name) => self.report(pos, format_args!("undefined indentifier: {name}")),
             }
+            return ty::Kind::Builtin(ty::NEVER);
         };
 
         if let Some(existing) = self.tys.syms.get(&SymKey { file, ident }) {
@@ -2590,7 +2629,12 @@ impl Codegen {
                             self.tys.args.push(ty);
                         }
 
-                        let args = self.pack_args(pos, arg_base);
+                        let Some(args) = self.pack_args(arg_base) else {
+                            self.fatal_report(
+                                pos,
+                                "you cant be serious, using more the 31 arguments in a function",
+                            );
+                        };
                         let ret = self.ty(ret);
 
                         Some(Sig { args, ret })
@@ -2629,7 +2673,14 @@ impl Codegen {
 
     #[must_use]
     #[track_caller]
-    fn assert_ty(&self, pos: Pos, ty: ty::Id, expected: ty::Id, preserve_expected: bool) -> ty::Id {
+    fn assert_ty(
+        &self,
+        pos: Pos,
+        ty: ty::Id,
+        expected: ty::Id,
+        preserve_expected: bool,
+        hint: impl fmt::Display,
+    ) -> ty::Id {
         if let Some(res) = ty.try_upcast(expected)
             && (!preserve_expected || res == expected)
         {
@@ -2637,31 +2688,40 @@ impl Codegen {
         } else {
             let ty = self.ty_display(ty);
             let expected = self.ty_display(expected);
-            self.report(pos, format_args!("expected {expected}, got {ty}"));
+            self.report(pos, format_args!("expected {hint} to be of type {expected}, got {ty}"));
+            ty::NEVER.into()
         }
     }
 
     fn report_log(&self, pos: Pos, msg: impl std::fmt::Display) {
+        use std::fmt::Write;
+        let mut buf = self.errors.borrow_mut();
         let str = &self.cfile().file;
         let (line, mut col) = lexer::line_col(str.as_bytes(), pos);
-        println!("{}:{}:{}: {}", self.cfile().path, line, col, msg);
+        _ = writeln!(buf, "{}:{}:{}: {}", self.cfile().path, line, col, msg);
 
         let line = &str[str[..pos as usize].rfind('\n').map_or(0, |i| i + 1)
             ..str[pos as usize..].find('\n').unwrap_or(str.len()) + pos as usize];
         col += line.matches('\t').count() * 3;
 
-        println!("{}", line.replace("\t", "    "));
-        println!("{}^", " ".repeat(col - 1))
+        _ = writeln!(buf, "{}", line.replace("\t", "    "));
+        _ = writeln!(buf, "{}^", " ".repeat(col - 1));
     }
 
     #[track_caller]
-    fn report(&self, pos: Pos, msg: impl std::fmt::Display) -> ! {
+    fn assert_report(&self, cond: bool, pos: Pos, msg: impl std::fmt::Display) {
+        if !cond {
+            self.report(pos, msg);
+        }
+    }
+
+    #[track_caller]
+    fn report(&self, pos: Pos, msg: impl std::fmt::Display) {
         self.report_log(pos, msg);
-        unreachable!();
     }
 
     #[track_caller]
-    fn report_unhandled_ast(&self, ast: &Expr, hint: &str) -> ! {
+    fn report_unhandled_ast(&self, ast: &Expr, hint: &str) {
         self.report(
             ast.pos(),
             format_args!(
@@ -2670,17 +2730,17 @@ impl Codegen {
                 info for weak people:\n\
                 {ast:#?}"
             ),
-        )
+        );
     }
 
     fn cfile(&self) -> &parser::Ast {
         &self.files[self.ci.file as usize]
     }
 
-    fn pack_args(&mut self, pos: Pos, arg_base: usize) -> ty::Tuple {
+    fn pack_args(&mut self, arg_base: usize) -> Option<ty::Tuple> {
         let needle = &self.tys.args[arg_base..];
         if needle.is_empty() {
-            return ty::Tuple::empty();
+            return Some(ty::Tuple::empty());
         }
         let len = needle.len();
         // FIXME: maybe later when this becomes a bottleneck we use more
@@ -2688,7 +2748,6 @@ impl Codegen {
         let sp = self.tys.args.windows(needle.len()).position(|val| val == needle).unwrap();
         self.tys.args.truncate((sp + needle.len()).max(arg_base));
         ty::Tuple::new(sp, len)
-            .unwrap_or_else(|| self.report(pos, "amount of arguments not supported"))
     }
 
     fn emit_pass(&mut self, src: Nid, dst: Nid) {
@@ -2719,6 +2778,12 @@ impl Codegen {
             return true;
         }
         false
+    }
+
+    fn fatal_report(&self, pos: Pos, msg: impl Display) -> ! {
+        self.report(pos, msg);
+        eprintln!("{}", self.errors.borrow());
+        std::process::exit(1);
     }
 }
 
@@ -2854,6 +2919,14 @@ mod tests {
 
         codegen.generate();
 
+        {
+            let errors = codegen.errors.borrow();
+            if !errors.is_empty() {
+                output.push_str(&errors);
+                return;
+            }
+        }
+
         let mut out = Vec::new();
         codegen.assemble(&mut out);
 
@@ -2946,5 +3019,6 @@ mod tests {
         const_folding_with_arg => README;
         // FIXME: contains redundant copies
         branch_assignments => README;
+        exhaustive_loop_testing => README;
     }
 }

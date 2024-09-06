@@ -116,16 +116,11 @@ main := fn(): int {
 fib := fn(n: int): int {
 	a := 0
 	b := 1
-	loop {
-		if n == 0 break
+	loop if n == 0 break else {
 		c := a + b
 		a = b
 		b = c
 		n -= 1
-
-		stack_reclamation_edge_case := 0
-
-		//continue
 	}
 	return a
 }
@@ -763,5 +758,71 @@ main := fn(): void {
 // in module: random.hb
 integer_range := fn(min: uint, max: int): uint {
 	return @eca(uint, 3, 4) % (@bitcast(max) - min + 1) + min
+}
+```
+
+#### exhaustive_loop_testing
+```hb
+main := fn(): void {
+	if {
+	} != 3 {
+		return 1
+	}
+
+	if multiple_breaks(4) != 10 {
+		return 2
+	}
+
+	if state_change_in_break(0) != 0 {
+		return 3
+	}
+
+	if state_change_in_break(4) != 10 {
+		return 4
+	}
+
+	if continue_and_state_change(0) != 10 {
+		return 5
+	}
+
+	if continue_and_state_change(3) != 0 {
+		return 6
+	}
+
+	return 0
+}
+
+multiple_breaks := fn(arg: int): int {
+	loop if arg < 10 {
+		arg += 1
+		if arg == 3 break
+	} else break
+	return arg
+}
+
+state_change_in_break := fn(arg: int): int {
+	loop if arg < 10 {
+		if arg == 3 {
+			arg = 0
+			break
+		}
+		arg += 1
+	} else break
+	return arg
+}
+
+continue_and_state_change := fn(arg: int): int {
+	loop if arg < 10 {
+		if arg == 2 {
+			arg = 4
+			continue
+		}
+		if arg == 3 {
+			arg = 0
+			break
+		}
+		arg += 1
+	} else break
+	return arg
 }
 ```

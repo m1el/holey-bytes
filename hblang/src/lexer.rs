@@ -182,6 +182,8 @@ impl TokenKind {
             TokenKind::Mul => a.wrapping_mul(b),
             TokenKind::Div => a.wrapping_div(b),
             TokenKind::Shl => a.wrapping_shl(b as _),
+            TokenKind::Eq => (a == b) as i64,
+            TokenKind::Band => a & b,
             s => todo!("{s}"),
         }
     }

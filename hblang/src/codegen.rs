@@ -3429,7 +3429,6 @@ mod tests {
     use {
         super::parser,
         crate::{codegen::LoggedMem, log, parser::FileId},
-        core::panic,
         std::io,
     };
 
