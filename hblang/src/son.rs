@@ -23,6 +23,12 @@ use {
     },
 };
 
+macro_rules! node_color {
+    ($self:expr, $value:expr) => {
+        $self.ci.colors[$self.ci.nodes[$value].color as usize - 1]
+    };
+}
+
 macro_rules! node_loc {
     ($self:expr, $value:expr) => {
         $self.ci.colors[$self.ci.nodes[$value].color as usize - 1].loc
@@ -444,7 +450,7 @@ impl Nodes {
 
         let free = self.free;
         self.free = match mem::replace(&mut self.values[free as usize], PoolSlot::Value(value)) {
-            PoolSlot::Value(_) => unreachable!(),
+            PoolSlot::Value(_) => unreachable!("{free}"),
             PoolSlot::Next(free) => free,
         };
         free
@@ -453,7 +459,7 @@ impl Nodes {
     fn remove_low(&mut self, id: u32) -> Node {
         let value = match mem::replace(&mut self.values[id as usize], PoolSlot::Next(self.free)) {
             PoolSlot::Value(value) => value,
-            PoolSlot::Next(_) => unreachable!(),
+            PoolSlot::Next(_) => unreachable!("{id}"),
         };
         self.free = id;
         value
@@ -864,7 +870,7 @@ impl ops::Index<u32> for Nodes {
     fn index(&self, index: u32) -> &Self::Output {
         match &self.values[index as usize] {
             PoolSlot::Value(value) => value,
-            PoolSlot::Next(_) => unreachable!(),
+            PoolSlot::Next(_) => unreachable!("{index}"),
         }
     }
 }
@@ -873,7 +879,7 @@ impl ops::IndexMut<u32> for Nodes {
     fn index_mut(&mut self, index: u32) -> &mut Self::Output {
         match &mut self.values[index as usize] {
             PoolSlot::Value(value) => value,
-            PoolSlot::Next(_) => unreachable!(),
+            PoolSlot::Next(_) => unreachable!("{index}"),
         }
     }
 }
@@ -971,6 +977,7 @@ struct Variable {
 struct ColorMeta {
     rc: u32,
     depth: u32,
+    call_count: u32,
     loc: Loc,
 }
 
@@ -989,7 +996,7 @@ struct ItemCtx {
 
     loop_depth: u32,
     colors: Vec<ColorMeta>,
-    call_count: usize,
+    call_count: u32,
     filled: Vec<Nid>,
     delayed_frees: Vec<u32>,
 
@@ -1003,7 +1010,12 @@ struct ItemCtx {
 
 impl ItemCtx {
     fn next_color(&mut self) -> u32 {
-        self.colors.push(ColorMeta { rc: 0, depth: self.loop_depth, loc: Default::default() });
+        self.colors.push(ColorMeta {
+            rc: 0,
+            call_count: self.call_count,
+            depth: self.loop_depth,
+            loc: Default::default(),
+        });
         self.colors.len() as _ // leave out 0 (sentinel)
     }
 
@@ -1549,7 +1561,6 @@ impl Codegen {
                 let rhs = self.expr_ctx(right, Ctx::default().with_ty(self.tof(lhs)));
                 self.ci.nodes.unlock(lhs);
                 let rhs = rhs?;
-                log::dbg!("{} {}", self.ty_display(self.tof(rhs)), self.ty_display(self.tof(lhs)));
                 let ty = self.assert_ty(
                     left.pos(),
                     self.tof(rhs),
@@ -1617,6 +1628,7 @@ impl Codegen {
                         self.ci.nodes.unlock_remove(else_var.value);
                     }
                     self.ci.vars = then_scope;
+                    self.ci.ctrl = lcntrl;
                     return Some(0);
                 }
 
@@ -1661,10 +1673,34 @@ impl Codegen {
 
                 self.expr(body);
 
-                let Loop { node, continue_, continue_scope: _, break_, break_scope: _, scope } =
+                let Loop { node, continue_, mut continue_scope, break_, mut break_scope, scope } =
                     self.ci.loops.pop().unwrap();
 
-                assert!(continue_ == Nid::MAX, "TODO: handle continue");
+                if continue_ != Nid::MAX {
+                    self.ci.ctrl =
+                        self.ci.nodes.new_node(ty::VOID, Kind::Region, [self.ci.ctrl, continue_]);
+
+                    std::mem::swap(&mut self.ci.vars, &mut continue_scope);
+
+                    for (else_var, then_var) in self.ci.vars.iter_mut().zip(continue_scope) {
+                        if else_var.value == then_var.value {
+                            self.ci.nodes.unlock_remove(then_var.value);
+                            continue;
+                        }
+                        self.ci.nodes.unlock(then_var.value);
+
+                        let ty = self.ci.nodes[else_var.value].ty;
+                        debug_assert_eq!(
+                            ty, self.ci.nodes[then_var.value].ty,
+                            "TODO: typecheck properly"
+                        );
+
+                        let inps = [self.ci.ctrl, then_var.value, else_var.value];
+                        self.ci.nodes.unlock(else_var.value);
+                        else_var.value = self.ci.nodes.new_node(ty, Kind::Phi, inps);
+                        self.ci.nodes.lock(else_var.value);
+                    }
+                }
 
                 self.ci.nodes.modify_input(node, 1, self.ci.ctrl);
 
@@ -1673,10 +1709,16 @@ impl Codegen {
                     return None;
                 }
 
-                for (loop_var, scope_var) in self.ci.vars.iter_mut().zip(scope) {
+                std::mem::swap(&mut self.ci.vars, &mut break_scope);
+
+                for ((dest_var, scope_var), loop_var) in
+                    self.ci.vars.iter_mut().zip(scope).zip(break_scope)
+                {
                     if loop_var.value == 0 {
                         self.ci.nodes.unlock(loop_var.value);
-                        loop_var.value = scope_var.value;
+                        debug_assert!(loop_var.value == dest_var.value);
+                        self.ci.nodes.unlock(dest_var.value);
+                        dest_var.value = scope_var.value;
                         continue;
                     }
 
@@ -1685,25 +1727,94 @@ impl Codegen {
                     if scope_var.value == loop_var.value {
                         let orig = self.ci.nodes[scope_var.value].inputs[1];
                         self.ci.nodes.lock(orig);
-                        self.ci.nodes.unlock(scope_var.value);
+                        self.ci.nodes.unlock(loop_var.value);
                         self.ci.nodes.unlock_remove(scope_var.value);
-                        loop_var.value = orig;
+                        self.ci.nodes.unlock_remove(dest_var.value);
+                        dest_var.value = orig;
                         continue;
                     }
 
-                    self.ci.nodes.unlock(scope_var.value);
                     self.ci.nodes.unlock(loop_var.value);
-                    loop_var.value = self.ci.nodes.modify_input(scope_var.value, 2, loop_var.value);
-                    self.ci.nodes.lock(loop_var.value);
+                    let phy = self.ci.nodes.modify_input(scope_var.value, 2, loop_var.value);
+                    self.ci.nodes.unlock_remove(dest_var.value);
+                    dest_var.value = phy;
                 }
 
                 Some(0)
             }
-            Expr::Break { .. } => {
-                let loob = self.ci.loops.last_mut().unwrap();
+            Expr::Break { pos } => {
+                let Some(loob) = self.ci.loops.last_mut() else {
+                    self.report(pos, "break outside a loop");
+                    return None;
+                };
 
-                debug_assert_eq!(loob.break_, Nid::MAX, "TODO: multile breaks");
-                loob.break_ = self.ci.ctrl;
+                if loob.break_ == Nid::MAX {
+                    loob.break_ = self.ci.ctrl;
+                    loob.break_scope = self.ci.vars[..loob.scope.len()].to_owned();
+                    for v in &loob.break_scope {
+                        self.ci.nodes.lock(v.value)
+                    }
+                } else {
+                    loob.break_ =
+                        self.ci.nodes.new_node(ty::VOID, Kind::Region, [self.ci.ctrl, loob.break_]);
+
+                    for (else_var, then_var) in loob.break_scope.iter_mut().zip(&self.ci.vars) {
+                        if else_var.value == then_var.value {
+                            continue;
+                        }
+
+                        let ty = self.ci.nodes[else_var.value].ty;
+                        debug_assert_eq!(
+                            ty, self.ci.nodes[then_var.value].ty,
+                            "TODO: typecheck properly"
+                        );
+
+                        let inps = [loob.break_, then_var.value, else_var.value];
+                        self.ci.nodes.unlock(else_var.value);
+                        else_var.value = self.ci.nodes.new_node(ty, Kind::Phi, inps);
+                        self.ci.nodes.lock(else_var.value);
+                    }
+                }
+
+                self.ci.ctrl = self.ci.end;
+                None
+            }
+            Expr::Continue { pos } => {
+                let Some(loob) = self.ci.loops.last_mut() else {
+                    self.report(pos, "break outside a loop");
+                    return None;
+                };
+
+                if loob.continue_ == Nid::MAX {
+                    loob.continue_ = self.ci.ctrl;
+                    loob.continue_scope = self.ci.vars[..loob.scope.len()].to_owned();
+                    for v in &loob.continue_scope {
+                        self.ci.nodes.lock(v.value)
+                    }
+                } else {
+                    loob.continue_ = self
+                        .ci
+                        .nodes
+                        .new_node(ty::VOID, Kind::Region, [self.ci.ctrl, loob.continue_]);
+
+                    for (else_var, then_var) in loob.continue_scope.iter_mut().zip(&self.ci.vars) {
+                        if else_var.value == then_var.value {
+                            continue;
+                        }
+
+                        let ty = self.ci.nodes[else_var.value].ty;
+                        debug_assert_eq!(
+                            ty, self.ci.nodes[then_var.value].ty,
+                            "TODO: typecheck properly"
+                        );
+
+                        let inps = [loob.continue_, then_var.value, else_var.value];
+                        self.ci.nodes.unlock(else_var.value);
+                        else_var.value = self.ci.nodes.new_node(ty, Kind::Phi, inps);
+                        self.ci.nodes.lock(else_var.value);
+                    }
+                }
+
                 self.ci.ctrl = self.ci.end;
                 None
             }
@@ -1766,19 +1877,20 @@ impl Codegen {
                 Some(self.ci.ctrl)
             }
             Expr::Return { pos, val } => {
-                let (ty, value) = if let Some(val) = val {
-                    let value = self.expr_ctx(val, Ctx { ty: self.ci.ret })?;
-
-                    (self.tof(value), value)
+                let value = if let Some(val) = val {
+                    self.expr_ctx(val, Ctx { ty: self.ci.ret })?
                 } else {
-                    (ty::VOID.into(), 0)
+                    0
                 };
 
                 let inps = [self.ci.ctrl, self.ci.end, value];
+                let out = &mut String::new();
+                self.report_log_to(pos, "returning here", out);
+                log::dbg!("{out}");
                 self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Return, inps);
 
-                let expected = *self.ci.ret.get_or_insert(ty);
-                _ = self.assert_ty(pos, ty, expected, true, "return value");
+                let expected = *self.ci.ret.get_or_insert(self.tof(value));
+                _ = self.assert_ty(pos, self.tof(value), expected, true, "return value");
 
                 None
             }
@@ -1908,6 +2020,7 @@ impl Codegen {
 
             self.ci.regs.init();
 
+            let call_count = self.ci.call_count;
             '_color_args: {
                 for var in &orig_vars {
                     if var.id != u32::MAX {
@@ -1922,6 +2035,7 @@ impl Codegen {
             }
 
             self.ci.vars = orig_vars;
+            self.ci.call_count = call_count;
             self.emit_control(self.ci.nodes[self.ci.start].outputs[0]);
             self.ci.vars.clear();
 
@@ -1968,11 +2082,14 @@ impl Codegen {
                     let ret = self.ci.nodes[ctrl].inputs[2];
                     if ret != 0 {
                         _ = self.color_expr_consume(ret);
-                        node_loc!(self, ret) = match self.tys.size_of(self.ci.ret.expect("TODO")) {
-                            0 => Loc::default(),
-                            1..=8 => Loc { reg: 1 },
-                            s => todo!("{s}"),
-                        };
+                        if node_color!(self, ret).call_count == self.ci.call_count {
+                            node_loc!(self, ret) =
+                                match self.tys.size_of(self.ci.ret.expect("TODO")) {
+                                    0 => Loc::default(),
+                                    1..=8 => Loc { reg: 1 },
+                                    s => todo!("{s}"),
+                                };
+                        }
                         self.ci.regs.mark_leaked(1);
                     }
                     return None;
@@ -1988,12 +2105,13 @@ impl Codegen {
                         self.ci.set_next_color(arg);
                     }
 
+                    self.ci.call_count -= 1;
+
                     self.ci.set_next_color(ctrl);
 
                     ctrl = *self.ci.nodes[ctrl]
                         .outputs
                         .iter()
-                        .inspect(|&&o| log::dbg!(self.ci.nodes[o].kind))
                         .find(|&&o| self.ci.nodes.is_cfg(o))
                         .unwrap();
                 }
@@ -2149,6 +2267,26 @@ impl Codegen {
                 Kind::Return => {
                     let ret = self.ci.nodes[ctrl].inputs[2];
                     if ret != 0 {
+                        // NOTE: this is safer less efficient way, maybe it will be needed
+                        //self.emit_expr_consume(ret);
+                        //if node_color!(self, ret).call_count != self.ci.call_count {
+                        //    let src = node_loc!(self, ret);
+                        //    let loc = match self.tys.size_of(self.ci.ret.expect("TODO")) {
+                        //        0 => Loc::default(),
+                        //        1..=8 => Loc { reg: 1 },
+                        //        s => todo!("{s}"),
+                        //    };
+                        //    if src != loc {
+                        //        let inst = instrs::cp(loc.reg, src.reg);
+                        //        self.ci.emit(inst);
+                        //    }
+                        //}
+
+                        node_loc!(self, ret) = match self.tys.size_of(self.ci.ret.expect("TODO")) {
+                            0 => Loc::default(),
+                            1..=8 => Loc { reg: 1 },
+                            s => todo!("{s}"),
+                        };
                         self.emit_expr_consume(ret);
                     }
                     self.ci.ret_relocs.push(Reloc::new(self.ci.code.len(), 1, 4));
@@ -2172,6 +2310,7 @@ impl Codegen {
                         };
                         self.ci.regs.mark_leaked(node_loc!(self, arg).reg);
                         self.emit_expr_consume(arg);
+                        self.ci.nodes[arg].depth = 0;
                     }
 
                     let reloc = Reloc::new(self.ci.code.len(), 3, 4);
@@ -2191,7 +2330,6 @@ impl Codegen {
                         };
 
                         if self.ci.nodes[ctrl].outputs.len() == 1 {
-                            log::dbg!("whata");
                             break 'b;
                         }
 
@@ -2212,18 +2350,28 @@ impl Codegen {
                     let cond = self.ci.nodes[ctrl].inputs[1];
 
                     let jump_offset: i64;
-                    match self.ci.nodes[cond].kind {
-                        Kind::BinOp { op: op @ (TokenKind::Le | TokenKind::Eq) } => {
+                    let mut swapped = false;
+                    'resolve_cond: {
+                        'optimize_cond: {
+                            let Kind::BinOp { op } = self.ci.nodes[cond].kind else {
+                                break 'optimize_cond;
+                            };
+
                             let [left, right, ..] = self.ci.nodes[cond].inputs;
+                            swapped = matches!(op, TokenKind::Lt | TokenKind::Gt);
+                            let signed = self.ci.nodes[left].ty.is_signed();
+                            let op = match op {
+                                TokenKind::Le if signed => instrs::jgts,
+                                TokenKind::Le => instrs::jgtu,
+                                TokenKind::Lt if signed => instrs::jlts,
+                                TokenKind::Lt => instrs::jltu,
+                                TokenKind::Eq => instrs::jne,
+                                TokenKind::Ne => instrs::jeq,
+                                _ => break 'optimize_cond,
+                            };
+
                             self.emit_expr_consume(left);
                             self.emit_expr_consume(right);
-
-                            let op = match op {
-                                TokenKind::Le if self.ci.nodes[left].ty.is_signed() => instrs::jgts,
-                                TokenKind::Le => instrs::jgtu,
-                                TokenKind::Eq => instrs::jne,
-                                op => unreachable!("{op}"),
-                            };
 
                             jump_offset = self.ci.code.len() as _;
                             self.ci.emit(op(
@@ -2231,16 +2379,19 @@ impl Codegen {
                                 node_loc!(self, right).reg,
                                 0,
                             ));
+
+                            break 'resolve_cond;
                         }
-                        _ => {
-                            self.emit_expr_consume(cond);
-                            jump_offset = self.ci.code.len() as _;
-                            self.ci.emit(instrs::jeq(node_loc!(self, cond).reg, reg::ZERO, 0));
-                        }
+
+                        self.emit_expr_consume(cond);
+                        jump_offset = self.ci.code.len() as _;
+                        self.ci.emit(instrs::jeq(node_loc!(self, cond).reg, reg::ZERO, 0));
                     }
 
+                    let [loff, roff] = [swapped as usize, !swapped as usize];
+
                     let filled_base = self.ci.filled.len();
-                    let left_unreachable = self.emit_control(self.ci.nodes[ctrl].outputs[0]);
+                    let left_unreachable = self.emit_control(self.ci.nodes[ctrl].outputs[loff]);
                     for fld in self.ci.filled.drain(filled_base..) {
                         self.ci.nodes[fld].depth = 0;
                     }
@@ -2251,7 +2402,7 @@ impl Codegen {
                             if self.ci.nodes[o].kind != Kind::Phi {
                                 continue;
                             }
-                            let out = self.ci.nodes[o].inputs[1];
+                            let out = self.ci.nodes[o].inputs[1 + loff];
                             self.emit_expr_consume(out);
                             self.emit_pass(out, o);
                         }
@@ -2262,7 +2413,7 @@ impl Codegen {
 
                     let right_base = self.ci.code.len();
                     let filled_base = self.ci.filled.len();
-                    let right_unreachable = self.emit_control(self.ci.nodes[ctrl].outputs[1]);
+                    let right_unreachable = self.emit_control(self.ci.nodes[ctrl].outputs[roff]);
 
                     for fld in self.ci.filled.drain(filled_base..) {
                         self.ci.nodes[fld].depth = 0;
@@ -2273,7 +2424,7 @@ impl Codegen {
                             if self.ci.nodes[o].kind != Kind::Phi {
                                 continue;
                             }
-                            let out = self.ci.nodes[o].inputs[2];
+                            let out = self.ci.nodes[o].inputs[1 + roff];
                             self.emit_expr_consume(out);
                             self.emit_pass(out, o);
                         }
@@ -2694,18 +2845,21 @@ impl Codegen {
     }
 
     fn report_log(&self, pos: Pos, msg: impl std::fmt::Display) {
-        use std::fmt::Write;
         let mut buf = self.errors.borrow_mut();
+        self.report_log_to(pos, msg, &mut *buf);
+    }
+
+    fn report_log_to(&self, pos: Pos, msg: impl std::fmt::Display, out: &mut impl std::fmt::Write) {
         let str = &self.cfile().file;
         let (line, mut col) = lexer::line_col(str.as_bytes(), pos);
-        _ = writeln!(buf, "{}:{}:{}: {}", self.cfile().path, line, col, msg);
+        _ = writeln!(out, "{}:{}:{}: {}", self.cfile().path, line, col, msg);
 
         let line = &str[str[..pos as usize].rfind('\n').map_or(0, |i| i + 1)
             ..str[pos as usize..].find('\n').unwrap_or(str.len()) + pos as usize];
         col += line.matches('\t').count() * 3;
 
-        _ = writeln!(buf, "{}", line.replace("\t", "    "));
-        _ = writeln!(buf, "{}^", " ".repeat(col - 1));
+        _ = writeln!(out, "{}", line.replace("\t", "    "));
+        _ = writeln!(out, "{}^", " ".repeat(col - 1));
     }
 
     #[track_caller]

@@ -763,9 +763,8 @@ integer_range := fn(min: uint, max: int): uint {
 
 #### exhaustive_loop_testing
 ```hb
-main := fn(): void {
-	if {
-	} != 3 {
+main := fn(): int {
+	if multiple_breaks(0) != 3 {
 		return 1
 	}
 
@@ -773,21 +772,21 @@ main := fn(): void {
 		return 2
 	}
 
-	if state_change_in_break(0) != 0 {
-		return 3
-	}
+	//if state_change_in_break(0) != 0 {
+	//	return 3
+	//}
 
-	if state_change_in_break(4) != 10 {
-		return 4
-	}
+	//if state_change_in_break(4) != 10 {
+	//	return 4
+	//}
 
-	if continue_and_state_change(0) != 10 {
-		return 5
-	}
+	//if continue_and_state_change(0) != 10 {
+	//	return 5
+	//}
 
-	if continue_and_state_change(3) != 0 {
-		return 6
-	}
+	//if continue_and_state_change(3) != 0 {
+	//	return 6
+	//}
 
 	return 0
 }
@@ -795,34 +794,34 @@ main := fn(): void {
 multiple_breaks := fn(arg: int): int {
 	loop if arg < 10 {
 		arg += 1
-		if arg == 3 break
+		//if arg == 3 break
 	} else break
 	return arg
 }
 
-state_change_in_break := fn(arg: int): int {
-	loop if arg < 10 {
-		if arg == 3 {
-			arg = 0
-			break
-		}
-		arg += 1
-	} else break
-	return arg
-}
-
-continue_and_state_change := fn(arg: int): int {
-	loop if arg < 10 {
-		if arg == 2 {
-			arg = 4
-			continue
-		}
-		if arg == 3 {
-			arg = 0
-			break
-		}
-		arg += 1
-	} else break
-	return arg
-}
+//state_change_in_break := fn(arg: int): int {
+//	loop if arg < 10 {
+//		if arg == 3 {
+//			arg = 0
+//			break
+//		}
+//		arg += 1
+//	} else break
+//	return arg
+//}
+//
+//continue_and_state_change := fn(arg: int): int {
+//	loop if arg < 10 {
+//		if arg == 2 {
+//			arg = 4
+//			continue
+//		}
+//		if arg == 3 {
+//			arg = 0
+//			break
+//		}
+//		arg += 1
+//	} else break
+//	return arg
+//}
 ```

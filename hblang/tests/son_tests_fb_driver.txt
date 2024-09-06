@@ -1,36 +1,36 @@
 main:
-    ADDI64 r254, r254, -96d
-    ST r31, r254, 0a, 96h
+    ADDI64 r254, r254, -104d
+    ST r31, r254, 0a, 104h
     JAL r31, r0, :check_platform
-    LI64 r1, 0d
-    CP r32, r1
-    LI64 r33, 30d
-    CP r34, r33
-    LI64 r35, 100d
-    CP r36, r35
-    CP r37, r32
-    CP r38, r36
- 4: ADDI64 r39, r34, 1d
-    JGTS r32, r39, :0
+    LI64 r32, 0d
+    CP r33, r32
+    LI64 r34, 30d
+    CP r35, r34
+    LI64 r36, 100d
+    CP r37, r36
+    CP r38, r33
+    CP r39, r37
+ 4: ADDI64 r40, r35, 1d
+    JGTS r33, r40, :0
     JAL r31, r0, :set_pixel
-    CP r40, r4
-    ADDI64 r41, r3, 1d
-    CP r42, r3
+    CP r41, r4
+    ADDI64 r42, r3, 1d
+    CP r43, r3
     JMP :1
  0: JAL r31, r0, :set_pixel
-    CP r40, r4
-    CP r41, r1
-    ADDI64 r42, r3, 1d
- 1: JNE r42, r40, :2
+    CP r41, r4
+    CP r42, r32
+    ADDI64 r43, r3, 1d
+ 1: JNE r43, r41, :2
     JMP :3
- 2: CP r2, r41
-    CP r34, r33
-    CP r4, r35
-    CP r3, r42
-    CP r4, r40
+ 2: CP r2, r42
+    CP r35, r34
+    CP r4, r36
+    CP r3, r43
+    CP r4, r41
     JMP :4
- 3: LD r31, r254, 0a, 96h
-    ADDI64 r254, r254, 96d
+ 3: LD r31, r254, 0a, 104h
+    ADDI64 r254, r254, 104d
     JALA r0, r31, 0a
 set_pixel:
     ADDI64 r254, r254, -8d
