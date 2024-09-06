@@ -2901,6 +2901,10 @@ mod tests {
                     3 => vm.write_reg(1, 42),
                     unknown => unreachable!("unknown ecall: {unknown:?}"),
                 },
+                Ok(hbvm::VmRunOk::Timer) => {
+                    writeln!(output, "timed out").unwrap();
+                    break Ok(());
+                }
                 Ok(ev) => writeln!(output, "ev: {:?}", ev).unwrap(),
                 Err(e) => break Err(e),
             }
@@ -2933,7 +2937,7 @@ mod tests {
         //struct_return_from_module_function => README;
         ////comptime_pointers => README;
         //sort_something_viredly => README;
-        //hex_octal_binary_literals => README;
+        hex_octal_binary_literals => README;
         //comptime_min_reg_leak => README;
         ////structs_in_registers => README;
         //comptime_function_from_another_file => README;
