@@ -966,6 +966,7 @@ struct ItemCtx {
     loop_depth: u32,
     colors: Vec<ColorMeta>,
     call_count: usize,
+    filled: Vec<Nid>,
 
     loops: Vec<Loop>,
     vars: Vec<Variable>,
@@ -1872,6 +1873,8 @@ impl Codegen {
         self.tys.funcs[id as usize].code.append(&mut self.ci.code);
         self.tys.funcs[id as usize].relocs.append(&mut self.ci.relocs);
         self.ci.nodes.clear();
+        self.ci.colors.clear();
+        self.ci.filled.clear();
         self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
     }
 
@@ -1883,7 +1886,6 @@ impl Codegen {
                 Kind::Return => {
                     if let Some(&ret) = self.ci.nodes[ctrl].inputs().get(2) {
                         _ = self.color_expr_consume(ret);
-
                         node_loc!(self, ret) = match self.tys.size_of(self.ci.ret.expect("TODO")) {
                             0 => Loc::default(),
                             1..=8 => Loc { reg: 1 },
@@ -1900,6 +1902,7 @@ impl Codegen {
                 Kind::Call { args, .. } => {
                     for &arg in args.iter() {
                         _ = self.color_expr_consume(arg);
+                        self.ci.nodes[arg].color = self.ci.next_color(); // hack?
                     }
 
                     self.ci.nodes[ctrl].color = self.ci.next_color();
@@ -1916,20 +1919,20 @@ impl Codegen {
                     let left_unreachable = self.color_control(self.ci.nodes[ctrl].outputs[0]);
                     let right_unreachable = self.color_control(self.ci.nodes[ctrl].outputs[1]);
 
-                    for i in 0..self.ci.nodes[ctrl].outputs.len() {
-                        let o = self.ci.nodes[ctrl].outputs[i];
-                        if self.ci.nodes[o].kind == Kind::Phi {
-                            self.color_phy(o);
-                            self.ci.nodes[o].depth = self.ci.loop_depth;
-                        }
-                    }
-
                     let dest = left_unreachable.or(right_unreachable)?;
                     if self.ci.nodes[dest].kind == Kind::Loop {
                         return Some(dest);
                     }
 
                     debug_assert_eq!(self.ci.nodes[dest].kind, Kind::Region);
+
+                    for i in 0..self.ci.nodes[dest].outputs.len() {
+                        let o = self.ci.nodes[dest].outputs[i];
+                        if self.ci.nodes[o].kind == Kind::Phi {
+                            self.color_phy(o);
+                            self.ci.nodes[o].depth = self.ci.loop_depth;
+                        }
+                    }
 
                     ctrl = *self.ci.nodes[dest]
                         .outputs
@@ -2015,7 +2018,6 @@ impl Codegen {
     fn color_expr_consume(&mut self, expr: Nid) -> Option<u32> {
         if self.ci.nodes[expr].lock_rc == 0 && self.ci.nodes[expr].kind != Kind::Phi {
             self.ci.nodes[expr].depth = self.ci.loop_depth;
-            log::dbg!(self.ci.nodes[expr]);
             self.color_expr(expr);
         }
         self.use_colored_expr(expr)
@@ -2034,7 +2036,6 @@ impl Codegen {
                 let [left, right, ..] = self.ci.nodes[expr].inputs;
                 let lcolor = self.color_expr_consume(left);
                 let rcolor = self.color_expr_consume(right);
-                log::dbg!(op, lcolor, rcolor);
 
                 self.ci.nodes[expr].color =
                     lcolor.or(rcolor).unwrap_or_else(|| self.ci.next_color());
@@ -2054,9 +2055,6 @@ impl Codegen {
         (self.ci.nodes[expr].lock_rc as usize >= self.ci.nodes[expr].outputs.len()
             && self.ci.nodes[expr].depth == self.ci.loop_depth)
             .then_some(self.ci.nodes[expr].color)
-            .inspect(|_| {
-                log::dbg!(self.ci.nodes[expr]);
-            })
     }
 
     fn emit_control(&mut self, mut ctrl: Nid) -> Option<Nid> {
@@ -2154,7 +2152,11 @@ impl Codegen {
                         }
                     }
 
+                    let filled_base = self.ci.filled.len();
                     let left_unreachable = self.emit_control(self.ci.nodes[ctrl].outputs[0]);
+                    for fld in self.ci.filled.drain(filled_base..) {
+                        self.ci.nodes[fld].lock_rc = 1;
+                    }
                     let mut skip_then_offset = self.ci.code.len() as i64;
                     if let Some(region) = left_unreachable {
                         for i in 0..self.ci.nodes[region].outputs.len() {
@@ -2172,7 +2174,12 @@ impl Codegen {
                     }
 
                     let right_base = self.ci.code.len();
+                    let filled_base = self.ci.filled.len();
                     let right_unreachable = self.emit_control(self.ci.nodes[ctrl].outputs[1]);
+
+                    for fld in self.ci.filled.drain(filled_base..) {
+                        self.ci.nodes[fld].lock_rc = 1;
+                    }
                     if let Some(region) = left_unreachable {
                         for i in 0..self.ci.nodes[region].outputs.len() {
                             let o = self.ci.nodes[region].outputs[i];
@@ -2289,6 +2296,7 @@ impl Codegen {
         if std::mem::take(&mut self.ci.nodes[expr].lock_rc) == 0 {
             return;
         }
+        self.ci.filled.push(expr);
 
         match self.ci.nodes[expr].kind {
             Kind::Start => unreachable!(),
@@ -2334,7 +2342,8 @@ impl Codegen {
                 self.emit_expr_consume(left);
 
                 if let Kind::ConstInt { value } = self.ci.nodes[right].kind
-                    && node_loc!(self, right) == Loc::default()
+                    && (node_loc!(self, right) == Loc::default()
+                        || self.ci.nodes[right].lock_rc != 0)
                     && let Some(op) = Self::imm_math_op(op, ty.is_signed(), self.tys.size_of(ty))
                 {
                     let instr =
@@ -2767,8 +2776,6 @@ mod tests {
             writeln!(output, "!!! asm is invalid: {e}").unwrap();
             return;
         }
-
-        return;
 
         let mut stack = [0_u64; 128];
 
