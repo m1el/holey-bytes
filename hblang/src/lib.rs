@@ -8,6 +8,7 @@
     never_type,
     unwrap_infallible,
     slice_partition_dedup,
+    hash_raw_entry,
     portable_simd,
     iter_collect_into,
     ptr_metadata,

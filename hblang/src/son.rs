@@ -15,8 +15,10 @@ use {
     core::fmt,
     std::{
         cell::RefCell,
-        collections::BTreeMap,
+        collections::{hash_map, BTreeMap},
         fmt::Display,
+        hash::{Hash as _, Hasher},
+        intrinsics::unreachable,
         mem,
         ops::{self, Range},
         rc::Rc,
@@ -462,10 +464,10 @@ mod ty {
 }
 
 struct Nodes {
-    values: Vec<PoolSlot>,
+    values: Vec<Result<Node, u32>>,
     visited: BitSet,
     free: u32,
-    lookup: HashMap<(Kind, [Nid; MAX_INPUTS], ty::Id), Nid>,
+    lookup: HashMap<Nid, ()>,
 }
 
 impl Default for Nodes {
@@ -480,25 +482,8 @@ impl Default for Nodes {
 }
 
 impl Nodes {
-    fn add(&mut self, value: Node) -> u32 {
-        if self.free == u32::MAX {
-            self.free = self.values.len() as _;
-            self.values.push(PoolSlot::Next(u32::MAX));
-        }
-
-        let free = self.free;
-        self.free = match mem::replace(&mut self.values[free as usize], PoolSlot::Value(value)) {
-            PoolSlot::Value(_) => unreachable!("{free}"),
-            PoolSlot::Next(free) => free,
-        };
-        free
-    }
-
     fn remove_low(&mut self, id: u32) -> Node {
-        let value = match mem::replace(&mut self.values[id as usize], PoolSlot::Next(self.free)) {
-            PoolSlot::Value(value) => value,
-            PoolSlot::Next(_) => unreachable!("{id}"),
-        };
+        let value = mem::replace(&mut self.values[id as usize], Err(self.free)).unwrap();
         self.free = id;
         value
     }
@@ -509,45 +494,81 @@ impl Nodes {
         self.free = u32::MAX;
     }
 
-    fn new_node_nop<const SIZE: usize>(
+    fn new_node_nop(
         &mut self,
         ty: impl Into<ty::Id>,
         kind: Kind,
-        inps: [Nid; SIZE],
+        inps: impl Into<Vec<Nid>>,
     ) -> Nid {
-        let mut inputs = [Nid::MAX; MAX_INPUTS];
-        inputs[..inps.len()].copy_from_slice(&inps);
         let ty = ty.into();
 
-        if let Some(&id) = self.lookup.get(&(kind.clone(), inputs, ty)) {
-            debug_assert_eq!(&self[id].kind, &kind);
-            debug_assert_eq!(self[id].inputs, inputs);
-            return id;
-        }
-
-        let id = self.add(Node {
-            inputs,
+        let node = Node {
+            inputs: inps.into(),
             kind: kind.clone(),
             color: 0,
             depth: u32::MAX,
             lock_rc: 0,
             ty,
             outputs: vec![],
-        });
+        };
 
-        let prev = self.lookup.insert((kind, inputs, ty), id);
-        debug_assert_eq!(prev, None);
+        let mut hasher = crate::FnvHasher::default();
+        node.key().hash(&mut hasher);
 
-        self.add_deps(id, &inps);
-        id
+        let (raw_entry, _) = Self::find_node(&mut self.lookup, &self.values, &node);
+
+        let entry = match raw_entry {
+            hash_map::RawEntryMut::Occupied(mut o) => return *o.get_key_value().0,
+            hash_map::RawEntryMut::Vacant(v) => v,
+        };
+
+        if self.free == u32::MAX {
+            self.free = self.values.len() as _;
+            self.values.push(Err(u32::MAX));
+        }
+
+        let free = self.free;
+        for &d in &node.inputs {
+            debug_assert_ne!(d, free);
+            self.values[d as usize].as_mut().unwrap().outputs.push(free);
+        }
+
+        self.free = mem::replace(&mut self.values[free as usize], Ok(node)).unwrap_err();
+        *entry.insert(free, ()).0
     }
 
-    fn new_node<const SIZE: usize>(
-        &mut self,
-        ty: impl Into<ty::Id>,
-        kind: Kind,
-        inps: [Nid; SIZE],
-    ) -> Nid {
+    fn find_node<'a>(
+        lookup: &'a mut HashMap<Nid, ()>,
+        values: &[Result<Node, u32>],
+        node: &Node,
+    ) -> (hash_map::RawEntryMut<'a, u32, (), std::hash::BuildHasherDefault<crate::FnvHasher>>, u64)
+    {
+        let mut hasher = crate::FnvHasher::default();
+        node.key().hash(&mut hasher);
+        let hash = hasher.finish();
+
+        (
+            lookup
+                .raw_entry_mut()
+                .from_hash(hash, |&n| values[n as usize].as_ref().unwrap().key() == node.key()),
+            hash,
+        )
+    }
+
+    fn remove_node_lookup(&mut self, target: Nid) {
+        match Self::find_node(
+            &mut self.lookup,
+            &self.values,
+            &self.values[target as usize].as_ref().unwrap(),
+        )
+        .0
+        {
+            hash_map::RawEntryMut::Occupied(o) => o.remove(),
+            hash_map::RawEntryMut::Vacant(_) => unreachable!(),
+        };
+    }
+
+    fn new_node(&mut self, ty: impl Into<ty::Id>, kind: Kind, inps: impl Into<Vec<u32>>) -> Nid {
         let id = self.new_node_nop(ty, kind, inps);
         if let Some(opt) = self.peephole(id) {
             debug_assert_ne!(opt, id);
@@ -574,17 +595,16 @@ impl Nodes {
             return false;
         }
 
-        for i in 0..self[target].inputs().len() {
+        for i in 0..self[target].inputs.len() {
             let inp = self[target].inputs[i];
             let index = self[inp].outputs.iter().position(|&p| p == target).unwrap();
             self[inp].outputs.swap_remove(index);
             self.remove(inp);
         }
-        let res =
-            self.lookup.remove(&(self[target].kind.clone(), self[target].inputs, self[target].ty));
 
-        debug_assert_eq!(res, Some(target));
+        self.remove_node_lookup(target);
         self.remove_low(target);
+
         true
     }
 
@@ -617,7 +637,7 @@ impl Nodes {
 
     fn peephole_binop(&mut self, target: Nid, op: TokenKind) -> Option<Nid> {
         use TokenKind as T;
-        let [mut lhs, mut rhs, ..] = self[target].inputs;
+        let &[mut lhs, mut rhs] = self[target].inputs.as_slice() else { unreachable!() };
 
         if lhs == rhs {
             match op {
@@ -693,7 +713,7 @@ impl Nodes {
 
         if op == T::Sub && self[lhs].kind == (Kind::BinOp { op }) {
             // (a - b) - c => a - (b + c)
-            let [a, b, ..] = self[lhs].inputs;
+            let &[a, b] = self[lhs].inputs.as_slice() else { unreachable!() };
             let c = rhs;
             let new_rhs = self.new_node(self[target].ty, Kind::BinOp { op: T::Add }, [b, c]);
             return Some(self.new_node(self[target].ty, Kind::BinOp { op }, [a, new_rhs]));
@@ -713,7 +733,7 @@ impl Nodes {
     fn replace(&mut self, target: Nid, with: Nid) {
         for i in 0..self[target].outputs.len() {
             let out = self[target].outputs[i];
-            let index = self[out].inputs().iter().position(|&p| p == target).unwrap();
+            let index = self[out].inputs.iter().position(|&p| p == target).unwrap();
             let rpl = self.modify_input(out, index, with);
             self[with].outputs.push(rpl);
         }
@@ -722,28 +742,32 @@ impl Nodes {
     }
 
     fn modify_input(&mut self, target: Nid, inp_index: usize, with: Nid) -> Nid {
-        let out =
-            self.lookup.remove(&(self[target].kind.clone(), self[target].inputs, self[target].ty));
-        debug_assert!(out == Some(target));
+        self.remove_node_lookup(target);
         debug_assert_ne!(self[target].inputs[inp_index], with);
 
         let prev = self[target].inputs[inp_index];
         self[target].inputs[inp_index] = with;
-        if let Err(other) = self
-            .lookup
-            .try_insert((self[target].kind.clone(), self[target].inputs, self[target].ty), target)
-        {
-            let rpl = *other.entry.get();
-            self[target].inputs[inp_index] = prev;
-            self.replace(target, rpl);
-            return rpl;
+        let (entry, hash) = Self::find_node(
+            &mut self.lookup,
+            &self.values,
+            &self.values[target as usize].as_ref().unwrap(),
+        );
+        match entry {
+            hash_map::RawEntryMut::Occupied(mut other) => {
+                let rpl = *other.get_key_value().0;
+                self[target].inputs[inp_index] = prev;
+                self.replace(target, rpl);
+                rpl
+            }
+            hash_map::RawEntryMut::Vacant(slot) => {
+                slot.insert_hashed_nocheck(hash, target, ());
+                let index = self[prev].outputs.iter().position(|&o| o == target).unwrap();
+                self[prev].outputs.swap_remove(index);
+                self[with].outputs.push(target);
+
+                target
+            }
         }
-
-        let index = self[prev].outputs.iter().position(|&o| o == target).unwrap();
-        self[prev].outputs.swap_remove(index);
-        self[with].outputs.push(target);
-
-        target
     }
 
     fn add_deps(&mut self, id: Nid, deps: &[Nid]) {
@@ -760,10 +784,7 @@ impl Nodes {
     }
 
     fn iter(&self) -> impl DoubleEndedIterator<Item = (Nid, &Node)> {
-        self.values.iter().enumerate().filter_map(|(i, s)| match s {
-            PoolSlot::Value(v) => Some((i as _, v)),
-            PoolSlot::Next(_) => None,
-        })
+        self.values.iter().enumerate().filter_map(|(i, s)| Some((i as _, s.as_ref().ok()?)))
     }
 
     fn fmt(&self, f: &mut fmt::Formatter, node: Nid, rcs: &mut [usize]) -> fmt::Result {
@@ -820,10 +841,10 @@ impl Nodes {
                     self.fmt(f, o, rcs)?;
                 }
             }
-            Kind::Call { func, ref args } => {
+            Kind::Call { func } => {
                 if is_ready() {
                     write!(f, "{}: call {}(", node, func)?;
-                    for (i, &value) in args.iter().enumerate() {
+                    for (i, &value) in self[node].inputs.iter().skip(1).enumerate() {
                         if i != 0 {
                             write!(f, ", ")?;
                         }
@@ -895,16 +916,13 @@ impl Nodes {
             for &o in &node.outputs {
                 let mut occurs = 0;
                 let other = match &self.values[o as usize] {
-                    PoolSlot::Value(other) => other,
-                    PoolSlot::Next(_) => {
+                    Ok(other) => other,
+                    Err(_) => {
                         log::err!("the edge points to dropped node: {i} {:?} {o}", node.kind,);
                         failed = true;
                         continue;
                     }
                 };
-                if let Kind::Call { ref args, .. } = other.kind {
-                    occurs = args.iter().filter(|&&el| el == i).count();
-                }
                 occurs += self[o].inputs.iter().filter(|&&el| el == i).count();
                 if occurs == 0 {
                     log::err!(
@@ -927,18 +945,23 @@ impl Nodes {
         }
     }
 
-    fn climb(&mut self, from: Nid, mut for_each: impl FnMut(Nid, &Node) -> bool) -> bool {
+    fn climb_expr(&mut self, from: Nid, mut for_each: impl FnMut(Nid, &Node) -> bool) -> bool {
         fn climb_impl(
             nodes: &mut Nodes,
             from: Nid,
             for_each: &mut impl FnMut(Nid, &Node) -> bool,
         ) -> bool {
-            { nodes[from].inputs }.iter().any(|&n| {
-                n != Nid::MAX
+            for i in 0..nodes[from].inputs.len() {
+                let n = nodes[from].inputs[i];
+                if n != Nid::MAX
                     && nodes.visited.set(n as usize)
                     && !nodes.is_cfg(n)
                     && (for_each(n, &nodes[n]) || climb_impl(nodes, n, for_each))
-            })
+                {
+                    return true;
+                }
+            }
+            return false;
         }
         self.visited.clear(self.values.len());
         climb_impl(self, from, &mut for_each)
@@ -949,29 +972,17 @@ impl ops::Index<u32> for Nodes {
     type Output = Node;
 
     fn index(&self, index: u32) -> &Self::Output {
-        match &self.values[index as usize] {
-            PoolSlot::Value(value) => value,
-            PoolSlot::Next(_) => unreachable!("{index}"),
-        }
+        self.values[index as usize].as_ref().unwrap()
     }
 }
 
 impl ops::IndexMut<u32> for Nodes {
     fn index_mut(&mut self, index: u32) -> &mut Self::Output {
-        match &mut self.values[index as usize] {
-            PoolSlot::Value(value) => value,
-            PoolSlot::Next(_) => unreachable!("{index}"),
-        }
+        self.values[index as usize].as_mut().unwrap()
     }
 }
 
-#[derive(Debug)]
-enum PoolSlot {
-    Value(Node),
-    Next(u32),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum Kind {
     Start,
@@ -984,7 +995,7 @@ pub enum Kind {
     Phi,
     Tuple { index: u32 },
     BinOp { op: lexer::TokenKind },
-    Call { func: ty::Func, args: Vec<Nid> },
+    Call { func: ty::Func },
 }
 
 impl Kind {
@@ -1009,13 +1020,13 @@ const MAX_INPUTS: usize = 3;
 
 #[derive(Debug)]
 struct Node {
-    inputs: [Nid; MAX_INPUTS],
+    inputs: Vec<Nid>,
+    outputs: Vec<Nid>,
     kind: Kind,
     color: u32,
     depth: u32,
     lock_rc: u32,
     ty: ty::Id,
-    outputs: Vec<Nid>,
 }
 
 impl Node {
@@ -1023,9 +1034,8 @@ impl Node {
         self.outputs.len() + self.lock_rc as usize == 0
     }
 
-    fn inputs(&self) -> &[Nid] {
-        let len = self.inputs.iter().position(|&n| n == Nid::MAX).unwrap_or(MAX_INPUTS);
-        &self.inputs[..len]
+    fn key(&self) -> (&[Nid], Kind, ty::Id) {
+        (&self.inputs, self.kind, self.ty)
     }
 }
 
@@ -1038,10 +1048,10 @@ impl fmt::Display for Nodes {
                 .values
                 .iter()
                 .map(|s| match s {
-                    PoolSlot::Value(Node { kind: Kind::Start, .. }) => 1,
-                    PoolSlot::Value(Node { kind: Kind::End, ref outputs, .. }) => outputs.len(),
-                    PoolSlot::Value(val) => val.inputs().len(),
-                    PoolSlot::Next(_) => 0,
+                    Ok(Node { kind: Kind::Start, .. }) => 1,
+                    Ok(Node { kind: Kind::End, ref outputs, .. }) => outputs.len(),
+                    Ok(val) => val.inputs.len(),
+                    Err(_) => 0,
                 })
                 .collect::<Vec<_>>(),
         )
@@ -1137,7 +1147,7 @@ impl ItemCtx {
 
         self.set_color(node, to);
 
-        for i in 0..self.nodes[node].inputs().len() {
+        for i in 0..self.nodes[node].inputs.len() {
             self.recolor(self.nodes[node].inputs[i], from, to);
         }
     }
@@ -1150,7 +1160,7 @@ impl ItemCtx {
             .filter(|v| {
                 matches!(
                     v,
-                    PoolSlot::Value(Node {
+                    Ok(Node {
                         kind: Kind::BinOp { .. }
                             | Kind::Call { .. }
                             | Kind::Phi
@@ -1159,7 +1169,7 @@ impl ItemCtx {
                     })
                 ) || matches!(
                     v,
-                    PoolSlot::Value(Node { kind: Kind::Tuple { index: 1.. }, inputs: [0, ..], .. })
+                    Ok(Node { kind: Kind::Tuple { index: 1.. }, inputs, .. }) if inputs.first() == Some(&0)
                 )
             })
             .count();
@@ -1963,7 +1973,7 @@ impl Codegen {
                     ),
                 );
 
-                let mut inps = vec![];
+                let mut inps = vec![self.ci.ctrl];
                 for ((arg, carg), tyx) in args.iter().zip(cargs).zip(sig.args.range()) {
                     let ty = self.tys.args[tyx];
                     if self.tys.size_of(ty) == 0 {
@@ -1979,11 +1989,7 @@ impl Codegen {
                     );
                     inps.push(value);
                 }
-                self.ci.ctrl =
-                    self.ci
-                        .nodes
-                        .new_node(sig.ret, Kind::Call { func, args: inps.clone() }, [self.ci.ctrl]);
-                self.ci.nodes.add_deps(self.ci.ctrl, &inps);
+                self.ci.ctrl = self.ci.nodes.new_node(sig.ret, Kind::Call { func }, inps);
 
                 Some(self.ci.ctrl)
             }
@@ -2216,8 +2222,9 @@ impl Codegen {
                     ctrl = self.ci.nodes[ctrl].outputs[0];
                 }
                 Kind::BinOp { .. } => unreachable!(),
-                Kind::Call { args, .. } => {
-                    for &arg in args.iter() {
+                Kind::Call { .. } => {
+                    for i in 1..self.ci.nodes[ctrl].inputs.len() {
+                        let arg = self.ci.nodes[ctrl].inputs[i];
                         _ = self.color_expr_consume(arg);
                         self.ci.set_next_color(arg);
                     }
@@ -2278,13 +2285,12 @@ impl Codegen {
 
                     for i in 0..self.ci.nodes[ctrl].outputs.len() {
                         let maybe_phy = self.ci.nodes[ctrl].outputs[i];
-                        let Node { kind: Kind::Phi, inputs: [_, left, ..], .. } =
-                            self.ci.nodes[maybe_phy]
+                        let Node { kind: Kind::Phi, ref inputs, .. } = self.ci.nodes[maybe_phy]
                         else {
                             continue;
                         };
 
-                        _ = self.color_expr_consume(left);
+                        _ = self.color_expr_consume(inputs[1]);
                         self.ci.nodes[maybe_phy].depth = self.ci.loop_depth;
                         self.ci.set_next_color(maybe_phy);
                     }
@@ -2316,10 +2322,10 @@ impl Codegen {
     }
 
     fn color_phy(&mut self, maybe_phy: Nid) {
-        let Node { kind: Kind::Phi, inputs: [region, left, right], .. } = self.ci.nodes[maybe_phy]
-        else {
+        let Node { kind: Kind::Phi, ref inputs, .. } = self.ci.nodes[maybe_phy] else {
             return;
         };
+        let &[region, left, right] = inputs.as_slice() else { unreachable!() };
 
         let lcolor = self.color_expr_consume(left);
         let rcolor = self.color_expr_consume(right);
@@ -2327,7 +2333,7 @@ impl Codegen {
         if self.ci.nodes[maybe_phy].color != 0 {
             // loop phy
             if let Some(c) = rcolor
-                && !self.ci.nodes.climb(right, |i, n| {
+                && !self.ci.nodes.climb_expr(right, |i, n| {
                     matches!(n.kind, Kind::Phi) && n.inputs[0] == region && i != maybe_phy
                 })
             {
@@ -2365,7 +2371,7 @@ impl Codegen {
                 debug_assert!(index != 0);
             }
             Kind::BinOp { .. } => {
-                let [left, right, ..] = self.ci.nodes[expr].inputs;
+                let &[left, right] = self.ci.nodes[expr].inputs.as_slice() else { unreachable!() };
                 let lcolor = self.color_expr_consume(left);
                 let rcolor = self.color_expr_consume(right);
                 let color = lcolor.or(rcolor).unwrap_or_else(|| self.ci.next_color());
@@ -2427,11 +2433,12 @@ impl Codegen {
                     ctrl = self.ci.nodes[ctrl].outputs[0];
                 }
                 Kind::BinOp { .. } => unreachable!(),
-                Kind::Call { func, args } => {
+                Kind::Call { func } => {
                     let ret = self.tof(ctrl);
 
                     let mut parama = self.tys.parama(ret);
-                    for &arg in args.iter() {
+                    for i in 1..self.ci.nodes[ctrl].inputs.len() {
+                        let arg = self.ci.nodes[ctrl].inputs[i];
                         node_loc!(self, arg) = match self.tys.size_of(self.tof(arg)) {
                             0 => continue,
                             1..=8 => Loc { reg: parama.next() },
@@ -2486,7 +2493,9 @@ impl Codegen {
                                 break 'optimize_cond;
                             };
 
-                            let [left, right, ..] = self.ci.nodes[cond].inputs;
+                            let &[left, right] = self.ci.nodes[cond].inputs.as_slice() else {
+                                unreachable!()
+                            };
                             swapped = matches!(op, TokenKind::Lt | TokenKind::Gt);
                             let signed = self.ci.nodes[left].ty.is_signed();
                             let op = match op {
@@ -2716,7 +2725,7 @@ impl Codegen {
             Kind::BinOp { op } => {
                 _ = self.lazy_init(expr);
                 let ty = self.tof(expr);
-                let [left, right, ..] = self.ci.nodes[expr].inputs;
+                let &[left, right] = self.ci.nodes[expr].inputs.as_slice() else { unreachable!() };
                 self.emit_expr_consume(left);
 
                 if let Kind::ConstInt { value } = self.ci.nodes[right].kind
