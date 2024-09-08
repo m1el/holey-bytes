@@ -1046,24 +1046,18 @@ struct FTask {
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Snapshot {
     code: usize,
-    string_data: usize,
     relocs: usize,
-    strings: usize,
 }
 
 impl Snapshot {
     fn _sub(&mut self, other: &Self) {
         self.code -= other.code;
-        self.string_data -= other.string_data;
         self.relocs -= other.relocs;
-        self.strings -= other.strings;
     }
 
     fn _add(&mut self, other: &Self) {
         self.code += other.code;
-        self.string_data += other.string_data;
         self.relocs += other.relocs;
-        self.strings += other.strings;
     }
 }
 
@@ -1119,21 +1113,13 @@ impl Output {
     }
 
     fn pop(&mut self, stash: &mut Self, snap: &Snapshot) {
-        let init_code = stash.code.len();
-
         stash.code.extend(self.code.drain(snap.code..));
-        stash.string_data.extend(self.string_data.drain(snap.string_data..));
         stash.relocs.extend(self.relocs.drain(snap.relocs..));
-        stash.strings.extend(self.strings.drain(snap.strings..).inspect(|str| {
-            debug_assert!(str.reloc.offset as usize + init_code < stash.code.len())
-        }));
     }
 
     fn trunc(&mut self, snap: &Snapshot) {
         self.code.truncate(snap.code);
-        self.string_data.truncate(snap.string_data);
         self.relocs.truncate(snap.relocs);
-        self.strings.truncate(snap.strings);
     }
 
     fn write_trap(&mut self, kind: trap::Trap) {
@@ -1143,12 +1129,7 @@ impl Output {
     }
 
     fn snap(&mut self) -> Snapshot {
-        Snapshot {
-            code: self.code.len(),
-            string_data: self.string_data.len(),
-            relocs: self.relocs.len(),
-            strings: self.strings.len(),
-        }
+        Snapshot { code: self.code.len(), relocs: self.relocs.len() }
     }
 }
 
@@ -2922,8 +2903,8 @@ impl Codegen {
         }
 
         //self.compress_strings();
-        for reloc in self.output.strings.iter() {
-            let from_offset = self.tys.offset_of_item(reloc.from, ct_hint).unwrap();
+        for reloc in self.output.strings.iter().filter(|s| s.shifted) {
+            let Some(from_offset) = self.tys.offset_of_item(reloc.from, ct_hint) else { continue };
             reloc.reloc.apply_jump(&mut self.output.code, reloc.range.start, from_offset);
         }
     }
@@ -3406,17 +3387,13 @@ impl Codegen {
     fn local_snap(&self) -> Snapshot {
         Snapshot {
             code: self.output.code.len() - self.ci.snap.code,
-            string_data: self.output.string_data.len() - self.ci.snap.string_data,
             relocs: self.output.relocs.len() - self.ci.snap.relocs,
-            strings: self.output.strings.len() - self.ci.snap.strings,
         }
     }
 
     fn pop_local_snap(&mut self, snap: Snapshot) {
         self.output.code.truncate(snap.code + self.ci.snap.code);
-        self.output.string_data.truncate(snap.string_data + self.ci.snap.string_data);
         self.output.relocs.truncate(snap.relocs + self.ci.snap.relocs);
-        self.output.strings.truncate(snap.strings + self.ci.snap.strings);
     }
 
     fn pack_args(&mut self, pos: Pos, arg_base: usize) -> ty::Tuple {

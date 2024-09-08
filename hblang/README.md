@@ -831,13 +831,13 @@ multiple_breaks := fn(arg: int): int {
 #### writing_into_string
 ```hb
 outl := fn(): void {
-	msg := "\0\0\0\0\0\0\0\0"
+	msg := "whahaha\0"
 	@as(u8, 0)
 	return
 }
 
 inl := fn(): void {
-	msg := "\0\0\0\0"
+	msg := "luhahah\0"
 	return
 }
 
