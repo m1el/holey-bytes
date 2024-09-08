@@ -794,7 +794,7 @@ main := fn(): int {
 multiple_breaks := fn(arg: int): int {
 	loop if arg < 10 {
 		arg += 1
-		//if arg == 3 break
+		if arg == 3 break
 	} else break
 	return arg
 }
@@ -809,7 +809,7 @@ multiple_breaks := fn(arg: int): int {
 //	} else break
 //	return arg
 //}
-//
+
 //continue_and_state_change := fn(arg: int): int {
 //	loop if arg < 10 {
 //		if arg == 2 {

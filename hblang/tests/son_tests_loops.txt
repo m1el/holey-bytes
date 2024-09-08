@@ -7,8 +7,8 @@ main:
     ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
 fib:
-    ADDI64 r254, r254, -64d
-    ST r31, r254, 0a, 64h
+    ADDI64 r254, r254, -56d
+    ST r31, r254, 0a, 56h
     CP r32, r2
     CP r33, r32
     LI64 r34, 0d
@@ -17,15 +17,14 @@ fib:
     CP r36, r35
  2: JNE r33, r34, :0
     JMP :1
- 0: SUB64 r37, r33, r35
-    ADD64 r38, r1, r36
-    CP r33, r37
+ 0: SUB64 r33, r33, r35
+    ADD64 r37, r1, r36
     CP r1, r36
-    CP r36, r38
+    CP r36, r37
     JMP :2
- 1: LD r31, r254, 0a, 64h
-    ADDI64 r254, r254, 64d
+ 1: LD r31, r254, 0a, 56h
+    ADDI64 r254, r254, 56d
     JALA r0, r31, 0a
-code size: 207
+code size: 204
 ret: 55
 status: Ok(())
