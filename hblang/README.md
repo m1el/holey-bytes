@@ -435,8 +435,7 @@ check_platform := fn(): int {
 }
 
 set_pixel := fn(x: int, y: int, width: int): int {
-	pix_offset := y * width + x
-	return 0
+	return y * width + x
 }
 
 main := fn(): int {
@@ -445,21 +444,23 @@ main := fn(): int {
 	height := 30
 	x := 0
 	y := 0
+	t := 0
+	i := 0
 
 	loop {
-		if x <= height + 1 {
-			_d := set_pixel(x, y, width)
+		if x < width {
+			t += set_pixel(x, y, width)
 			x += 1
 		} else {
-			_d := set_pixel(x, y, width)
 			x = 0
 			y += 1
+			if set_pixel(x, y, width) != i return 0
 		}
-		if y == width {
-			break
-		}
+
+		i += 1
+		if y == width break
 	}
-	return 0
+	return t
 }
 ```
 
@@ -825,4 +826,24 @@ multiple_breaks := fn(arg: int): int {
 //	} else break
 //	return arg
 //}
+```
+
+#### writing_into_string
+```hb
+outl := fn(): void {
+	msg := "\0\0\0\0\0\0\0\0"
+	@as(u8, 0)
+	return
+}
+
+inl := fn(): void {
+	msg := "\0\0\0\0"
+	return
+}
+
+main := fn(): void {
+	outl()
+	inl()
+	return
+}
 ```

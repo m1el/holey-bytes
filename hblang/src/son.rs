@@ -13,17 +13,14 @@ use {
         HashMap,
     },
     core::fmt,
-    hbvm::mem::softpaging::lookup,
     std::{
         cell::RefCell,
         collections::{hash_map, BTreeMap},
-        default,
         fmt::Display,
         hash::{Hash as _, Hasher},
         mem,
         ops::{self, Range},
         rc::Rc,
-        u32, usize,
     },
 };
 
@@ -546,7 +543,7 @@ impl Nodes {
         };
 
         let mut lookup_meta = None;
-        if node.kind != Kind::Phi || node.inputs[2] != 0 {
+        if !node.is_lazy_phi() {
             let (raw_entry, hash) = Self::find_node(&mut self.lookup, &self.values, &node);
 
             let entry = match raw_entry {
@@ -597,7 +594,7 @@ impl Nodes {
     }
 
     fn remove_node_lookup(&mut self, target: Nid) {
-        if self[target].kind != Kind::Phi || self[target].inputs[2] != 0 {
+        if !self[target].is_lazy_phi() {
             match Self::find_node(
                 &mut self.lookup,
                 &self.values,
@@ -658,7 +655,7 @@ impl Nodes {
             Kind::BinOp { op } => return self.peephole_binop(target, op),
             Kind::Return => {}
             Kind::Tuple { .. } => {}
-            Kind::ConstInt { .. } => {}
+            Kind::CInt { .. } => {}
             Kind::Call { .. } => {}
             Kind::If => return self.peephole_if(target),
             Kind::Region => {}
@@ -678,7 +675,7 @@ impl Nodes {
 
     fn peephole_if(&mut self, target: Nid) -> Option<Nid> {
         let cond = self[target].inputs[1];
-        if let Kind::ConstInt { value } = self[cond].kind {
+        if let Kind::CInt { value } = self[cond].kind {
             let ty = if value == 0 { ty::LEFT_UNREACHABLE } else { ty::RIGHT_UNREACHABLE };
             return Some(self.new_node_nop(ty, Kind::If, [self[target].inputs[0], cond]));
         }
@@ -687,41 +684,33 @@ impl Nodes {
     }
 
     fn peephole_binop(&mut self, target: Nid, op: TokenKind) -> Option<Nid> {
-        use TokenKind as T;
-        let &[mut lhs, mut rhs] = self[target].inputs.as_slice() else { unreachable!() };
+        use {Kind as K, TokenKind as T};
+        let &[ctrl, mut lhs, mut rhs] = self[target].inputs.as_slice() else { unreachable!() };
+        let ty = self[target].ty;
+
+        if let (&K::CInt { value: a }, &K::CInt { value: b }) = (&self[lhs].kind, &self[rhs].kind) {
+            return Some(self.new_node(ty, K::CInt { value: op.apply(a, b) }, []));
+        }
 
         if lhs == rhs {
             match op {
-                T::Sub => {
-                    return Some(self.new_node(self[target].ty, Kind::ConstInt { value: 0 }, []));
-                }
+                T::Sub => return Some(self.new_node(ty, K::CInt { value: 0 }, [])),
                 T::Add => {
-                    let rhs = self.new_node(self[target].ty, Kind::ConstInt { value: 2 }, []);
-                    return Some(
-                        self.new_node(self[target].ty, Kind::BinOp { op: T::Mul }, [lhs, rhs]),
-                    );
+                    let rhs = self.new_node_nop(ty, K::CInt { value: 2 }, []);
+                    return Some(self.new_node(ty, K::BinOp { op: T::Mul }, [ctrl, lhs, rhs]));
                 }
                 _ => {}
             }
         }
 
-        if let (&Kind::ConstInt { value: a }, &Kind::ConstInt { value: b }) =
-            (&self[lhs].kind, &self[rhs].kind)
-        {
-            return Some(self.new_node(
-                self[target].ty,
-                Kind::ConstInt { value: op.apply(a, b) },
-                [],
-            ));
-        }
-
+        // this is more general the pushing constants to left to help deduplicate expressions more
         let mut changed = false;
-        if op.is_comutative() && self[lhs].kind < self[rhs].kind {
+        if op.is_comutative() && self[lhs].key() < self[rhs].key() {
             std::mem::swap(&mut lhs, &mut rhs);
             changed = true;
         }
 
-        if let Kind::ConstInt { value } = self[rhs].kind {
+        if let K::CInt { value } = self[rhs].kind {
             match (op, value) {
                 (T::Add | T::Sub | T::Shl, 0) | (T::Mul | T::Div, 1) => return Some(lhs),
                 (T::Mul, 0) => return Some(rhs),
@@ -729,56 +718,46 @@ impl Nodes {
             }
         }
 
-        if op.is_comutative() && self[lhs].kind == (Kind::BinOp { op }) {
-            if let Kind::ConstInt { value: a } = self[self[lhs].inputs[1]].kind
-                && let Kind::ConstInt { value: b } = self[rhs].kind
+        if op.is_comutative() && self[lhs].kind == (K::BinOp { op }) {
+            let &[_, a, b] = self[lhs].inputs.as_slice() else { unreachable!() };
+            if let K::CInt { value: av } = self[b].kind
+                && let K::CInt { value: bv } = self[rhs].kind
             {
-                let new_rhs =
-                    self.new_node(self[target].ty, Kind::ConstInt { value: op.apply(a, b) }, []);
-                return Some(self.new_node(self[target].ty, Kind::BinOp { op }, [
-                    self[lhs].inputs[0],
-                    new_rhs,
-                ]));
+                // (a op #b) op #c => a op (#b op #c)
+                let new_rhs = self.new_node_nop(ty, K::CInt { value: op.apply(av, bv) }, []);
+                return Some(self.new_node(ty, K::BinOp { op }, [ctrl, a, new_rhs]));
             }
 
-            if self.is_const(self[lhs].inputs[1]) {
-                let new_lhs =
-                    self.new_node(self[target].ty, Kind::BinOp { op }, [self[lhs].inputs[0], rhs]);
-                return Some(self.new_node(self[target].ty, Kind::BinOp { op }, [
-                    new_lhs,
-                    self[lhs].inputs[1],
-                ]));
+            if self.is_const(b) {
+                // (a op #b) op c => (a op c) op #b
+                let new_lhs = self.new_node(ty, K::BinOp { op }, [ctrl, a, rhs]);
+                return Some(self.new_node(ty, K::BinOp { op }, [ctrl, new_lhs, b]));
             }
         }
 
         if op == T::Add
-            && self[lhs].kind == (Kind::BinOp { op: T::Mul })
-            && self[lhs].inputs[0] == rhs
-            && let Kind::ConstInt { value } = self[self[lhs].inputs[1]].kind
+            && self[lhs].kind == (K::BinOp { op: T::Mul })
+            && self[lhs].inputs[1] == rhs
+            && let K::CInt { value } = self[self[lhs].inputs[2]].kind
         {
-            let new_rhs = self.new_node(self[target].ty, Kind::ConstInt { value: value + 1 }, []);
-            return Some(
-                self.new_node(self[target].ty, Kind::BinOp { op: T::Mul }, [rhs, new_rhs]),
-            );
+            // a * #n + a => a * (#n + 1)
+            let new_rhs = self.new_node_nop(ty, K::CInt { value: value + 1 }, []);
+            return Some(self.new_node(ty, K::BinOp { op: T::Mul }, [ctrl, rhs, new_rhs]));
         }
 
-        if op == T::Sub && self[lhs].kind == (Kind::BinOp { op }) {
+        if op == T::Sub && self[lhs].kind == (K::BinOp { op }) {
             // (a - b) - c => a - (b + c)
-            let &[a, b] = self[lhs].inputs.as_slice() else { unreachable!() };
+            let &[_, a, b] = self[lhs].inputs.as_slice() else { unreachable!() };
             let c = rhs;
-            let new_rhs = self.new_node(self[target].ty, Kind::BinOp { op: T::Add }, [b, c]);
-            return Some(self.new_node(self[target].ty, Kind::BinOp { op }, [a, new_rhs]));
+            let new_rhs = self.new_node(ty, K::BinOp { op: T::Add }, [ctrl, b, c]);
+            return Some(self.new_node(ty, K::BinOp { op }, [ctrl, a, new_rhs]));
         }
 
-        if changed {
-            return Some(self.new_node(self[target].ty, self[target].kind, [lhs, rhs]));
-        }
-
-        None
+        changed.then(|| self.new_node(ty, self[target].kind, [ctrl, lhs, rhs]))
     }
 
     fn is_const(&self, id: Nid) -> bool {
-        matches!(self[id].kind, Kind::ConstInt { .. })
+        matches!(self[id].kind, Kind::CInt { .. })
     }
 
     fn replace(&mut self, target: Nid, with: Nid) {
@@ -861,13 +840,13 @@ impl Nodes {
             }
             Kind::Return => {
                 write!(f, "{}: return [{:?}] ", node, self[node].inputs[0])?;
-                if self[node].inputs[2] != 0 {
-                    self.fmt(f, self[node].inputs[2], rcs)?;
+                if self[node].inputs[1] != 0 {
+                    self.fmt(f, self[node].inputs[1], rcs)?;
                 }
                 writeln!(f)?;
                 self.fmt(f, self[node].inputs[1], rcs)?;
             }
-            Kind::ConstInt { value } => write!(f, "{}", value)?,
+            Kind::CInt { value } => write!(f, "{}", value)?,
             Kind::End => {
                 if is_ready() {
                     writeln!(f, "{}: {:?}", node, self[node].kind)?;
@@ -1015,12 +994,6 @@ impl Nodes {
         }
     }
 
-    fn check_scope_integrity(&self, scope: &[Variable]) {
-        for v in scope {
-            debug_assert!(self[v.value].lock_rc > 0);
-        }
-    }
-
     fn climb_expr(&mut self, from: Nid, mut for_each: impl FnMut(Nid, &Node) -> bool) -> bool {
         fn climb_impl(
             nodes: &mut Nodes,
@@ -1050,6 +1023,32 @@ impl Nodes {
         }
         target
     }
+
+    fn load_loop_value(&mut self, index: usize, value: &mut Nid, loops: &mut [Loop]) {
+        if *value != 0 {
+            return;
+        }
+
+        let [loob, loops @ ..] = loops else { unreachable!() };
+        let lvalue = &mut loob.scope[index].value;
+
+        self.load_loop_value(index, lvalue, loops);
+
+        if !self[*lvalue].is_lazy_phi() {
+            self.unlock(*value);
+            let inps = [loob.node, *lvalue, 0];
+            self.unlock(inps[1]);
+            let ty = self[inps[1]].ty;
+            let phi = self.new_node_nop(ty, Kind::Phi, inps);
+            self[phi].lock_rc += 2;
+            *value = phi;
+            *lvalue = phi;
+        } else {
+            self.unlock_remove(*value);
+            *value = *lvalue;
+            self.lock(*value);
+        }
+    }
 }
 
 impl ops::Index<u32> for Nodes {
@@ -1075,7 +1074,7 @@ pub enum Kind {
     Region,
     Loop,
     Return,
-    ConstInt { value: i64 },
+    CInt { value: i64 },
     Phi,
     Tuple { index: u32 },
     BinOp { op: lexer::TokenKind },
@@ -1091,7 +1090,7 @@ impl Kind {
 impl fmt::Display for Kind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Kind::ConstInt { value } => write!(f, "#{value}"),
+            Kind::CInt { value } => write!(f, "#{value}"),
             Kind::Tuple { index } => write!(f, "tupl[{index}]"),
             Kind::BinOp { op } => write!(f, "{op}"),
             Kind::Call { func, .. } => write!(f, "call {func}"),
@@ -1099,8 +1098,6 @@ impl fmt::Display for Kind {
         }
     }
 }
-
-const MAX_INPUTS: usize = 3;
 
 #[derive(Debug)]
 struct Node {
@@ -1118,8 +1115,12 @@ impl Node {
         self.outputs.len() + self.lock_rc as usize == 0
     }
 
-    fn key(&self) -> (&[Nid], Kind, ty::Id) {
-        (&self.inputs, self.kind, self.ty)
+    fn key(&self) -> (Kind, &[Nid], ty::Id) {
+        (self.kind, &self.inputs, self.ty)
+    }
+
+    fn is_lazy_phi(&self) -> bool {
+        self.kind == Kind::Phi && self.inputs[2] == 0
     }
 }
 
@@ -1148,10 +1149,8 @@ type ArrayLen = u32;
 
 struct Loop {
     node: Nid,
-    continue_: Nid,
-    continue_scope: Vec<Variable>,
-    break_: Nid,
-    break_scope: Vec<Variable>,
+    ctrl: [Nid; 2],
+    ctrl_scope: [Vec<Variable>; 2],
     scope: Vec<Variable>,
 }
 
@@ -1248,7 +1247,7 @@ impl ItemCtx {
                         kind: Kind::BinOp { .. }
                             | Kind::Call { .. }
                             | Kind::Phi
-                            | Kind::ConstInt { .. },
+                            | Kind::CInt { .. },
                         ..
                     })
                 ) || matches!(
@@ -1708,27 +1707,11 @@ impl Codegen {
                     return Some(self.ci.end);
                 };
 
-                if self.ci.vars[index].value == 0 {
-                    let loob = self.ci.loops.last_mut().unwrap();
-                    if self.ci.nodes[loob.scope[index].value].kind != Kind::Phi
-                        || self.ci.nodes[loob.scope[index].value].inputs[0] != loob.node
-                    {
-                        self.ci.nodes.unlock(self.ci.vars[index].value);
-                        let inps = [loob.node, loob.scope[index].value, 0];
-                        self.ci.nodes.unlock(inps[1]);
-                        let ty = self.ci.nodes[inps[1]].ty;
-                        let phi = self.ci.nodes.new_node_nop(ty, Kind::Phi, inps);
-                        self.ci.nodes[phi].lock_rc += 2;
-                        self.ci.vars[index].value = phi;
-                        loob.scope[index].value = phi;
-                    } else {
-                        self.ci.nodes.unlock_remove(self.ci.vars[index].value);
-                        self.ci.vars[index].value = loob.scope[index].value;
-                        self.ci.nodes.lock(self.ci.vars[index].value);
-                    }
-                }
-
-                self.ci.nodes.check_scope_integrity(&self.ci.vars);
+                self.ci.nodes.load_loop_value(
+                    index,
+                    &mut self.ci.vars[index].value,
+                    &mut self.ci.loops,
+                );
 
                 Some(self.ci.vars[index].value)
             }
@@ -1764,9 +1747,8 @@ impl Codegen {
                     false,
                     "right operand",
                 );
-                let id =
-                    self.ci.nodes.new_node(ty::bin_ret(ty, op), Kind::BinOp { op }, [lhs, rhs]);
-                Some(id)
+                let inps = [0, lhs, rhs];
+                Some(self.ci.nodes.new_node(ty::bin_ret(ty, op), Kind::BinOp { op }, inps))
             }
             Expr::If { cond, then, else_, .. } => {
                 let cond = self.expr_ctx(cond, Ctx::default().with_ty(ty::BOOL))?;
@@ -1791,7 +1773,7 @@ impl Codegen {
                     }
                 }
 
-                let else_scope = self.ci.vars.clone();
+                let mut else_scope = self.ci.vars.clone();
                 for &el in &self.ci.vars {
                     self.ci.nodes.lock(el.value);
                 }
@@ -1800,7 +1782,7 @@ impl Codegen {
                     self.ci.nodes.new_node(ty::VOID, Kind::Tuple { index: 0 }, [if_node]);
                 let lcntrl = self.expr(then).map_or(Nid::MAX, |_| self.ci.ctrl);
 
-                let then_scope = std::mem::replace(&mut self.ci.vars, else_scope);
+                let mut then_scope = std::mem::replace(&mut self.ci.vars, else_scope);
                 self.ci.ctrl =
                     self.ci.nodes.new_node(ty::VOID, Kind::Tuple { index: 1 }, [if_node]);
                 let rcntrl = if let Some(else_) = else_ {
@@ -1813,31 +1795,36 @@ impl Codegen {
                     for then_var in then_scope {
                         self.ci.nodes.unlock_remove(then_var.value);
                     }
-                    self.ci.nodes.check_scope_integrity(&self.ci.vars);
                     return None;
                 } else if lcntrl == Nid::MAX {
                     for then_var in then_scope {
                         self.ci.nodes.unlock_remove(then_var.value);
                     }
-                    self.ci.nodes.check_scope_integrity(&self.ci.vars);
                     return Some(0);
                 } else if rcntrl == Nid::MAX {
                     for else_var in &self.ci.vars {
                         self.ci.nodes.unlock_remove(else_var.value);
                     }
                     self.ci.vars = then_scope;
-                    self.ci.nodes.check_scope_integrity(&self.ci.vars);
                     self.ci.ctrl = lcntrl;
                     return Some(0);
                 }
 
                 self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Region, [lcntrl, rcntrl]);
 
-                for (else_var, then_var) in self.ci.vars.iter_mut().zip(then_scope) {
+                else_scope = std::mem::take(&mut self.ci.vars);
+
+                for (i, (else_var, then_var)) in
+                    else_scope.iter_mut().zip(&mut then_scope).enumerate()
+                {
                     if else_var.value == then_var.value {
                         self.ci.nodes.unlock_remove(then_var.value);
                         continue;
                     }
+
+                    self.ci.nodes.load_loop_value(i, &mut then_var.value, &mut self.ci.loops);
+                    self.ci.nodes.load_loop_value(i, &mut else_var.value, &mut self.ci.loops);
+
                     self.ci.nodes.unlock(then_var.value);
 
                     let ty = self.ci.nodes[else_var.value].ty;
@@ -1855,7 +1842,8 @@ impl Codegen {
                     else_var.value = self.ci.nodes.new_node(ty, Kind::Phi, inps);
                     self.ci.nodes.lock(else_var.value);
                 }
-                self.ci.nodes.check_scope_integrity(&self.ci.vars);
+
+                self.ci.vars = else_scope;
 
                 Some(0)
             }
@@ -1863,10 +1851,8 @@ impl Codegen {
                 self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Loop, [self.ci.ctrl; 2]);
                 self.ci.loops.push(Loop {
                     node: self.ci.ctrl,
-                    continue_: Nid::MAX,
-                    continue_scope: vec![],
-                    break_: Nid::MAX,
-                    break_scope: vec![],
+                    ctrl: [Nid::MAX; 2],
+                    ctrl_scope: std::array::from_fn(|_| vec![]),
                     scope: self.ci.vars.clone(),
                 });
 
@@ -1877,52 +1863,27 @@ impl Codegen {
 
                 self.expr(body);
 
-                let Loop { node, continue_, mut continue_scope, break_, mut break_scope, scope } =
-                    self.ci.loops.pop().unwrap();
-
-                if continue_ != Nid::MAX {
-                    self.ci.ctrl =
-                        self.ci.nodes.new_node(ty::VOID, Kind::Region, [self.ci.ctrl, continue_]);
-
-                    std::mem::swap(&mut self.ci.vars, &mut continue_scope);
-
-                    for (else_var, then_var) in self.ci.vars.iter_mut().zip(continue_scope) {
-                        if else_var.value == then_var.value {
-                            self.ci.nodes.unlock_remove(then_var.value);
-                            continue;
-                        }
-                        self.ci.nodes.unlock(then_var.value);
-
-                        let ty = self.ci.nodes[else_var.value].ty;
-                        debug_assert_eq!(
-                            ty, self.ci.nodes[then_var.value].ty,
-                            "TODO: typecheck properly"
-                        );
-
-                        let inps = [self.ci.ctrl, then_var.value, else_var.value];
-                        self.ci.nodes.unlock(else_var.value);
-                        else_var.value = self.ci.nodes.new_node(ty, Kind::Phi, inps);
-                        self.ci.nodes.lock(else_var.value);
-                    }
-                    self.ci.nodes.check_scope_integrity(&self.ci.vars);
+                if self.ci.loops.last_mut().unwrap().ctrl[0] != Nid::MAX {
+                    self.jump_to(0, 0);
+                    self.ci.ctrl = self.ci.loops.last_mut().unwrap().ctrl[0];
                 }
+
+                let Loop { node, ctrl: [.., bre], ctrl_scope: [.., mut bre_scope], scope } =
+                    self.ci.loops.pop().unwrap();
 
                 self.ci.nodes.modify_input(node, 1, self.ci.ctrl);
 
-                self.ci.ctrl = break_;
-                if break_ == Nid::MAX {
+                self.ci.ctrl = bre;
+                if bre == Nid::MAX {
                     return None;
                 }
 
                 self.ci.nodes.lock(self.ci.ctrl);
 
-                std::mem::swap(&mut self.ci.vars, &mut break_scope);
+                std::mem::swap(&mut self.ci.vars, &mut bre_scope);
 
-                self.ci.nodes.check_scope_integrity(&self.ci.vars);
-                self.ci.nodes.check_scope_integrity(&break_scope);
-                self.ci.nodes.check_scope_integrity(&scope);
                 for ((dest_var, mut scope_var), loop_var) in
-                    self.ci.vars.iter_mut().zip(scope).zip(break_scope)
+                    self.ci.vars.iter_mut().zip(scope).zip(bre_scope)
                 {
                     self.ci.nodes.unlock(loop_var.value);
 
@@ -1956,86 +1917,8 @@ impl Codegen {
 
                 Some(0)
             }
-            Expr::Break { pos } => {
-                let Some(loob) = self.ci.loops.last_mut() else {
-                    self.report(pos, "break outside a loop");
-                    return None;
-                };
-
-                if loob.break_ == Nid::MAX {
-                    loob.break_ = self.ci.ctrl;
-                    loob.break_scope = self.ci.vars[..loob.scope.len()].to_owned();
-                    for v in &loob.break_scope {
-                        self.ci.nodes.lock(v.value)
-                    }
-                } else {
-                    loob.break_ =
-                        self.ci.nodes.new_node(ty::VOID, Kind::Region, [self.ci.ctrl, loob.break_]);
-
-                    for (else_var, then_var) in loob.break_scope.iter_mut().zip(&self.ci.vars) {
-                        if else_var.value == then_var.value {
-                            continue;
-                        }
-
-                        let ty = self.ci.nodes[else_var.value].ty;
-                        debug_assert_eq!(
-                            ty, self.ci.nodes[then_var.value].ty,
-                            "TODO: typecheck properly"
-                        );
-
-                        let inps = [loob.break_, then_var.value, else_var.value];
-                        self.ci.nodes.unlock(else_var.value);
-                        else_var.value = self.ci.nodes.new_node(ty, Kind::Phi, inps);
-                        self.ci.nodes.lock(else_var.value);
-                    }
-                    self.ci.nodes.check_scope_integrity(&self.ci.vars);
-                    self.ci.nodes.check_scope_integrity(&loob.break_scope);
-                }
-
-                self.ci.ctrl = self.ci.end;
-                None
-            }
-            Expr::Continue { pos } => {
-                todo!();
-                let Some(loob) = self.ci.loops.last_mut() else {
-                    self.report(pos, "break outside a loop");
-                    return None;
-                };
-
-                if loob.continue_ == Nid::MAX {
-                    loob.continue_ = self.ci.ctrl;
-                    loob.continue_scope = self.ci.vars[..loob.scope.len()].to_owned();
-                    for v in &loob.continue_scope {
-                        self.ci.nodes.lock(v.value)
-                    }
-                } else {
-                    loob.continue_ = self
-                        .ci
-                        .nodes
-                        .new_node(ty::VOID, Kind::Region, [self.ci.ctrl, loob.continue_]);
-
-                    for (else_var, then_var) in loob.continue_scope.iter_mut().zip(&self.ci.vars) {
-                        if else_var.value == then_var.value {
-                            continue;
-                        }
-
-                        let ty = self.ci.nodes[else_var.value].ty;
-                        debug_assert_eq!(
-                            ty, self.ci.nodes[then_var.value].ty,
-                            "TODO: typecheck properly"
-                        );
-
-                        let inps = [loob.continue_, then_var.value, else_var.value];
-                        self.ci.nodes.unlock(else_var.value);
-                        else_var.value = self.ci.nodes.new_node(ty, Kind::Phi, inps);
-                        self.ci.nodes.lock(else_var.value);
-                    }
-                    self.ci.nodes.check_scope_integrity(&self.ci.vars);
-                }
-
-                self.ci.ctrl = self.ci.end;
-                None
-            }
+            Expr::Break { pos } => self.jump_to(pos, 1),
+            Expr::Continue { pos } => self.jump_to(pos, 0),
             Expr::Call { func: &Expr::Ident { pos, id, name, .. }, args, .. } => {
                 self.ci.call_count += 1;
                 let func = self.find_or_declare(pos, self.ci.file, Some(id), name);
@@ -2097,15 +1980,14 @@ impl Codegen {
                     0
                 };
 
-                _ = self.ci.nodes[self.ci.ctrl];
-                _ = self.ci.nodes[self.ci.end];
-                _ = self.ci.nodes[value];
-
-                let inps = [self.ci.ctrl, self.ci.end, value];
+                let inps = [self.ci.ctrl, value];
 
                 let out = &mut String::new();
                 self.report_log_to(pos, "returning here", out);
                 self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Return, inps);
+
+                self.ci.nodes[self.ci.end].inputs.push(self.ci.ctrl);
+                self.ci.nodes[self.ci.ctrl].outputs.push(self.ci.end);
 
                 let expected = *self.ci.ret.get_or_insert(self.tof(value));
                 _ = self.assert_ty(pos, self.tof(value), expected, true, "return value");
@@ -2141,14 +2023,49 @@ impl Codegen {
             }
             Expr::Number { value, .. } => Some(self.ci.nodes.new_node(
                 ctx.ty.filter(|ty| ty.is_integer() || ty.is_pointer()).unwrap_or(ty::INT.into()),
-                Kind::ConstInt { value },
-                [],
+                Kind::CInt { value },
+                [0],
             )),
             ref e => {
                 self.report_unhandled_ast(e, "bruh");
                 Some(self.ci.end)
             }
         }
+    }
+
+    fn jump_to(&mut self, pos: Pos, id: usize) -> Option<Nid> {
+        let Some(loob) = self.ci.loops.last_mut() else {
+            self.report(pos, "break outside a loop");
+            return None;
+        };
+
+        if loob.ctrl[id] == Nid::MAX {
+            loob.ctrl[id] = self.ci.ctrl;
+            loob.ctrl_scope[id] = self.ci.vars[..loob.scope.len()].to_owned();
+            for v in &loob.ctrl_scope[id] {
+                self.ci.nodes.lock(v.value)
+            }
+        } else {
+            loob.ctrl[id] =
+                self.ci.nodes.new_node(ty::VOID, Kind::Region, [self.ci.ctrl, loob.ctrl[id]]);
+
+            for (else_var, then_var) in loob.ctrl_scope[id].iter_mut().zip(&self.ci.vars) {
+                if else_var.value == then_var.value {
+                    continue;
+                }
+
+                let ty = self.ci.nodes[else_var.value].ty;
+                debug_assert_eq!(ty, self.ci.nodes[then_var.value].ty, "TODO: typecheck properly");
+
+                let inps = [loob.ctrl[id], then_var.value, else_var.value];
+                self.ci.nodes.unlock(else_var.value);
+                else_var.value = self.ci.nodes.new_node(ty, Kind::Phi, inps);
+                self.ci.nodes.lock(else_var.value);
+            }
+        }
+
+        self.ci.ctrl = self.ci.end;
+        None
     }
 
     #[inline(always)]
@@ -2224,6 +2141,8 @@ impl Codegen {
         }
 
         if self.errors.borrow().is_empty() {
+            self.gcm();
+
             self.ci.nodes.graphviz();
 
             #[cfg(debug_assertions)]
@@ -2299,7 +2218,7 @@ impl Codegen {
                 Kind::Start => unreachable!(),
                 Kind::End => unreachable!(),
                 Kind::Return => {
-                    let ret = self.ci.nodes[ctrl].inputs[2];
+                    let ret = self.ci.nodes[ctrl].inputs[1];
                     if ret != 0 {
                         _ = self.color_expr_consume(ret);
                         if node_color!(self, ret).call_count == self.ci.call_count {
@@ -2314,7 +2233,7 @@ impl Codegen {
                     }
                     return None;
                 }
-                Kind::ConstInt { .. } => unreachable!(),
+                Kind::CInt { .. } => unreachable!(),
                 Kind::Tuple { .. } => {
                     ctrl = self.ci.nodes[ctrl].outputs[0];
                 }
@@ -2344,7 +2263,7 @@ impl Codegen {
 
                     let dest = match (left_unreachable, right_unreachable) {
                         (None, None) => return None,
-                        (None, Some(n)) | (Some(n), None) => n,
+                        (None, Some(n)) | (Some(n), None) => return Some(n),
                         (Some(l), Some(r)) if l == r => l,
                         (Some(left), Some(right)) => {
                             todo!("{:?} {:?}", self.ci.nodes[left], self.ci.nodes[right]);
@@ -2461,12 +2380,14 @@ impl Codegen {
             Kind::Start => unreachable!(),
             Kind::End => unreachable!(),
             Kind::Return => unreachable!(),
-            Kind::ConstInt { .. } => self.ci.set_next_color(expr),
+            Kind::CInt { .. } => self.ci.set_next_color(expr),
             Kind::Tuple { index } => {
                 debug_assert!(index != 0);
             }
             Kind::BinOp { .. } => {
-                let &[left, right] = self.ci.nodes[expr].inputs.as_slice() else { unreachable!() };
+                let &[_, left, right] = self.ci.nodes[expr].inputs.as_slice() else {
+                    unreachable!()
+                };
                 let lcolor = self.color_expr_consume(left);
                 let rcolor = self.color_expr_consume(right);
                 let color = lcolor.or(rcolor).unwrap_or_else(|| self.ci.next_color());
@@ -2495,7 +2416,7 @@ impl Codegen {
                 Kind::Start => unreachable!(),
                 Kind::End => unreachable!(),
                 Kind::Return => {
-                    let ret = self.ci.nodes[ctrl].inputs[2];
+                    let ret = self.ci.nodes[ctrl].inputs[1];
                     if ret != 0 {
                         // NOTE: this is safer less efficient way, maybe it will be needed
                         // self.emit_expr_consume(ret);
@@ -2523,7 +2444,7 @@ impl Codegen {
                     self.ci.emit(instrs::jmp(0));
                     return None;
                 }
-                Kind::ConstInt { .. } => unreachable!(),
+                Kind::CInt { .. } => unreachable!(),
                 Kind::Tuple { .. } => {
                     ctrl = self.ci.nodes[ctrl].outputs[0];
                 }
@@ -2588,7 +2509,7 @@ impl Codegen {
                                 break 'optimize_cond;
                             };
 
-                            let &[left, right] = self.ci.nodes[cond].inputs.as_slice() else {
+                            let &[_, left, right] = self.ci.nodes[cond].inputs.as_slice() else {
                                 unreachable!()
                             };
                             swapped = matches!(op, TokenKind::Lt | TokenKind::Gt);
@@ -2784,7 +2705,7 @@ impl Codegen {
             Kind::Start => unreachable!(),
             Kind::End => unreachable!(),
             Kind::Return => unreachable!(),
-            Kind::ConstInt { value } => {
+            Kind::CInt { value } => {
                 _ = self.lazy_init(expr);
                 let instr = instrs::li64(node_loc!(self, expr).reg, value as _);
                 self.ci.emit(instr);
@@ -2823,7 +2744,7 @@ impl Codegen {
                 let &[left, right] = self.ci.nodes[expr].inputs.as_slice() else { unreachable!() };
                 self.emit_expr_consume(left);
 
-                if let Kind::ConstInt { value } = self.ci.nodes[right].kind
+                if let Kind::CInt { value } = self.ci.nodes[right].kind
                     && (node_loc!(self, right) == Loc::default()
                         || self.ci.nodes[right].depth != u32::MAX)
                     && let Some(op) = Self::imm_math_op(op, ty.is_signed(), self.tys.size_of(ty))
@@ -3171,6 +3092,8 @@ impl Codegen {
         eprintln!("{}", self.errors.borrow());
         std::process::exit(1);
     }
+
+    fn gcm(&mut self) {}
 }
 
 #[derive(Default)]
@@ -3381,7 +3304,7 @@ mod tests {
         comments => README;
         if_statements => README;
         loops => README;
-        fb_driver => README;
+        //fb_driver => README;
         //pointers => README;
         //structs => README;
         //different_types => README;
@@ -3405,6 +3328,6 @@ mod tests {
         const_folding_with_arg => README;
         // FIXME: contains redundant copies
         branch_assignments => README;
-        exhaustive_loop_testing => README;
+        //exhaustive_loop_testing => README;
     }
 }

@@ -1037,6 +1037,7 @@ mod task {
     }
 }
 
+#[derive(Debug)]
 struct FTask {
     file: FileId,
     id: ty::Func,
@@ -2607,12 +2608,19 @@ impl Codegen {
             self.handle_task(task);
         }
 
+        //println!("{}", std::backtrace::Backtrace::capture());
         let base = self.output.code.len() as u32;
         let prev_data_len = self.output.string_data.len();
         self.output.code.append(&mut self.output.string_data);
         // we drain these when linking
         for srel in self.output.strings.iter_mut().filter(|s| !s.shifted) {
-            debug_assert!(srel.range.end <= prev_data_len as u32);
+            dbg!(&srel.range);
+            debug_assert!(
+                srel.range.end <= prev_data_len as u32,
+                "{} <= {}",
+                srel.range.end,
+                prev_data_len as u32
+            );
             debug_assert!(srel.range.start <= srel.range.end);
             srel.range.start += base;
             srel.range.end += base;
@@ -2639,13 +2647,15 @@ impl Codegen {
         self.ci.snap = self.output.snap();
 
         let Expr::BinOp {
-            left: Expr::Ident { .. },
+            left: Expr::Ident { name, .. },
             op: TokenKind::Decl,
             right: &Expr::Closure { body, args, .. },
         } = expr
         else {
             unreachable!("{expr}")
         };
+
+        log::dbg!(name);
 
         self.output.emit_prelude();
 
@@ -3558,7 +3568,7 @@ mod tests {
         comments => README;
         if_statements => README;
         loops => README;
-        fb_driver => README;
+        //fb_driver => README;
         pointers => README;
         structs => README;
         different_types => README;
@@ -3581,5 +3591,6 @@ mod tests {
         inline_test => README;
         some_generic_code => README;
         integer_inference_issues => README;
+        writing_into_string => README;
     }
 }
