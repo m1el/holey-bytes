@@ -217,6 +217,7 @@ fib := fn(n: int): int {
 }
 
 main := fn(): int {
+	complex_global_var += 5
 	return complex_global_var
 }
 ```

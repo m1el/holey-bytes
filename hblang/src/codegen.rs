@@ -2106,7 +2106,7 @@ impl Codegen {
             }
             E::BinOp { left, op, right } if op != T::Decl => 'ops: {
                 let left = self.expr_ctx(left, Ctx {
-                    ty: ctx.ty.filter(|_| dbg!(dbg!(op).is_homogenous())),
+                    ty: ctx.ty.filter(|_| op.is_homogenous()),
                     ..Default::default()
                 })?;
 

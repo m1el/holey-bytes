@@ -13,16 +13,17 @@ use {
         HashMap,
     },
     core::fmt,
+    hbvm::mem::softpaging::lookup,
     std::{
         cell::RefCell,
         collections::{hash_map, BTreeMap},
+        default,
         fmt::Display,
         hash::{Hash as _, Hasher},
-        intrinsics::unreachable,
         mem,
         ops::{self, Range},
         rc::Rc,
-        usize,
+        u32, usize,
     },
 };
 
@@ -463,11 +464,43 @@ mod ty {
     }
 }
 
+struct LookupEntry {
+    nid: u32,
+    hash: u64,
+}
+
+#[derive(Default)]
+struct IdentityHash(u64);
+
+impl std::hash::Hasher for IdentityHash {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, _: &[u8]) {
+        unimplemented!()
+    }
+
+    fn write_u64(&mut self, i: u64) {
+        self.0 = i;
+    }
+}
+
+impl std::hash::Hash for LookupEntry {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_u64(self.hash);
+    }
+}
+
 struct Nodes {
     values: Vec<Result<Node, u32>>,
     visited: BitSet,
     free: u32,
-    lookup: HashMap<Nid, ()>,
+    lookup: std::collections::hash_map::HashMap<
+        LookupEntry,
+        (),
+        std::hash::BuildHasherDefault<IdentityHash>,
+    >,
 }
 
 impl Default for Nodes {
@@ -504,7 +537,7 @@ impl Nodes {
 
         let node = Node {
             inputs: inps.into(),
-            kind: kind.clone(),
+            kind,
             color: 0,
             depth: u32::MAX,
             lock_rc: 0,
@@ -512,15 +545,17 @@ impl Nodes {
             outputs: vec![],
         };
 
-        let mut hasher = crate::FnvHasher::default();
-        node.key().hash(&mut hasher);
+        let mut lookup_meta = None;
+        if node.kind != Kind::Phi || node.inputs[2] != 0 {
+            let (raw_entry, hash) = Self::find_node(&mut self.lookup, &self.values, &node);
 
-        let (raw_entry, _) = Self::find_node(&mut self.lookup, &self.values, &node);
+            let entry = match raw_entry {
+                hash_map::RawEntryMut::Occupied(mut o) => return o.get_key_value().0.nid,
+                hash_map::RawEntryMut::Vacant(v) => v,
+            };
 
-        let entry = match raw_entry {
-            hash_map::RawEntryMut::Occupied(mut o) => return *o.get_key_value().0,
-            hash_map::RawEntryMut::Vacant(v) => v,
-        };
+            lookup_meta = Some((entry, hash));
+        }
 
         if self.free == u32::MAX {
             self.free = self.values.len() as _;
@@ -532,40 +567,48 @@ impl Nodes {
             debug_assert_ne!(d, free);
             self.values[d as usize].as_mut().unwrap().outputs.push(free);
         }
-
         self.free = mem::replace(&mut self.values[free as usize], Ok(node)).unwrap_err();
-        *entry.insert(free, ()).0
+
+        if let Some((entry, hash)) = lookup_meta {
+            entry.insert(LookupEntry { nid: free, hash }, ());
+        }
+        free
     }
 
     fn find_node<'a>(
-        lookup: &'a mut HashMap<Nid, ()>,
+        lookup: &'a mut std::collections::hash_map::HashMap<
+            LookupEntry,
+            (),
+            std::hash::BuildHasherDefault<IdentityHash>,
+        >,
         values: &[Result<Node, u32>],
         node: &Node,
-    ) -> (hash_map::RawEntryMut<'a, u32, (), std::hash::BuildHasherDefault<crate::FnvHasher>>, u64)
-    {
+    ) -> (
+        hash_map::RawEntryMut<'a, LookupEntry, (), std::hash::BuildHasherDefault<IdentityHash>>,
+        u64,
+    ) {
         let mut hasher = crate::FnvHasher::default();
         node.key().hash(&mut hasher);
         let hash = hasher.finish();
-
-        (
-            lookup
-                .raw_entry_mut()
-                .from_hash(hash, |&n| values[n as usize].as_ref().unwrap().key() == node.key()),
-            hash,
-        )
+        let entry = lookup
+            .raw_entry_mut()
+            .from_hash(hash, |n| values[n.nid as usize].as_ref().unwrap().key() == node.key());
+        (entry, hash)
     }
 
     fn remove_node_lookup(&mut self, target: Nid) {
-        match Self::find_node(
-            &mut self.lookup,
-            &self.values,
-            &self.values[target as usize].as_ref().unwrap(),
-        )
-        .0
-        {
-            hash_map::RawEntryMut::Occupied(o) => o.remove(),
-            hash_map::RawEntryMut::Vacant(_) => unreachable!(),
-        };
+        if self[target].kind != Kind::Phi || self[target].inputs[2] != 0 {
+            match Self::find_node(
+                &mut self.lookup,
+                &self.values,
+                self.values[target as usize].as_ref().unwrap(),
+            )
+            .0
+            {
+                hash_map::RawEntryMut::Occupied(o) => o.remove(),
+                hash_map::RawEntryMut::Vacant(_) => unreachable!(),
+            };
+        }
     }
 
     fn new_node(&mut self, ty: impl Into<ty::Id>, kind: Kind, inps: impl Into<Vec<u32>>) -> Nid {
@@ -619,9 +662,17 @@ impl Nodes {
             Kind::Call { .. } => {}
             Kind::If => return self.peephole_if(target),
             Kind::Region => {}
-            Kind::Phi => {}
+            Kind::Phi => return self.peephole_phi(target),
             Kind::Loop => {}
         }
+        None
+    }
+
+    fn peephole_phi(&mut self, target: Nid) -> Option<Nid> {
+        if self[target].inputs[1] == self[target].inputs[2] {
+            return Some(self[target].inputs[1]);
+        }
+
         None
     }
 
@@ -720,7 +771,7 @@ impl Nodes {
         }
 
         if changed {
-            return Some(self.new_node(self[target].ty, self[target].kind.clone(), [lhs, rhs]));
+            return Some(self.new_node(self[target].ty, self[target].kind, [lhs, rhs]));
         }
 
         None
@@ -731,11 +782,13 @@ impl Nodes {
     }
 
     fn replace(&mut self, target: Nid, with: Nid) {
+        let mut back_press = 0;
         for i in 0..self[target].outputs.len() {
-            let out = self[target].outputs[i];
+            let out = self[target].outputs[i - back_press];
             let index = self[out].inputs.iter().position(|&p| p == target).unwrap();
-            let rpl = self.modify_input(out, index, with);
-            self[with].outputs.push(rpl);
+            let prev_len = self[target].outputs.len();
+            self.modify_input(out, index, with);
+            back_press += (self[target].outputs.len() != prev_len) as usize;
         }
 
         self.remove(target);
@@ -750,17 +803,19 @@ impl Nodes {
         let (entry, hash) = Self::find_node(
             &mut self.lookup,
             &self.values,
-            &self.values[target as usize].as_ref().unwrap(),
+            self.values[target as usize].as_ref().unwrap(),
         );
         match entry {
             hash_map::RawEntryMut::Occupied(mut other) => {
-                let rpl = *other.get_key_value().0;
+                log::dbg!("rplc");
+                let rpl = other.get_key_value().0.nid;
                 self[target].inputs[inp_index] = prev;
                 self.replace(target, rpl);
                 rpl
             }
             hash_map::RawEntryMut::Vacant(slot) => {
-                slot.insert_hashed_nocheck(hash, target, ());
+                log::dbg!("mod");
+                slot.insert(LookupEntry { nid: target, hash }, ());
                 let index = self[prev].outputs.iter().position(|&o| o == target).unwrap();
                 self[prev].outputs.swap_remove(index);
                 self[with].outputs.push(target);
@@ -913,8 +968,28 @@ impl Nodes {
                 failed = true;
             }
 
+            let mut allowed_cfgs = 1 + (node.kind == Kind::If) as usize;
             for &o in &node.outputs {
-                let mut occurs = 0;
+                if self.is_cfg(i) {
+                    if allowed_cfgs == 0 && self.is_cfg(o) {
+                        log::err!(
+                            "multiple cfg outputs detected: {:?} -> {:?}",
+                            node.kind,
+                            self[o].kind
+                        );
+                        failed = true;
+                    } else {
+                        allowed_cfgs += self.is_cfg(o) as usize;
+                    }
+                }
+                if matches!(node.kind, Kind::Region | Kind::Loop)
+                    && !self.is_cfg(o)
+                    && self[o].kind != Kind::Phi
+                {
+                    log::err!("unexpected output node on region: {:?}", self[o].kind);
+                    failed = true;
+                }
+
                 let other = match &self.values[o as usize] {
                     Ok(other) => other,
                     Err(_) => {
@@ -923,10 +998,11 @@ impl Nodes {
                         continue;
                     }
                 };
-                occurs += self[o].inputs.iter().filter(|&&el| el == i).count();
-                if occurs == 0 {
+                let occurs = self[o].inputs.iter().filter(|&&el| el == i).count();
+                let self_occurs = self[i].outputs.iter().filter(|&&el| el == o).count();
+                if occurs != self_occurs {
                     log::err!(
-                        "the edge is not bidirectional: {i} {:?} {o} {:?}",
+                        "the edge is not bidirectional: {i} {:?} {self_occurs} {o} {:?} {occurs}",
                         node.kind,
                         other.kind
                     );
@@ -961,10 +1037,18 @@ impl Nodes {
                     return true;
                 }
             }
-            return false;
+            false
         }
         self.visited.clear(self.values.len());
         climb_impl(self, from, &mut for_each)
+    }
+
+    fn late_peephole(&mut self, target: Nid) -> Nid {
+        if let Some(id) = self.peephole(target) {
+            self.replace(target, id);
+            return id;
+        }
+        target
     }
 }
 
@@ -1625,16 +1709,23 @@ impl Codegen {
                 };
 
                 if self.ci.vars[index].value == 0 {
-                    self.ci.nodes.unlock(self.ci.vars[index].value);
                     let loob = self.ci.loops.last_mut().unwrap();
-                    let inps = [loob.node, loob.scope[index].value, loob.scope[index].value];
-                    self.ci.nodes.unlock(inps[1]);
-                    let ty = self.ci.nodes[inps[1]].ty;
-                    // TODO: dont apply peepholes here
-                    let phy = self.ci.nodes.new_node(ty, Kind::Phi, inps);
-                    self.ci.nodes[phy].lock_rc += 2;
-                    self.ci.vars[index].value = phy;
-                    loob.scope[index].value = phy;
+                    if self.ci.nodes[loob.scope[index].value].kind != Kind::Phi
+                        || self.ci.nodes[loob.scope[index].value].inputs[0] != loob.node
+                    {
+                        self.ci.nodes.unlock(self.ci.vars[index].value);
+                        let inps = [loob.node, loob.scope[index].value, 0];
+                        self.ci.nodes.unlock(inps[1]);
+                        let ty = self.ci.nodes[inps[1]].ty;
+                        let phi = self.ci.nodes.new_node_nop(ty, Kind::Phi, inps);
+                        self.ci.nodes[phi].lock_rc += 2;
+                        self.ci.vars[index].value = phi;
+                        loob.scope[index].value = phi;
+                    } else {
+                        self.ci.nodes.unlock_remove(self.ci.vars[index].value);
+                        self.ci.vars[index].value = loob.scope[index].value;
+                        self.ci.nodes.lock(self.ci.vars[index].value);
+                    }
                 }
 
                 self.ci.nodes.check_scope_integrity(&self.ci.vars);
@@ -1751,8 +1842,12 @@ impl Codegen {
 
                     let ty = self.ci.nodes[else_var.value].ty;
                     debug_assert_eq!(
-                        ty, self.ci.nodes[then_var.value].ty,
-                        "TODO: typecheck properly"
+                        ty,
+                        self.ci.nodes[then_var.value].ty,
+                        "TODO: typecheck properly: {} != {}\n{}",
+                        self.ty_display(ty),
+                        self.ty_display(self.ci.nodes[then_var.value].ty),
+                        self.errors.borrow()
                     );
 
                     let inps = [self.ci.ctrl, then_var.value, else_var.value];
@@ -1826,33 +1921,35 @@ impl Codegen {
                 self.ci.nodes.check_scope_integrity(&self.ci.vars);
                 self.ci.nodes.check_scope_integrity(&break_scope);
                 self.ci.nodes.check_scope_integrity(&scope);
-                for ((dest_var, scope_var), loop_var) in
+                for ((dest_var, mut scope_var), loop_var) in
                     self.ci.vars.iter_mut().zip(scope).zip(break_scope)
                 {
-                    if loop_var.value == 0 {
-                        self.ci.nodes.unlock(loop_var.value);
-                        debug_assert!(loop_var.value == dest_var.value);
-                        self.ci.nodes.unlock(dest_var.value);
-                        dest_var.value = scope_var.value;
-                        continue;
-                    }
-
-                    debug_assert_eq!(self.ci.nodes[scope_var.value].kind, Kind::Phi);
-
-                    if scope_var.value == loop_var.value {
-                        let orig = self.ci.nodes[scope_var.value].inputs[1];
-                        self.ci.nodes.lock(orig);
-                        self.ci.nodes.unlock(loop_var.value);
-                        self.ci.nodes.unlock_remove(scope_var.value);
-                        self.ci.nodes.unlock_remove(dest_var.value);
-                        dest_var.value = orig;
-                        continue;
-                    }
-
                     self.ci.nodes.unlock(loop_var.value);
-                    let phy = self.ci.nodes.modify_input(scope_var.value, 2, loop_var.value);
-                    self.ci.nodes.unlock_remove(dest_var.value);
-                    dest_var.value = phy;
+
+                    if loop_var.value != 0 {
+                        self.ci.nodes.unlock(scope_var.value);
+                        if loop_var.value != scope_var.value {
+                            scope_var.value =
+                                self.ci.nodes.modify_input(scope_var.value, 2, loop_var.value);
+                            self.ci.nodes.lock(scope_var.value);
+                        } else {
+                            let phi = &self.ci.nodes[scope_var.value];
+                            debug_assert_eq!(phi.kind, Kind::Phi);
+                            debug_assert_eq!(phi.inputs[2], 0);
+                            let prev = phi.inputs[1];
+                            self.ci.nodes.replace(scope_var.value, prev);
+                            scope_var.value = prev;
+                            self.ci.nodes.lock(prev);
+                        }
+                    }
+
+                    if dest_var.value == 0 {
+                        self.ci.nodes.unlock_remove(dest_var.value);
+                        dest_var.value = scope_var.value;
+                        self.ci.nodes.lock(dest_var.value);
+                    }
+
+                    self.ci.nodes.unlock_remove(scope_var.value);
                 }
 
                 self.ci.nodes.unlock(self.ci.ctrl);
@@ -2198,7 +2295,7 @@ impl Codegen {
 
     fn color_control(&mut self, mut ctrl: Nid) -> Option<Nid> {
         for _ in 0..30 {
-            match self.ci.nodes[ctrl].kind.clone() {
+            match self.ci.nodes[ctrl].kind {
                 Kind::Start => unreachable!(),
                 Kind::End => unreachable!(),
                 Kind::Return => {
@@ -2250,7 +2347,7 @@ impl Codegen {
                         (None, Some(n)) | (Some(n), None) => n,
                         (Some(l), Some(r)) if l == r => l,
                         (Some(left), Some(right)) => {
-                            todo!()
+                            todo!("{:?} {:?}", self.ci.nodes[left], self.ci.nodes[right]);
                         }
                     };
 
@@ -2258,14 +2355,12 @@ impl Codegen {
                         return Some(dest);
                     }
 
-                    debug_assert!(left_unreachable.is_none() || right_unreachable.is_none());
-
                     debug_assert_eq!(self.ci.nodes[dest].kind, Kind::Region);
 
                     for i in 0..self.ci.nodes[dest].outputs.len() {
                         let o = self.ci.nodes[dest].outputs[i];
                         if self.ci.nodes[o].kind == Kind::Phi {
-                            self.color_phy(o);
+                            self.color_phi(o);
                             self.ci.nodes[o].depth = self.ci.loop_depth;
                         }
                     }
@@ -2284,15 +2379,15 @@ impl Codegen {
                     }
 
                     for i in 0..self.ci.nodes[ctrl].outputs.len() {
-                        let maybe_phy = self.ci.nodes[ctrl].outputs[i];
-                        let Node { kind: Kind::Phi, ref inputs, .. } = self.ci.nodes[maybe_phy]
+                        let maybe_phi = self.ci.nodes[ctrl].outputs[i];
+                        let Node { kind: Kind::Phi, ref inputs, .. } = self.ci.nodes[maybe_phi]
                         else {
                             continue;
                         };
 
                         _ = self.color_expr_consume(inputs[1]);
-                        self.ci.nodes[maybe_phy].depth = self.ci.loop_depth;
-                        self.ci.set_next_color(maybe_phy);
+                        self.ci.nodes[maybe_phi].depth = self.ci.loop_depth;
+                        self.ci.set_next_color(maybe_phi);
                     }
 
                     self.ci.nodes[ctrl].lock_rc = self.ci.code.len() as _;
@@ -2307,7 +2402,7 @@ impl Codegen {
                     );
 
                     for i in 0..self.ci.nodes[ctrl].outputs.len() {
-                        self.color_phy(self.ci.nodes[ctrl].outputs[i]);
+                        self.color_phi(self.ci.nodes[ctrl].outputs[i]);
                     }
 
                     self.ci.loop_depth -= 1;
@@ -2321,8 +2416,8 @@ impl Codegen {
         unreachable!()
     }
 
-    fn color_phy(&mut self, maybe_phy: Nid) {
-        let Node { kind: Kind::Phi, ref inputs, .. } = self.ci.nodes[maybe_phy] else {
+    fn color_phi(&mut self, maybe_phi: Nid) {
+        let Node { kind: Kind::Phi, ref inputs, .. } = self.ci.nodes[maybe_phi] else {
             return;
         };
         let &[region, left, right] = inputs.as_slice() else { unreachable!() };
@@ -2330,14 +2425,14 @@ impl Codegen {
         let lcolor = self.color_expr_consume(left);
         let rcolor = self.color_expr_consume(right);
 
-        if self.ci.nodes[maybe_phy].color != 0 {
-            // loop phy
+        if self.ci.nodes[maybe_phi].color != 0 {
+            // loop phi
             if let Some(c) = rcolor
                 && !self.ci.nodes.climb_expr(right, |i, n| {
-                    matches!(n.kind, Kind::Phi) && n.inputs[0] == region && i != maybe_phy
+                    matches!(n.kind, Kind::Phi) && n.inputs[0] == region && i != maybe_phi
                 })
             {
-                self.ci.recolor(right, c, self.ci.nodes[maybe_phy].color);
+                self.ci.recolor(right, c, self.ci.nodes[maybe_phi].color);
             }
         } else {
             let color = match (lcolor, rcolor) {
@@ -2348,7 +2443,7 @@ impl Codegen {
                     lc
                 }
             };
-            self.ci.set_color(maybe_phy, color);
+            self.ci.set_color(maybe_phi, color);
         }
     }
 
@@ -2396,7 +2491,7 @@ impl Codegen {
 
     fn emit_control(&mut self, mut ctrl: Nid) -> Option<Nid> {
         for _ in 0..30 {
-            match self.ci.nodes[ctrl].kind.clone() {
+            match self.ci.nodes[ctrl].kind {
                 Kind::Start => unreachable!(),
                 Kind::End => unreachable!(),
                 Kind::Return => {
@@ -2439,14 +2534,14 @@ impl Codegen {
                     let mut parama = self.tys.parama(ret);
                     for i in 1..self.ci.nodes[ctrl].inputs.len() {
                         let arg = self.ci.nodes[ctrl].inputs[i];
-                        node_loc!(self, arg) = match self.tys.size_of(self.tof(arg)) {
+
+                        let dst = match self.tys.size_of(self.tof(arg)) {
                             0 => continue,
                             1..=8 => Loc { reg: parama.next() },
                             s => todo!("{s}"),
                         };
-                        self.ci.regs.mark_leaked(node_loc!(self, arg).reg);
                         self.emit_expr_consume(arg);
-                        self.ci.nodes[arg].depth = 0;
+                        self.ci.emit(instrs::cp(dst.reg, node_loc!(self, arg).reg));
                     }
 
                     let reloc = Reloc::new(self.ci.code.len(), 3, 4);
@@ -2770,8 +2865,7 @@ impl Codegen {
         if color.rc == 0 {
             if color.depth != self.ci.loop_depth {
                 self.ci.delayed_frees.push(node.color);
-            } else {
-                debug_assert_ne!(color.loc, Loc::default(), "{:?}", node);
+            } else if color.loc != Loc::default() {
                 self.ci.regs.free(color.loc.reg);
             }
         }

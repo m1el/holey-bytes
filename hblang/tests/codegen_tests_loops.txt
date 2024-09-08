@@ -27,12 +27,11 @@ fib:
     CP r35, r32
     ADDI64 r35, r35, -1d
     CP r32, r35
-    LI64 r35, 0d
     JMP :2
  1: CP r1, r33
     LD r31, r254, 0a, 48h
     ADDI64 r254, r254, 48d
     JALA r0, r31, 0a
-code size: 258
+code size: 248
 ret: 55
 status: Ok(())
