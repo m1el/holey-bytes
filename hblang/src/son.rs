@@ -936,6 +936,7 @@ impl Nodes {
             { nodes[from].inputs }.iter().any(|&n| {
                 n != Nid::MAX
                     && nodes.visited.set(n as usize)
+                    && !nodes.is_cfg(n)
                     && (for_each(n, &nodes[n]) || climb_impl(nodes, n, for_each))
             })
         }

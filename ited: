@@ -1,0 +1,2411 @@
+[33mcommit 1c043b1687026a426611b75b0a7bbeb3279fef46[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mtrunk[m[33m)[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Sep 8 03:13:59 2024 +0200
+
+    if a phy does not depend of different phy in the same loop we can modify it in place saving a register copy
+
+[33mcommit 49387dbe16897c788751b5ad3f3318b6c81ab061[m[33m ([m[1;31morigin/trunk[m[33m, [m[1;31morigin/HEAD[m[33m)[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Sep 8 03:12:57 2024 +0200
+
+    if a phy does not depend of different phy in the same loop we can modify it in place saving a register copy
+
+[33mcommit 803095c0c599abfb29cd6c3d71b39882efbc1c38[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Sep 6 22:00:23 2024 +0200
+
+    implementing multiple breaks
+
+[33mcommit 514c2fe630acfec5302a19d42cd9c248bf254045[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Sep 6 18:50:53 2024 +0200
+
+    ups
+
+[33mcommit b4f64656fe3d85fd26e7c1e6771f7fc4d6d21fa7[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Sep 6 18:50:28 2024 +0200
+
+    better error recovery
+
+[33mcommit 73e13bd93cefb7cc7a225f17d8149e04adff561d[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Sep 6 16:16:42 2024 +0200
+
+    more tests work now
+
+[33mcommit b404e5b86dd628c4553c1f73e5c8b883e61d3e4b[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Sep 6 16:11:57 2024 +0200
+
+    more tests work now
+
+[33mcommit 4bcab252315fbef9e77f705f815250b7c1f3eddc[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Sep 6 02:42:07 2024 +0200
+
+    upgraded error messages and inference
+
+[33mcommit 414a07b99adc088ea2f11c85c114b622879121b6[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Sep 6 02:04:19 2024 +0200
+
+    great
+
+[33mcommit fdf4cccde09d8b84085f21d2e859e1c54ce681fa[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Sep 6 01:17:54 2024 +0200
+
+    making a mess
+
+[33mcommit 1a3b0c2eec67fbb7200be04b8295f0107f2e74b4[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Thu Sep 5 11:16:11 2024 +0200
+
+    implementing optimizations up to is statements
+
+[33mcommit 955e4a5c7a94c46b3ef8c26dddf67a88c502f96f[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Wed Sep 4 23:46:32 2024 +0200
+
+    making functions example pass
+
+[33mcommit d9aab2191b57d4c9fa5a57e70c38039e605ad741[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Wed Sep 4 18:53:07 2024 +0200
+
+    maybe fixing a bug 2
+
+[33mcommit 9dd09b21221a2d02bd658b6e9142c3d53b8b2034[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Wed Sep 4 18:51:56 2024 +0200
+
+    maybe fixing a bug
+
+[33mcommit 937c107dec00d84a823f717f864139c4d1ac677d[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Wed Sep 4 18:48:25 2024 +0200
+
+    updating tests and fixing bug
+
+[33mcommit ed1b9459fcd15f84e0354c94544c78197b0ca1f3[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Wed Sep 4 18:43:08 2024 +0200
+
+    some more
+
+[33mcommit f063d0a4fd2dfa6a42875be5b6b77ab1e4b05454[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Wed Sep 4 18:38:32 2024 +0200
+
+    disasm now displays literal string value
+
+[33mcommit a21dee61e7a282472d091614ed8231703a6e9d35[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Wed Sep 4 17:56:59 2024 +0200
+
+    adding disasm option
+
+[33mcommit 3807276a555a8e7a1f7df15c2df99cf7c03e72b9[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Wed Sep 4 17:13:43 2024 +0200
+
+    fixing integer parsing bug
+
+[33mcommit 894f73ca35199f524dff6160c57c0916169fbaf6[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Wed Sep 4 16:54:34 2024 +0200
+
+    adding more type checking
+
+[33mcommit 00ad4748811bb9b1159dee314482fdad92594fdc[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Wed Sep 4 02:35:09 2024 +0200
+
+    making tests more robust for no reason
+
+[33mcommit 9e0e0242aa7629b382ebb108fa7ba5e8ce24cf68[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Tue Sep 3 22:41:44 2024 +0200
+
+    preparing for dead code elemination
+
+[33mcommit a31e02449c8e0a0023a1c78fb5896f679e6c4d3b[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Tue Sep 3 22:34:17 2024 +0200
+
+    adding disasembler
+
+[33mcommit b956cc78bb0e1f42c4f7597f64375b5b9bc73129[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Tue Sep 3 17:51:28 2024 +0200
+
+    adding bfn to ast nodes
+
+[33mcommit 7279ed88e9f8c5c0bf11936215e3be9e8a9342c9[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Tue Sep 3 00:27:50 2024 +0200
+
+    adding sime ignores
+
+[33mcommit 9500db876479f7b24d467a5da846ed63e54c4d11[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Tue Sep 3 00:07:20 2024 +0200
+
+    some organization
+
+[33mcommit 9404eb32a2c09c7c7f6bc825ed2ea1b9bb21fb74[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon Sep 2 13:28:07 2024 +0200
+
+    what
+
+[33mcommit f172c332478f54839ea8b3814883ffa7ac29b5b1[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon Sep 2 04:45:42 2024 +0200
+
+    fixing nasety bug
+
+[33mcommit 75dca646483a584df7cae395d0fdc5c33f3e7294[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon Sep 2 03:56:22 2024 +0200
+
+    popping the inlined function arguments
+
+[33mcommit 97c62e424aaf5a0d582727994c4eda8a87187104[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon Sep 2 03:37:49 2024 +0200
+
+    fixing inconststent context for function
+
+[33mcommit a2c08b6ef6a272e4ec2ec8b0455153332dac156a[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon Sep 2 03:21:39 2024 +0200
+
+    fixing inlining related bugs
+
+[33mcommit a78d2bc3e92e35ae163d69bcf5dee8b4aeb3fc18[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon Sep 2 02:45:03 2024 +0200
+
+    small fix
+
+[33mcommit ad3fc1190cd341908e397cc3c7d818ae6d57e20f[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon Sep 2 02:38:11 2024 +0200
+
+    uptimizing a bit more, inline calls
+
+[33mcommit 641be15703153386fef1a6b083a7e00c85414df9[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Sep 1 23:51:59 2024 +0200
+
+    most likely fixed
+
+[33mcommit cbe6f98dff9960e6b070173f35cf54434b0262f6[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Sep 1 23:14:48 2024 +0200
+
+    maybe fixed
+
+[33mcommit 9bdacfffb26d360ea4c400a620a8b95182d423b3[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Sep 1 22:08:17 2024 +0200
+
+    ups
+
+[33mcommit f13f500d6ee2e607f5ae7d9e2e19e563ce520e95[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Sep 1 22:07:45 2024 +0200
+
+    fixing minmaxing bug
+
+[33mcommit 4e9d6094bd28d563a3cd63d780fc0642bbfee9a9[m
+Merge: 28e33d1 581c4d5
+Author: mlokis <mlokis@email.com>
+Date:   Sun Sep 1 19:19:10 2024 +0000
+
+    Merge pull request 'Support Hex, Binary, and Octal number literals' (#20) from koniifer/holey-bytes:trunk into trunk
+    
+    Reviewed-on: https://git.ablecorp.us/AbleOS/holey-bytes/pulls/20
+
+[33mcommit 28e33d11c9200b2be70db256f655ff29bbe3b55b[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Sep 1 21:15:29 2024 +0200
+
+    removing garbage
+
+[33mcommit 581c4d531c83067d5d0aadf3a7c0129f2977f208[m
+Author: koniifer <aurlex1@gmail.com>
+Date:   Sun Sep 1 20:07:19 2024 +0100
+
+    fix obvious bugs, add unit test, hopefully preserve radix when formatting
+
+[33mcommit 9012f976c5dcbc5c904462563529dc0e113d414a[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Sep 1 21:05:17 2024 +0200
+
+    bruh
+
+[33mcommit 27462d9a335f91e5b9544ee03b01636737b3c9e8[m
+Author: koniifer <aurlex1@gmail.com>
+Date:   Sun Sep 1 18:45:38 2024 +0100
+
+    forgot octals exist
+
+[33mcommit 781c40ede04ae9da9ca3029d712173ba816a74f0[m
+Author: koniifer <aurlex1@gmail.com>
+Date:   Sun Sep 1 18:42:04 2024 +0100
+
+    support hex, octal, binary literals
+
+[33mcommit 9af7bf559f139937529ea7747cd275ed163fb1fa[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Jul 21 10:29:58 2024 +0200
+
+    fixed confused shift tokens (I still dont know which side is left)
+
+[33mcommit 5a6474f06628d80386cdc4c09d443da9118ccfca[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat Jul 20 18:52:24 2024 +0200
+
+    fixed nasty wrong scope bug
+
+[33mcommit 33a4bf7d010029351fdb6e81bc31c02db646c704[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 21:19:03 2024 +0200
+
+    barbar
+
+[33mcommit cac99cd34d99e09bc3d9608e870b770f13fe397b[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 21:04:22 2024 +0200
+
+    foobar
+
+[33mcommit 5555b9865a3ae9d512bc338c1f370aeca9975c60[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 15:51:02 2024 +0200
+
+    v
+
+[33mcommit f964520641c141810425c5ab28c41c62b3187706[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 14:39:30 2024 +0200
+
+    u
+
+[33mcommit a88d3a5c9deb964ce4d7172e1579110f8ebeb747[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 14:24:58 2024 +0200
+
+    t
+
+[33mcommit 416f646957fe3f6cd0a971393d8c05204c05b95d[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 14:17:45 2024 +0200
+
+    s
+
+[33mcommit 12b39c5b3ff6d7b1e63ce935424e757174ec6252[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 14:05:13 2024 +0200
+
+    q
+
+[33mcommit 4dcaae83629d3ab667bd8f52f29fdb08b3e88441[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 13:51:38 2024 +0200
+
+    p
+
+[33mcommit ab903fa4eab4b2d24df6ac568baf7a52bc2de7b6[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 13:44:35 2024 +0200
+
+    o
+
+[33mcommit c48a2d2799d59a1a94a694cf0e55ed2ea0b8ff25[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 13:39:42 2024 +0200
+
+    l
+
+[33mcommit fb0140746543c811e51326cfeb061171e165962e[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 13:38:30 2024 +0200
+
+    k
+
+[33mcommit 71359d82aaa92e0dde3a011af06801a1e9696e6a[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 13:21:14 2024 +0200
+
+    j
+
+[33mcommit 29d5774c473d3fd751bce19d037fa00818cbb0df[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 13:09:45 2024 +0200
+
+    i
+
+[33mcommit 434acfbc7b2cae5481b861b09834ec8f326dd1c4[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 13:09:07 2024 +0200
+
+    i
+
+[33mcommit 6a03f125a53c4bfc09631cf45c6841af98ccc7b7[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 13:03:11 2024 +0200
+
+    h
+
+[33mcommit 03aedb5d3f57c2d05a510f91ae980dba7366db93[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 13:02:00 2024 +0200
+
+    g
+
+[33mcommit a1179f332093e95dc008cf8364040dbdd3d720d9[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 12:56:40 2024 +0200
+
+    f
+
+[33mcommit ba73a89171ef6f89d2b31383f96c933bfe9fb634[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 12:52:11 2024 +0200
+
+    e
+
+[33mcommit 523ca6d1033d0f9be859537adc3f5d9c8234d277[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 12:51:26 2024 +0200
+
+    d
+
+[33mcommit 654b7eb7af94c191a6ac9071e7efd56833966ad5[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 12:42:06 2024 +0200
+
+    d
+
+[33mcommit 4c3b63df255f2ec0c19b828f65ae7ba14c76a95f[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 12:39:19 2024 +0200
+
+    c
+
+[33mcommit 9a8a56fe971f8ca6c7135462be192ace9568639d[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 12:34:22 2024 +0200
+
+    b
+
+[33mcommit aeb3a37f7dc9eab8322dd00f71d22f89b93b84c7[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jul 19 12:00:55 2024 +0200
+
+    fixing typechecking issues, pointers now properly typecheck and generic types are properly cached
+
+[33mcommit 3c01a40ef258609769fe30a099af74451f87adbf[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Thu Jul 18 17:55:55 2024 +0200
+
+    fixing wide register returns
+
+[33mcommit 4f9d4f2e71b3818710bd6b72fc11fb6ad68dbc4f[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon Jul 8 18:08:58 2024 +0200
+
+    arrays work i guess
+
+[33mcommit 25bbe247e954b64c1d4a1231919167ee473626a9[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon Jul 8 11:00:35 2024 +0200
+
+    added example for struct patters
+
+[33mcommit ab41d49a3d2d5f689de880faf5f7c21f54df6c38[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon Jul 8 10:14:38 2024 +0200
+
+    some stuff
+
+[33mcommit 11cb875882200077619f720ea26417ea35ec5a6c[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon Jul 8 10:13:50 2024 +0200
+
+    some stuff
+
+[33mcommit 8984dce0e7d72be3624931a19e0e93ca712c9fe5[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon Jul 8 07:44:06 2024 +0200
+
+    more dependencies removed
+
+[33mcommit fd64968f3ad481355b415238d0566e91c1a34758[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon Jul 8 07:27:40 2024 +0200
+
+    more garbage
+
+[33mcommit e00f2f08c84197900ab365e551fe791cf06907a4[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon Jul 8 07:22:53 2024 +0200
+
+    removing garbage
+
+[33mcommit 880cd66c6677cb5f8b87ea6a76b1385113b2767c[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Jul 7 19:16:15 2024 +0200
+
+    on the journey twards struct destruct
+
+[33mcommit fa41c56cb3ed1fa8745a1fb790fa3f58707406e7[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Jul 7 18:21:07 2024 +0200
+
+    interstellar
+
+[33mcommit efa7271a5917c9b78ed06563df2bea13f895f8ca[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Jul 7 14:52:31 2024 +0200
+
+    brahmaputra 4
+
+[33mcommit bd7384123c63032711daf5fb0fc6ff428df859d0[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Jul 7 14:29:37 2024 +0200
+
+    brahmaputra 2
+
+[33mcommit e9589ebcae580637f4237dc89cdd6b231867b85a[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Jul 7 14:26:43 2024 +0200
+
+    brahmaputra
+
+[33mcommit 22f925b3f5c66c44172a4358fe7c08895a2f292f[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Jul 7 13:44:20 2024 +0200
+
+    bruh
+
+[33mcommit 3807fe22daadc53efdb09f5b7a2e6884ae71ab70[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Jul 7 13:42:48 2024 +0200
+
+    YEEEEEEEEEEEEEEEEEEEEEEEEEEEES
+
+[33mcommit 12c7467be218e8008b2d5c8f748cabb47c874d69[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Jul 7 12:15:48 2024 +0200
+
+    removing string optimizations
+
+[33mcommit cdc8cb35f7d0e187883a87f283caab756208c55c[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat Jul 6 23:02:49 2024 +0200
+
+    GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH, I did not delete unwanted relocations
+
+[33mcommit 36bd1a796bc70b0842a065a7fc68e0479f0e40c4[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat Jul 6 23:02:04 2024 +0200
+
+    GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAH, I did not delete unwanted relocations
+
+[33mcommit 59705c062dbd0eeeaf2feb4a76230a393672c646[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat Jul 6 15:18:57 2024 +0200
+
+    adding better api
+
+[33mcommit 9fe734c68c954274d17e959a3d0e29e58a5345a1[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat Jul 6 15:05:56 2024 +0200
+
+    adding better api
+
+[33mcommit dc0562553ddf81da0d649a318d5181b87d17621a[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat Jul 6 14:58:50 2024 +0200
+
+    adding better api
+
+[33mcommit 91907a90ff2312526278d11d4d76bc3afbf3ff8b[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Tue Jul 2 14:49:05 2024 +0200
+
+    -__-
+
+[33mcommit e147358fce9b1ee7230a0a50e6f8fa3556bcbec0[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Tue Jun 25 21:51:41 2024 +0200
+
+    adding spart fmt to struct ctors
+
+[33mcommit f9e46b4641d0505ace19fbc431d53ec358909f97[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Tue Jun 25 21:41:12 2024 +0200
+
+    added formatting
+
+[33mcommit 93deeee6b99aa02392c18048016c8d3b02515fd2[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Tue Jun 25 19:55:25 2024 +0200
+
+    adding comments
+
+[33mcommit 876690319fa83cfad1166d981bc998399d501bb2[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Tue Jun 25 19:46:48 2024 +0200
+
+    slight improvement
+
+[33mcommit c835317287c40c65396f5dc8ced53d8f5dcea9ae[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Tue Jun 25 19:22:49 2024 +0200
+
+    slight improvement
+
+[33mcommit 8442b55aa6e3dd197f3aa14aa2bed8ea22a98946[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Tue Jun 25 19:13:42 2024 +0200
+
+    improved exer
+
+[33mcommit e07265c88ba639946c96ca931d5e9a30b54462b7[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Tue Jun 25 19:12:35 2024 +0200
+
+    improved exer
+
+[33mcommit 6a69042cb701e29516e18c2e08b170e935bad167[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Tue Jun 25 18:39:59 2024 +0200
+
+    improved exer
+
+[33mcommit c85437e4e8299e68ac567dee3e11ef38fc192d72[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon Jun 24 17:45:58 2024 +0200
+
+    fixed a significant bugus
+
+[33mcommit 76b3f9ff4be69c04f3e786d220cf56c7ad373364[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon Jun 24 17:26:00 2024 +0200
+
+    pekomaaaaa
+
+[33mcommit 66c3f7b0d42604bdbebaf68a22020c5d5c7c4275[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Jun 23 13:55:48 2024 +0200
+
+    cleanup
+
+[33mcommit b04d9e517e87fbaa25dabdaec6070cba53d9a8b4[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Jun 23 09:26:03 2024 +0200
+
+    tests pass again
+
+[33mcommit b46c64db4faf8ed6dbcd8f8b03fe40dcd92be608[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Jun 23 09:09:33 2024 +0200
+
+    tests pass again
+
+[33mcommit 6de8496aa5e367fcac4c2a1d0a9c8e5b1c4d3f68[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri Jun 21 23:07:32 2024 +0200
+
+    whew
+
+[33mcommit 499fe34f1d8a8391b1d420e778e28dcf9b2866dc[m
+Merge: 20903ef 36d978d
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Thu Jun 20 11:23:37 2024 +0200
+
+    psl
+
+[33mcommit 36d978d7981908bd03ab373d6439f6d2a5457dde[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Thu Jun 20 11:18:36 2024 +0200
+
+    cleaning up the docs
+
+[33mcommit bd2a49d29a9f34549df6cd736b2ae2c3bf95cfb2[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat Jun 15 10:49:02 2024 +0200
+
+    brah
+
+[33mcommit 1c8645bf11d74fa8c70c46db05a9f9a0c9aaa2cd[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat Jun 15 10:48:42 2024 +0200
+
+    fixing pre
+
+[33mcommit 1624559e7b4522ce28a935e24a3d5c04b197a1c8[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat Jun 15 10:46:53 2024 +0200
+
+    little guide to add examples
+
+[33mcommit 1ca5d896443551204d147d97f6a5a0092486f80a[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat Jun 15 10:38:16 2024 +0200
+
+    pup
+
+[33mcommit 61ecbbd304a7dad35e1fd7ce1979aeac027e10fb[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat Jun 15 10:37:50 2024 +0200
+
+    putting tests as examples in readme
+
+[33mcommit 002a7df5091db3c04190e6ece2707a300deaf260[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat Jun 15 09:37:19 2024 +0200
+
+    adding more elaborate directive example
+
+[33mcommit 20903ef2948b6294597cccb999028028a3d2db61[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Wed Jun 12 16:29:41 2024 +0200
+
+    smh my head
+
+[33mcommit aafcb2fbbdabc77aff350021d94c0ea7843978c9[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Thu Jun 6 15:39:10 2024 +0200
+
+    size improvement
+
+[33mcommit 98862edd58be781068f37221328265256c9c60be[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat Jun 1 20:30:07 2024 +0200
+
+    other stuff
+
+[33mcommit b9de362ba24988cbf428fe62e34717051b3b1c34[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat Jun 1 20:29:35 2024 +0200
+
+    making modules work
+
+[33mcommit e494785f93dad2722ebd9e5d81c2bcb3c471cc07[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon May 20 14:11:58 2024 +0200
+
+    some stuff
+
+[33mcommit aef9951bc50c078677063cc1b5fc9b4824a0feca[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun May 19 18:20:42 2024 +0200
+
+    implementing comptime constants
+
+[33mcommit b922dbd2329525ff461f64fef978a1154e682c90[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri May 17 19:53:59 2024 +0200
+
+    making progress on parallelization
+
+[33mcommit 71c4d3632a044ff74b423179f103c1518faf1f57[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Thu May 16 22:56:53 2024 +0200
+
+    welp that was an accident
+
+[33mcommit 8cb9f2eaac76f445a17a39cf40b6c3f59f083347[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Thu May 16 16:54:12 2024 +0200
+
+    fixing stack to what compiler assumes
+
+[33mcommit aae217dd00cc5ce1b7fc221947e5f62379ed78f8[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Thu May 16 16:50:29 2024 +0200
+
+    making better use of parameter and return registers (use register 2 for arguments when possible)
+
+[33mcommit 4502a645140354b365b39f38d3f56249ee776ae3[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Thu May 16 13:32:04 2024 +0200
+
+    some cleanup and bug fix
+
+[33mcommit ca1d471646d39dc925faa00b8500691db4b5a9b6[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Thu May 16 13:29:16 2024 +0200
+
+    adding imm operations is come cases
+
+[33mcommit 2dff9f7244cfcf5d4a58f0defb343fd6febf4442[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Thu May 16 12:56:33 2024 +0200
+
+    slightly optimizing assignment
+
+[33mcommit 3127d04e41ac4c325d843094752ca5fac4489d98[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Thu May 16 12:42:11 2024 +0200
+
+    doing same for arguments
+
+[33mcommit 589a30c8a3fa9de3a0bb74dd35c0979408077574[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Thu May 16 12:23:37 2024 +0200
+
+    making the variables smarter (only putting then on stack when they get referenced)
+
+[33mcommit 8b81cfef3729118798ca25787ff5afb070c83844[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Wed May 15 14:39:36 2024 +0200
+
+    cargo update
+
+[33mcommit 6b74640c3fdc29d40aaa04faff31cff9acaa5b08[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Wed May 15 14:37:03 2024 +0200
+
+    accident
+
+[33mcommit 87ba7aa2030bdeb251259a8b9d13287f0a0e8560[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Wed May 15 14:36:38 2024 +0200
+
+    removing deendence on macros with a simple build script
+
+[33mcommit 78f9eb6acc35319b2cbf8e029132b44cab7518e9[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Wed May 15 11:10:20 2024 +0200
+
+    implementing codegen for all the operators
+
+[33mcommit 3c09a5f23e2b1c8fa979bfa405387c8cae64cfe5[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Wed May 15 10:37:39 2024 +0200
+
+    adding '<op>=' syntax
+
+[33mcommit 70955c1792791070a34c82b904213aa84e572242[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Tue May 14 23:07:32 2024 +0200
+
+    adding directives
+
+[33mcommit d8a922df264a6bbb292bbb33d48062d7a36d96b5[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Tue May 14 15:03:36 2024 +0200
+
+    painfully, but suddle bugs with pointers are now fixed
+
+[33mcommit 9aa5da82c941fb21a31ececd85b105a66556a137[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Tue May 14 14:01:40 2024 +0200
+
+    saving before refactoring experiment
+
+[33mcommit fb481a060076a9085b2cadc508743baac02605a6[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Tue May 14 12:17:39 2024 +0200
+
+    making stack reclamation
+
+[33mcommit d90f386bd2253d64f867c3c826fba881f67fb1e9[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon May 13 15:27:09 2024 +0200
+
+    adding an edge case
+
+[33mcommit c14e6c352d309a11416155fe48fd3f81f42d3c24[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon May 13 15:24:48 2024 +0200
+
+    fixing upcating bugs related to pointers
+
+[33mcommit 9ccf91d0724fcd8bcf56297d1eaa766e01edeeea[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon May 13 14:23:19 2024 +0200
+
+    adding pointer arithmetic test
+
+[33mcommit 7cca9a368395696f83c86dad507bdf12de3d21dc[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon May 13 13:36:29 2024 +0200
+
+    adding different-sized integers
+
+[33mcommit b28baa86f793737c8e2e76e6d00e04dcb090252e[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon May 13 11:05:35 2024 +0200
+
+    adding destination semantics for expressions
+
+[33mcommit 2226a47aaab7e200d57dc9cf8820d90a1f95ad94[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon May 13 09:55:09 2024 +0200
+
+    fixing struct regurns
+
+[33mcommit 0aec47e985eb52094203da6a6b35c96d11c03494[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon May 13 09:38:33 2024 +0200
+
+    fixing struct regurns
+
+[33mcommit 5c38115119b4ebb2f82575c4b71a267342fd41f3[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Mon May 13 00:02:32 2024 +0200
+
+    adding simple cli
+
+[33mcommit c3cbd054f753473c19c12049593f7901b5e4f051[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun May 12 23:45:28 2024 +0200
+
+    improving code
+
+[33mcommit 06e30529bf7a8804bf74532e05f934bcfa85a0cf[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun May 12 23:19:45 2024 +0200
+
+    added better error reports
+
+[33mcommit 4ec635dc56572bcf8b9ad5cba5f7c1b4f98d0ccc[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun May 12 22:40:28 2024 +0200
+
+    proper type display and pointer types
+
+[33mcommit a08856a464a93da3dfee77956dfc7dc65c037e0b[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun May 12 20:14:46 2024 +0200
+
+    fising spec
+
+[33mcommit d5a5c932e7b2b28511c65737a53c466ce96323ea[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun May 12 20:10:50 2024 +0200
+
+    finishing structures
+
+[33mcommit bc598864289b942b1ebe13d025c4299a32d4c536[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun May 12 14:56:59 2024 +0200
+
+    adding per function dead code elimination
+
+[33mcommit f87959aacba2348255c0c073dc1f1a65474c5421[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun May 12 13:13:36 2024 +0200
+
+    adding structures
+
+[33mcommit 80b05779ea40f98450f795e8badbfcb06512897c[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun May 12 12:21:40 2024 +0200
+
+    adding struct syntax
+
+[33mcommit 4bb5ec1953aadf4c27c7503459323defab7bdde9[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun May 12 12:16:40 2024 +0200
+
+    adding struct syntax
+
+[33mcommit 2aa315a86309d8a6927d6eb52ca7594fecc43d14[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun May 12 11:53:21 2024 +0200
+
+    accident
+
+[33mcommit 86013a50a43d196adba0af5857504452716b58b6[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun May 12 11:52:58 2024 +0200
+
+    identifiers are now properly checked
+
+[33mcommit 465b185452de3633d181eab83a7751b031dfa878[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat May 11 22:23:58 2024 +0200
+
+    foo bar
+
+[33mcommit b794fa7c3caa664156364bae8cb0b9fdcd08fd94[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat May 11 22:22:08 2024 +0200
+
+    foo bar
+
+[33mcommit ebefc855669d743c0ede5b69c259c598c820cce2[m
+Author: able <abl3theabove@gmail.com>
+Date:   Sat May 11 15:21:07 2024 -0500
+
+    :3 Breaky
+
+[33mcommit a3c4b878b2fe2475260d4acd0b97627eb81acf8c[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat May 11 18:16:27 2024 +0200
+
+    adding loops
+
+[33mcommit 7f32e7775c44522d7988cf6226365162ca22e724[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat May 11 17:05:22 2024 +0200
+
+    making if statements without else branch work
+
+[33mcommit 1d74f27b0ec6279a705af5d46832acf2bfb93821[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat May 11 16:04:13 2024 +0200
+
+    making the functions kind of walk
+
+[33mcommit 7435218999af438ed7a5a8061ba669ae2b851f31[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat May 11 12:51:32 2024 +0200
+
+    fixing relative jumps to not offset from immidiate adress but from instruction adress
+
+[33mcommit cf99091a4545aedfd4734bf57448a32e8cee7dca[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri May 10 22:54:12 2024 +0200
+
+    now compiling some trivial arithmetic
+
+[33mcommit 81952cfc4035b9456834fcad394d178696598e85[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri May 10 21:38:15 2024 +0200
+
+    compiling return stmt
+
+[33mcommit 68d53544fd384462656e2964344a98e4dd0c506b[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri May 10 21:33:42 2024 +0200
+
+    compiling return stmt
+
+[33mcommit aa77a2f82273dbe84d3ccf41bbf252ddac1ac453[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Fri May 10 15:29:11 2024 +0200
+
+    fixing JALA and JAL saving self reference instead of reference to the next instruction
+
+[33mcommit b80528bfd78666b494b54e8b1575f2385700023d[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Thu May 9 23:43:18 2024 +0200
+
+    accident
+
+[33mcommit 1c08148dc91e47cde5d1fa19cc88dc0b7c59389f[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Thu May 9 23:41:59 2024 +0200
+
+    starting from zero again
+
+[33mcommit 774735b515d3b917d5304bcb5ff7ac751024d23b[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Thu May 9 18:24:30 2024 +0200
+
+    ups
+
+[33mcommit 870c1f47188f79f1befe5565d5e37418b22fb5d9[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Thu May 9 18:22:31 2024 +0200
+
+    blah
+
+[33mcommit 326adf47ce02d521e41b6012baf798d5a7411301[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Thu May 9 18:16:01 2024 +0200
+
+    wha
+
+[33mcommit 37ff58c5e55fbb0924674d509905048be80f3aba[m
+Author: able <abl3theabove@gmail.com>
+Date:   Mon Apr 29 05:02:33 2024 -0500
+
+    Removing old deprecated things.
+
+[33mcommit cbf4c6572a50fc190ca4e534a9ff625ba6471a9d[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Apr 16 15:34:12 2024 +0200
+
+    fixed hbasm
+
+[33mcommit 0070016f74fc21606375bda56b78d3997251fea5[m
+Author: Erin <erin@erindesu.cz>
+Date:   Thu Feb 22 23:57:29 2024 +0100
+
+    Documented hbasm
+
+[33mcommit 6c6e29479fef4b4c38db8cb55092a6de4536326f[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Feb 16 12:17:15 2024 +0100
+
+    xyzzy
+
+[33mcommit eb46b24a107934120b304f5068b4e9daf96c28d0[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Feb 16 11:49:32 2024 +0100
+
+    xyzzy
+
+[33mcommit 942839a5f8226898d94129437c31b60daa970d8e[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Feb 16 11:45:39 2024 +0100
+
+    xyzzy
+
+[33mcommit 9ddc336ecd5028966a583b892a9993848528f684[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Wed Feb 14 11:45:58 2024 +0100
+
+    fixing deprecated stuff, i hate this
+
+[33mcommit 34d1bf415e9de5053f5f546c153438811e41fa2d[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Feb 14 01:25:44 2024 +0100
+
+    Don't fail to compile on unsupported architectures
+
+[33mcommit c978b408e291ace10cb290d984e0b34668b27866[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Tue Feb 13 15:54:46 2024 +0100
+
+    running cargo updtae to fix the broken build on nightly
+
+[33mcommit fe9a0667b879ef28327782e54047c029576c9fcd[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Feb 4 22:36:52 2024 +0100
+
+    Maybe fixed questionable code
+
+[33mcommit 975ce8a9fe0c755212c8798137109998111f8290[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Feb 4 18:32:55 2024 +0100
+
+    more
+
+[33mcommit 8a3dd3001d1b6d20c4170015459de59b9d761a42[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sun Feb 4 10:34:16 2024 +0100
+
+    smh
+
+[33mcommit de723980dacf87540c7fc701a531957e9061f97b[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Feb 4 03:08:20 2024 +0100
+
+    The more macros, the merrier
+
+[33mcommit 4aa39f3fbc150824b75208f24262e0b93fedc661[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Feb 4 02:46:50 2024 +0100
+
+    a
+
+[33mcommit 5f8864e251453231fd91298c7c757da2b6566afc[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Feb 4 02:21:14 2024 +0100
+
+    Fixed stack allocation for debug
+
+[33mcommit bcbe47bcd67e9340c654a83e4675f8c98945e485[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Sat Feb 3 21:43:30 2024 +0100
+
+    some more progress on codegen
+
+[33mcommit 30ee6c84fc70475c69334319e1b496efb69720f6[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sat Feb 3 20:08:09 2024 +0100
+
+    Fixed x86 asm
+
+[33mcommit 6e464be33d214f2802bcfa7f97d9d5f19152b9c3[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Thu Feb 1 16:11:10 2024 +0100
+
+    adding more parsing with a sanity test
+
+[33mcommit 09aacff161e0927acb0f72526f9bb3ee4cb9baae[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Wed Jan 31 20:11:57 2024 +0100
+
+    establishing some syntax
+
+[33mcommit 433f2db4d1dace1e4b00305ac9ec7945db321873[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Wed Jan 31 17:54:38 2024 +0100
+
+    fixing some warnings
+
+[33mcommit e335e55aa0b784669aaed9aae502f486f812fdb2[m
+Author: mlokr <jdoka@crownsterling.io>
+Date:   Wed Jan 31 16:47:17 2024 +0100
+
+    removing useles import, super important change
+
+[33mcommit 8e0aeabc079346930c9d92352c9587880554a281[m
+Author: Erin <erin@erindesu.cz>
+Date:   Mon Jan 15 17:59:46 2024 +0100
+
+    Baka baka Erin, when you decode RRB, you have to bump it by RRB!
+
+[33mcommit a84e93d562ba5586a89e078f8d718f27d8920d83[m
+Author: Erin <erin@erindesu.cz>
+Date:   Mon Jan 15 17:51:08 2024 +0100
+
+    idk
+
+[33mcommit 8374dfe20a1f161e6cd543357ca88e48746ef5a7[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Jan 7 00:34:28 2024 +0100
+
+    Changed macro param
+
+[33mcommit e9e12427430a48022182043ed95ccf289a19029e[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Dec 19 12:36:54 2023 +0100
+
+    Fixed another typo
+
+[33mcommit f604a2463d5b10980853e945528b24f31ff26647[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Nov 29 21:07:16 2023 +0100
+
+    Fixed typo
+
+[33mcommit 59e38db874dea4e0be94fb28133fddfa1c3dcd03[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Nov 26 04:13:52 2023 +0100
+
+    Whoops.
+
+[33mcommit 8c257e921612273f5ece0015aa850c72a0f9b60b[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Nov 26 04:13:30 2023 +0100
+
+    More general runtime
+
+[33mcommit 84cc1db691483d0c9a4435012fbd8105edf623f2[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Nov 24 12:30:20 2023 +0100
+
+    Added fuzzer back
+
+[33mcommit 633e3adc617580b8e2ee15589f9f27a792d61ab7[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Nov 24 01:09:15 2023 +0100
+
+    Add basic Win32 support
+
+[33mcommit 7f981fe9a04ec6e30a877e8dc3f4d9f3e33a5c65[m
+Author: Erin <erin@erindesu.cz>
+Date:   Thu Nov 23 22:10:44 2023 +0000
+
+    It was not a typo, baka Erin.
+
+[33mcommit 43c36774a560959d7445585143b44ac4c59968e7[m
+Author: Erin <erin@erindesu.cz>
+Date:   Thu Nov 23 22:10:23 2023 +0000
+
+    Fixed typo in spec (thanks Ity ^^)
+
+[33mcommit 5dd0e22c0d1a85d90d0babda284d36cad3f950bb[m
+Author: Erin <erin@erindesu.cz>
+Date:   Thu Nov 23 17:35:11 2023 +0100
+
+    Moved module
+
+[33mcommit b161d46a5beb120da69d156b386d971a894754a6[m
+Author: Erin <erin@erindesu.cz>
+Date:   Thu Nov 23 16:25:06 2023 +0100
+
+    Changed docs a bit
+
+[33mcommit 42488e1e4a38b32c5cc2bbf49964c30d2808e811[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Nov 15 19:17:25 2023 +0100
+
+    Added stack hopefully maybe who knows
+
+[33mcommit b84ff7001406e5e465dc443898791d1768a65e68[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Nov 15 19:03:56 2023 +0100
+
+    funny thing
+
+[33mcommit b8432d544c517d6516d24227d9f820a75ca1a525[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Nov 15 18:23:43 2023 +0100
+
+    Baka baka Erin, do not forget to bump the opcode too!
+
+[33mcommit 207d8d7fa637f2dcb357bb9aa7a3f73f04fab46d[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Nov 15 18:11:29 2023 +0100
+
+    Bye file merged already into spec.md
+
+[33mcommit 569f154bcc344fc71f30401655cbacaaf04c61bd[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Nov 15 12:45:40 2023 +0100
+
+    Changed psABI spec
+
+[33mcommit 68094ce0ae6a9c9e65566de0c8283991015fce7b[m
+Merge: d255967 84dcbfc
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Nov 15 11:26:39 2023 +0000
+
+    Merge pull request 'The best kind of pull request' (#17) from bee/holey-bytes:master into trunk
+    
+    Reviewed-on: https://git.ablecorp.us/AbleOS/holey-bytes/pulls/17
+
+[33mcommit 84dcbfc6bb74fc082832e965b3e5421a1683d3c9[m
+Author: Bee <bee@glorpus.com>
+Date:   Tue Nov 14 01:46:40 2023 -0500
+
+    Fixed typo
+
+[33mcommit d26c285ca765fd2a73a68c0cbb15b5504bdf11b7[m
+Merge: d6ea5ad d255967
+Author: bee <bee@glorpus.com>
+Date:   Tue Nov 14 06:42:33 2023 +0000
+
+    Merge pull request 'Gooby' (#2) from AbleOS/holey-bytes:trunk into master
+    
+    Reviewed-on: https://git.ablecorp.us/bee/holey-bytes/pulls/2
+
+[33mcommit d25596712569a77903a05fbca67d363cab62d9e9[m
+Author: Erin <erin@erindesu.cz>
+Date:   Mon Nov 13 00:21:12 2023 +0100
+
+    Ehm?
+
+[33mcommit c5c8d23470be6bb85c80c85967ba230c47e9a197[m
+Author: Erin <erin@erindesu.cz>
+Date:   Mon Nov 13 00:12:18 2023 +0100
+
+    Fixed immediate ops
+
+[33mcommit aca8045a987715d836235ebfcc06d39269937bc3[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Nov 10 09:51:01 2023 +0100
+
+    Fixed assembler register symbols
+
+[33mcommit 398687d8bf9b0868a090e0244a0e2eb4a85765e1[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Nov 8 12:38:14 2023 +0100
+
+    Fixed some panics and some UB
+
+[33mcommit a7c4379976c7b60261224130f35e10724154a0b9[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Nov 3 09:49:42 2023 +0100
+
+    »fixed« fuzzer
+
+[33mcommit 949dd3ba6190bcf7ac667eec7057d89d7cd41e9f[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Nov 3 09:43:08 2023 +0100
+
+    Fixed rounding mode
+
+[33mcommit 37711809096a3d9297fca23b609b4bd3515da18b[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Nov 3 09:19:41 2023 +0100
+
+    more fmt
+
+[33mcommit 6b3a132451b7693660ab9b5223ae17f9920f3dc9[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Nov 3 09:01:26 2023 +0100
+
+    fmt
+
+[33mcommit b45d235312c5402581c418bab42f12e1820995ad[m
+Author: Erin <erin@erindesu.cz>
+Date:   Thu Nov 2 19:53:03 2023 +0100
+
+    Exit
+
+[33mcommit 9ee3e9cb5f4587e9f7bf2c8e197f79b197553fc5[m
+Author: Erin <erin@erindesu.cz>
+Date:   Thu Nov 2 16:53:44 2023 +0100
+
+    Public accessors
+
+[33mcommit 57f30109c8d5ccd3945076b2e86ed6d9add47ea1[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Oct 29 20:38:57 2023 +0100
+
+    Fixed smaller units
+
+[33mcommit d6243fa99f8076c18a5d94360f4cf7318d17e967[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sat Oct 28 03:29:02 2023 +0200
+
+    Squashed assembler
+
+[33mcommit 3a6d0fdd2d0dd38cbb329f48655493d76dbe7baf[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Oct 22 23:59:27 2023 +0200
+
+    fixed match
+
+[33mcommit 9b823ef66047bbcbef33a32c16481536a1b09285[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Oct 22 18:44:08 2023 +0200
+
+    Untypo'd
+
+[33mcommit 84aeac0b2af53cce1b6c26ab4cf2e2d1c7e5bcd6[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Oct 22 18:43:44 2023 +0200
+
+    Hints of ABI
+
+[33mcommit fc4118938e235be286523d5f0607dfe5dd4b5232[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Oct 22 18:36:32 2023 +0200
+
+    Spec update
+
+[33mcommit cb557d136102bd743ca74264d2f492cce8ffaf08[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Oct 22 18:18:50 2023 +0200
+
+    Updated spec!
+
+[33mcommit 2715bc9107f378940837b6ca4ac15a91aa1920cc[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Oct 22 16:17:51 2023 +0200
+
+    Some fmt
+
+[33mcommit 8182abca980149f35a5ce35fa40f75bd9ac6f516[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Oct 22 15:08:45 2023 +0200
+
+    Added assembler
+    
+    - its a bit cursed, prolly broken, but at least something
+
+[33mcommit 83563fff84b392d0110205081d30c3f8dc69da24[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Oct 22 14:46:45 2023 +0200
+
+    Maybe fixed relative addressing bugs
+
+[33mcommit b4923cfb953b203412f25823b2c5dbf4338b7730[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Oct 22 04:21:45 2023 +0200
+
+    Removed UB
+
+[33mcommit eab47db4d6aae10f2e3c0dba97a283d906e1dde4[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Oct 20 12:35:45 2023 +0200
+
+    chore: cargo update
+
+[33mcommit 4b45407a70e9032b5431c700a5027af66f6de0e5[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Oct 20 02:05:00 2023 +0200
+
+    Added test example
+
+[33mcommit a944a145ed6b16ac25eb692b6de409ad297cd7ec[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Oct 20 00:42:45 2023 +0200
+
+    relative JAL
+
+[33mcommit 0e701e31b5cd266f58b1b7dd4666aad52bee0e04[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Oct 20 00:12:32 2023 +0200
+
+    Updated runtime stuff
+
+[33mcommit 0cb20d5727b83ca6685cc6d49200ff42f849e0e2[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Oct 18 12:14:24 2023 +0200
+
+    New float instructions, Linux runtime added, some other stuff I forgor
+
+[33mcommit 889aefe87adb57129d958ff999d17e9ddd322c71[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Oct 1 16:02:06 2023 +0200
+
+    Changed relative addressing
+
+[33mcommit 59be9068359d86edd7de7dd696d28a6ec7006300[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Oct 1 01:52:26 2023 +0200
+
+    Sus2
+
+[33mcommit 441356b6f290d9af9d98f996787c42ee6f19df5c[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Oct 1 01:51:51 2023 +0200
+
+    Sus stuff
+
+[33mcommit 2f8612c6d2a5ae138ec7f70ddbea533db637ca00[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Sep 29 09:10:36 2023 +0200
+
+    Added relaxed relative 16 bit instructions
+
+[33mcommit 3e4095da6f0496994af8bd36652d66c3176c2f99[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Sep 26 23:36:27 2023 +0200
+
+    Lottsa things changed
+
+[33mcommit b1bdbea991e3a898ca13b48ba0e74e84a263edc9[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sat Sep 16 01:02:14 2023 +0200
+
+    JMP
+
+[33mcommit 8c8c708279bdfb68364bc6021d72768df82338bb[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sat Sep 16 00:57:37 2023 +0200
+
+    JMP impl
+
+[33mcommit 35f90e94a87a639904db7848f6da22227c6c2848[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Sep 15 08:42:56 2023 +0200
+
+    Changed CMP handling and added simple JMP
+
+[33mcommit e7aa306e5d182fa05c53d3e513a6b09f48a9c6a0[m
+Author: able <abl3theabove@gmail.com>
+Date:   Tue Sep 12 01:38:32 2023 -0500
+
+    examples
+
+[33mcommit 42be580425a76e5ce53de85544706b3af556e765[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Sep 8 10:46:41 2023 +0200
+
+    ABI proposal part 1
+
+[33mcommit 9b8a4a718e3468823016945a3f1aaccd9f5d7207[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Aug 20 00:24:27 2023 +0200
+
+    a
+
+[33mcommit 0d2949024c9061ed935ae93fd64b70c5e0b61c3d[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sat Aug 19 23:57:48 2023 +0200
+
+    updated macro
+
+[33mcommit 26105bab70f61a0622eedf60304eab6041a9e552[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sat Aug 19 23:46:47 2023 +0200
+
+    bye stuff
+
+[33mcommit 006dcca309c5e7c640b6be7d647effab8da2fdba[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sat Aug 19 23:24:31 2023 +0200
+
+    cleaned up deps
+
+[33mcommit 3034469e89089b8ce7dc62cc2a5e3af6be863a14[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Aug 18 02:31:49 2023 +0200
+
+    Address type, changed behaviour on address overflow
+
+[33mcommit 30070818ae8b76c63c6c3f76963b18bf8a2ef049[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Aug 18 01:41:05 2023 +0200
+
+    Move
+
+[33mcommit d282b3d111e75413a47fabf6166288e6c5d06307[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Aug 18 01:28:02 2023 +0200
+
+    Softpage improvements
+
+[33mcommit 600528434be52e383d280b9376709459724f2234[m
+Author: Erin <erin@erindesu.cz>
+Date:   Thu Aug 17 01:37:53 2023 +0200
+
+    nope.
+
+[33mcommit 0deeaf3a7e09ef460273155c6f30cabf6995d16a[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Aug 15 17:21:55 2023 +0200
+
+    SPID
+
+[33mcommit 3decd01619f241e79d48aa4f6bf7b2ce485abe7f[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Aug 15 17:05:10 2023 +0200
+
+    Modified memory interface
+    
+    I have no idea what I am doing rn
+
+[33mcommit a071a4a7ae472cb2e3414093ea61ada18bd6c133[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Aug 15 16:33:56 2023 +0200
+
+    Notice
+
+[33mcommit af1a7d3bfab2453a2f300e4b1ed04cf430998def[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Aug 15 16:32:59 2023 +0200
+
+    Move stuff, deprecate softpage
+
+[33mcommit 3fdf936f77e60c54c4957682541a379e0b75d02a[m
+Merge: e2d3f46 96b7490
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Aug 11 02:19:26 2023 +0200
+
+    Some merges
+
+[33mcommit 96b749060d9ecb3a270e851d21e6122c4b457a1f[m
+Author: Erin <erin@erindesu.cz>
+Date:   Thu Aug 10 12:39:18 2023 +0200
+
+    h
+
+[33mcommit 770c2ebcf0cd64330ef34a4daf631936fe6b4db4[m
+Author: Erin <erin@erindesu.cz>
+Date:   Thu Aug 10 12:39:03 2023 +0200
+
+    move
+
+[33mcommit 6609bd10c5d4b901e8facabe48c7fb30b80cc40f[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Aug 9 20:19:12 2023 +0200
+
+    executable
+
+[33mcommit 97eaae1c764fee8c8927e80d191047d9d600a6d6[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Aug 9 03:12:09 2023 +0200
+
+    bai
+
+[33mcommit 1460a7a23075297ae463aa48e32615af7b83eea6[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Aug 9 03:01:42 2023 +0200
+
+    Edit 0x0
+
+[33mcommit 529fbdaed45402c76a6a0bd484070bb930760816[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Aug 9 02:59:11 2023 +0200
+
+    Comments
+
+[33mcommit 3ac80a2e3d513c2ea9c1cf35a3e16b6f29a19817[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Aug 9 02:57:25 2023 +0200
+
+    Forbid store
+
+[33mcommit 06d66289bc7159db656c8526473c7dea594634e8[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Aug 9 02:53:55 2023 +0200
+
+    Now finally, leaving Hardvard!
+
+[33mcommit 430ccd170dc9d06e96c636fc628d2e5afd7970c9[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Aug 9 02:33:03 2023 +0200
+
+    Von-Neumann?
+
+[33mcommit e2d3f46d3ff57016332dcbc4f97f09bc7fd80fd1[m
+Merge: d74b32a eadf9e0
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Aug 9 01:24:45 2023 +0200
+
+    Added TX instruction (definitely not named after Texas)
+
+[33mcommit eadf9e0a1fc29ae43d69ee13b917973333bc99ce[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Aug 9 01:24:13 2023 +0200
+
+    Termination instruction
+
+[33mcommit d74b32a38d5ab8018659eb7bb44f6e48b56883e9[m
+Merge: 8287b1b 4530ff0
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Aug 8 03:14:19 2023 +0200
+
+    Changed memory interfacing
+
+[33mcommit 4530ff049e3acc128ec5e933d417569f071d8541[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Aug 8 03:10:23 2023 +0200
+
+    fmt
+
+[33mcommit 2d2978eec70f767370aefebe069db100d8d7f74a[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Aug 8 03:10:11 2023 +0200
+
+    Added inner memory access
+
+[33mcommit bf50bcb2035c64976db23fd3eededc2640bddb5a[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Aug 8 03:03:15 2023 +0200
+
+    Changed stuff aroud
+
+[33mcommit 82f23ec2e2decf960ae5d1052ec1010c558d532b[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Aug 8 02:48:47 2023 +0200
+
+    Abstraction of memory
+
+[33mcommit 5264576274e4228c0a927d7eb7d2d5905effbdbf[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Aug 8 02:06:15 2023 +0200
+
+    Reimplemented BMC
+
+[33mcommit cdee99598ebcbe7764cd85e7efaacda57d608423[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Aug 8 01:44:33 2023 +0200
+
+    const perm check
+
+[33mcommit f130a27685e701ca615a3fdf143ee2934c0ff9df[m
+Author: Erin <erin@erindesu.cz>
+Date:   Mon Aug 7 01:50:21 2023 +0200
+
+    Shrunk
+
+[33mcommit aa186b35c25e9c888efc7b7a7f43668041bb5603[m
+Author: Erin <erin@erindesu.cz>
+Date:   Mon Aug 7 01:43:29 2023 +0200
+
+    Spec update
+
+[33mcommit 629fc969c29a872d2c5fa7bbba181a380d4e32ad[m
+Author: Erin <erin@erindesu.cz>
+Date:   Mon Aug 7 01:41:26 2023 +0200
+
+    Spec update
+
+[33mcommit 8287b1bdc1b1af7d6cba79c246ca3c2562449b16[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Aug 1 22:20:11 2023 +0200
+
+    Changed magic
+
+[33mcommit 73b998911ce9188c9c47cf0b2125eda704603243[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Aug 1 22:17:20 2023 +0200
+
+    a
+
+[33mcommit 1a5f101719b9dd57f131f09f8c8022db4bf270f3[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Aug 1 22:13:22 2023 +0200
+
+    Added magic
+
+[33mcommit a667c36d6cde27cb24fca9e7a7e6030ae050c898[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 26 21:23:03 2023 +0200
+
+    Link fix
+
+[33mcommit 582c7164451cf22131fe205e4e75cac8c928f23d[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 26 20:54:24 2023 +0200
+
+    Nightly opts
+
+[33mcommit 37a1923f1e74ab4c77c3a1f8d41941b0e4add05f[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 26 20:49:23 2023 +0200
+
+    Added some comments
+
+[33mcommit 10f9907c09c0f1c224ee48ffcc80f4c523690488[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 26 13:04:58 2023 +0200
+
+    Fixed mapping problems
+
+[33mcommit 2480a659475a1a6003f0130ab5dc3a067b16d081[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 26 12:41:18 2023 +0200
+
+    Whoops, this is 5-level paging, not 6-level paging
+
+[33mcommit 1ed153a9a2fe44afe8deafef8e9ed5a4cf4c134e[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 26 12:22:28 2023 +0200
+
+    Fixed memory (un)mapping
+
+[33mcommit 19df4538d78e8759dd9ee77e039918a6452e9be3[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 26 03:27:31 2023 +0200
+
+    Fixed page size, fuzzer now does memory.
+
+[33mcommit e07bfb2301c5cadd2b17c822f6c3337df6200212[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 26 02:35:27 2023 +0200
+
+    Decreased timeout
+
+[33mcommit cfe3203ef1b8ff526f0f51c0c15d7469e74c2226[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 26 02:31:06 2023 +0200
+
+    Increased timeout
+
+[33mcommit c4e062e742db8a2d5454a91907f4b6e7069d4ccc[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 26 02:30:22 2023 +0200
+
+    Increased timeout
+
+[33mcommit 83436507dfaa36613b15deed0be9f0dbb25648c3[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 26 02:28:14 2023 +0200
+
+    Fixed few overflows
+
+[33mcommit bdda987da9db132fd64aad60ca99e9ff94fbf37e[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 26 02:04:26 2023 +0200
+
+    BMC is now interruptable
+
+[33mcommit 65888377694451f9fd79ed1f690a2f17ab8d0e16[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 26 01:11:21 2023 +0200
+
+    restruct + no-alloc support
+
+[33mcommit f2ec9a3034862ab502e2c29ecfd110be2f457e29[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 26 01:01:53 2023 +0200
+
+    Added fuzzy tests
+
+[33mcommit 95c979cb83c5eef01016a602f92ecca1b9747bf9[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 26 00:17:10 2023 +0200
+
+    a
+
+[33mcommit 66f634a70fb8e651039b4d41ec3b67199aa242cf[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 26 00:16:50 2023 +0200
+
+    Added warning
+
+[33mcommit 077da50787871a38e5f865f142a643355763d693[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 26 00:12:50 2023 +0200
+
+    Reworked macros
+
+[33mcommit 5055626968d5fc19f81e1391216b411edd3348f3[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 26 00:01:25 2023 +0200
+
+    Added runtime bound checking
+
+[33mcommit 0f5d78bb27d5748ea1da6ab17e2ce3f792ead503[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Jul 25 23:48:59 2023 +0200
+
+    whoops, fixed builds.
+
+[33mcommit 668b324cc88dced28c1905ff006fa006c9481975[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Jul 25 23:47:51 2023 +0200
+
+    Valider
+
+[33mcommit 759514686aacde377ee3f8b394bda2d02f1c4aa4[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Jul 25 23:43:06 2023 +0200
+
+    Valider is now generated from macro (not done yet)
+
+[33mcommit 92793dc93b069b26139bb2d89aadbaf0b40dc8f6[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Jul 25 23:03:06 2023 +0200
+
+    Quick valider fix
+
+[33mcommit ac149a5319cbeefe7ab15780c4cb751ba3e88190[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Jul 25 22:44:08 2023 +0200
+
+    Commented valider
+
+[33mcommit f4c55ae3cc9b62e34f19a3108d5854917d2bcf05[m
+Author: able <abl3theabove@gmail.com>
+Date:   Tue Jul 25 12:20:35 2023 -0500
+
+    changes I GUESS
+
+[33mcommit a82686ec074a0d75cd18c808c84878eb340bd9c9[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Jul 25 19:10:00 2023 +0200
+
+    Fixed endian stuffs
+
+[33mcommit b3a6c42af343ef0c8c871e0f07e5d32586a269fd[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Jul 25 14:41:54 2023 +0200
+
+    Added notice
+
+[33mcommit d20447dd15d82f186f6f3efe5a8bd54157548c0f[m
+Author: Erin <erin@erindesu.cz>
+Date:   Mon Jul 24 20:41:10 2023 +0200
+
+    Kekw
+
+[33mcommit 193be0bd5ad8a04d7f212c8baca57f8626c33d40[m
+Author: Erin <erin@erindesu.cz>
+Date:   Mon Jul 24 18:48:42 2023 +0200
+
+    Removed some macros
+
+[33mcommit fce3fa5210fb5b343725cee23408976bee0a8f04[m
+Author: Erin <erin@erindesu.cz>
+Date:   Mon Jul 24 16:48:13 2023 +0200
+
+    fixed imm shl/r
+
+[33mcommit 4ca4e81ac3c66feeaa229d0f4d45b57715ab7638[m
+Author: Erin <erin@erindesu.cz>
+Date:   Mon Jul 24 16:37:37 2023 +0200
+
+    Fixed panic on shift outta bounds
+    
+    - Pointed out by 5225225
+
+[33mcommit dcfd51999d2b5675ff18d4f8b9384c13c600c687[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sat Jul 22 02:42:43 2023 +0200
+
+    Fixed missing /
+
+[33mcommit 1532c501a6ab2a8b685212fbdc89d56ce9b274f8[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sat Jul 22 02:42:21 2023 +0200
+
+    added contribution guide to instructions
+
+[33mcommit 8eebbacb91b6a9522d9621073cd1cd08b707080e[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sat Jul 22 02:34:41 2023 +0200
+
+    Name correction
+
+[33mcommit c621a5c71d7e91fd4901256fdea5a200c1e8d94a[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sat Jul 22 02:29:05 2023 +0200
+
+    Edits.
+
+[33mcommit 8d5d22eae19b710cf1c0f9719059ff66ae2b769c[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sat Jul 22 02:28:05 2023 +0200
+
+    Moved lore
+
+[33mcommit 3892a719eb941532c54d83a3ac15203deca7bbcd[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sat Jul 22 02:27:03 2023 +0200
+
+    A
+
+[33mcommit 47323e140c5bf8c151347353aa474ae0d84318fe[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sat Jul 22 02:26:29 2023 +0200
+
+    added notice.
+
+[33mcommit 3833beb17db06b4844edb0a4649493055e5e2e34[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sat Jul 22 02:26:03 2023 +0200
+
+    More comments
+
+[33mcommit afbf6dd2e41cba429c2d376167a126d5fe051293[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sat Jul 22 01:06:41 2023 +0200
+
+    Removed pagetable hack
+
+[33mcommit ec7053a2898047fd7879d808234eca01bc41cdc1[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sat Jul 22 01:03:09 2023 +0200
+
+    Zero alloc BMC!
+
+[33mcommit 1a53c80a621b60de5cc3b8ebdf1f9640bcfe2451[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sat Jul 22 00:46:30 2023 +0200
+
+    Fixed bug + spec update
+
+[33mcommit 6fe1fd91bf78a9e3421e9c9a591e13aed9694bb6[m
+Author: Erin <erin@erindesu.cz>
+Date:   Thu Jul 20 20:47:50 2023 +0200
+
+    Mapping + bye bye memory leaks
+
+[33mcommit ac7fdc7688032d5001cba454f9d7ca4a9e786cfd[m
+Author: able <abl3theabove@gmail.com>
+Date:   Sat Jul 15 06:27:11 2023 -0500
+
+    code and stufd
+
+[33mcommit 9cf8789e9a4b6ebc66814bc2a766bd27c73379bb[m
+Merge: 3534b26 a21f68f
+Author: able <abl3theabove@gmail.com>
+Date:   Thu Jul 13 04:23:06 2023 -0500
+
+    Merge branch 'master' of ssh://git.ablecorp.us:20/AbleOS/holey-bytes
+
+[33mcommit 3534b26946fd321b58a3e4cefb443336f97e9611[m
+Author: able <abl3theabove@gmail.com>
+Date:   Thu Jul 13 04:23:00 2023 -0500
+
+    Add some example code for hbasm
+
+[33mcommit a21f68ffa6701400fe7a347b92dc71286fbd1ba5[m
+Merge: 446225b 7833334
+Author: Erin <erin@erindesu.cz>
+Date:   Thu Jul 13 09:13:34 2023 +0000
+
+    Merge pull request 'Added UN instruction and fixed UB' (#7) from fix-ub into master
+    
+    Reviewed-on: https://git.ablecorp.us/AbleOS/holey-bytes/pulls/7
+
+[33mcommit 78333347132672bb7f9ba87ddcdec0306f9fdb07[m
+Author: Erin <erin@erindesu.cz>
+Date:   Thu Jul 13 11:11:35 2023 +0200
+
+    Update spec
+
+[33mcommit 141c5f524f19f8afdbcc9d6cfb0e7e7fd6558d8a[m
+Author: Erin <erin@erindesu.cz>
+Date:   Thu Jul 13 11:05:41 2023 +0200
+
+    Added UN instruction and fixed UB
+
+[33mcommit 446225bcf6e00d32e435541edc534db8c10161b9[m
+Merge: beb6e23 d6ea5ad
+Author: Erin <erin@erindesu.cz>
+Date:   Thu Jul 13 09:09:44 2023 +0000
+
+    Merge pull request 'Fixed the number of registers BRC copies' (#6) from bee/holey-bytes:master into master
+    
+    Reviewed-on: https://git.ablecorp.us/AbleOS/holey-bytes/pulls/6
+
+[33mcommit d6ea5adf49c04de8da82d833f68ac75384752baa[m
+Merge: 898738f beb6e23
+Author: bee <mrhumanman2@gmail.com>
+Date:   Wed Jul 12 17:13:38 2023 +0000
+
+    Merge pull request 'merge' (#1) from AbleOS/holey-bytes:master into master
+    
+    Reviewed-on: https://git.ablecorp.us/bee/holey-bytes/pulls/1
+
+[33mcommit 898738fb40704883ea30b731b504e4c756882328[m
+Author: Egggggg <mrhumanman2@gmail.com>
+Date:   Wed Jul 12 13:12:00 2023 -0400
+
+    fixed the number of registers BRC copies
+
+[33mcommit beb6e23d716e16fa8e9cb577d60cd094775b7de7[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 12 14:56:11 2023 +0200
+
+    Map APIs
+
+[33mcommit 5afd081c2a43a5f959aae336c66ea30fbbc0891f[m
+Author: Egggggg <mrhumanman2@gmail.com>
+Date:   Wed Jul 12 06:50:07 2023 -0400
+
+    hehe oops
+
+[33mcommit 81cf5c43363beaeef31d1b4923816f0915d1532c[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 12 12:45:50 2023 +0200
+
+    JMP → JAL + spec fix
+
+[33mcommit 63cf7ac0b0e65770433d4ce6ee1a05868668a807[m
+Author: Egggggg <mrhumanman2@gmail.com>
+Date:   Wed Jul 12 06:25:38 2023 -0400
+
+    fixed argument order of BMC and BRC
+
+[33mcommit 3cb3ee1feea96a02841c87ce5ed1361839c0ee5d[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 12 02:24:05 2023 +0200
+
+    fixxed lint
+
+[33mcommit 4dfbe939199d2664920b667903272e98f306bc54[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 12 02:23:47 2023 +0200
+
+    special-cased BRC
+
+[33mcommit 6791b6d48e2d896ce58d439ce1255ed5935c3c87[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jul 12 02:16:23 2023 +0200
+
+    Rewritten assembler
+
+[33mcommit 0ed89234a753618bb3f84d75f2c3528cd3341c49[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Jul 11 17:04:48 2023 +0200
+
+    Revised trap API
+
+[33mcommit 6afec2a031eb6f183f725c9a8009244b61903374[m
+Merge: 9196519 b83d183
+Author: able <abl3theabove@ablecorp.us>
+Date:   Tue Jul 11 09:36:39 2023 +0000
+
+    Merge pull request 'master' (#3) from IntoTheNight/holey-bytes:master into master
+    
+    Reviewed-on: https://git.ablecorp.us/AbleOS/holey-bytes/pulls/3
+
+[33mcommit b83d1838aa142746c81f3b7ce1d509a47721d67c[m
+Merge: e25a89d 9196519
+Author: IntoTheNight <intothenight@munir.fun>
+Date:   Tue Jul 11 09:28:48 2023 +0000
+
+    Merge pull request 'master' (#1) from AbleOS/holey-bytes:master into master
+    
+    Reviewed-on: https://git.ablecorp.us/IntoTheNight/holey-bytes/pulls/1
+
+[33mcommit e25a89d56dc0b5cefd0d1efbc8295ddcd18dc697[m
+Author: MunirG05 <munirgodil0@tutanota.com>
+Date:   Tue Jul 11 14:54:49 2023 +0530
+
+    the design is very human
+
+[33mcommit b72f0afe8412308d55d3a2a12e33d783a235f629[m
+Author: MunirG05 <munirgodil0@tutanota.com>
+Date:   Tue Jul 11 14:38:20 2023 +0530
+
+    add fancy errors
+
+[33mcommit 9196519fae726b6b477a0878f1eced6559759fd0[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Jul 11 10:33:55 2023 +0200
+
+    doc
+
+[33mcommit 6759fbd2abd3b09224f603f3dab06ef0157a0480[m
+Author: MunirG05 <munirgodil0@tutanota.com>
+Date:   Tue Jul 11 14:03:25 2023 +0530
+
+    tried to shove the timer back in
+
+[33mcommit 4f53fb1c875a9cd406b475c56b101f3e7f13e3b3[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Jul 11 10:32:26 2023 +0200
+
+    Moved
+
+[33mcommit ad96e83f095ac4667566fe2c59dbe0af2ed0c016[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Jul 11 10:31:03 2023 +0200
+
+    wrap around timer
+
+[33mcommit 5ee8a914798cb4a2291405dbf22f7b4b81c11e8d[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Jul 11 10:29:23 2023 +0200
+
+    Implement timer
+
+[33mcommit bde00c13f283c07c66bc75c4024b05aa09f212a4[m
+Author: Erin <erin@erindesu.cz>
+Date:   Tue Jul 11 02:08:55 2023 +0200
+
+    Improved assembler library
+
+[33mcommit b4dac1245be889fcda37cab0989e1848ba0909be[m
+Author: Erin <erin@erindesu.cz>
+Date:   Mon Jul 10 23:18:23 2023 +0200
+
+    Moved
+
+[33mcommit e700010e7f03203c677efbde667dea5d53edc923[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Jul 7 15:23:53 2023 +0200
+
+    Rename
+
+[33mcommit 2d34ed61d028305cc7dc7ecc9f7885b89d6992e6[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Jul 7 15:22:03 2023 +0200
+
+    Updated flots
+
+[33mcommit 3919aa810010b4f562cb419aac32ca0cb14edc59[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Jul 7 14:36:40 2023 +0200
+
+    assert char bit
+
+[33mcommit a548a7b08e1a3f72f7c925218b42badb31618c61[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Jul 7 14:32:46 2023 +0200
+
+    Updated C header
+
+[33mcommit 132fc1a6ed6d154abc5df24bc1402b3f365d3b4a[m
+Author: Erin <erin@erindesu.cz>
+Date:   Fri Jul 7 14:28:12 2023 +0200
+
+    Updated spec
+
+[33mcommit c31c9e9a54d310a59929ff8ac631d36100201785[m
+Author: able <abl3theabove@gmail.com>
+Date:   Mon Jun 26 05:23:52 2023 -0500
+
+    HBASM: derp forgot that deps also need to be nostd
+
+[33mcommit c26b5598981c860fbde7377ba1be66f414c705e7[m
+Author: able <abl3theabove@gmail.com>
+Date:   Mon Jun 26 05:18:14 2023 -0500
+
+    HBASM: no_std compatible now
+
+[33mcommit 907dd66d5e32ba8029a263343939d66e2a9e3cc0[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Jun 25 00:28:20 2023 +0200
+
+    Improved unhandled trap handling
+
+[33mcommit 2416526014664dbcde87713ddc6af026d16f7a92[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Jun 25 00:21:40 2023 +0200
+
+    Stole docs
+
+[33mcommit bb50c095387f9c7fa74282e1215a15274181086b[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Jun 25 00:18:31 2023 +0200
+
+    docs
+
+[33mcommit a7cf5e4847b2a29fb7a101adce7c7a0778ef0036[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun Jun 25 00:16:14 2023 +0200
+
+    Implemented traps
+
+[33mcommit 87ec6ded54c713995c27439c5a15dd79dd66ac2e[m
+Author: able <abl3theabove@gmail.com>
+Date:   Wed Jun 21 08:22:56 2023 -0500
+
+    Initial work on a simple serial driver for ableos
+
+[33mcommit 4a840a6ef012896ff81632b881acddff1c8c906e[m
+Author: able <abl3theabove@gmail.com>
+Date:   Wed Jun 21 08:22:21 2023 -0500
+
+    Update to stable
+
+[33mcommit 5ec6da9fb448b50074871da8bf122dc777b72ce2[m
+Author: able <abl3theabove@gmail.com>
+Date:   Wed Jun 21 07:54:10 2023 -0500
+
+    clear out assets
+
+[33mcommit fdca041e6b5abf6e605d1e027568d708f407c451[m
+Author: able <abl3theabove@gmail.com>
+Date:   Wed Jun 21 07:53:01 2023 -0500
+
+    NIX: fix nix-shell
+
+[33mcommit 06b11847720f605cce57b401a0c546ef1c6ab75e[m
+Author: Erin <erin@erindesu.cz>
+Date:   Wed Jun 21 02:07:48 2023 +0200
+
+    HoleyBytes, almost adhering the spec
+    
+    - Changed instruction encoding to be faster to match on
+    - Implemented all instructions defined in spec
+    - Bytecode validation
+    - Assembler
+    - Implemented 5 level paging (based on SV57)
+    - Implemented some degree of interrupts (though not fully adhering the spec yet)
+
+[33mcommit fb78e0a44a9d4cd2ae18888b408247fa17f32ada[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun May 28 23:38:26 2023 +0200
+
+    a
+
+[33mcommit 7eaa01f53c53b605f81a62dffd688c339bfb0f20[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun May 28 23:37:43 2023 +0200
+
+    fixup32
+
+[33mcommit 119ce4405f437e9a6a52861e52a9c30b3f70b40f[m
+Author: Erin <erin@erindesu.cz>
+Date:   Sun May 28 16:49:01 2023 +0200
+
+    Changed register handling
+
+[33mcommit eb3edea2e746bdd002f9f3b2df153caabcc6df2a[m
+Author: able <abl3theabove@gmail.com>
+Date:   Thu May 25 07:51:40 2023 -0500
+
+    CLEANUP: IDK if what is here works tbh glhf I'm sleepy
+
+[33mcommit f990f05c4c13e7d6b083a0390d816408f73dbcbb[m
+Author: able <abl3theabove@gmail.com>
+Date:   Wed May 24 08:07:29 2023 -0500
+
+    Begin work on a revamped HBVM
+
+[33mcommit 4223055c0cbcbb1136b4f3a59f21ecacd7f0bcd0[m
+Author: able <abl3theabove@gmail.com>
+Date:   Tue May 23 02:29:31 2023 -0500
+
+    minor changes and a bug fix
+
+[33mcommit e53a5eb83526c9c37972aa7c8d3fac32447edc79[m
+Author: able <abl3theabove@gmail.com>
+Date:   Mon May 22 23:44:40 2023 -0500
+
+    More test cases
+
+[33mcommit 49a45d62c6f7b7cfe96fe70c25f026587bd8e0c0[m
+Author: able <abl3theabove@gmail.com>
+Date:   Mon May 22 22:47:29 2023 -0500
+
+    add in test cases
+
+[33mcommit e3277e99a70d22fac3af6a3139e417b600e42bb7[m
+Author: able <abl3theabove@gmail.com>
+Date:   Mon May 22 09:03:52 2023 -0500
+
+    Attempt to support nix shell
+
+[33mcommit c7828a49406ee6c6813505d8d524c068a41f360f[m
+Author: able <abl3theabove@gmail.com>
+Date:   Mon May 22 09:01:13 2023 -0500
+
+    Adding a couple of tests
+
+[33mcommit 76302b4ca8aeda6597ee51cb1cf5f59a5d385c4f[m
+Author: Able <abl3theabove@gmail.com>
+Date:   Tue May 9 03:47:21 2023 -0500
+
+    I'm a genus
+
+[33mcommit 15c3ce1f69da36146ff3a10de797eb48b42ab786[m
+Author: Able <abl3theabove@gmail.com>
+Date:   Tue May 9 03:36:37 2023 -0500
+
+    rework architecture and add a "compiler"
+
+[33mcommit b2870bf2b074701f5f4fd756de4c73d3735c7b93[m
+Author: Able <abl3theabove@gmail.com>
+Date:   Sat May 6 07:50:29 2023 -0500
+
+    update environ call
+
+[33mcommit 1e47b6242f64213aefe20daada1855c13acb20b7[m
+Author: Able <abl3theabove@gmail.com>
+Date:   Sat May 6 07:35:20 2023 -0500
+
+    all caps
+
+[33mcommit 5909b8e520b180e88357ef1fa712aa51ad4141e3[m
+Author: Able <abl3theabove@gmail.com>
+Date:   Sat May 6 07:33:40 2023 -0500
+
+    beetp
+
+[33mcommit 46eb4c17a002e975dc48cf480ab89a832162b71d[m
+Author: Able <abl3theabove@gmail.com>
+Date:   Sat Apr 22 17:47:01 2023 -0500
+
+    bizare page unmapped error
+
+[33mcommit 7d8b0bae78509d1808548dd5dcf2abba56dce7cc[m
+Author: Able <abl3theabove@gmail.com>
+Date:   Sat Apr 22 17:17:49 2023 -0500
+
+    Implement address decoding
+
+[33mcommit 35b2baf0a4135f8da25dcd2550dfea5a2a40152d[m
+Author: Able <abl3theabove@gmail.com>
+Date:   Sat Apr 22 16:06:33 2023 -0500
+
+    adding in environ calls
+
+[33mcommit 685ddbbe74266c23f42b3eb73781899eff6384aa[m
+Author: Able <abl3theabove@gmail.com>
+Date:   Sat Apr 22 14:32:41 2023 -0500
+
+    minor change
+
+[33mcommit fef23d0f93e83371f6b809b71de7a91e3117b7d4[m
+Author: Able <abl3theabove@gmail.com>
+Date:   Sat Apr 22 13:00:19 2023 -0500
+
+    Update
+
+[33mcommit 28958d0810560dfd3ff289596a173457677289d4[m
+Author: Able <abl3theabove@gmail.com>
+Date:   Tue Apr 18 21:41:27 2023 -0500
+
+    restructure
+
+[33mcommit fb2c859db14aed40ac3538fb40b936cbb3f6b502[m
+Author: Able <abl3theabove@gmail.com>
+Date:   Tue Apr 18 18:08:30 2023 -0500
+
+    commit
+
+[33mcommit 1bf49eafe1b15bf94e488f7b280dee067b064527[m
+Author: Able <abl3theabove@gmail.com>
+Date:   Mon Apr 17 07:31:18 2023 -0500
+
+    Initial commit
