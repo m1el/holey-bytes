@@ -28,19 +28,18 @@ pass:
     ADD64 r33, r33, r35
     LD r35, r33, 0a, 8h
     ADD64 r34, r34, r35
-    CP r35, r32
-    LI64 r33, 1d
-    MULI64 r33, r33, 8d
-    ADD64 r32, r32, r33
-    LD r33, r32, 0a, 8h
-    MULI64 r33, r33, 8d
-    ADD64 r35, r35, r33
-    LD r33, r35, 0a, 8h
-    ADD64 r34, r34, r33
-    CP r1, r34
+    CP r33, r32
+    LI64 r35, 1d
+    MULI64 r35, r35, 8d
+    ADD64 r32, r32, r35
+    LD r35, r32, 0a, 8h
+    MULI64 r35, r35, 8d
+    ADD64 r33, r33, r35
+    LD r35, r33, 0a, 8h
+    ADD64 r1, r34, r35
     LD r31, r254, 0a, 40h
     ADDI64 r254, r254, 40d
     JALA r0, r31, 0a
-code size: 381
+code size: 378
 ret: 7
 status: Ok(())

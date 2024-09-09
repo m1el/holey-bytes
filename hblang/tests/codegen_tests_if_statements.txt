@@ -23,11 +23,10 @@ fib:
     CP r2, r32
     JAL r31, r0, :fib
     CP r32, r1
-    ADD64 r33, r33, r32
-    CP r1, r33
+    ADD64 r1, r33, r32
  1: LD r31, r254, 0a, 24h
     ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
-code size: 234
+code size: 231
 ret: 55
 status: Ok(())

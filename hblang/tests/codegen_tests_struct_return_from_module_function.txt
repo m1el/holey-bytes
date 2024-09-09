@@ -28,11 +28,10 @@ main:
     CP r33, r0
     LD r33, r254, 12a, 4h
     SXT32 r33, r33
-    SUB64 r32, r32, r33
-    CP r1, r32
+    SUB64 r1, r32, r33
     LD r31, r254, 16a, 24h
     ADDI64 r254, r254, 40d
     JALA r0, r31, 0a
-code size: 320
+code size: 317
 ret: 0
 status: Ok(())

@@ -15,11 +15,10 @@ main:
     MULI64 r33, r33, 4d
     SUB64 r32, r32, r33
     ADDI64 r32, r32, 1d
-    SLUI64 r32, r32, 0b
-    CP r1, r32
+    SLUI64 r1, r32, 0b
     LD r31, r254, 0a, 32h
     ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
-code size: 188
+code size: 185
 ret: 1
 status: Ok(())

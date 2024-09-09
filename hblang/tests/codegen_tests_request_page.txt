@@ -1,10 +1,11 @@
 main:
-    ADDI64 r254, r254, -8d
-    ST r31, r254, 0a, 8h
-    LI64 r2, 10d
+    ADDI64 r254, r254, -16d
+    ST r31, r254, 0a, 16h
+    LI64 r2, 400d
     JAL r31, r0, :create_back_buffer
-    LD r31, r254, 0a, 8h
-    ADDI64 r254, r254, 8d
+    CP r32, r1
+    LD r31, r254, 0a, 16h
+    ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
 create_back_buffer:
     ADDI64 r254, r254, -32d
@@ -26,12 +27,12 @@ create_back_buffer:
     JLTS r32, r34, :4
     LI64 r2, 255d
     JAL r31, r0, :request_page
+    CP r34, r1
     JMP :5
  4: CP r2, r32
     JAL r31, r0, :request_page
- 5: CP r34, r32
-    ADDI64 r34, r34, -255d
-    CP r32, r34
+    CP r34, r1
+ 5: ADDI64 r32, r32, -255d
     JMP :6
  3: CP r1, r33
  1: LD r31, r254, 0a, 32h
@@ -53,6 +54,6 @@ request_page:
     LD r31, r254, 0a, 32h
     ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
-code size: 440
+code size: 443
 ret: 42
 status: Ok(())

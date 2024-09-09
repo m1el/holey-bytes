@@ -10,8 +10,7 @@ main:
     JAL r31, r0, :drop
     LI64 r33, 0d
     LD r34, r32, 0a, 8h
-    ADDI64 r34, r34, -2d
-    CP r1, r34
+    ADDI64 r34, r1, -2d
     LD r31, r254, 8a, 32h
     ADDI64 r254, r254, 40d
     JALA r0, r31, 0a
@@ -31,6 +30,6 @@ modify:
     LD r31, r254, 0a, 24h
     ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
-code size: 315
+code size: 312
 ret: 0
 status: Ok(())

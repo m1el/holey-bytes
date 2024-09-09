@@ -692,6 +692,10 @@ impl Loc {
     fn is_stack(&self) -> bool {
         matches!(self, Self::Rt { derefed: true, reg, stack: Some(_), offset: 0 } if reg.get() == STACK_PTR)
     }
+
+    fn is_reg(&self) -> bool {
+        matches!(self, Self::Rt { derefed: false, reg: _, stack: None, offset: 0 })
+    }
 }
 
 impl From<reg::Id> for Loc {
@@ -1931,7 +1935,7 @@ impl Codegen {
                     self.ci.free_loc(value);
                 }
 
-                let loc = self.alloc_ret(sig.ret, ctx, false);
+                let loc = self.alloc_ret(sig.ret, ctx, true);
 
                 if should_momize {
                     self.output.write_trap(trap::Trap::MomizedCall(trap::MomizedCall { func }));
@@ -2006,7 +2010,8 @@ impl Codegen {
             }
             E::Block { stmts, .. } => {
                 for stmt in stmts {
-                    self.expr(stmt)?;
+                    let val = self.expr(stmt)?;
+                    self.ci.free_loc(val.loc);
                 }
                 Some(Value::void())
             }
@@ -2040,6 +2045,10 @@ impl Codegen {
                             TokenKind::Le => instrs::jgtu,
                             TokenKind::Lt if signed => instrs::jlts,
                             TokenKind::Lt => instrs::jltu,
+                            TokenKind::Ge if signed => instrs::jlts,
+                            TokenKind::Ge => instrs::jltu,
+                            TokenKind::Gt if signed => instrs::jgts,
+                            TokenKind::Gt => instrs::jgtu,
                             TokenKind::Eq => instrs::jne,
                             TokenKind::Ne => instrs::jeq,
                             _ => return None,
@@ -2187,7 +2196,23 @@ impl Codegen {
 
                 let lsize = self.tys.size_of(left.ty);
 
-                let lhs = self.loc_to_reg(left.loc, lsize);
+                let (mut lhs, dst, drop_loc) = if let Some(dst) = &ctx.loc
+                    && dst.is_reg()
+                    && let Some(dst) = ctx.loc.take()
+                {
+                    (
+                        self.loc_to_reg(&left.loc, lsize),
+                        if dst.is_ref() {
+                            self.loc_to_reg(&dst, lsize)
+                        } else {
+                            self.loc_to_reg(dst, lsize)
+                        },
+                        left.loc,
+                    )
+                } else {
+                    let lhs = self.loc_to_reg(left.loc, lsize);
+                    (lhs.as_ref(), lhs, Loc::default())
+                };
                 let right = self.expr_ctx(right, Ctx::default().with_ty(left.ty))?;
                 let rsize = self.tys.size_of(right.ty);
 
@@ -2212,24 +2237,33 @@ impl Codegen {
                         imm *= size as u64;
                     }
 
-                    self.output.emit(oper(lhs.get(), lhs.get(), imm));
-                    break 'ops Some(Value::new(ty, lhs));
+                    self.output.emit(oper(dst.get(), lhs.get(), imm));
+                    self.ci.regs.free(lhs);
+                    self.ci.free_loc(drop_loc);
+                    break 'ops Some(Value::new(ty, dst));
                 }
 
-                let rhs = self.loc_to_reg(right.loc, rsize);
-
+                let mut rhs = self.loc_to_reg(&right.loc, rsize);
                 if matches!(op, T::Add | T::Sub) {
                     let min_size = lsize.min(rsize);
                     if ty.is_signed() && min_size < size {
-                        let operand = if lsize < rsize { lhs.get() } else { rhs.get() };
+                        let operand = if lsize < rsize {
+                            lhs = self.cow_reg(lhs);
+                            lhs.get()
+                        } else {
+                            rhs = self.cow_reg(rhs);
+                            rhs.get()
+                        };
                         let op = [sxt8, sxt16, sxt32][min_size.ilog2() as usize];
                         self.output.emit(op(operand, operand));
                     }
 
                     if left.ty.is_pointer() ^ right.ty.is_pointer() {
                         let (offset, ty) = if left.ty.is_pointer() {
+                            rhs = self.cow_reg(rhs);
                             (rhs.get(), left.ty)
                         } else {
+                            lhs = self.cow_reg(lhs);
                             (lhs.get(), right.ty)
                         };
 
@@ -2241,9 +2275,12 @@ impl Codegen {
                 }
 
                 if let Some(op) = Self::math_op(op, signed, size) {
-                    self.output.emit(op(lhs.get(), lhs.get(), rhs.get()));
+                    self.output.emit(op(dst.get(), lhs.get(), rhs.get()));
+                    self.ci.regs.free(lhs);
                     self.ci.regs.free(rhs);
-                    break 'ops Some(Value::new(ty, lhs));
+                    self.ci.free_loc(right.loc);
+                    self.ci.free_loc(drop_loc);
+                    break 'ops Some(Value::new(ty, dst));
                 }
 
                 'cmp: {
@@ -2255,14 +2292,17 @@ impl Codegen {
                     };
 
                     let op_fn = if signed { cmps } else { cmpu };
-                    self.output.emit(op_fn(lhs.get(), lhs.get(), rhs.get()));
-                    self.output.emit(cmpui(lhs.get(), lhs.get(), against));
+                    self.output.emit(op_fn(dst.get(), lhs.get(), rhs.get()));
+                    self.output.emit(cmpui(dst.get(), dst.get(), against));
                     if matches!(op, T::Eq | T::Lt | T::Gt) {
                         self.output.emit(not(lhs.get(), lhs.get()));
                     }
 
+                    self.ci.regs.free(lhs);
                     self.ci.regs.free(rhs);
-                    break 'ops Some(Value::new(ty::BOOL, lhs));
+                    self.ci.free_loc(right.loc);
+                    self.ci.free_loc(drop_loc);
+                    break 'ops Some(Value::new(ty::BOOL, dst));
                 }
 
                 unimplemented!("{:#?}", op)
@@ -2967,8 +3007,8 @@ impl Codegen {
             }
             (lpat!(true, src, soff, ref ssta), lpat!(true, dst, doff, ref dsta)) => {
                 // TODO: some oportuinies to ellit more optimal code
-                let src_off = self.ci.regs.allocate();
-                let dst_off = self.ci.regs.allocate();
+                let src_off = if src.is_ref() { self.ci.regs.allocate() } else { src.as_ref() };
+                let dst_off = if dst.is_ref() { self.ci.regs.allocate() } else { dst.as_ref() };
                 self.stack_offset(src_off.get(), src.get(), ssta.as_ref(), soff);
                 self.stack_offset(dst_off.get(), dst.get(), dsta.as_ref(), doff);
                 self.output.emit(bmc(src_off.get(), dst_off.get(), size as _));
@@ -3343,7 +3383,7 @@ impl Codegen {
                 if self.disasm(&mut vc).is_err() {
                     panic!("{}", String::from_utf8(vc).unwrap());
                 } else {
-                    log::inf!("{}", String::from_utf8(vc).unwrap());
+                    //log::inf!("{}", String::from_utf8(vc).unwrap());
                 }
             }
 
@@ -3546,6 +3586,16 @@ impl Codegen {
         ty::Tuple::new(sp, len)
             .unwrap_or_else(|| self.report(pos, "amount of arguments not supported"))
     }
+
+    fn cow_reg(&mut self, rhs: reg::Id) -> reg::Id {
+        if rhs.is_ref() {
+            let reg = self.ci.regs.allocate();
+            self.output.emit(cp(reg.get(), rhs.get()));
+            reg
+        } else {
+            rhs
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3625,7 +3675,7 @@ mod tests {
 
         use std::fmt::Write;
 
-        let mut stack = [0_u64; 128];
+        let mut stack = [0_u64; 1024 * 20];
 
         let mut vm = unsafe {
             hbvm::Vm::<_, 0>::new(
@@ -3699,7 +3749,7 @@ mod tests {
         //comptime_pointers => README;
         sort_something_viredly => README;
         hex_octal_binary_literals => README;
-        comptime_min_reg_leak => README;
+        //comptime_min_reg_leak => README;
         // structs_in_registers => README;
         comptime_function_from_another_file => README;
         inline => README;
@@ -3708,5 +3758,6 @@ mod tests {
         integer_inference_issues => README;
         writing_into_string => README;
         request_page => README;
+        tests_ptr_to_ptr_copy => README;
     }
 }

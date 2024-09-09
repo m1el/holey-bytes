@@ -66,11 +66,10 @@ main:
     ST r33, r254, 104a, 8h
     LD r33, r254, 96a, 8h
     LD r32, r254, 104a, 8h
-    ADD64 r33, r33, r32
-    CP r1, r33
+    ADD64 r1, r33, r32
     LD r31, r254, 112a, 24h
     ADDI64 r254, r254, 136d
     JALA r0, r31, 0a
-code size: 781
+code size: 778
 ret: 10
 status: Ok(())

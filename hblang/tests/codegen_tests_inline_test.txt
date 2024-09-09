@@ -62,8 +62,7 @@ example:
     ADDI64 r35, r35, 0d
     ADDI64 r35, r35, 1d
     DIRS64 r0, r34, r34, r35
-    ADDI64 r34, r34, 0d
-    CP r32, r34
+    ADDI64 r32, r34, 0d
     JMP :1
  0: CP r32, r33
  1: LI64 r2, 0d
@@ -95,12 +94,10 @@ integer:
     OR r35, r35, r36
     JEQ r35, r0, :0
     CP r35, r34
-    CP r36, r32
-    SUB64 r33, r33, r36
+    SUB64 r33, r33, r32
     ADDI64 r33, r33, 1d
     DIRS64 r0, r35, r35, r33
-    ADD64 r35, r35, r32
-    CP r1, r35
+    ADD64 r1, r35, r32
     JMP :1
  0: CP r1, r34
  1: LD r31, r254, 0a, 56h
@@ -130,15 +127,10 @@ rect_line:
     ADD64 r36, r36, r37
     LI64 r37, 1d
     LI64 r38, 2d
-    ADD64 r37, r37, r38
-    CP r36, r37
-    CP r36, r34
-    ADDI64 r36, r36, 1d
-    CP r34, r36
+    ADD64 r36, r37, r38
+    ADDI64 r34, r34, 1d
     JMP :4
- 3: CP r36, r33
-    ADDI64 r36, r36, 1d
-    CP r33, r36
+ 3: ADDI64 r33, r33, 1d
     JMP :5
  1: LD r31, r254, 48a, 64h
     ADDI64 r254, r254, 112d
@@ -146,30 +138,24 @@ rect_line:
 line:
     ADDI64 r254, r254, -80d
     ST r31, r254, 48a, 32h
-    ST r2, r254, 0a, 16h
-    ST r4, r254, 16a, 16h
+    ST r2, r254, 16a, 16h
+    ST r4, r254, 0a, 16h
     ST r6, r254, 32a, 16h
     CP r32, r8
     LI64 r33, 1d
     JEQ r33, r0, :0
-    LD r33, r254, 0a, 8h
-    LD r34, r254, 16a, 8h
-    CMPS r33, r33, r34
-    CMPUI r33, r33, 1d
-    NOT r33, r33
-    JEQ r33, r0, :1
+    LD r33, r254, 16a, 8h
+    LD r34, r254, 0a, 8h
+    JGTS r33, r34, :1
     JMP :1
  1: JMP :2
- 0: LD r33, r254, 8a, 8h
-    LD r34, r254, 24a, 8h
-    CMPS r33, r33, r34
-    CMPUI r33, r33, 1d
-    NOT r33, r33
-    JEQ r33, r0, :2
+ 0: LD r34, r254, 24a, 8h
+    LD r33, r254, 8a, 8h
+    JGTS r34, r33, :2
     JMP :2
  2: LD r31, r254, 48a, 32h
     ADDI64 r254, r254, 80d
     JALA r0, r31, 0a
-code size: 1476
+code size: 1416
 ret: 0
 status: Ok(())

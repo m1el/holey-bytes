@@ -892,3 +892,22 @@ main := fn(): void {
 	return
 }
 ```
+
+#### tests_ptr_to_ptr_copy
+```hb
+main := fn(): int {
+	back_buffer := @as([u8; 1024 * 10], idk)
+
+	n := 0
+	loop if n >= 1024 break else {
+		back_buffer[n] = 64
+		n += 1
+	}
+	n = 1
+	loop if n >= 10 break else {
+		*(@as(^[u8; 1024], @bitcast(&back_buffer)) + n) = *@as(^[u8; 1024], @bitcast(&back_buffer))
+		n += 1
+	}
+	return back_buffer[1024 * 2]
+}
+```

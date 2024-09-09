@@ -1,16 +1,14 @@
 main:
-    ADDI64 r254, r254, -48d
-    ST r31, r254, 0a, 48h
+    ADDI64 r254, r254, -40d
+    ST r31, r254, 0a, 40h
     LI64 r32, 255d
     LI64 r33, 255d
     LI64 r34, 255d
     LI64 r35, 255d
-    CP r36, r33
-    CMPS r32, r32, r36
+    CMPS r32, r32, r33
     CMPUI r32, r32, 0d
     NOT r32, r32
-    CP r36, r33
-    CMPS r34, r34, r36
+    CMPS r34, r34, r33
     CMPUI r34, r34, 0d
     NOT r34, r34
     AND r32, r32, r34
@@ -22,9 +20,9 @@ main:
     LI64 r1, 0d
     JMP :1
  0: LI64 r1, 1d
- 1: LD r31, r254, 0a, 48h
-    ADDI64 r254, r254, 48d
+ 1: LD r31, r254, 0a, 40h
+    ADDI64 r254, r254, 40d
     JALA r0, r31, 0a
-code size: 205
+code size: 199
 ret: 0
 status: Ok(())

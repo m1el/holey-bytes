@@ -15,14 +15,13 @@ main:
     CP r2, r33
     JAL r31, r0, :fib_iter
     CP r33, r1
-    SUB64 r32, r32, r33
-    CP r1, r32
+    SUB64 r1, r32, r33
     LD r31, r254, 2a, 24h
     ADDI64 r254, r254, 26d
     JALA r0, r31, 0a
 fib_iter:
-    ADDI64 r254, r254, -48d
-    ST r31, r254, 0a, 48h
+    ADDI64 r254, r254, -40d
+    ST r31, r254, 0a, 40h
     CP r32, r2
     LI64 r33, 0d
     LI64 r34, 1d
@@ -30,17 +29,14 @@ fib_iter:
     JNE r32, r35, :0
     JMP :1
  0: CP r35, r33
-    CP r36, r34
-    ADD64 r35, r35, r36
+    ADD64 r35, r35, r34
     CP r33, r34
     CP r34, r35
-    CP r35, r32
-    ADDI64 r35, r35, -1d
-    CP r32, r35
+    ADDI64 r32, r32, -1d
     JMP :2
  1: CP r1, r33
-    LD r31, r254, 0a, 48h
-    ADDI64 r254, r254, 48d
+    LD r31, r254, 0a, 40h
+    ADDI64 r254, r254, 40d
     JALA r0, r31, 0a
 fib:
     ADDI64 r254, r254, -32d
@@ -58,13 +54,12 @@ fib:
     CP r2, r34
     JAL r31, r0, :fib
     CP r34, r1
-    ADD64 r33, r33, r34
-    CP r1, r33
+    ADD64 r1, r33, r34
     JMP :1
  0: CP r1, r32
  1: LD r31, r254, 0a, 32h
     ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
-code size: 479
+code size: 464
 ret: 0
 status: Ok(())
