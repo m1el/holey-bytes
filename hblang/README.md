@@ -888,7 +888,7 @@ create_back_buffer := fn(total_pages: int): ^u32 {
 }
 
 main := fn(): void {
-	create_back_buffer(10)
+	create_back_buffer(400)
 	return
 }
 ```
