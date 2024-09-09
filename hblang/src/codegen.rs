@@ -2370,6 +2370,9 @@ impl Codegen {
                     uses_left: v.uses_left,
                 })
                 .collect(),
+            stack_relocs: self.ci.stack_relocs.clone(),
+            ret_relocs: self.ci.ret_relocs.clone(),
+            loop_relocs: self.ci.loop_relocs.clone(),
             ..Default::default()
         };
         ci.regs.init();
@@ -2377,6 +2380,7 @@ impl Codegen {
         let value = self.expr(expr).unwrap();
         self.ci.free_loc(value.loc);
         std::mem::swap(&mut self.ci, &mut ci);
+        self.ci.snap = ci.snap;
         snap._add(&self.ci.snap);
         self.output.trunc(&snap);
         value.ty
@@ -3333,11 +3337,13 @@ impl Codegen {
             let entry = &mut self.output.code[self.ci.snap.code] as *mut _ as _;
             let prev_pc = std::mem::replace(&mut self.ct.vm.pc, hbvm::mem::Address::new(entry));
 
-            #[cfg(test)]
+            #[cfg(debug_assertions)]
             {
                 let mut vc = Vec::<u8>::new();
                 if self.disasm(&mut vc).is_err() {
                     panic!("{}", String::from_utf8(vc).unwrap());
+                } else {
+                    log::inf!("{}", String::from_utf8(vc).unwrap());
                 }
             }
 
