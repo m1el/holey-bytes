@@ -1,0 +1,58 @@
+main:
+    ADDI64 r254, r254, -8d
+    ST r31, r254, 0a, 8h
+    LI64 r2, 10d
+    JAL r31, r0, :create_back_buffer
+    LD r31, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
+    JALA r0, r31, 0a
+create_back_buffer:
+    ADDI64 r254, r254, -32d
+    ST r31, r254, 0a, 32h
+    CP r32, r2
+    LI64 r33, 255d
+    JGTS r32, r33, :0
+    CP r2, r32
+    JAL r31, r0, :request_page
+    JMP :1
+ 0: LI64 r2, 255d
+    JAL r31, r0, :request_page
+    CP r33, r1
+    ADDI64 r32, r32, -255d
+ 6: LI64 r34, 0d
+    JGTS r32, r34, :2
+    JMP :3
+ 2: LI64 r34, 255d
+    JLTS r32, r34, :4
+    LI64 r2, 255d
+    JAL r31, r0, :request_page
+    JMP :5
+ 4: CP r2, r32
+    JAL r31, r0, :request_page
+ 5: CP r34, r32
+    ADDI64 r34, r34, -255d
+    CP r32, r34
+    JMP :6
+ 3: CP r1, r33
+ 1: LD r31, r254, 0a, 32h
+    ADDI64 r254, r254, 32d
+    JALA r0, r31, 0a
+request_page:
+    ADDI64 r254, r254, -32d
+    ST r31, r254, 0a, 32h
+    CP r32, r2
+    LRA r33, r0, :"\0\u{1}xxxxxxxx"
+    CP r34, r33
+    ADDI64 r34, r34, 1d
+    ST r32, r34, 0a, 1h
+    LI64 r2, 3d
+    LI64 r3, 2d
+    CP r4, r33
+    LI64 r5, 12d
+    ECA 
+    LD r31, r254, 0a, 32h
+    ADDI64 r254, r254, 32d
+    JALA r0, r31, 0a
+code size: 440
+ret: 42
+status: Ok(())

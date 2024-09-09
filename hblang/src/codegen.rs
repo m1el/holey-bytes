@@ -3379,6 +3379,7 @@ impl Codegen {
                     .filter(|&(i, f)| {
                         task::unpack(f.offset).is_ok()
                             && (f.runtime || self.ct.active())
+                            && (!self.ct.active() || i != 0)
                             && self.is_fully_linked(i as ty::Func)
                     })
                     .map(|(_, f)| {
@@ -3700,5 +3701,6 @@ mod tests {
         some_generic_code => README;
         integer_inference_issues => README;
         writing_into_string => README;
+        request_page => README;
     }
 }

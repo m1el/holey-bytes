@@ -860,3 +860,35 @@ main := fn(): void {
 	return
 }
 ```
+
+#### request_page
+```hb
+request_page := fn(page_count: u8): ^u8 {
+	msg := "\{00}\{01}xxxxxxxx\0"
+	msg_page_count := msg + 1;
+	*msg_page_count = page_count
+	return @eca(^u8, 3, 2, msg, 12)
+}
+
+create_back_buffer := fn(total_pages: int): ^u32 {
+	if total_pages <= 0xFF {
+		return @bitcast(request_page(total_pages))
+	}
+	ptr := request_page(255)
+	remaining := total_pages - 0xFF
+	loop if remaining <= 0 break else {
+		if remaining < 0xFF {
+			request_page(remaining)
+		} else {
+			request_page(0xFF)
+		}
+		remaining -= 0xFF
+	}
+	return @bitcast(ptr)
+}
+
+main := fn(): void {
+	create_back_buffer(10)
+	return
+}
+```

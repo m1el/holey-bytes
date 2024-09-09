@@ -256,7 +256,11 @@ fn disasm(
 
                 let global_offset: u32 = (offset + rel).try_into().unwrap();
                 if let Some(&(name, ..)) = functions.get(&global_offset) {
-                    write!(out, ":{name}")?;
+                    if name.contains('\0') {
+                        write!(out, ":{name:?}")?;
+                    } else {
+                        write!(out, ":{name}")?;
+                    }
                 } else {
                     let local_has_oob = global_offset < off
                         || global_offset > off + len
@@ -571,7 +575,6 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     };
 
     let execute_task = |(_, path, command): Task, buffer: &mut Vec<u8>| {
-        log::dbg!("{path:?}");
         if let Some(mut command) = command {
             let output = command.output()?;
             if !output.status.success() {
