@@ -22,7 +22,7 @@ fib:
     SUB64 r35, r32, r33
     CP r2, r35
     JAL r31, r0, :fib
-    ADD64 r1, r34, r1
+    ADD64 r1, r1, r34
  1: LD r31, r254, 0a, 40h
     ADDI64 r254, r254, 40d
     JALA r0, r31, 0a

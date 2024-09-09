@@ -36,7 +36,7 @@ pub mod idfl {
         COMPTIME,
     }
 
-    pub fn index(i: IdentFlags) -> IdentIndex {
+    pub fn count(i: IdentFlags) -> IdentIndex {
         (i & !ALL) as _
     }
 }
@@ -251,7 +251,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             self.captured.push(id.ident);
         }
 
-        (id.ident, idfl::index(id.flags))
+        (id.ident, idfl::count(id.flags))
     }
 
     fn move_str(&mut self, range: Token) -> &'a str {
@@ -261,11 +261,11 @@ impl<'a, 'b> Parser<'a, 'b> {
     fn unit_expr(&mut self) -> Expr<'a> {
         use {Expr as E, TokenKind as T};
         let frame = self.idents.len();
-        let token = self.next();
+        let token @ Token { start: pos, .. } = self.next();
         let prev_boundary = self.ns_bound;
         let prev_captured = self.captured.len();
         let mut expr = match token.kind {
-            T::Ct => E::Ct { pos: token.start, value: self.ptr_expr() },
+            T::Ct => E::Ct { pos, value: self.ptr_expr() },
             T::Directive if self.lexer.slice(token.range()) == "use" => {
                 self.expect_advance(TokenKind::LParen);
                 let str = self.expect_advance(TokenKind::DQuote);
@@ -273,7 +273,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 let path = self.lexer.slice(str.range()).trim_matches('"');
 
                 E::Mod {
-                    pos: token.start,
+                    pos,
                     path: self.arena.alloc_str(path),
                     id: match (self.loader)(path, self.path) {
                         Ok(id) => id,
@@ -282,15 +282,17 @@ impl<'a, 'b> Parser<'a, 'b> {
                 }
             }
             T::Directive => E::Directive {
-                pos: token.start,
+                pos,
                 name: self.move_str(token),
                 args: {
                     self.expect_advance(T::LParen);
                     self.collect_list(T::Comma, T::RParen, Self::expr)
                 },
             },
-            T::True => E::Bool { pos: token.start, value: true },
-            T::DQuote => E::String { pos: token.start, literal: self.move_str(token) },
+            T::True => E::Bool { pos, value: true },
+            T::False => E::Bool { pos, value: false },
+            T::Idk => E::Idk { pos },
+            T::DQuote => E::String { pos, literal: self.move_str(token) },
             T::Struct => E::Struct {
                 fields: {
                     self.ns_bound = self.idents.len();
@@ -313,26 +315,26 @@ impl<'a, 'b> Parser<'a, 'b> {
                         // we might save some memory
                         self.captured.clear();
                     }
-                    token.start
+                    pos
                 },
                 trailing_comma: std::mem::take(&mut self.trailing_sep),
             },
             T::Ident | T::CtIdent => {
                 let (id, index) = self.resolve_ident(token);
                 let name = self.move_str(token);
-                E::Ident { pos: token.start, is_ct: token.kind == T::CtIdent, name, id, index }
+                E::Ident { pos, is_ct: token.kind == T::CtIdent, name, id, index }
             }
             T::If => E::If {
-                pos: token.start,
+                pos,
                 cond: self.ptr_expr(),
                 then: self.ptr_expr(),
                 else_: self.advance_if(T::Else).then(|| self.ptr_expr()),
             },
-            T::Loop => E::Loop { pos: token.start, body: self.ptr_expr() },
-            T::Break => E::Break { pos: token.start },
-            T::Continue => E::Continue { pos: token.start },
+            T::Loop => E::Loop { pos, body: self.ptr_expr() },
+            T::Break => E::Break { pos },
+            T::Continue => E::Continue { pos },
             T::Return => E::Return {
-                pos: token.start,
+                pos,
                 val: (!matches!(
                     self.token.kind,
                     T::Semi | T::RBrace | T::RBrack | T::RParen | T::Comma
@@ -340,7 +342,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 .then(|| self.ptr_expr()),
             },
             T::Fn => E::Closure {
-                pos: token.start,
+                pos,
                 args: {
                     self.expect_advance(T::LParen);
                     self.collect_list(T::Comma, T::RParen, |s| {
@@ -363,18 +365,18 @@ impl<'a, 'b> Parser<'a, 'b> {
                 },
                 body: self.ptr_expr(),
             },
-            T::Ctor => self.ctor(token.start, None),
-            T::Tupl => self.tupl(token.start, None),
+            T::Ctor => self.ctor(pos, None),
+            T::Tupl => self.tupl(pos, None),
             T::LBrack => E::Slice {
                 item: self.ptr_unit_expr(),
                 size: self.advance_if(T::Semi).then(|| self.ptr_expr()),
                 pos: {
                     self.expect_advance(T::RBrack);
-                    token.start
+                    pos
                 },
             },
             T::Band | T::Mul | T::Xor => E::UnOp {
-                pos: token.start,
+                pos,
                 op: token.kind,
                 val: {
                     let expr = self.ptr_unit_expr();
@@ -384,10 +386,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                     expr
                 },
             },
-            T::LBrace => E::Block {
-                pos: token.start,
-                stmts: self.collect_list(T::Semi, T::RBrace, Self::expr),
-            },
+            T::LBrace => E::Block { pos, stmts: self.collect_list(T::Semi, T::RBrace, Self::expr) },
             T::Number => {
                 let slice = self.lexer.slice(token.range());
                 let (slice, radix) = match &slice.get(0..2) {
@@ -397,7 +396,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                     _ => (slice, Radix::Decimal),
                 };
                 E::Number {
-                    pos: token.start,
+                    pos,
                     value: match u64::from_str_radix(slice, radix as u32) {
                         Ok(value) => value,
                         Err(e) => self.report(format_args!("invalid number: {e}")),
@@ -410,7 +409,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 self.expect_advance(T::RParen);
                 expr
             }
-            T::Comment => Expr::Comment { pos: token.start, literal: self.move_str(token) },
+            T::Comment => Expr::Comment { pos, literal: self.move_str(token) },
             tok => self.report(format_args!("unexpected token: {tok:?}")),
         };
 
@@ -773,6 +772,10 @@ generate_expr! {
             pos:   Pos,
             value: bool,
         },
+        /// `'idk'`
+        Idk {
+            pos: Pos,
+        },
         /// `'@' Ident List('(', ',', ')', Expr)`
         Directive {
             pos:  u32,
@@ -1047,6 +1050,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 Radix::Binary => write!(f, "{value:#b}"),
             },
             Self::Bool { value, .. } => write!(f, "{value}"),
+            Self::Idk { .. } => write!(f, "idk"),
             Self::BinOp {
                 left,
                 op: TokenKind::Assign,

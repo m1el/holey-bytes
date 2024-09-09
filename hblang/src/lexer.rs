@@ -44,19 +44,23 @@ macro_rules! gen_token_kind {
     ) => {
         impl std::fmt::Display for $name {
             fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                let sf = *self as u8;
-                f.write_str(match *self {
+                f.write_str(self.name())
+            }
+        }
+
+        impl $name {
+            pub fn name(&self) -> &str {
+                let sf = unsafe { &*(self as *const _ as *const u8) } ;
+                match *self {
                     $( Self::$pattern => concat!('<', stringify!($pattern), '>'), )*
                     $( Self::$keyword => stringify!($keyword_lit), )*
                     $( Self::$punkt   => stringify!($punkt_lit),   )*
                     $($( Self::$op    => $op_lit,
                       $(Self::$assign => concat!($op_lit, "="),)?)*)*
                     _ => unsafe { std::str::from_utf8_unchecked(std::slice::from_ref(&sf)) },
-                })
+                }
             }
-        }
 
-        impl $name {
             #[inline(always)]
             pub fn precedence(&self) -> Option<u8> {
                 Some(match self {
@@ -124,6 +128,8 @@ pub enum TokenKind {
     Fn,
     Struct,
     True,
+    False,
+    Idk,
 
     Ctor,
     Tupl,
@@ -204,15 +210,17 @@ gen_token_kind! {
         Eof,
         Directive,
         #[keywords]
-        Return   = b"return",
-        If       = b"if",
-        Else     = b"else",
-        Loop     = b"loop",
-        Break    = b"break",
-        Continue = b"continue",
-        Fn       = b"fn",
-        Struct   = b"struct",
-        True     = b"true",
+        Return    = b"return",
+        If        = b"if",
+        Else      = b"else",
+        Loop      = b"loop",
+        Break     = b"break",
+        Continue  = b"continue",
+        Fn        = b"fn",
+        Struct    = b"struct",
+        True      = b"true",
+        False     = b"false",
+        Idk = b"idk",
         #[punkt]
         Ctor   = ".{",
         Tupl   = ".(",

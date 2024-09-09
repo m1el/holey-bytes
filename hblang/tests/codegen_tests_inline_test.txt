@@ -116,23 +116,14 @@ rect_line:
     LI64 r33, 0d
     LI64 r34, 0d
     LI64 r35, 0d
- 5: CP r36, r33
-    CP r37, r32
-    CMPS r36, r36, r37
-    CMPUI r36, r36, 0d
-    NOT r36, r36
-    JEQ r36, r0, :0
+ 5: JNE r33, r32, :0
     JMP :1
  0: LD r34, r254, 8a, 8h
     LD r35, r254, 0a, 8h
- 4: CP r36, r34
-    LD r37, r254, 8a, 8h
-    LD r38, r254, 16a, 8h
-    ADD64 r37, r37, r38
-    CMPS r36, r36, r37
-    CMPUI r36, r36, 0d
-    NOT r36, r36
-    JEQ r36, r0, :2
+ 4: LD r36, r254, 8a, 8h
+    LD r37, r254, 16a, 8h
+    ADD64 r36, r36, r37
+    JNE r34, r36, :2
     JMP :3
  2: LI64 r36, 1d
     LI64 r37, 10d
@@ -179,6 +170,6 @@ line:
  2: LD r31, r254, 48a, 32h
     ADDI64 r254, r254, 80d
     JALA r0, r31, 0a
-code size: 1521
+code size: 1476
 ret: 0
 status: Ok(())

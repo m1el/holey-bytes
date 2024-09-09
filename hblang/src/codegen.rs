@@ -8,7 +8,7 @@ use {
         parser::{self, find_symbol, idfl, CtorField, Expr, ExprRef, FileId, Pos},
         HashMap,
     },
-    std::{collections::BTreeMap, fmt::Display, ops::Range, rc::Rc},
+    std::{collections::BTreeMap, fmt::Display, ops::Range, rc::Rc, u32},
 };
 
 type Offset = u32;
@@ -688,6 +688,10 @@ impl Loc {
             Self::Rt { .. } => None,
         }
     }
+
+    fn is_stack(&self) -> bool {
+        matches!(self, Self::Rt { derefed: true, reg, stack: Some(_), offset: 0 } if reg.get() == STACK_PTR)
+    }
 }
 
 impl From<reg::Id> for Loc {
@@ -702,6 +706,7 @@ impl Default for Loc {
     }
 }
 
+#[derive(Clone, Copy)]
 struct Loop {
     var_count: u32,
     offset: u32,
@@ -710,6 +715,7 @@ struct Loop {
 
 struct Variable {
     id: Ident,
+    uses_left: u32,
     value: Value,
 }
 
@@ -1419,7 +1425,9 @@ impl Codegen {
                 // TODO: we need to check if index is in bounds on debug builds
 
                 let mut base_val = self.expr(base)?;
-                base_val.loc = self.make_loc_owned(base_val.loc, base_val.ty);
+                if base_val.ty.is_pointer() {
+                    base_val.loc = self.make_loc_owned(base_val.loc, base_val.ty);
+                }
                 let index_val = self.expr(index)?;
                 _ = self.assert_ty(index.pos(), index_val.ty, ty::INT.into(), "subsctipt");
 
@@ -1449,7 +1457,9 @@ impl Codegen {
 
                         let idx = self.loc_to_reg(index_val.loc, 8);
 
-                        self.output.emit(muli64(idx.get(), idx.get(), item_size as _));
+                        if item_size != 1 {
+                            self.output.emit(muli64(idx.get(), idx.get(), item_size as _));
+                        }
                         self.output.emit(add64(reg.get(), reg.get(), idx.get()));
                         self.ci.regs.free(idx);
 
@@ -1491,7 +1501,13 @@ impl Codegen {
                         args.iter().zip(sig.args.view(&self.tys.args).to_owned()).zip(cargs)
                     {
                         let loc = self.expr_ctx(arg, Ctx::default().with_ty(ty))?.loc;
-                        self.ci.vars.push(Variable { id: carg.id, value: Value { ty, loc } });
+
+                        let sym = parser::find_symbol(&fast.symbols, carg.id).flags;
+                        self.ci.vars.push(Variable {
+                            id: carg.id,
+                            value: Value { ty, loc },
+                            uses_left: idfl::count(sym) as u32,
+                        });
                     }
                 }
 
@@ -1524,11 +1540,7 @@ impl Codegen {
                 return Some(Value { ty: sig.ret, loc });
             }
             E::Directive { name: "TypeOf", args: [expr], .. } => {
-                let snap = self.output.snap();
-                let value = self.expr(expr).unwrap();
-                self.ci.free_loc(value.loc);
-                self.output.trunc(&snap);
-                Some(Value::ty(value.ty))
+                Some(Value::ty(self.infer_type(expr)))
             }
             E::Directive { name: "eca", args: [ret_ty, args @ ..], .. } => {
                 let ty = self.ty(ret_ty);
@@ -1585,7 +1597,7 @@ impl Codegen {
                 let Some(ty) = ctx.ty else {
                     self.report(
                         expr.pos(),
-                        "type to cast to is unknown, use `@as(<type>, <expr>)`",
+                        "type to cast to is unknown, use `@as(<type>, @bitcast(<expr>))`",
                     );
                 };
 
@@ -1622,6 +1634,31 @@ impl Codegen {
             }
             E::Bool { value, .. } => {
                 Some(Value { ty: ty::BOOL.into(), loc: Loc::ct(value as u64) })
+            }
+            E::Idk { pos } => {
+                let Some(ty) = ctx.ty else {
+                    self.report(
+                        pos,
+                        "`idk` can be used only when type can be inferred, use @as(<type>, idk)",
+                    );
+                };
+
+                if ctx.loc.is_some() {
+                    self.report(
+                        pos,
+                        "`idk` would be written to an existing memory location \
+                        which at ths point does notthing so its prohibited. TODO: make debug \
+                        builds write 0xAA instead.",
+                    );
+                }
+
+                let loc = match self.tys.size_of(ty) {
+                    0 => Loc::default(),
+                    1..=8 => Loc::reg(self.ci.regs.allocate()),
+                    size => Loc::stack(self.ci.stack.allocate(size)),
+                };
+
+                Some(Value { ty, loc })
             }
             E::String { pos, mut literal } => {
                 literal = literal.trim_matches('"');
@@ -1917,12 +1954,12 @@ impl Codegen {
                 return Some(Value { ty: sig.ret, loc });
             }
             E::Ident { id, .. } if ident::is_null(id) => Some(Value::ty(id.into())),
-            E::Ident { id, index, .. }
+            E::Ident { id, .. }
                 if let Some((var_index, var)) =
                     self.ci.vars.iter_mut().enumerate().find(|(_, v)| v.id == id) =>
             {
-                let sym = parser::find_symbol(&self.files[self.ci.file as usize].symbols, id);
-                let loc = match idfl::index(sym.flags) == index
+                var.uses_left -= 1;
+                let loc = match var.uses_left == 0
                     && !self.ci.loops.last().is_some_and(|l| l.var_count > var_index as u32)
                 {
                     true => std::mem::take(&mut var.value.loc),
@@ -1990,15 +2027,59 @@ impl Codegen {
                 },
                 loc: Loc::ct(value as u64),
             }),
-            E::If { cond, then, else_, .. } => {
-                let cond = self.expr_ctx(cond, Ctx::default().with_ty(ty::BOOL))?;
-                let reg = self.loc_to_reg(&cond.loc, 1);
-                let jump_offset = self.local_offset();
-                self.output.emit(jeq(reg.get(), 0, 0));
-                self.ci.free_loc(cond.loc);
-                self.ci.regs.free(reg);
+            E::If { cond, then, mut else_, .. } => {
+                #[allow(clippy::type_complexity)]
+                fn cond_op(
+                    op: TokenKind,
+                    signed: bool,
+                ) -> Option<(fn(u8, u8, i16) -> (usize, [u8; instrs::MAX_SIZE]), bool)>
+                {
+                    Some((
+                        match op {
+                            TokenKind::Le if signed => instrs::jgts,
+                            TokenKind::Le => instrs::jgtu,
+                            TokenKind::Lt if signed => instrs::jlts,
+                            TokenKind::Lt => instrs::jltu,
+                            TokenKind::Eq => instrs::jne,
+                            TokenKind::Ne => instrs::jeq,
+                            _ => return None,
+                        },
+                        matches!(op, TokenKind::Lt | TokenKind::Gt),
+                    ))
+                }
 
-                let then_unreachable = self.expr(then).is_none();
+                let mut then = Some(then);
+                let jump_offset;
+                if let &E::BinOp { left, op, right } = cond
+                    && let ty = self.infer_type(left)
+                    && let Some((op, swapped)) = cond_op(op, ty.is_signed())
+                {
+                    let left = self.expr_ctx(left, Ctx::default())?;
+                    let right = self.expr_ctx(right, Ctx::default())?;
+                    let lsize = self.tys.size_of(left.ty);
+                    let rsize = self.tys.size_of(right.ty);
+                    let left_reg = self.loc_to_reg(&left.loc, lsize);
+                    let right_reg = self.loc_to_reg(&right.loc, rsize);
+                    jump_offset = self.local_offset();
+                    self.output.emit(op(left_reg.get(), right_reg.get(), 0));
+                    self.ci.free_loc(left.loc);
+                    self.ci.free_loc(right.loc);
+                    self.ci.regs.free(left_reg);
+                    self.ci.regs.free(right_reg);
+                    if swapped {
+                        std::mem::swap(&mut then, &mut else_);
+                    }
+                } else {
+                    let cond = self.expr_ctx(cond, Ctx::default().with_ty(ty::BOOL))?;
+                    let reg = self.loc_to_reg(&cond.loc, 1);
+                    jump_offset = self.local_offset();
+                    self.output.emit(jeq(reg.get(), 0, 0));
+                    self.ci.free_loc(cond.loc);
+                    self.ci.regs.free(reg);
+                }
+
+                let then_unreachable =
+                    if let Some(then) = then { self.expr(then).is_none() } else { false };
                 let mut else_unreachable = false;
 
                 let mut jump = self.local_offset() as i64 - jump_offset as i64;
@@ -2196,9 +2277,8 @@ impl Codegen {
 
         Some(match ctx.loc {
             Some(dest) => {
-                let ty = ctx.ty.unwrap_or(value.ty);
-                self.store_typed(value.loc, dest, ty);
-                Value { ty, loc: Loc::ct(0) }
+                self.store_typed(value.loc, dest, value.ty);
+                Value { ty: value.ty, loc: Loc::ct(0) }
             }
             None => value,
         })
@@ -2236,7 +2316,11 @@ impl Codegen {
                     arg.loc
                 };
 
-                self.ci.vars.push(Variable { id: carg.id, value: Value { ty, loc } });
+                self.ci.vars.push(Variable {
+                    id: carg.id,
+                    value: Value { ty, loc },
+                    uses_left: idfl::count(sym.flags) as u32,
+                });
             }
 
             let args = self.pack_args(pos, arg_base);
@@ -2264,6 +2348,38 @@ impl Codegen {
 
     fn has_ct(&self, expr: &Expr) -> bool {
         expr.has_ct(&self.cfile().symbols)
+    }
+
+    fn infer_type(&mut self, expr: &Expr) -> ty::Id {
+        let mut snap = self.output.snap();
+        snap._sub(&self.ci.snap);
+        let mut ci = ItemCtx {
+            file: self.ci.file,
+            id: self.ci.id,
+            ret: self.ci.ret,
+            task_base: self.ci.task_base,
+            snap: self.ci.snap,
+            loops: self.ci.loops.clone(),
+            vars: self
+                .ci
+                .vars
+                .iter()
+                .map(|v| Variable {
+                    id: v.id,
+                    value: Value { ty: v.value.ty, loc: v.value.loc.as_ref() },
+                    uses_left: v.uses_left,
+                })
+                .collect(),
+            ..Default::default()
+        };
+        ci.regs.init();
+        std::mem::swap(&mut self.ci, &mut ci);
+        let value = self.expr(expr).unwrap();
+        self.ci.free_loc(value.loc);
+        std::mem::swap(&mut self.ci, &mut ci);
+        snap._add(&self.ci.snap);
+        self.output.trunc(&snap);
+        value.ty
     }
 
     fn eval_const(&mut self, expr: &Expr, ty: impl Into<ty::Id>) -> u64 {
@@ -2321,11 +2437,15 @@ impl Codegen {
                     && size <= 8 =>
             {
                 let loc = Loc::ct(load_value(offset, size));
-                self.ci.vars.push(Variable { id, value: Value { ty, loc } });
+                self.ci.vars.push(Variable { id, value: Value { ty, loc }, uses_left: u32::MAX });
                 true
             }
             Expr::Ident { id, .. } => {
-                let var = Variable { id, value: Value { ty, loc: Loc::ct_ptr(offset as _) } };
+                let var = Variable {
+                    id,
+                    value: Value { ty, loc: Loc::ct_ptr(offset as _) },
+                    uses_left: u32::MAX,
+                };
                 self.ci.vars.push(var);
                 false
             }
@@ -2337,11 +2457,15 @@ impl Codegen {
         match *pat {
             Expr::Ident { id, .. } => {
                 let mut loc = self.make_loc_owned(right.loc, right.ty);
-                let sym = parser::find_symbol(&self.cfile().symbols, id);
-                if sym.flags & idfl::REFERENCED != 0 {
+                let sym = parser::find_symbol(&self.cfile().symbols, id).flags;
+                if sym & idfl::REFERENCED != 0 {
                     loc = self.spill(loc, self.tys.size_of(right.ty));
                 }
-                self.ci.vars.push(Variable { id, value: Value { ty: right.ty, loc } });
+                self.ci.vars.push(Variable {
+                    id,
+                    value: Value { ty: right.ty, loc },
+                    uses_left: idfl::count(sym) as u32,
+                });
             }
             Expr::Ctor { pos, fields, .. } => {
                 let ty::Kind::Struct(idx) = right.ty.expand() else {
@@ -2553,9 +2677,13 @@ impl Codegen {
     }
 
     fn spill(&mut self, loc: Loc, size: Size) -> Loc {
-        let stack = Loc::stack(self.ci.stack.allocate(size));
-        self.store_sized(loc, &stack, size);
-        stack
+        if loc.is_ref() || !loc.is_stack() {
+            let stack = Loc::stack(self.ci.stack.allocate(size));
+            self.store_sized(loc, &stack, size);
+            stack
+        } else {
+            loc
+        }
     }
 
     fn make_loc_owned(&mut self, loc: Loc, ty: ty::Id) -> Loc {
@@ -2595,7 +2723,6 @@ impl Codegen {
         self.output.code.append(&mut self.output.string_data);
         // we drain these when linking
         for srel in self.output.strings.iter_mut().filter(|s| !s.shifted) {
-            dbg!(&srel.range);
             debug_assert!(
                 srel.range.end <= prev_data_len as u32,
                 "{} <= {}",
@@ -2628,7 +2755,7 @@ impl Codegen {
         self.ci.snap = self.output.snap();
 
         let Expr::BinOp {
-            left: Expr::Ident { name, .. },
+            left: Expr::Ident { .. },
             op: TokenKind::Decl,
             right: &Expr::Closure { body, args, .. },
         } = expr
@@ -2636,20 +2763,22 @@ impl Codegen {
             unreachable!("{expr}")
         };
 
-        log::dbg!(name);
-
         self.output.emit_prelude();
 
         let mut parama = self.tys.parama(sig.ret);
         let mut sig_args = sig.args.range();
         for arg in args.iter() {
             let ty = self.tys.args[sig_args.next().unwrap()];
-            let sym = parser::find_symbol(&ast.symbols, arg.id);
-            let loc = match sym.flags & idfl::COMPTIME != 0 {
+            let sym = parser::find_symbol(&ast.symbols, arg.id).flags;
+            let loc = match sym & idfl::COMPTIME != 0 {
                 true => Loc::ty(self.tys.args[sig_args.next().unwrap()]),
-                false => self.load_arg(sym.flags, ty, &mut parama),
+                false => self.load_arg(sym, ty, &mut parama),
             };
-            self.ci.vars.push(Variable { id: arg.id, value: Value { ty, loc } });
+            self.ci.vars.push(Variable {
+                id: arg.id,
+                value: Value { ty, loc },
+                uses_left: idfl::count(sym) as u32,
+            });
         }
 
         if self.tys.size_of(sig.ret) > 16 {
@@ -2980,6 +3109,7 @@ impl Codegen {
                     self.ci.vars.push(Variable {
                         id,
                         value: Value::new(ty, Loc::ct(u64::from_ne_bytes(imm))),
+                        uses_left: u32::MAX,
                     });
                 }
 
@@ -3555,6 +3685,7 @@ mod tests {
         generic_types => README;
         generic_functions => README;
         c_strings => README;
+        idk => README;
         struct_patterns => README;
         arrays => README;
         struct_return_from_module_function => README;
@@ -3562,7 +3693,7 @@ mod tests {
         sort_something_viredly => README;
         hex_octal_binary_literals => README;
         comptime_min_reg_leak => README;
-       // structs_in_registers => README;
+        // structs_in_registers => README;
         comptime_function_from_another_file => README;
         inline => README;
         inline_test => README;

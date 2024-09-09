@@ -1,6 +1,6 @@
 main:
-    ADDI64 r254, r254, -72d
-    ST r31, r254, 48a, 24h
+    ADDI64 r254, r254, -40d
+    ST r31, r254, 24a, 16h
     LI64 r32, 1d
     ST r32, r254, 0a, 8h
     LI64 r32, 2d
@@ -8,13 +8,10 @@ main:
     LI64 r32, 4d
     ST r32, r254, 16a, 8h
     ADDI64 r32, r254, 0d
-    ADDI64 r33, r254, 24d
-    BMC r32, r33, 24h
-    ADDI64 r33, r254, 24d
-    CP r2, r33
+    CP r2, r32
     JAL r31, r0, :pass
-    LD r31, r254, 48a, 24h
-    ADDI64 r254, r254, 72d
+    LD r31, r254, 24a, 16h
+    ADDI64 r254, r254, 40d
     JALA r0, r31, 0a
 pass:
     ADDI64 r254, r254, -40d
@@ -44,6 +41,6 @@ pass:
     LD r31, r254, 0a, 40h
     ADDI64 r254, r254, 40d
     JALA r0, r31, 0a
-code size: 408
+code size: 381
 ret: 7
 status: Ok(())

@@ -335,6 +335,19 @@ foo := fn(a: int, b: int, c: int): int {
 }
 ```
 
+#### idk
+```hb
+main := fn(): int {
+	big_array := @as([u8; 128], idk)
+	i := 0
+	loop if i >= 128 break else {
+		big_array[i] = 69
+		i += 1
+	}
+	return big_array[42]
+}
+```
+
 ### Incomplete Examples
 
 #### comptime_pointers

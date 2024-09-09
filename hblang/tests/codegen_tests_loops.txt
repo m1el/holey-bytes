@@ -12,12 +12,8 @@ fib:
     CP r32, r2
     LI64 r33, 0d
     LI64 r34, 1d
- 2: CP r35, r32
-    LI64 r36, 0d
-    CMPS r35, r35, r36
-    CMPUI r35, r35, 0d
-    NOT r35, r35
-    JEQ r35, r0, :0
+ 2: LI64 r35, 0d
+    JNE r32, r35, :0
     JMP :1
  0: CP r35, r33
     CP r36, r34
@@ -32,6 +28,6 @@ fib:
     LD r31, r254, 0a, 48h
     ADDI64 r254, r254, 48d
     JALA r0, r31, 0a
-code size: 248
+code size: 227
 ret: 55
 status: Ok(())

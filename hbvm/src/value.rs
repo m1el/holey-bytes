@@ -6,7 +6,7 @@ use crate::utils::static_assert;
 ///
 /// # Safety
 /// Its variants have to be sound to byte-reinterpretate
-/// between each other. Otherwise the behaviour is undefined.
+/// between each other. Otherwise the behaviour is idk.
 macro_rules! value_def {
     ($($ty:ident),* $(,)?) => {
         /// HBVM register value

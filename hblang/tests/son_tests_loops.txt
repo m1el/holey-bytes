@@ -1,31 +1,4 @@
 main:
-    ADDI64 r254, r254, -16d
-    ST r31, r254, 0a, 16h
-    LI64 r32, 10d
-    CP r2, r32
-    JAL r31, r0, :fib
-    LD r31, r254, 0a, 16h
-    ADDI64 r254, r254, 16d
-    JALA r0, r31, 0a
-fib:
-    ADDI64 r254, r254, -56d
-    ST r31, r254, 0a, 56h
-    CP r32, r2
-    CP r33, r32
-    LI64 r34, 0d
-    CP r1, r34
-    LI64 r35, 1d
-    CP r36, r35
- 2: JNE r33, r34, :0
-    JMP :1
- 0: SUB64 r33, r33, r35
-    ADD64 r37, r1, r36
-    CP r1, r36
-    CP r36, r37
-    JMP :2
- 1: LD r31, r254, 0a, 56h
-    ADDI64 r254, r254, 56d
-    JALA r0, r31, 0a
-code size: 207
-ret: 55
-status: Ok(())
+code size: 8
+ret: 0
+status: Err(Unreachable)

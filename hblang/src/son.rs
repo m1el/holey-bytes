@@ -15,12 +15,14 @@ use {
     core::fmt,
     std::{
         cell::RefCell,
+        cmp,
         collections::{hash_map, BTreeMap},
-        fmt::Display,
+        fmt::{Display, Write},
         hash::{Hash as _, Hasher},
         mem,
         ops::{self, Range},
         rc::Rc,
+        u32,
     },
 };
 
@@ -58,12 +60,19 @@ impl BitSet {
         self.data.resize(new_len, 0);
     }
 
+    #[track_caller]
     pub fn set(&mut self, idx: usize) -> bool {
         let data_idx = idx / Self::ELEM_SIZE;
         let sub_idx = idx % Self::ELEM_SIZE;
         let prev = self.data[data_idx] & (1 << sub_idx);
         self.data[data_idx] |= 1 << sub_idx;
         prev == 0
+    }
+
+    fn unset(&mut self, idx: usize) {
+        let data_idx = idx / Self::ELEM_SIZE;
+        let sub_idx = idx % Self::ELEM_SIZE;
+        self.data[data_idx] &= !(1 << sub_idx);
     }
 }
 
@@ -532,15 +541,8 @@ impl Nodes {
     ) -> Nid {
         let ty = ty.into();
 
-        let node = Node {
-            inputs: inps.into(),
-            kind,
-            color: 0,
-            depth: u32::MAX,
-            lock_rc: 0,
-            ty,
-            outputs: vec![],
-        };
+        let node =
+            Node { inputs: inps.into(), kind, color: 0, depth: 0, lock_rc: 0, ty, outputs: vec![] };
 
         let mut lookup_meta = None;
         if !node.is_lazy_phi() {
@@ -689,14 +691,14 @@ impl Nodes {
         let ty = self[target].ty;
 
         if let (&K::CInt { value: a }, &K::CInt { value: b }) = (&self[lhs].kind, &self[rhs].kind) {
-            return Some(self.new_node(ty, K::CInt { value: op.apply(a, b) }, []));
+            return Some(self.new_node(ty, K::CInt { value: op.apply(a, b) }, [ctrl]));
         }
 
         if lhs == rhs {
             match op {
-                T::Sub => return Some(self.new_node(ty, K::CInt { value: 0 }, [])),
+                T::Sub => return Some(self.new_node(ty, K::CInt { value: 0 }, [ctrl])),
                 T::Add => {
-                    let rhs = self.new_node_nop(ty, K::CInt { value: 2 }, []);
+                    let rhs = self.new_node_nop(ty, K::CInt { value: 2 }, [ctrl]);
                     return Some(self.new_node(ty, K::BinOp { op: T::Mul }, [ctrl, lhs, rhs]));
                 }
                 _ => {}
@@ -724,7 +726,7 @@ impl Nodes {
                 && let K::CInt { value: bv } = self[rhs].kind
             {
                 // (a op #b) op #c => a op (#b op #c)
-                let new_rhs = self.new_node_nop(ty, K::CInt { value: op.apply(av, bv) }, []);
+                let new_rhs = self.new_node_nop(ty, K::CInt { value: op.apply(av, bv) }, [ctrl]);
                 return Some(self.new_node(ty, K::BinOp { op }, [ctrl, a, new_rhs]));
             }
 
@@ -741,7 +743,7 @@ impl Nodes {
             && let K::CInt { value } = self[self[lhs].inputs[2]].kind
         {
             // a * #n + a => a * (#n + 1)
-            let new_rhs = self.new_node_nop(ty, K::CInt { value: value + 1 }, []);
+            let new_rhs = self.new_node_nop(ty, K::CInt { value: value + 1 }, [ctrl]);
             return Some(self.new_node(ty, K::BinOp { op: T::Mul }, [ctrl, rhs, new_rhs]));
         }
 
@@ -786,14 +788,12 @@ impl Nodes {
         );
         match entry {
             hash_map::RawEntryMut::Occupied(mut other) => {
-                log::dbg!("rplc");
                 let rpl = other.get_key_value().0.nid;
                 self[target].inputs[inp_index] = prev;
                 self.replace(target, rpl);
                 rpl
             }
             hash_map::RawEntryMut::Vacant(slot) => {
-                log::dbg!("mod");
                 slot.insert(LookupEntry { nid: target, hash }, ());
                 let index = self[prev].outputs.iter().position(|&o| o == target).unwrap();
                 self[prev].outputs.swap_remove(index);
@@ -801,13 +801,6 @@ impl Nodes {
 
                 target
             }
-        }
-    }
-
-    fn add_deps(&mut self, id: Nid, deps: &[Nid]) {
-        for &d in deps {
-            debug_assert_ne!(d, id);
-            self[d].outputs.push(id);
         }
     }
 
@@ -909,13 +902,149 @@ impl Nodes {
         for (i, node) in self.iter() {
             let color = if self.is_cfg(i) { "yellow" } else { "white" };
             writeln!(out, "node{i}[label=\"{}\" color={color}]", node.kind)?;
-            for &o in &node.outputs {
-                let color = if self.is_cfg(i) && self.is_cfg(o) { "red" } else { "black" };
-                writeln!(out, "node{o} -> node{i}[color={color}]",)?;
+            for (j, &o) in node.outputs.iter().enumerate() {
+                let color = if self.is_cfg(i) && self.is_cfg(o) { "red" } else { "lightgray" };
+                let index = self[o].inputs.iter().position(|&inp| i == inp).unwrap();
+                let style = if index == 0 && !self.is_cfg(o) { "style=dotted" } else { "" };
+                writeln!(
+                    out,
+                    "node{o} -> node{i}[color={color} taillabel={index} headlabel={j} {style}]",
+                )?;
             }
         }
 
         Ok(())
+    }
+
+    #[allow(clippy::format_in_format_args)]
+    fn basic_blocks_instr(&mut self, out: &mut String, node: Nid) -> std::fmt::Result {
+        if !self.visited.set(node as _) {
+            return Ok(());
+        }
+        write!(out, "  {node:>2}: ")?;
+        match self[node].kind {
+            Kind::Start => unreachable!(),
+            Kind::End => unreachable!(),
+            Kind::If => write!(out, "  if:      "),
+            Kind::Region => unreachable!(),
+            Kind::Loop => unreachable!(),
+            Kind::Return => write!(out, " ret: "),
+            Kind::CInt { value } => write!(out, "cint: #{value:<4}"),
+            Kind::Phi => write!(out, " phi:      "),
+            Kind::Tuple { index } => write!(out, " arg: {index:<5}"),
+            Kind::BinOp { op } => {
+                write!(out, "{:>4}:      ", op.name())
+            }
+            Kind::Call { func } => {
+                write!(out, "call: {func} {}", self[node].depth)
+            }
+        }?;
+
+        writeln!(
+            out,
+            " {:<14} {}",
+            format!("{:?}", self[node].inputs),
+            format!("{:?}", self[node].outputs)
+        )
+    }
+
+    fn basic_blocks_low(&mut self, out: &mut String, mut node: Nid) -> std::fmt::Result {
+        while self.visited.set(node as _) {
+            match dbg!(self[node].kind) {
+                Kind::Start => {
+                    writeln!(out, "start: {}", self[node].depth)?;
+                    let mut cfg_index = Nid::MAX;
+                    for o in self[node].outputs.clone() {
+                        if self[o].kind == (Kind::Tuple { index: 0 }) {
+                            cfg_index = o;
+                            continue;
+                        }
+                        self.basic_blocks_instr(out, o)?;
+                    }
+                    node = cfg_index;
+                }
+                Kind::End => break,
+                Kind::If => {
+                    self.visited.unset(node as _);
+                    self.basic_blocks_instr(out, node)?;
+                    self.basic_blocks_low(out, self[node].outputs[0])?;
+                    node = self[node].outputs[1];
+                }
+                Kind::Region => {
+                    let mut cfg_index = Nid::MAX;
+                    for o in self[node].outputs.clone().into_iter() {
+                        if self.is_cfg(o) {
+                            cfg_index = o;
+                            continue;
+                        }
+                        self.basic_blocks_instr(out, o)?;
+                    }
+                    node = cfg_index;
+                }
+                Kind::Loop => {
+                    writeln!(out, "loop{node}  {}", self[node].depth)?;
+                    let mut cfg_index = Nid::MAX;
+                    for o in self[node].outputs.clone().into_iter() {
+                        if self.is_cfg(o) {
+                            cfg_index = o;
+                            continue;
+                        }
+                        self.basic_blocks_instr(out, o)?;
+                    }
+                    node = cfg_index;
+                }
+                Kind::Return => {
+                    self.visited.unset(node as _);
+                    self.basic_blocks_instr(out, node)?;
+                    node = self[node].outputs[0];
+                }
+                Kind::CInt { .. } => unreachable!(),
+                Kind::Phi => unreachable!(),
+                Kind::Tuple { .. } => {
+                    writeln!(out, "b{node}: {}", self[node].depth)?;
+                    let mut cfg_index = Nid::MAX;
+                    for o in self[node].outputs.clone().into_iter() {
+                        if self.is_cfg(o) {
+                            cfg_index = o;
+                            continue;
+                        }
+                        self.basic_blocks_instr(out, o)?;
+                    }
+                    if !self[cfg_index].kind.ends_basic_block()
+                        && !matches!(self[cfg_index].kind, Kind::Call { .. })
+                    {
+                        writeln!(out, "      goto: {cfg_index}")?;
+                    }
+                    node = cfg_index;
+                }
+                Kind::BinOp { .. } => unreachable!(),
+                Kind::Call { .. } => {
+                    self.visited.unset(node as _);
+                    self.basic_blocks_instr(out, node)?;
+
+                    let mut cfg_index = Nid::MAX;
+                    for o in self[node].outputs.clone().into_iter() {
+                        if self.is_cfg(o) {
+                            cfg_index = o;
+                            continue;
+                        }
+                        if self[o].inputs[0] == node {
+                            self.basic_blocks_instr(out, o)?;
+                        }
+                    }
+                    node = cfg_index;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn basic_blocks(&mut self) {
+        let mut out = String::new();
+        self.visited.clear(self.values.len());
+        self.basic_blocks_low(&mut out, 0).unwrap();
+        println!("{out}");
     }
 
     fn graphviz(&self) {
@@ -925,17 +1054,7 @@ impl Nodes {
     }
 
     fn is_cfg(&self, o: Nid) -> bool {
-        matches!(
-            self[o].kind,
-            Kind::Start
-                | Kind::End
-                | Kind::Return
-                | Kind::Tuple { .. }
-                | Kind::Call { .. }
-                | Kind::If
-                | Kind::Region
-                | Kind::Loop
-        )
+        self[o].kind.is_cfg()
     }
 
     fn check_final_integrity(&self) {
@@ -1082,8 +1201,30 @@ pub enum Kind {
 }
 
 impl Kind {
-    fn disc(&self) -> u8 {
-        unsafe { *(self as *const _ as *const u8) }
+    fn is_pinned(&self) -> bool {
+        self.is_cfg() || matches!(self, Kind::Phi)
+    }
+
+    fn is_cfg(&self) -> bool {
+        matches!(
+            self,
+            Kind::Start
+                | Kind::End
+                | Kind::Return
+                | Kind::Tuple { .. }
+                | Kind::Call { .. }
+                | Kind::If
+                | Kind::Region
+                | Kind::Loop
+        )
+    }
+
+    fn ends_basic_block(&self) -> bool {
+        matches!(self, Kind::Return | Kind::If | Kind::End)
+    }
+
+    fn starts_basic_block(&self) -> bool {
+        matches!(self, Kind::Start | Kind::End | Kind::Tuple { .. } | Kind::Region | Kind::Loop)
     }
 }
 
@@ -1933,6 +2074,8 @@ impl Codegen {
                     return Some(self.ci.end);
                 };
 
+                self.make_func_reachable(func);
+
                 let fuc = &self.tys.funcs[func as usize];
                 let sig = fuc.sig.expect("TODO: generic functions");
                 let ast = self.files[fuc.file as usize].clone();
@@ -2107,7 +2250,7 @@ impl Codegen {
         self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Tuple { index: 0 }, [self.ci.start]);
 
         let Expr::BinOp {
-            left: Expr::Ident { .. },
+            left: Expr::Ident { name, .. },
             op: TokenKind::Decl,
             right: &Expr::Closure { body, args, .. },
         } = expr
@@ -2143,7 +2286,11 @@ impl Codegen {
         if self.errors.borrow().is_empty() {
             self.gcm();
 
-            self.ci.nodes.graphviz();
+            //self.ci.nodes.graphviz();
+            log::inf!("{id} {name}: ");
+            self.ci.nodes.basic_blocks();
+
+            return;
 
             #[cfg(debug_assertions)]
             {
@@ -2470,7 +2617,6 @@ impl Codegen {
                         .relocs
                         .push(TypedReloc { target: ty::Kind::Func(func).compress(), reloc });
                     self.ci.emit(instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
-                    self.make_func_reachable(func);
 
                     self.ci.call_count -= 1;
 
@@ -2512,17 +2658,13 @@ impl Codegen {
                             let &[_, left, right] = self.ci.nodes[cond].inputs.as_slice() else {
                                 unreachable!()
                             };
-                            swapped = matches!(op, TokenKind::Lt | TokenKind::Gt);
-                            let signed = self.ci.nodes[left].ty.is_signed();
-                            let op = match op {
-                                TokenKind::Le if signed => instrs::jgts,
-                                TokenKind::Le => instrs::jgtu,
-                                TokenKind::Lt if signed => instrs::jlts,
-                                TokenKind::Lt => instrs::jltu,
-                                TokenKind::Eq => instrs::jne,
-                                TokenKind::Ne => instrs::jeq,
-                                _ => break 'optimize_cond,
+
+                            let Some((op, swpd)) =
+                                Self::cond_op(op, self.ci.nodes[left].ty.is_signed())
+                            else {
+                                break 'optimize_cond;
                             };
+                            swapped = swpd;
 
                             self.emit_expr_consume(left);
                             self.emit_expr_consume(right);
@@ -2741,7 +2883,9 @@ impl Codegen {
             Kind::BinOp { op } => {
                 _ = self.lazy_init(expr);
                 let ty = self.tof(expr);
-                let &[left, right] = self.ci.nodes[expr].inputs.as_slice() else { unreachable!() };
+                let &[_, left, right] = self.ci.nodes[expr].inputs.as_slice() else {
+                    unreachable!()
+                };
                 self.emit_expr_consume(left);
 
                 if let Kind::CInt { value } = self.ci.nodes[right].kind
@@ -2832,6 +2976,25 @@ impl Codegen {
     }
 
     #[allow(clippy::type_complexity)]
+    fn cond_op(
+        op: TokenKind,
+        signed: bool,
+    ) -> Option<(fn(u8, u8, i16) -> (usize, [u8; instrs::MAX_SIZE]), bool)> {
+        Some((
+            match op {
+                TokenKind::Le if signed => instrs::jgts,
+                TokenKind::Le => instrs::jgtu,
+                TokenKind::Lt if signed => instrs::jlts,
+                TokenKind::Lt => instrs::jltu,
+                TokenKind::Eq => instrs::jne,
+                TokenKind::Ne => instrs::jeq,
+                _ => return None,
+            },
+            matches!(op, TokenKind::Lt | TokenKind::Gt),
+        ))
+    }
+
+    #[allow(clippy::type_complexity)]
     fn math_op(
         op: TokenKind,
         signed: bool,
@@ -2887,7 +3050,7 @@ impl Codegen {
             match name.ok_or(lit_name) {
                 Ok(name) => {
                     let name = self.cfile().ident_str(name);
-                    self.report(pos, format_args!("undefined indentifier: {name}"))
+                    self.report(pos, format_args!("idk indentifier: {name}"))
                 }
                 Err("main") => self.report(
                     pos,
@@ -2897,7 +3060,7 @@ impl Codegen {
                         f.path
                     ),
                 ),
-                Err(name) => self.report(pos, format_args!("undefined indentifier: {name}")),
+                Err(name) => self.report(pos, format_args!("idk indentifier: {name}")),
             }
             return ty::Kind::Builtin(ty::NEVER);
         };
@@ -3093,7 +3256,105 @@ impl Codegen {
         std::process::exit(1);
     }
 
-    fn gcm(&mut self) {}
+    fn gcm(&mut self) {
+        fn idepth(nodes: &mut Nodes, target: Nid) -> u32 {
+            if target == 0 {
+                return 0;
+            }
+            if nodes[target].depth == 0 {
+                let dm = idom(nodes, target);
+                nodes[target].depth = idepth(nodes, dm) + 1;
+            }
+            nodes[target].depth
+        }
+
+        fn idom(nodes: &mut Nodes, target: Nid) -> Nid {
+            match nodes[target].kind {
+                Kind::Start => 0,
+                Kind::End => unreachable!(),
+                Kind::Loop
+                | Kind::CInt { .. }
+                | Kind::BinOp { .. }
+                | Kind::Call { .. }
+                | Kind::Phi
+                | Kind::Tuple { .. }
+                | Kind::Return
+                | Kind::If => nodes[target].inputs[0],
+                Kind::Region => {
+                    let &[mut lcfg, mut rcfg] = nodes[target].inputs.as_slice() else {
+                        unreachable!()
+                    };
+
+                    while lcfg != rcfg {
+                        let [ldepth, rdepth] = [idepth(nodes, lcfg), idepth(nodes, rcfg)];
+                        if ldepth >= rdepth {
+                            lcfg = idom(nodes, lcfg);
+                        }
+                        if ldepth <= rdepth {
+                            rcfg = idom(nodes, rcfg);
+                        }
+                    }
+
+                    lcfg
+                }
+            }
+        }
+
+        fn push_up(nodes: &mut Nodes, node: Nid) {
+            if !nodes.visited.set(node as _) {
+                return;
+            }
+
+            if nodes[node].kind.is_pinned() {
+                for i in 0..nodes[node].inputs.len() {
+                    let i = nodes[node].inputs[i];
+                    push_up(nodes, i);
+                }
+            } else {
+                let mut max = 0;
+                for i in 0..nodes[node].inputs.len() {
+                    let i = nodes[node].inputs[i];
+                    let is_call = matches!(nodes[i].kind, Kind::Call { .. });
+                    if nodes.is_cfg(i) && !is_call {
+                        continue;
+                    }
+                    push_up(nodes, i);
+                    if idepth(nodes, i) > idepth(nodes, max) {
+                        max = if is_call { i } else { idom(nodes, i) };
+                    }
+                }
+
+                if max == 0 {
+                    return;
+                }
+
+                let index = nodes[0].outputs.iter().position(|&p| p == node).unwrap();
+                nodes[0].outputs.remove(index);
+                nodes[node].inputs[0] = max;
+                debug_assert!(
+                    !nodes[max].outputs.contains(&node)
+                        || matches!(nodes[max].kind, Kind::Call { .. }),
+                    "{node} {:?} {max} {:?}",
+                    nodes[node],
+                    nodes[max]
+                );
+                nodes[max].outputs.push(node);
+            }
+        }
+
+        fn push_down(nodes: &mut Nodes, node: Nid) {
+            if !nodes.visited.set(node as _) {
+                return;
+            }
+
+            // TODO: handle memory nodes first
+        }
+
+        self.ci.nodes.visited.clear(self.ci.nodes.values.len());
+        push_up(&mut self.ci.nodes, self.ci.end);
+        // TODO: handle infinte loops
+        self.ci.nodes.visited.clear(self.ci.nodes.values.len());
+    }
 }
 
 #[derive(Default)]

@@ -36,7 +36,7 @@ use {
 pub struct Vm<Mem, const TIMER_QUOTIENT: usize> {
     /// Holds 256 registers
     ///
-    /// Writing to register 0 is considered undefined behaviour
+    /// Writing to register 0 is considered idk behaviour
     /// in terms of HoleyBytes program execution
     pub registers: [Value; 256],
 
