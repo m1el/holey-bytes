@@ -6,6 +6,6 @@ main:
     LD r31, r254, 0a, 16h
     ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
-code size: 239
+code size: 236
 ret: 50
 status: Ok(())

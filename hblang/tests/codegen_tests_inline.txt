@@ -4,7 +4,7 @@ main:
     LI64 r33, 1d
     ADDI64 r33, r33, 2d
     ADDI64 r32, r33, 3d
-    ADDI64 r32, r1, -6d
+    ADDI64 r1, r32, -6d
     LD r31, r254, 0a, 24h
     ADDI64 r254, r254, 24d
     JALA r0, r31, 0a

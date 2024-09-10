@@ -34,21 +34,21 @@ main:
     JMP :1
  2: CP r33, r0
     LD r33, r254, 4a, 4h
-    CP r32, r0
-    LD r32, r254, 8a, 4h
-    ADD32 r33, r33, r32
-    CP r32, r0
-    LD r32, r254, 0a, 1h
-    ADD32 r33, r33, r32
-    CP r32, r0
-    LD r32, r254, 1a, 1h
-    ADD32 r33, r33, r32
-    CP r32, r0
-    LD r32, r254, 2a, 1h
-    ADD32 r33, r33, r32
-    CP r32, r0
-    LD r32, r254, 3a, 1h
-    ADD32 r1, r33, r32
+    CP r34, r0
+    LD r34, r254, 8a, 4h
+    ADD32 r32, r33, r34
+    CP r34, r0
+    LD r34, r254, 0a, 1h
+    ADD32 r32, r32, r34
+    CP r34, r0
+    LD r34, r254, 1a, 1h
+    ADD32 r32, r32, r34
+    CP r34, r0
+    LD r34, r254, 2a, 1h
+    ADD32 r32, r32, r34
+    CP r34, r0
+    LD r34, r254, 3a, 1h
+    ADD32 r1, r32, r34
  1: LD r31, r254, 12a, 32h
     ADDI64 r254, r254, 44d
     JALA r0, r31, 0a

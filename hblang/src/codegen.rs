@@ -2209,6 +2209,8 @@ impl Codegen {
                         },
                         left.loc,
                     )
+                } else if left.loc.is_ref() {
+                    (self.loc_to_reg(&left.loc, lsize), dbg!(self.ci.regs.allocate()), left.loc)
                 } else {
                     let lhs = self.loc_to_reg(left.loc, lsize);
                     (lhs.as_ref(), lhs, Loc::default())
@@ -2295,7 +2297,7 @@ impl Codegen {
                     self.output.emit(op_fn(dst.get(), lhs.get(), rhs.get()));
                     self.output.emit(cmpui(dst.get(), dst.get(), against));
                     if matches!(op, T::Eq | T::Lt | T::Gt) {
-                        self.output.emit(not(lhs.get(), lhs.get()));
+                        self.output.emit(not(dst.get(), dst.get()));
                     }
 
                     self.ci.regs.free(lhs);
@@ -2690,7 +2692,7 @@ impl Codegen {
         }
 
         def_op!(basic_op | a, b, c | a, b, c as _);
-        def_op!(sub_op | a, b, c | b, a, c.wrapping_neg() as _);
+        def_op!(sub_op | a, b, c | a, b, c.wrapping_neg() as _);
 
         let ops = match op {
             T::Add => basic_op!(addi8, addi16, addi32, addi64),
