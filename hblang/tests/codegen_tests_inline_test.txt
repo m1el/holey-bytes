@@ -114,16 +114,16 @@ rect_line:
  0: LD r34, r254, 8a, 8h
     LD r35, r254, 0a, 8h
  4: LD r36, r254, 8a, 8h
-    LD r38, r254, 16a, 8h
-    ADD64 r37, r36, r38
-    JNE r34, r37, :2
+    LD r37, r254, 16a, 8h
+    ADD64 r36, r36, r37
+    JNE r34, r36, :2
     JMP :3
- 2: LI64 r37, 1d
-    LI64 r38, 10d
-    ADD64 r37, r37, r38
-    LI64 r38, 1d
-    LI64 r36, 2d
-    ADD64 r37, r38, r36
+ 2: LI64 r36, 1d
+    LI64 r37, 10d
+    ADD64 r36, r36, r37
+    LI64 r37, 1d
+    LI64 r38, 2d
+    ADD64 r36, r37, r38
     ADDI64 r34, r34, 1d
     JMP :4
  3: ADDI64 r33, r33, 1d

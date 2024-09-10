@@ -18,19 +18,19 @@ main:
     ADDI64 r254, r254, 48d
     JALA r0, r31, 0a
 deinit:
-    ADDI64 r254, r254, -32d
-    ST r31, r254, 0a, 32h
+    ADDI64 r254, r254, -24d
+    ST r31, r254, 0a, 24h
     CP r32, r2
     LD r2, r32, 0a, 8h
     LD r33, r32, 16a, 8h
-    MULI64 r34, r33, 8d
-    CP r3, r34
+    MULI64 r33, r33, 8d
+    CP r3, r33
     LI64 r4, 8d
     JAL r31, r0, :free
     CP r1, r32
     JAL r31, r0, :new
-    LD r31, r254, 0a, 32h
-    ADDI64 r254, r254, 32d
+    LD r31, r254, 0a, 24h
+    ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
 free:
     ADDI64 r254, r254, -40d
@@ -62,10 +62,10 @@ push:
     ST r34, r32, 16a, 8h
     JMP :2
  1: LD r34, r32, 16a, 8h
-    MULI64 r35, r34, 2d
-    ST r35, r32, 16a, 8h
- 2: LD r35, r32, 16a, 8h
-    MULI64 r34, r35, 8d
+    MULI64 r34, r34, 2d
+    ST r34, r32, 16a, 8h
+ 2: LD r34, r32, 16a, 8h
+    MULI64 r34, r34, 8d
     CP r2, r34
     LI64 r3, 8d
     JAL r31, r0, :malloc
@@ -77,37 +77,37 @@ push:
  3: LD r35, r32, 0a, 8h
     CP r36, r34
     LD r37, r32, 0a, 8h
-    LD r39, r32, 8a, 8h
-    MULI64 r39, r39, 8d
-    ADD64 r38, r37, r39
- 7: JNE r35, r38, :5
+    LD r38, r32, 8a, 8h
+    MULI64 r38, r38, 8d
+    ADD64 r37, r37, r38
+ 7: JNE r35, r37, :5
     JMP :6
- 5: CP r39, r36
-    CP r37, r35
-    BMC r37, r39, 8h
+ 5: CP r38, r36
+    CP r39, r35
+    BMC r39, r38, 8h
     ADDI64 r35, r35, 8d
     ADDI64 r36, r36, 8d
     JMP :7
- 6: LD r39, r32, 8a, 8h
-    LI64 r37, 0d
-    JEQ r39, r37, :8
+ 6: LD r38, r32, 8a, 8h
+    LI64 r39, 0d
+    JEQ r38, r39, :8
     LD r2, r32, 0a, 8h
-    LD r37, r32, 8a, 8h
-    MULI64 r39, r37, 8d
+    LD r39, r32, 8a, 8h
+    MULI64 r39, r39, 8d
     CP r3, r39
     LI64 r4, 8d
     JAL r31, r0, :free
  8: ST r34, r32, 0a, 8h
  0: LD r34, r32, 0a, 8h
-    LD r37, r32, 8a, 8h
-    MULI64 r37, r37, 8d
-    ADD64 r39, r34, r37
-    CP r37, r39
-    ST r33, r37, 0a, 8h
-    LD r37, r32, 8a, 8h
-    ADDI64 r37, r37, 1d
-    ST r37, r32, 8a, 8h
-    CP r1, r39
+    LD r39, r32, 8a, 8h
+    MULI64 r39, r39, 8d
+    ADD64 r34, r34, r39
+    CP r39, r34
+    ST r33, r39, 0a, 8h
+    LD r39, r32, 8a, 8h
+    ADDI64 r39, r39, 1d
+    ST r39, r32, 8a, 8h
+    CP r1, r34
  4: LD r31, r254, 0a, 72h
     ADDI64 r254, r254, 72d
     JALA r0, r31, 0a

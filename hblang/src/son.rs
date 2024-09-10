@@ -15,14 +15,12 @@ use {
     core::fmt,
     std::{
         cell::RefCell,
-        cmp,
         collections::{hash_map, BTreeMap},
         fmt::{Display, Write},
         hash::{Hash as _, Hasher},
         mem,
         ops::{self, Range},
         rc::Rc,
-        u32,
     },
 };
 
