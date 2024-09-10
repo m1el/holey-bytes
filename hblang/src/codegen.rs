@@ -2209,8 +2209,6 @@ impl Codegen {
                         },
                         left.loc,
                     )
-                } else if left.loc.is_ref() && left.loc.is_reg() {
-                    (self.loc_to_reg(&left.loc, lsize), self.ci.regs.allocate(), left.loc)
                 } else {
                     let lhs = self.loc_to_reg(left.loc, lsize);
                     (lhs.as_ref(), lhs, Loc::default())
