@@ -9,11 +9,8 @@ macro_rules! fnsdef {
         $vis fn $name(val: $from, mode: RoundingMode) -> $to {
             let result: $to;
             unsafe {
-                if mode == RoundingMode::NearestEven {
-                    return;
-                }
-
                 let fpcr: u64;
+
                 unsafe { asm!("mrs {}, fpcr", out(reg) fpcr) };
 
                 let fpcr_new = fpcr & !(0b11 << 22)

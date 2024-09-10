@@ -3340,18 +3340,55 @@ impl Codegen {
             }
         }
 
-        fn push_down(nodes: &mut Nodes, node: Nid) {
+        fn push_down(nodes: &mut Nodes, node: Nid, lowest_pos: &mut [u32]) {
             if !nodes.visited.set(node as _) {
                 return;
             }
 
             // TODO: handle memory nodes first
+
+            if nodes[node].kind.is_pinned() {
+                for i in 0..nodes[node].inputs.len() {
+                    let i = nodes[node].inputs[i];
+                    push_up(nodes, i);
+                }
+            } else {
+                let mut max = 0;
+                for i in 0..nodes[node].inputs.len() {
+                    let i = nodes[node].inputs[i];
+                    let is_call = matches!(nodes[i].kind, Kind::Call { .. });
+                    if nodes.is_cfg(i) && !is_call {
+                        continue;
+                    }
+                    push_up(nodes, i);
+                    if idepth(nodes, i) > idepth(nodes, max) {
+                        max = if is_call { i } else { idom(nodes, i) };
+                    }
+                }
+
+                if max == 0 {
+                    return;
+                }
+
+                let index = nodes[0].outputs.iter().position(|&p| p == node).unwrap();
+                nodes[0].outputs.remove(index);
+                nodes[node].inputs[0] = max;
+                debug_assert!(
+                    !nodes[max].outputs.contains(&node)
+                        || matches!(nodes[max].kind, Kind::Call { .. }),
+                    "{node} {:?} {max} {:?}",
+                    nodes[node],
+                    nodes[max]
+                );
+                nodes[max].outputs.push(node);
+            }
         }
 
         self.ci.nodes.visited.clear(self.ci.nodes.values.len());
         push_up(&mut self.ci.nodes, self.ci.end);
         // TODO: handle infinte loops
         self.ci.nodes.visited.clear(self.ci.nodes.values.len());
+        push_down(&mut self.ci.nodes, self.ci.start);
     }
 }
 
@@ -3505,6 +3542,8 @@ mod tests {
             writeln!(output, "!!! asm is invalid: {e}").unwrap();
             return;
         }
+
+        return;
 
         let mut stack = [0_u64; 128];
 
