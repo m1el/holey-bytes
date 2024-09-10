@@ -3388,7 +3388,7 @@ impl Codegen {
         push_up(&mut self.ci.nodes, self.ci.end);
         // TODO: handle infinte loops
         self.ci.nodes.visited.clear(self.ci.nodes.values.len());
-        push_down(&mut self.ci.nodes, self.ci.start);
+        //push_down(&mut self.ci.nodes, self.ci.start);
     }
 }
 
