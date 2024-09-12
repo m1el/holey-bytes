@@ -57,10 +57,11 @@ example:
     CMPUI r35, r35, 0d
     OR r34, r34, r35
     JEQ r34, r0, :0
+    CP r34, r33
     LI64 r35, 1024d
     ADDI64 r35, r35, 0d
     ADDI64 r35, r35, 1d
-    DIRS64 r0, r34, r33, r35
+    DIRS64 r0, r34, r34, r35
     ADDI64 r32, r34, 0d
     JMP :1
  0: CP r32, r33
@@ -82,17 +83,20 @@ integer:
     LI64 r3, 4d
     ECA 
     CP r34, r1
+    CP r35, r32
     LI64 r36, 0d
-    CMPS r35, r32, r36
+    CMPS r35, r35, r36
     CMPUI r35, r35, 0d
+    CP r36, r33
     LI64 r37, 0d
-    CMPS r36, r33, r37
+    CMPS r36, r36, r37
     CMPUI r36, r36, 0d
     OR r35, r35, r36
     JEQ r35, r0, :0
+    CP r35, r34
     SUB64 r33, r33, r32
     ADDI64 r33, r33, 1d
-    DIRS64 r0, r35, r34, r33
+    DIRS64 r0, r35, r35, r33
     ADD64 r1, r35, r32
     JMP :1
  0: CP r1, r34
@@ -152,6 +156,6 @@ line:
  2: LD r31, r254, 48a, 32h
     ADDI64 r254, r254, 80d
     JALA r0, r31, 0a
-code size: 1404
+code size: 1416
 ret: 0
 status: Ok(())

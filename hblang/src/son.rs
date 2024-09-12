@@ -18,8 +18,9 @@ use {
         collections::{hash_map, BTreeMap},
         fmt::{Display, Write},
         hash::{Hash as _, Hasher},
-        mem,
-        ops::{self, Range},
+        mem::{self, MaybeUninit},
+        ops::{self, Deref, DerefMut, Range},
+        ptr::Unique,
         rc::Rc,
     },
 };
@@ -42,6 +43,108 @@ impl Drop for Drom {
     fn drop(&mut self) {
         log::inf!("{}", self.0);
     }
+}
+
+const VC_SIZE: usize = std::mem::size_of::<AllocedVc>();
+const INLINE_ELEMS: usize = VC_SIZE / std::mem::size_of::<Nid>() - 1;
+
+union Vc {
+    inline: InlineVc,
+    alloced: AllocedVc,
+}
+
+impl Vc {
+    fn is_inline(&self) -> bool {
+        unsafe { self.inline.len <= INLINE_ELEMS as u32 }
+    }
+
+    fn layout(&self) -> Option<std::alloc::Layout> {
+        unsafe {
+            self.is_inline()
+                .then(|| std::alloc::Layout::array::<Nid>(self.alloced.cap as _).unwrap_unchecked())
+        }
+    }
+
+    fn len(&self) -> usize {
+        unsafe { self.inline.len as _ }
+    }
+
+    fn as_ptr(&self) -> *mut Nid {
+        unsafe {
+            match self.is_inline() {
+                true => self.alloced.base.as_ptr(),
+                false => { self.inline.elems }.as_mut_ptr().cast(),
+            }
+        }
+    }
+
+    fn as_slice(&self) -> &[Nid] {
+        unsafe { std::slice::from_raw_parts(self.as_ptr(), self.len()) }
+    }
+
+    fn as_slice_mut(&mut self) -> &mut [Nid] {
+        unsafe { std::slice::from_raw_parts_mut(self.as_ptr(), self.len()) }
+    }
+}
+
+impl Drop for Vc {
+    fn drop(&mut self) {
+        if let Some(layout) = self.layout() {
+            unsafe {
+                std::alloc::dealloc(self.alloced.base.as_ptr().cast(), layout);
+            }
+        }
+    }
+}
+
+impl Clone for Vc {
+    fn clone(&self) -> Self {
+        if self.is_inline() {
+            unsafe { std::ptr::read(self) }
+        } else {
+            let layout = unsafe { std::alloc::Layout::array::<Nid>(self.len()).unwrap_unchecked() };
+            let alloc = unsafe { std::alloc::alloc(layout) };
+            unsafe { std::ptr::copy_nonoverlapping(self.as_ptr(), alloc.cast(), self.len()) };
+            unsafe {
+                Vc {
+                    alloced: AllocedVc {
+                        base: Unique::new_unchecked(alloc.cast()),
+                        len: self.alloced.len,
+                        cap: self.alloced.cap,
+                    },
+                }
+            }
+        }
+    }
+}
+
+impl Deref for Vc {
+    type Target = [Nid];
+
+    fn deref(&self) -> &Self::Target {
+        self.as_slice()
+    }
+}
+
+impl DerefMut for Vc {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.as_slice_mut()
+    }
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct InlineVc {
+    elems: MaybeUninit<[Nid; INLINE_ELEMS]>,
+    len: Nid,
+}
+
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct AllocedVc {
+    base: Unique<Nid>,
+    cap: u32,
+    len: u32,
 }
 
 #[derive(Default)]
@@ -539,8 +642,7 @@ impl Nodes {
     ) -> Nid {
         let ty = ty.into();
 
-        let node =
-            Node { inputs: inps.into(), kind, color: 0, depth: 0, lock_rc: 0, ty, outputs: vec![] };
+        let node = Node { inputs: inps.into(), kind, ty, ..Default::default() };
 
         let mut lookup_meta = None;
         if !node.is_lazy_phi() {
@@ -916,17 +1018,15 @@ impl Nodes {
 
     #[allow(clippy::format_in_format_args)]
     fn basic_blocks_instr(&mut self, out: &mut String, node: Nid) -> std::fmt::Result {
-        if !self.visited.set(node as _) {
-            return Ok(());
+        if self[node].kind != Kind::Loop && self[node].kind != Kind::Region {
+            write!(out, "  {node:>2}: ")?;
         }
-        write!(out, "  {node:>2}: ")?;
         match self[node].kind {
             Kind::Start => unreachable!(),
             Kind::End => unreachable!(),
             Kind::If => write!(out, "  if:      "),
-            Kind::Region => unreachable!(),
-            Kind::Loop => unreachable!(),
-            Kind::Return => write!(out, " ret: "),
+            Kind::Region | Kind::Loop => writeln!(out, "      goto: {node}"),
+            Kind::Return => write!(out, " ret:      "),
             Kind::CInt { value } => write!(out, "cint: #{value:<4}"),
             Kind::Phi => write!(out, " phi:      "),
             Kind::Tuple { index } => write!(out, " arg: {index:<5}"),
@@ -934,66 +1034,65 @@ impl Nodes {
                 write!(out, "{:>4}:      ", op.name())
             }
             Kind::Call { func } => {
-                write!(out, "call: {func} {}", self[node].depth)
+                write!(out, "call: {func} {}  ", self[node].depth)
             }
         }?;
 
-        writeln!(
-            out,
-            " {:<14} {}",
-            format!("{:?}", self[node].inputs),
-            format!("{:?}", self[node].outputs)
-        )
+        if self[node].kind != Kind::Loop && self[node].kind != Kind::Region {
+            writeln!(
+                out,
+                " {:<14} {}",
+                format!("{:?}", self[node].inputs),
+                format!("{:?}", self[node].outputs)
+            )?;
+        }
+
+        Ok(())
     }
 
     fn basic_blocks_low(&mut self, out: &mut String, mut node: Nid) -> std::fmt::Result {
+        let iter = |nodes: &Nodes, node| nodes[node].outputs.clone().into_iter().rev();
         while self.visited.set(node as _) {
-            match dbg!(self[node].kind) {
+            match self[node].kind {
                 Kind::Start => {
                     writeln!(out, "start: {}", self[node].depth)?;
                     let mut cfg_index = Nid::MAX;
-                    for o in self[node].outputs.clone() {
+                    for o in iter(self, node) {
+                        self.basic_blocks_instr(out, o)?;
                         if self[o].kind == (Kind::Tuple { index: 0 }) {
                             cfg_index = o;
-                            continue;
                         }
-                        self.basic_blocks_instr(out, o)?;
                     }
                     node = cfg_index;
                 }
                 Kind::End => break,
                 Kind::If => {
-                    self.visited.unset(node as _);
-                    self.basic_blocks_instr(out, node)?;
                     self.basic_blocks_low(out, self[node].outputs[0])?;
                     node = self[node].outputs[1];
                 }
                 Kind::Region => {
+                    writeln!(out, "region{node}: {}", self[node].depth)?;
                     let mut cfg_index = Nid::MAX;
-                    for o in self[node].outputs.clone().into_iter() {
+                    for o in iter(self, node) {
+                        self.basic_blocks_instr(out, o)?;
                         if self.is_cfg(o) {
                             cfg_index = o;
-                            continue;
                         }
-                        self.basic_blocks_instr(out, o)?;
                     }
                     node = cfg_index;
                 }
                 Kind::Loop => {
-                    writeln!(out, "loop{node}  {}", self[node].depth)?;
+                    writeln!(out, "loop{node}: {}", self[node].depth)?;
                     let mut cfg_index = Nid::MAX;
-                    for o in self[node].outputs.clone().into_iter() {
+                    for o in iter(self, node) {
+                        self.basic_blocks_instr(out, o)?;
                         if self.is_cfg(o) {
                             cfg_index = o;
-                            continue;
                         }
-                        self.basic_blocks_instr(out, o)?;
                     }
                     node = cfg_index;
                 }
                 Kind::Return => {
-                    self.visited.unset(node as _);
-                    self.basic_blocks_instr(out, node)?;
                     node = self[node].outputs[0];
                 }
                 Kind::CInt { .. } => unreachable!(),
@@ -1001,33 +1100,23 @@ impl Nodes {
                 Kind::Tuple { .. } => {
                     writeln!(out, "b{node}: {}", self[node].depth)?;
                     let mut cfg_index = Nid::MAX;
-                    for o in self[node].outputs.clone().into_iter() {
+                    for o in iter(self, node) {
+                        self.basic_blocks_instr(out, o)?;
                         if self.is_cfg(o) {
                             cfg_index = o;
-                            continue;
                         }
-                        self.basic_blocks_instr(out, o)?;
-                    }
-                    if !self[cfg_index].kind.ends_basic_block()
-                        && !matches!(self[cfg_index].kind, Kind::Call { .. })
-                    {
-                        writeln!(out, "      goto: {cfg_index}")?;
                     }
                     node = cfg_index;
                 }
                 Kind::BinOp { .. } => unreachable!(),
                 Kind::Call { .. } => {
-                    self.visited.unset(node as _);
-                    self.basic_blocks_instr(out, node)?;
-
                     let mut cfg_index = Nid::MAX;
-                    for o in self[node].outputs.clone().into_iter() {
-                        if self.is_cfg(o) {
-                            cfg_index = o;
-                            continue;
-                        }
+                    for o in iter(self, node) {
                         if self[o].inputs[0] == node {
                             self.basic_blocks_instr(out, o)?;
+                        }
+                        if self.is_cfg(o) {
+                            cfg_index = o;
                         }
                     }
                     node = cfg_index;
@@ -1042,7 +1131,7 @@ impl Nodes {
         let mut out = String::new();
         self.visited.clear(self.values.len());
         self.basic_blocks_low(&mut out, 0).unwrap();
-        println!("{out}");
+        eprintln!("{out}");
     }
 
     fn graphviz(&self) {
@@ -1182,20 +1271,29 @@ impl ops::IndexMut<u32> for Nodes {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[repr(u8)]
 pub enum Kind {
+    #[default]
     Start,
     End,
     If,
     Region,
     Loop,
     Return,
-    CInt { value: i64 },
+    CInt {
+        value: i64,
+    },
     Phi,
-    Tuple { index: u32 },
-    BinOp { op: lexer::TokenKind },
-    Call { func: ty::Func },
+    Tuple {
+        index: u32,
+    },
+    BinOp {
+        op: lexer::TokenKind,
+    },
+    Call {
+        func: ty::Func,
+    },
 }
 
 impl Kind {
@@ -1238,7 +1336,7 @@ impl fmt::Display for Kind {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 struct Node {
     inputs: Vec<Nid>,
     outputs: Vec<Nid>,
@@ -1247,6 +1345,7 @@ struct Node {
     depth: u32,
     lock_rc: u32,
     ty: ty::Id,
+    loop_depth: u32,
 }
 
 impl Node {
@@ -2011,6 +2110,13 @@ impl Codegen {
                     self.ci.loops.pop().unwrap();
 
                 self.ci.nodes.modify_input(node, 1, self.ci.ctrl);
+
+                let idx = self.ci.nodes[node]
+                    .outputs
+                    .iter()
+                    .position(|&n| self.ci.nodes.is_cfg(n))
+                    .unwrap();
+                self.ci.nodes[node].outputs.swap(idx, 0);
 
                 self.ci.ctrl = bre;
                 if bre == Nid::MAX {
@@ -3255,6 +3361,47 @@ impl Codegen {
     }
 
     fn gcm(&mut self) {
+        fn loop_depth(target: Nid, nodes: &mut Nodes) -> u32 {
+            if nodes[target].loop_depth != 0 {
+                return nodes[target].loop_depth;
+            }
+
+            nodes[target].loop_depth = match nodes[target].kind {
+                Kind::Tuple { .. } | Kind::Call { .. } | Kind::Return | Kind::If => {
+                    loop_depth(nodes[target].inputs[0], nodes)
+                }
+                Kind::Region => loop_depth(idom(nodes, target), nodes),
+                Kind::Loop => {
+                    let depth = loop_depth(nodes[target].inputs[0], nodes) + 1;
+                    let mut cursor = nodes[target].inputs[1];
+                    while cursor != target {
+                        nodes[cursor].loop_depth = depth;
+                        let next = idom(nodes, cursor);
+                        if let Kind::Tuple { index } = nodes[cursor].kind
+                            && nodes[next].kind == Kind::If
+                        {
+                            let other = *nodes[next].outputs.iter().find(|&&n| matches!(nodes[n].kind, Kind::Tuple { index: oi } if index != oi)).unwrap();
+                            nodes[other].loop_depth = depth - 1;
+                        }
+                        cursor = next;
+                    }
+                    depth
+                }
+                Kind::Start | Kind::End => 1,
+                Kind::CInt { .. } | Kind::Phi | Kind::BinOp { .. } => {
+                    unreachable!()
+                }
+            };
+
+            nodes[target].loop_depth
+        }
+
+        fn better(nodes: &mut Nodes, is: Nid, then: Nid) -> bool {
+            loop_depth(is, nodes) < loop_depth(then, nodes)
+                || idepth(nodes, is) > idepth(nodes, then)
+                || nodes[then].kind == Kind::If
+        }
+
         fn idepth(nodes: &mut Nodes, target: Nid) -> u32 {
             if target == 0 {
                 return 0;
@@ -3279,21 +3426,8 @@ impl Codegen {
                 | Kind::Return
                 | Kind::If => nodes[target].inputs[0],
                 Kind::Region => {
-                    let &[mut lcfg, mut rcfg] = nodes[target].inputs.as_slice() else {
-                        unreachable!()
-                    };
-
-                    while lcfg != rcfg {
-                        let [ldepth, rdepth] = [idepth(nodes, lcfg), idepth(nodes, rcfg)];
-                        if ldepth >= rdepth {
-                            lcfg = idom(nodes, lcfg);
-                        }
-                        if ldepth <= rdepth {
-                            rcfg = idom(nodes, rcfg);
-                        }
-                    }
-
-                    lcfg
+                    let &[lcfg, rcfg] = nodes[target].inputs.as_slice() else { unreachable!() };
+                    common_dom(lcfg, rcfg, nodes)
                 }
             }
         }
@@ -3340,7 +3474,7 @@ impl Codegen {
             }
         }
 
-        fn push_down(nodes: &mut Nodes, node: Nid, lowest_pos: &mut [u32]) {
+        fn push_down(nodes: &mut Nodes, node: Nid) {
             if !nodes.visited.set(node as _) {
                 return;
             }
@@ -3348,47 +3482,72 @@ impl Codegen {
             // TODO: handle memory nodes first
 
             if nodes[node].kind.is_pinned() {
-                for i in 0..nodes[node].inputs.len() {
-                    let i = nodes[node].inputs[i];
-                    push_up(nodes, i);
+                // TODO: use buffer to avoid allocation or better yet queue the location changes
+                for i in nodes[node].outputs.clone() {
+                    push_down(nodes, i);
                 }
             } else {
-                let mut max = 0;
-                for i in 0..nodes[node].inputs.len() {
-                    let i = nodes[node].inputs[i];
-                    let is_call = matches!(nodes[i].kind, Kind::Call { .. });
-                    if nodes.is_cfg(i) && !is_call {
-                        continue;
+                let mut min = None::<Nid>;
+                for i in 0..nodes[node].outputs.len() {
+                    let i = nodes[node].outputs[i];
+                    push_down(nodes, i);
+                    let i = use_block(node, i, nodes);
+                    min = min.map(|m| common_dom(i, m, nodes)).or(Some(i));
+                }
+                let mut min = min.unwrap();
+
+                let mut cursor = min;
+                loop {
+                    if better(nodes, cursor, min) {
+                        min = cursor;
                     }
-                    push_up(nodes, i);
-                    if idepth(nodes, i) > idepth(nodes, max) {
-                        max = if is_call { i } else { idom(nodes, i) };
+                    if cursor == nodes[node].inputs[0] {
+                        break;
                     }
+                    cursor = idom(nodes, cursor);
                 }
 
-                if max == 0 {
-                    return;
+                if nodes[min].kind.ends_basic_block() {
+                    min = idom(nodes, min);
                 }
 
-                let index = nodes[0].outputs.iter().position(|&p| p == node).unwrap();
-                nodes[0].outputs.remove(index);
-                nodes[node].inputs[0] = max;
-                debug_assert!(
-                    !nodes[max].outputs.contains(&node)
-                        || matches!(nodes[max].kind, Kind::Call { .. }),
-                    "{node} {:?} {max} {:?}",
-                    nodes[node],
-                    nodes[max]
-                );
-                nodes[max].outputs.push(node);
+                let prev = nodes[node].inputs[0];
+                if min != prev {
+                    let index = nodes[prev].outputs.iter().position(|&p| p == node).unwrap();
+                    nodes[prev].outputs.remove(index);
+                    nodes[node].inputs[0] = min;
+                    nodes[min].outputs.push(node);
+                }
             }
+        }
+
+        fn use_block(target: Nid, from: Nid, nodes: &mut Nodes) -> Nid {
+            if nodes[from].kind != Kind::Phi {
+                return idom(nodes, from);
+            }
+
+            let index = nodes[from].inputs.iter().position(|&n| n == target).unwrap();
+            nodes[nodes[from].inputs[0]].inputs[index - 1]
+        }
+
+        fn common_dom(mut a: Nid, mut b: Nid, nodes: &mut Nodes) -> Nid {
+            while a != b {
+                let [ldepth, rdepth] = [idepth(nodes, a), idepth(nodes, b)];
+                if ldepth >= rdepth {
+                    a = idom(nodes, a);
+                }
+                if ldepth <= rdepth {
+                    b = idom(nodes, b);
+                }
+            }
+            a
         }
 
         self.ci.nodes.visited.clear(self.ci.nodes.values.len());
         push_up(&mut self.ci.nodes, self.ci.end);
         // TODO: handle infinte loops
         self.ci.nodes.visited.clear(self.ci.nodes.values.len());
-        //push_down(&mut self.ci.nodes, self.ci.start);
+        push_down(&mut self.ci.nodes, self.ci.start);
     }
 }
 
@@ -3626,6 +3785,6 @@ mod tests {
         const_folding_with_arg => README;
         // FIXME: contains redundant copies
         branch_assignments => README;
-        //exhaustive_loop_testing => README;
+        exhaustive_loop_testing => README;
     }
 }

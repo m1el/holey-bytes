@@ -1648,12 +1648,15 @@ impl Codegen {
                 };
 
                 if ctx.loc.is_some() {
-                    self.report(
-                        pos,
-                        "`idk` would be written to an existing memory location \
-                        which at ths point does notthing so its prohibited. TODO: make debug \
-                        builds write 0xAA instead.",
-                    );
+                    // self.report(
+                    //     pos,
+                    //     format_args!(
+                    //         "`idk` would be written to an existing memory location \
+                    //         which at ths point does notthing so its prohibited. TODO: make debug \
+                    //         builds write 0xAA instead. Info for weak people: {:?}",
+                    //         ctx.loc
+                    //     ),
+                    // );
                 }
 
                 let loc = match self.tys.size_of(ty) {

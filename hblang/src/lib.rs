@@ -15,7 +15,8 @@
     slice_ptr_get,
     slice_take,
     map_try_insert,
-    extract_if
+    extract_if,
+    ptr_internals
 )]
 #![allow(internal_features, clippy::format_collect)]
 

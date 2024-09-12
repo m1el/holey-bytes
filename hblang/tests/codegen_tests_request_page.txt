@@ -43,7 +43,8 @@ request_page:
     ST r31, r254, 0a, 32h
     CP r32, r2
     LRA r33, r0, :"\0\u{1}xxxxxxxx"
-    ADDI64 r34, r33, 1d
+    CP r34, r33
+    ADDI64 r34, r34, 1d
     ST r32, r34, 0a, 1h
     LI64 r2, 3d
     LI64 r3, 2d
@@ -53,6 +54,6 @@ request_page:
     LD r31, r254, 0a, 32h
     ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
-code size: 440
+code size: 443
 ret: 42
 status: Ok(())

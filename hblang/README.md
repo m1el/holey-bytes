@@ -337,6 +337,8 @@ foo := fn(a: int, b: int, c: int): int {
 
 #### idk
 ```hb
+_edge_case := @as(int, idk)
+
 main := fn(): int {
 	big_array := @as([u8; 128], idk)
 	i := 0

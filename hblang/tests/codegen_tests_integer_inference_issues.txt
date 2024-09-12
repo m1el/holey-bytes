@@ -16,13 +16,14 @@ integer_range:
     LI64 r2, 3d
     LI64 r3, 4d
     ECA 
+    CP r34, r1
     SUB64 r33, r33, r32
     ADDI64 r33, r33, 1d
-    DIRU64 r0, r34, r1, r33
+    DIRU64 r0, r34, r34, r33
     ADD64 r1, r34, r32
     LD r31, r254, 0a, 32h
     ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
-code size: 211
+code size: 214
 ret: 42
 status: Ok(())
