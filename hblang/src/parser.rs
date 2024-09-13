@@ -6,7 +6,7 @@ use {
     },
     std::{
         cell::{Cell, UnsafeCell},
-        io,
+        fmt, io,
         ops::{Deref, Not},
         ptr::NonNull,
         sync::atomic::AtomicUsize,
@@ -549,12 +549,12 @@ impl<'a, 'b> Parser<'a, 'b> {
     }
 
     #[track_caller]
-    fn report(&self, msg: impl std::fmt::Display) -> ! {
+    fn report(&self, msg: impl fmt::Display) -> ! {
         self.report_pos(self.token.start, msg)
     }
 
     #[track_caller]
-    fn report_pos(&self, pos: Pos, msg: impl std::fmt::Display) -> ! {
+    fn report_pos(&self, pos: Pos, msg: impl fmt::Display) -> ! {
         let (line, col) = self.lexer.line_col(pos);
         eprintln!("{}:{}:{} => {}", self.path, line, col, msg);
         unreachable!();
@@ -868,20 +868,20 @@ pub fn with_fmt_source<T>(source: &str, f: impl FnOnce() -> T) -> T {
     r
 }
 
-impl<'a> std::fmt::Display for Expr<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl<'a> fmt::Display for Expr<'a> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         thread_local! {
             static INDENT: Cell<usize> = const { Cell::new(0) };
             static DISPLAY_BUFFER: Cell<String> = const { Cell::new(String::new()) };
         }
 
         fn fmt_list<T>(
-            f: &mut std::fmt::Formatter,
+            f: &mut fmt::Formatter,
             trailing: bool,
             end: &str,
             list: &[T],
-            fmt: impl Fn(&T, &mut std::fmt::Formatter) -> std::fmt::Result,
-        ) -> std::fmt::Result {
+            fmt: impl Fn(&T, &mut fmt::Formatter) -> fmt::Result,
+        ) -> fmt::Result {
             if !trailing {
                 let first = &mut true;
                 for expr in list {
@@ -948,7 +948,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
             Self::Field { target, name: field } => write!(f, "{}.{field}", Postfix(target)),
             Self::Directive { name, args, .. } => {
                 write!(f, "@{name}(")?;
-                fmt_list(f, false, ")", args, std::fmt::Display::fmt)
+                fmt_list(f, false, ")", args, fmt::Display::fmt)
             }
             Self::Struct { fields, trailing_comma, .. } => {
                 write!(f, "struct {{")?;
@@ -961,7 +961,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
                     write!(f, "{}", Unary(ty))?;
                 }
                 write!(f, ".{{")?;
-                let fmt_field = |CtorField { name, value, .. }: &_, f: &mut std::fmt::Formatter| {
+                let fmt_field = |CtorField { name, value, .. }: &_, f: &mut fmt::Formatter| {
                     if matches!(value, Expr::Ident { name: n, .. } if name == n) {
                         write!(f, "{name}")
                     } else {
@@ -975,7 +975,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
                     write!(f, "{}", Unary(ty))?;
                 }
                 write!(f, ".(")?;
-                fmt_list(f, trailing_comma, ")", fields, std::fmt::Display::fmt)
+                fmt_list(f, trailing_comma, ")", fields, fmt::Display::fmt)
             }
             Self::Slice { item, size, .. } => match size {
                 Some(size) => write!(f, "[{item}; {size}]"),
@@ -1006,7 +1006,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
             }
             Self::Call { func, args, trailing_comma } => {
                 write!(f, "{}(", Postfix(func))?;
-                fmt_list(f, trailing_comma, ")", args, std::fmt::Display::fmt)
+                fmt_list(f, trailing_comma, ")", args, fmt::Display::fmt)
             }
             Self::Return { val: Some(val), .. } => write!(f, "return {val}"),
             Self::Return { val: None, .. } => write!(f, "return"),
@@ -1071,7 +1071,7 @@ impl<'a> std::fmt::Display for Expr<'a> {
                 write!(f, "{left} {op}= {right}")
             }
             Self::BinOp { right, op, left } => {
-                let display_branch = |f: &mut std::fmt::Formatter, expr: &Self| {
+                let display_branch = |f: &mut fmt::Formatter, expr: &Self| {
                     if let Self::BinOp { op: lop, .. } = expr
                         && op.precedence() > lop.precedence()
                     {
@@ -1163,6 +1163,19 @@ impl AstInner<[Symbol]> {
             NonNull::new_unchecked(inner)
         }
     }
+
+    pub fn report_to(&self, pos: Pos, msg: impl fmt::Display, out: &mut impl fmt::Write) {
+        let str = &self.file;
+        let (line, mut col) = lexer::line_col(str.as_bytes(), pos);
+        _ = writeln!(out, "{}:{}:{}: {}", self.path, line, col, msg);
+
+        let line = &str[str[..pos as usize].rfind('\n').map_or(0, |i| i + 1)
+            ..str[pos as usize..].find('\n').unwrap_or(str.len()) + pos as usize];
+        col += line.matches('\t').count() * 3;
+
+        _ = writeln!(out, "{}", line.replace("\t", "    "));
+        _ = writeln!(out, "{}^", " ".repeat(col - 1));
+    }
 }
 
 #[derive(PartialEq, Eq, Hash)]
@@ -1193,8 +1206,8 @@ impl Ast {
     }
 }
 
-impl std::fmt::Display for Ast {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for Ast {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for expr in self.exprs() {
             writeln!(f, "{expr}\n")?;
         }

@@ -3,7 +3,7 @@ use {
     crate::{
         ident::{self, Ident},
         instrs::{self, *},
-        lexer::{self, TokenKind},
+        lexer::TokenKind,
         log,
         parser::{self, find_symbol, idfl, CtorField, Expr, ExprRef, FileId, Pos},
         HashMap, LoggedMem,
@@ -512,6 +512,148 @@ pub mod ty {
     }
 }
 
+#[derive(Default)]
+struct Types {
+    syms: HashMap<SymKey, ty::Id>,
+
+    funcs: Vec<Func>,
+    args: Vec<ty::Id>,
+    globals: Vec<Global>,
+    structs: Vec<Struct>,
+    ptrs: Vec<Ptr>,
+    arrays: Vec<Array>,
+}
+
+impl Types {
+    pub fn offset_of_item(&self, item: ty::Kind, ct_hint: Option<u32>) -> Option<Offset> {
+        task::unpack(match item {
+            ty::Kind::Func(f) => self.funcs[f as usize].offset,
+            ty::Kind::Global(g) => self.globals[g as usize].offset,
+            ty::Kind::Builtin(u32::MAX) => ct_hint?,
+            _ => unreachable!(),
+        })
+        .ok()
+    }
+
+    pub fn is_runtime_item(&self, item: ty::Kind) -> bool {
+        match item {
+            ty::Kind::Func(f) => self.funcs[f as usize].runtime,
+            ty::Kind::Global(f) => self.globals[f as usize].runtime,
+            ty::Kind::Builtin(u32::MAX) => false,
+            _ => unreachable!(),
+        }
+    }
+
+    fn parama(&self, ret: impl Into<ty::Id>) -> ParamAlloc {
+        ParamAlloc(2 + (9..=16).contains(&self.size_of(ret.into())) as u8..12)
+    }
+
+    fn offset_of(&self, idx: ty::Struct, field: &str) -> Option<(Offset, ty::Id)> {
+        let record = &self.structs[idx as usize];
+        let until = record.fields.iter().position(|f| f.name.as_ref() == field)?;
+        let mut offset = 0;
+        for &Field { ty, .. } in &record.fields[..until] {
+            offset = Self::align_up(offset, self.align_of(ty));
+            offset += self.size_of(ty);
+        }
+        Some((offset, record.fields[until].ty))
+    }
+
+    fn make_ptr(&mut self, base: ty::Id) -> ty::Id {
+        ty::Kind::Ptr(self.make_ptr_low(base)).compress()
+    }
+
+    fn make_ptr_low(&mut self, base: ty::Id) -> ty::Ptr {
+        let id = SymKey::pointer_to(base);
+
+        self.syms
+            .entry(id)
+            .or_insert_with(|| {
+                self.ptrs.push(Ptr { base });
+                ty::Kind::Ptr(self.ptrs.len() as u32 - 1).compress()
+            })
+            .expand()
+            .inner()
+    }
+
+    fn make_array(&mut self, ty: ty::Id, len: ArrayLen) -> ty::Id {
+        ty::Kind::Slice(self.make_array_low(ty, len)).compress()
+    }
+
+    fn make_array_low(&mut self, ty: ty::Id, len: ArrayLen) -> ty::Slice {
+        let id = SymKey {
+            file: match len {
+                ArrayLen::MAX => ArrayLen::MAX - 1,
+                len => ArrayLen::MAX - len - 2,
+            },
+            ident: ty.repr(),
+        };
+
+        self.syms
+            .entry(id)
+            .or_insert_with(|| {
+                self.arrays.push(Array { ty, len });
+                ty::Kind::Slice(self.arrays.len() as u32 - 1).compress()
+            })
+            .expand()
+            .inner()
+    }
+
+    fn align_up(value: Size, align: Size) -> Size {
+        (value + align - 1) & !(align - 1)
+    }
+
+    fn size_of(&self, ty: ty::Id) -> Size {
+        match ty.expand() {
+            ty::Kind::Ptr(_) => 8,
+            ty::Kind::Builtin(ty::VOID) => 0,
+            ty::Kind::Builtin(ty::NEVER) => unreachable!(),
+            ty::Kind::Builtin(ty::INT | ty::UINT) => 8,
+            ty::Kind::Builtin(ty::I32 | ty::U32 | ty::TYPE) => 4,
+            ty::Kind::Builtin(ty::I16 | ty::U16) => 2,
+            ty::Kind::Builtin(ty::I8 | ty::U8 | ty::BOOL) => 1,
+            ty::Kind::Slice(arr) => {
+                let arr = &self.arrays[arr as usize];
+                match arr.len {
+                    0 => 0,
+                    ArrayLen::MAX => 16,
+                    len => self.size_of(arr.ty) * len,
+                }
+            }
+            ty::Kind::Struct(stru) => {
+                let mut offset = 0u32;
+                let record = &self.structs[stru as usize];
+                for &Field { ty, .. } in record.fields.iter() {
+                    let align = self.align_of(ty);
+                    offset = Self::align_up(offset, align);
+                    offset += self.size_of(ty);
+                }
+                offset
+            }
+            ty => unimplemented!("size_of: {:?}", ty),
+        }
+    }
+
+    fn align_of(&self, ty: ty::Id) -> Size {
+        match ty.expand() {
+            ty::Kind::Struct(stru) => self.structs[stru as usize]
+                .fields
+                .iter()
+                .map(|&Field { ty, .. }| self.align_of(ty))
+                .max()
+                .unwrap(),
+            ty::Kind::Slice(arr) => {
+                let arr = &self.arrays[arr as usize];
+                match arr.len {
+                    ArrayLen::MAX => 8,
+                    _ => self.align_of(arr.ty),
+                }
+            }
+            _ => self.size_of(ty).max(1),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Reloc {
     offset: Offset,
@@ -887,148 +1029,6 @@ impl ParamAlloc {
 struct Array {
     ty: ty::Id,
     len: ArrayLen,
-}
-
-#[derive(Default)]
-struct Types {
-    syms: HashMap<SymKey, ty::Id>,
-
-    funcs: Vec<Func>,
-    args: Vec<ty::Id>,
-    globals: Vec<Global>,
-    structs: Vec<Struct>,
-    ptrs: Vec<Ptr>,
-    arrays: Vec<Array>,
-}
-
-impl Types {
-    pub fn offset_of_item(&self, item: ty::Kind, ct_hint: Option<u32>) -> Option<Offset> {
-        task::unpack(match item {
-            ty::Kind::Func(f) => self.funcs[f as usize].offset,
-            ty::Kind::Global(g) => self.globals[g as usize].offset,
-            ty::Kind::Builtin(u32::MAX) => ct_hint?,
-            _ => unreachable!(),
-        })
-        .ok()
-    }
-
-    pub fn is_runtime_item(&self, item: ty::Kind) -> bool {
-        match item {
-            ty::Kind::Func(f) => self.funcs[f as usize].runtime,
-            ty::Kind::Global(f) => self.globals[f as usize].runtime,
-            ty::Kind::Builtin(u32::MAX) => false,
-            _ => unreachable!(),
-        }
-    }
-
-    fn parama(&self, ret: impl Into<ty::Id>) -> ParamAlloc {
-        ParamAlloc(2 + (9..=16).contains(&self.size_of(ret.into())) as u8..12)
-    }
-
-    fn offset_of(&self, idx: ty::Struct, field: &str) -> Option<(Offset, ty::Id)> {
-        let record = &self.structs[idx as usize];
-        let until = record.fields.iter().position(|f| f.name.as_ref() == field)?;
-        let mut offset = 0;
-        for &Field { ty, .. } in &record.fields[..until] {
-            offset = Self::align_up(offset, self.align_of(ty));
-            offset += self.size_of(ty);
-        }
-        Some((offset, record.fields[until].ty))
-    }
-
-    fn make_ptr(&mut self, base: ty::Id) -> ty::Id {
-        ty::Kind::Ptr(self.make_ptr_low(base)).compress()
-    }
-
-    fn make_ptr_low(&mut self, base: ty::Id) -> ty::Ptr {
-        let id = SymKey::pointer_to(base);
-
-        self.syms
-            .entry(id)
-            .or_insert_with(|| {
-                self.ptrs.push(Ptr { base });
-                ty::Kind::Ptr(self.ptrs.len() as u32 - 1).compress()
-            })
-            .expand()
-            .inner()
-    }
-
-    fn make_array(&mut self, ty: ty::Id, len: ArrayLen) -> ty::Id {
-        ty::Kind::Slice(self.make_array_low(ty, len)).compress()
-    }
-
-    fn make_array_low(&mut self, ty: ty::Id, len: ArrayLen) -> ty::Slice {
-        let id = SymKey {
-            file: match len {
-                ArrayLen::MAX => ArrayLen::MAX - 1,
-                len => ArrayLen::MAX - len - 2,
-            },
-            ident: ty.repr(),
-        };
-
-        self.syms
-            .entry(id)
-            .or_insert_with(|| {
-                self.arrays.push(Array { ty, len });
-                ty::Kind::Slice(self.arrays.len() as u32 - 1).compress()
-            })
-            .expand()
-            .inner()
-    }
-
-    fn align_up(value: Size, align: Size) -> Size {
-        (value + align - 1) & !(align - 1)
-    }
-
-    fn size_of(&self, ty: ty::Id) -> Size {
-        match ty.expand() {
-            ty::Kind::Ptr(_) => 8,
-            ty::Kind::Builtin(ty::VOID) => 0,
-            ty::Kind::Builtin(ty::NEVER) => unreachable!(),
-            ty::Kind::Builtin(ty::INT | ty::UINT) => 8,
-            ty::Kind::Builtin(ty::I32 | ty::U32 | ty::TYPE) => 4,
-            ty::Kind::Builtin(ty::I16 | ty::U16) => 2,
-            ty::Kind::Builtin(ty::I8 | ty::U8 | ty::BOOL) => 1,
-            ty::Kind::Slice(arr) => {
-                let arr = &self.arrays[arr as usize];
-                match arr.len {
-                    0 => 0,
-                    ArrayLen::MAX => 16,
-                    len => self.size_of(arr.ty) * len,
-                }
-            }
-            ty::Kind::Struct(stru) => {
-                let mut offset = 0u32;
-                let record = &self.structs[stru as usize];
-                for &Field { ty, .. } in record.fields.iter() {
-                    let align = self.align_of(ty);
-                    offset = Self::align_up(offset, align);
-                    offset += self.size_of(ty);
-                }
-                offset
-            }
-            ty => unimplemented!("size_of: {:?}", ty),
-        }
-    }
-
-    fn align_of(&self, ty: ty::Id) -> Size {
-        match ty.expand() {
-            ty::Kind::Struct(stru) => self.structs[stru as usize]
-                .fields
-                .iter()
-                .map(|&Field { ty, .. }| self.align_of(ty))
-                .max()
-                .unwrap(),
-            ty::Kind::Slice(arr) => {
-                let arr = &self.arrays[arr as usize];
-                match arr.len {
-                    ArrayLen::MAX => 8,
-                    _ => self.align_of(arr.ty),
-                }
-            }
-            _ => self.size_of(ty).max(1),
-        }
-    }
 }
 
 mod task {
@@ -3458,16 +3458,9 @@ impl Codegen {
     }
 
     fn report_log(&self, pos: Pos, msg: impl std::fmt::Display) {
-        let str = &self.cfile().file;
-        let (line, mut col) = lexer::line_col(str.as_bytes(), pos);
-        println!("{}:{}:{}: {}", self.cfile().path, line, col, msg);
-
-        let line = &str[str[..pos as usize].rfind('\n').map_or(0, |i| i + 1)
-            ..str[pos as usize..].find('\n').unwrap_or(str.len()) + pos as usize];
-        col += line.matches('\t').count() * 3;
-
-        println!("{}", line.replace("\t", "    "));
-        println!("{}^", " ".repeat(col - 1))
+        let mut out = String::new();
+        self.cfile().report_to(pos, msg, &mut out);
+        eprintln!("{out}");
     }
 
     #[track_caller]

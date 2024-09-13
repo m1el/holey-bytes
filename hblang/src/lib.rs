@@ -17,14 +17,21 @@
     extract_if,
     ptr_internals
 )]
-#![allow(internal_features, clippy::format_collect)]
+#![allow(internal_features, clippy::format_collect, dead_code)]
 
 use {
+    self::{
+        ident::Ident,
+        parser::{ExprRef, FileId},
+        ty::ArrayLen,
+    },
     parser::Ast,
     std::{
         collections::{hash_map, BTreeMap, VecDeque},
         io::{self, Read},
+        ops::Range,
         path::{Path, PathBuf},
+        rc::Rc,
         sync::Mutex,
     },
 };
@@ -45,6 +52,575 @@ pub mod son;
 
 mod instrs;
 mod lexer;
+
+mod ty {
+    use {
+        crate::{
+            lexer::TokenKind,
+            parser::{self, Expr},
+        },
+        std::{num::NonZeroU32, ops::Range},
+    };
+
+    pub type ArrayLen = u32;
+
+    pub type Builtin = u32;
+    pub type Struct = u32;
+    pub type Ptr = u32;
+    pub type Func = u32;
+    pub type Global = u32;
+    pub type Module = u32;
+    pub type Param = u32;
+    pub type Slice = u32;
+
+    #[derive(Clone, Copy)]
+    pub struct Tuple(pub u32);
+
+    impl Tuple {
+        const LEN_BITS: u32 = 5;
+        const LEN_MASK: usize = Self::MAX_LEN - 1;
+        const MAX_LEN: usize = 1 << Self::LEN_BITS;
+
+        pub fn new(pos: usize, len: usize) -> Option<Self> {
+            if len >= Self::MAX_LEN {
+                return None;
+            }
+
+            Some(Self((pos << Self::LEN_BITS | len) as u32))
+        }
+
+        pub fn view(self, slice: &[Id]) -> &[Id] {
+            &slice[self.0 as usize >> Self::LEN_BITS..][..self.len()]
+        }
+
+        pub fn range(self) -> Range<usize> {
+            let start = self.0 as usize >> Self::LEN_BITS;
+            start..start + self.len()
+        }
+
+        pub fn len(self) -> usize {
+            self.0 as usize & Self::LEN_MASK
+        }
+
+        pub fn is_empty(self) -> bool {
+            self.0 == 0
+        }
+
+        pub fn empty() -> Self {
+            Self(0)
+        }
+
+        pub fn repr(&self) -> u32 {
+            self.0
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
+    pub struct Id(NonZeroU32);
+
+    impl Default for Id {
+        fn default() -> Self {
+            Self(unsafe { NonZeroU32::new_unchecked(UNDECLARED) })
+        }
+    }
+
+    impl Id {
+        pub const fn from_bt(bt: u32) -> Self {
+            Self(unsafe { NonZeroU32::new_unchecked(bt) })
+        }
+
+        pub fn is_signed(self) -> bool {
+            (I8..=INT).contains(&self.repr())
+        }
+
+        pub fn is_unsigned(self) -> bool {
+            (U8..=UINT).contains(&self.repr())
+        }
+
+        pub fn is_integer(self) -> bool {
+            (U8..=INT).contains(&self.repr())
+        }
+
+        pub fn strip_pointer(self) -> Self {
+            match self.expand() {
+                Kind::Ptr(_) => Kind::Builtin(UINT).compress(),
+                _ => self,
+            }
+        }
+
+        pub fn is_pointer(self) -> bool {
+            matches!(Kind::from_ty(self), Kind::Ptr(_))
+        }
+
+        pub fn try_upcast(self, ob: Self) -> Option<Self> {
+            let (oa, ob) = (Self(self.0.min(ob.0)), Self(self.0.max(ob.0)));
+            let (a, b) = (oa.strip_pointer(), ob.strip_pointer());
+            Some(match () {
+                _ if oa == ob => oa,
+                _ if oa.is_pointer() && ob.is_pointer() => return None,
+                _ if a.is_signed() && b.is_signed() || a.is_unsigned() && b.is_unsigned() => ob,
+                _ if a.is_unsigned() && b.is_signed() && a.repr() - U8 < b.repr() - I8 => ob,
+                _ if oa.is_integer() && ob.is_pointer() => ob,
+                _ => return None,
+            })
+        }
+
+        pub fn expand(self) -> Kind {
+            Kind::from_ty(self)
+        }
+
+        pub const fn repr(self) -> u32 {
+            self.0.get()
+        }
+    }
+
+    impl From<u64> for Id {
+        fn from(id: u64) -> Self {
+            Self(unsafe { NonZeroU32::new_unchecked(id as _) })
+        }
+    }
+
+    impl From<u32> for Id {
+        fn from(id: u32) -> Self {
+            Kind::Builtin(id).compress()
+        }
+    }
+
+    const fn array_to_lower_case<const N: usize>(array: [u8; N]) -> [u8; N] {
+        let mut result = [0; N];
+        let mut i = 0;
+        while i < N {
+            result[i] = array[i].to_ascii_lowercase();
+            i += 1;
+        }
+        result
+    }
+    // const string to lower case
+
+    macro_rules! builtin_type {
+        ($($name:ident;)*) => {
+            $(pub const $name: Builtin = ${index(0)} + 1;)*
+
+            mod __lc_names {
+                use super::*;
+                $(pub const $name: &[u8] = &array_to_lower_case(unsafe {
+                    *(stringify!($name).as_ptr() as *const [u8; stringify!($name).len()]) });)*
+            }
+
+            pub fn from_str(name: &str) -> Option<Builtin> {
+                match name.as_bytes() {
+                    $(__lc_names::$name => Some($name),)*
+                    _ => None,
+                }
+            }
+
+            pub fn to_str(ty: Builtin) -> &'static str {
+                match ty {
+                    $($name => unsafe { std::str::from_utf8_unchecked(__lc_names::$name) },)*
+                    v => unreachable!("invalid type: {}", v),
+                }
+            }
+        };
+    }
+
+    builtin_type! {
+        UNDECLARED;
+        NEVER;
+        VOID;
+        TYPE;
+        BOOL;
+        U8;
+        U16;
+        U32;
+        UINT;
+        I8;
+        I16;
+        I32;
+        INT;
+        LEFT_UNREACHABLE;
+        RIGHT_UNREACHABLE;
+    }
+
+    macro_rules! type_kind {
+        ($(#[$meta:meta])* $vis:vis enum $name:ident {$( $variant:ident, )*}) => {
+            $(#[$meta])*
+            $vis enum $name {
+                $($variant($variant),)*
+            }
+
+            impl $name {
+                const FLAG_BITS: u32 = (${count($variant)} as u32).next_power_of_two().ilog2();
+                const FLAG_OFFSET: u32 = std::mem::size_of::<Id>() as u32 * 8 - Self::FLAG_BITS;
+                const INDEX_MASK: u32 = (1 << (32 - Self::FLAG_BITS)) - 1;
+
+                $vis fn from_ty(ty: Id) -> Self {
+                    let (flag, index) = (ty.repr() >> Self::FLAG_OFFSET, ty.repr() & Self::INDEX_MASK);
+                    match flag {
+                        $(${index(0)} => Self::$variant(index),)*
+                        i => unreachable!("{i}"),
+                    }
+                }
+
+                $vis const fn compress(self) -> Id {
+                    let (index, flag) = match self {
+                        $(Self::$variant(index) => (index, ${index(0)}),)*
+                    };
+                   Id(unsafe { NonZeroU32::new_unchecked((flag << Self::FLAG_OFFSET) | index) })
+                }
+
+                $vis const fn inner(self) -> u32 {
+                    match self {
+                        $(Self::$variant(index) => index,)*
+                    }
+                }
+            }
+        };
+    }
+
+    type_kind! {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Kind {
+            Builtin,
+            Struct,
+            Ptr,
+            Func,
+            Global,
+            Module,
+            Slice,
+        }
+    }
+
+    impl Default for Kind {
+        fn default() -> Self {
+            Self::Builtin(UNDECLARED)
+        }
+    }
+
+    pub struct Display<'a> {
+        tys: &'a super::Types,
+        files: &'a [parser::Ast],
+        ty: Id,
+    }
+
+    impl<'a> Display<'a> {
+        pub(super) fn new(tys: &'a super::Types, files: &'a [parser::Ast], ty: Id) -> Self {
+            Self { tys, files, ty }
+        }
+
+        fn rety(&self, ty: Id) -> Self {
+            Self::new(self.tys, self.files, ty)
+        }
+    }
+
+    impl<'a> std::fmt::Display for Display<'a> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            use Kind as TK;
+            match TK::from_ty(self.ty) {
+                TK::Module(idx) => write!(f, "module{}", idx),
+                TK::Builtin(ty) => write!(f, "{}", to_str(ty)),
+                TK::Ptr(ty) => {
+                    write!(f, "^{}", self.rety(self.tys.ptrs[ty as usize].base))
+                }
+                _ if let Some((key, _)) = self
+                    .tys
+                    .syms
+                    .iter()
+                    .find(|(sym, &ty)| sym.file < self.files.len() as u32 && ty == self.ty)
+                    && let Some(name) = self.files[key.file as usize].exprs().iter().find_map(
+                        |expr| match expr {
+                            Expr::BinOp {
+                                left: &Expr::Ident { name, id, .. },
+                                op: TokenKind::Decl,
+                                ..
+                            } if id == key.ident => Some(name),
+                            _ => None,
+                        },
+                    ) =>
+                {
+                    write!(f, "{name}")
+                }
+                TK::Struct(idx) => {
+                    let record = &self.tys.structs[idx as usize];
+                    write!(f, "{{")?;
+                    for (i, &super::Field { ref name, ty }) in record.fields.iter().enumerate() {
+                        if i != 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{name}: {}", self.rety(ty))?;
+                    }
+                    write!(f, "}}")
+                }
+                TK::Func(idx) => write!(f, "fn{idx}"),
+                TK::Global(idx) => write!(f, "global{idx}"),
+                TK::Slice(idx) => {
+                    let array = self.tys.arrays[idx as usize];
+                    match array.len {
+                        ArrayLen::MAX => write!(f, "[{}]", self.rety(array.ty)),
+                        len => write!(f, "[{}; {len}]", self.rety(array.ty)),
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn bin_ret(ty: Id, op: TokenKind) -> Id {
+        use TokenKind as T;
+        match op {
+            T::Lt | T::Gt | T::Le | T::Ge | T::Ne | T::Eq => BOOL.into(),
+            _ => ty,
+        }
+    }
+}
+
+type Offset = u32;
+type Size = u32;
+
+#[derive(PartialEq, Eq, Hash)]
+struct SymKey {
+    file: u32,
+    ident: u32,
+}
+
+impl SymKey {
+    pub fn pointer_to(ty: ty::Id) -> Self {
+        Self { file: u32::MAX, ident: ty.repr() }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Sig {
+    args: ty::Tuple,
+    ret: ty::Id,
+}
+
+struct Func {
+    file: FileId,
+    expr: ExprRef,
+    sig: Option<Sig>,
+    offset: Offset,
+    // TODO: change to indices into common vec
+    relocs: Vec<TypedReloc>,
+    code: Vec<u8>,
+}
+
+impl Default for Func {
+    fn default() -> Self {
+        Self {
+            file: u32::MAX,
+            expr: Default::default(),
+            sig: None,
+            offset: u32::MAX,
+            relocs: Default::default(),
+            code: Default::default(),
+        }
+    }
+}
+
+struct TypedReloc {
+    target: ty::Id,
+    reloc: Reloc,
+}
+
+struct Global {
+    file: FileId,
+    name: Ident,
+    ty: ty::Id,
+    offset: Offset,
+    data: Vec<u8>,
+}
+
+impl Default for Global {
+    fn default() -> Self {
+        Self {
+            ty: Default::default(),
+            offset: u32::MAX,
+            data: Default::default(),
+            file: 0,
+            name: 0,
+        }
+    }
+}
+
+// TODO: make into bit struct (width: u2, sub_offset: u3, offset: u27)
+#[derive(Clone, Copy, Debug)]
+struct Reloc {
+    offset: Offset,
+    sub_offset: u8,
+    width: u8,
+}
+
+impl Reloc {
+    fn new(offset: usize, sub_offset: u8, width: u8) -> Self {
+        Self { offset: offset as u32, sub_offset, width }
+    }
+
+    fn apply_jump(mut self, code: &mut [u8], to: u32, from: u32) -> i64 {
+        self.offset += from;
+        let offset = to as i64 - self.offset as i64;
+        self.write_offset(code, offset);
+        offset
+    }
+
+    fn write_offset(&self, code: &mut [u8], offset: i64) {
+        let bytes = offset.to_ne_bytes();
+        let slice = &mut code[self.offset as usize + self.sub_offset as usize..];
+        slice[..self.width as usize].copy_from_slice(&bytes[..self.width as usize]);
+    }
+}
+
+struct Field {
+    name: Rc<str>,
+    ty: ty::Id,
+}
+
+struct Struct {
+    fields: Rc<[Field]>,
+}
+
+struct Ptr {
+    base: ty::Id,
+}
+
+#[derive(Clone, Copy)]
+struct Array {
+    ty: ty::Id,
+    len: ArrayLen,
+}
+
+struct ParamAlloc(Range<u8>);
+
+impl ParamAlloc {
+    pub fn next(&mut self) -> u8 {
+        self.0.next().expect("too many paramteters")
+    }
+
+    fn next_wide(&mut self) -> u8 {
+        (self.next(), self.next()).0
+    }
+}
+
+#[derive(Default)]
+struct Types {
+    syms: HashMap<SymKey, ty::Id>,
+
+    funcs: Vec<Func>,
+    args: Vec<ty::Id>,
+    globals: Vec<Global>,
+    structs: Vec<Struct>,
+    ptrs: Vec<Ptr>,
+    arrays: Vec<Array>,
+}
+
+impl Types {
+    fn parama(&self, ret: impl Into<ty::Id>) -> ParamAlloc {
+        ParamAlloc(2 + (9..=16).contains(&self.size_of(ret.into())) as u8..12)
+    }
+
+    fn offset_of(&self, idx: ty::Struct, field: &str) -> Option<(Offset, ty::Id)> {
+        let record = &self.structs[idx as usize];
+        let until = record.fields.iter().position(|f| f.name.as_ref() == field)?;
+        let mut offset = 0;
+        for &Field { ty, .. } in &record.fields[..until] {
+            offset = Self::align_up(offset, self.align_of(ty));
+            offset += self.size_of(ty);
+        }
+        Some((offset, record.fields[until].ty))
+    }
+
+    fn make_ptr(&mut self, base: ty::Id) -> ty::Id {
+        ty::Kind::Ptr(self.make_ptr_low(base)).compress()
+    }
+
+    fn make_ptr_low(&mut self, base: ty::Id) -> ty::Ptr {
+        let id = SymKey::pointer_to(base);
+
+        self.syms
+            .entry(id)
+            .or_insert_with(|| {
+                self.ptrs.push(Ptr { base });
+                ty::Kind::Ptr(self.ptrs.len() as u32 - 1).compress()
+            })
+            .expand()
+            .inner()
+    }
+
+    fn make_array(&mut self, ty: ty::Id, len: ArrayLen) -> ty::Id {
+        ty::Kind::Slice(self.make_array_low(ty, len)).compress()
+    }
+
+    fn make_array_low(&mut self, ty: ty::Id, len: ArrayLen) -> ty::Slice {
+        let id = SymKey {
+            file: match len {
+                ArrayLen::MAX => ArrayLen::MAX - 1,
+                len => ArrayLen::MAX - len - 2,
+            },
+            ident: ty.repr(),
+        };
+
+        self.syms
+            .entry(id)
+            .or_insert_with(|| {
+                self.arrays.push(Array { ty, len });
+                ty::Kind::Slice(self.arrays.len() as u32 - 1).compress()
+            })
+            .expand()
+            .inner()
+    }
+
+    fn align_up(value: Size, align: Size) -> Size {
+        (value + align - 1) & !(align - 1)
+    }
+
+    fn size_of(&self, ty: ty::Id) -> Size {
+        match ty.expand() {
+            ty::Kind::Ptr(_) => 8,
+            ty::Kind::Builtin(ty::VOID) => 0,
+            ty::Kind::Builtin(ty::NEVER) => unreachable!(),
+            ty::Kind::Builtin(ty::INT | ty::UINT) => 8,
+            ty::Kind::Builtin(ty::I32 | ty::U32 | ty::TYPE) => 4,
+            ty::Kind::Builtin(ty::I16 | ty::U16) => 2,
+            ty::Kind::Builtin(ty::I8 | ty::U8 | ty::BOOL) => 1,
+            ty::Kind::Slice(arr) => {
+                let arr = &self.arrays[arr as usize];
+                match arr.len {
+                    0 => 0,
+                    ArrayLen::MAX => 16,
+                    len => self.size_of(arr.ty) * len,
+                }
+            }
+            ty::Kind::Struct(stru) => {
+                let mut offset = 0u32;
+                let record = &self.structs[stru as usize];
+                for &Field { ty, .. } in record.fields.iter() {
+                    let align = self.align_of(ty);
+                    offset = Self::align_up(offset, align);
+                    offset += self.size_of(ty);
+                }
+                offset
+            }
+            ty => unimplemented!("size_of: {:?}", ty),
+        }
+    }
+
+    fn align_of(&self, ty: ty::Id) -> Size {
+        match ty.expand() {
+            ty::Kind::Struct(stru) => self.structs[stru as usize]
+                .fields
+                .iter()
+                .map(|&Field { ty, .. }| self.align_of(ty))
+                .max()
+                .unwrap(),
+            ty::Kind::Slice(arr) => {
+                let arr = &self.arrays[arr as usize];
+                match arr.len {
+                    ArrayLen::MAX => 8,
+                    _ => self.align_of(arr.ty),
+                }
+            }
+            _ => self.size_of(ty).max(1),
+        }
+    }
+}
 
 mod ident {
     pub type Ident = u32;
