@@ -1,5 +1,5 @@
+pub use self::reg::{RET_ADDR, STACK_PTR, ZERO};
 use {
-    self::reg::{RET_ADDR, STACK_PTR, ZERO},
     crate::{
         ident::{self, Ident},
         instrs::{self, *},
@@ -3540,68 +3540,12 @@ impl Codegen {
 
 #[cfg(test)]
 mod tests {
-    use {
-        super::parser,
-        crate::{codegen::LoggedMem, log, parser::FileId},
-        std::io,
-    };
-
     const README: &str = include_str!("../README.md");
 
     fn generate(ident: &'static str, input: &'static str, output: &mut String) {
-        fn find_block(mut input: &'static str, test_name: &'static str) -> &'static str {
-            const CASE_PREFIX: &str = "#### ";
-            const CASE_SUFFIX: &str = "\n```hb";
-            loop {
-                let Some(pos) = input.find(CASE_PREFIX) else {
-                    unreachable!("test {test_name} not found");
-                };
+        let mut codegen =
+            super::Codegen { files: crate::test_parse_files(ident, input), ..Default::default() };
 
-                input = unsafe { input.get_unchecked(pos + CASE_PREFIX.len()..) };
-                if !input.starts_with(test_name) {
-                    continue;
-                }
-                input = unsafe { input.get_unchecked(test_name.len()..) };
-                if !input.starts_with(CASE_SUFFIX) {
-                    continue;
-                }
-                input = unsafe { input.get_unchecked(CASE_SUFFIX.len()..) };
-
-                let end = input.find("```").unwrap_or(input.len());
-                break unsafe { input.get_unchecked(..end) };
-            }
-        }
-
-        let input = find_block(input, ident);
-
-        let mut module_map = Vec::new();
-        let mut last_start = 0;
-        let mut last_module_name = "test";
-        for (i, m) in input.match_indices("// in module: ") {
-            parser::test::format(ident, input[last_start..i].trim());
-            module_map.push((last_module_name, &input[last_start..i]));
-            let (module_name, _) = input[i + m.len()..].split_once('\n').unwrap();
-            last_module_name = module_name;
-            last_start = i + m.len() + module_name.len() + 1;
-        }
-        parser::test::format(ident, input[last_start..].trim());
-        module_map.push((last_module_name, input[last_start..].trim()));
-
-        let loader = |path: &str, _: &str| {
-            module_map
-                .iter()
-                .position(|&(name, _)| name == path)
-                .map(|i| i as FileId)
-                .ok_or(io::Error::from(io::ErrorKind::NotFound))
-        };
-
-        let mut codegen = super::Codegen {
-            files: module_map
-                .iter()
-                .map(|&(path, content)| parser::Ast::new(path, content.to_owned(), &loader))
-                .collect(),
-            ..Default::default()
-        };
         codegen.generate();
         let mut out = Vec::new();
         codegen.dump(&mut out).unwrap();
@@ -3613,56 +3557,7 @@ mod tests {
             return;
         }
 
-        use std::fmt::Write;
-
-        let mut stack = [0_u64; 1024 * 20];
-
-        let mut vm = unsafe {
-            hbvm::Vm::<_, 0>::new(
-                LoggedMem::default(),
-                hbvm::mem::Address::new(out.as_ptr() as u64),
-            )
-        };
-
-        vm.write_reg(super::STACK_PTR, unsafe { stack.as_mut_ptr().add(stack.len()) } as u64);
-
-        let stat = loop {
-            match vm.run() {
-                Ok(hbvm::VmRunOk::End) => break Ok(()),
-                Ok(hbvm::VmRunOk::Ecall) => match vm.read_reg(2).0 {
-                    1 => writeln!(output, "ev: Ecall").unwrap(), // compatibility with a test
-                    69 => {
-                        let [size, align] = [vm.read_reg(3).0 as usize, vm.read_reg(4).0 as usize];
-                        let layout = std::alloc::Layout::from_size_align(size, align).unwrap();
-                        let ptr = unsafe { std::alloc::alloc(layout) };
-                        vm.write_reg(1, ptr as u64);
-                    }
-                    96 => {
-                        let [ptr, size, align] = [
-                            vm.read_reg(3).0 as usize,
-                            vm.read_reg(4).0 as usize,
-                            vm.read_reg(5).0 as usize,
-                        ];
-
-                        let layout = std::alloc::Layout::from_size_align(size, align).unwrap();
-                        unsafe { std::alloc::dealloc(ptr as *mut u8, layout) };
-                    }
-                    3 => vm.write_reg(1, 42),
-                    unknown => unreachable!("unknown ecall: {unknown:?}"),
-                },
-                Ok(hbvm::VmRunOk::Timer) => {
-                    writeln!(output, "timed out").unwrap();
-                    break Ok(());
-                }
-                Ok(ev) => writeln!(output, "ev: {:?}", ev).unwrap(),
-                Err(e) => break Err(e),
-            }
-        };
-
-        writeln!(output, "code size: {}", out.len()).unwrap();
-        writeln!(output, "ret: {:?}", vm.read_reg(1).0).unwrap();
-        writeln!(output, "status: {:?}", stat).unwrap();
-        log::inf!("input lenght: {}", input.len());
+        crate::test_run_vm(&out, output);
     }
 
     crate::run_tests! { generate:
