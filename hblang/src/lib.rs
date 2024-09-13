@@ -17,12 +17,13 @@
     extract_if,
     ptr_internals
 )]
-#![allow(internal_features, clippy::format_collect, dead_code)]
+#![allow(internal_features, clippy::format_collect)]
 
 use {
     self::{
         ident::Ident,
-        parser::{ExprRef, FileId},
+        parser::{Expr, ExprRef, FileId},
+        son::reg,
         ty::ArrayLen,
     },
     parser::Ast,
@@ -53,6 +54,108 @@ pub mod son;
 mod instrs;
 mod lexer;
 
+mod task {
+    use super::Offset;
+
+    pub fn unpack(offset: Offset) -> Result<Offset, usize> {
+        if offset >> 31 != 0 {
+            Err((offset & !(1 << 31)) as usize)
+        } else {
+            Ok(offset)
+        }
+    }
+
+    pub fn is_done(offset: Offset) -> bool {
+        unpack(offset).is_ok()
+    }
+
+    pub fn id(index: usize) -> Offset {
+        1 << 31 | index as u32
+    }
+}
+
+mod ident {
+    pub type Ident = u32;
+
+    const LEN_BITS: u32 = 6;
+
+    pub fn len(ident: u32) -> u32 {
+        ident & ((1 << LEN_BITS) - 1)
+    }
+
+    pub fn is_null(ident: u32) -> bool {
+        (ident >> LEN_BITS) == 0
+    }
+
+    pub fn pos(ident: u32) -> u32 {
+        (ident >> LEN_BITS).saturating_sub(1)
+    }
+
+    pub fn new(pos: u32, len: u32) -> u32 {
+        debug_assert!(len < (1 << LEN_BITS));
+        ((pos + 1) << LEN_BITS) | len
+    }
+
+    pub fn range(ident: u32) -> std::ops::Range<usize> {
+        let (len, pos) = (len(ident) as usize, pos(ident) as usize);
+        pos..pos + len
+    }
+}
+
+mod log {
+    #![allow(unused_macros)]
+
+    #[derive(PartialOrd, PartialEq, Ord, Eq, Debug)]
+    pub enum Level {
+        Err,
+        Wrn,
+        Inf,
+        Dbg,
+        Trc,
+    }
+
+    pub const LOG_LEVEL: Level = match option_env!("LOG_LEVEL") {
+        Some(val) => match val.as_bytes()[0] {
+            b'e' => Level::Err,
+            b'w' => Level::Wrn,
+            b'i' => Level::Inf,
+            b'd' => Level::Dbg,
+            b't' => Level::Trc,
+            _ => panic!("Invalid log level."),
+        },
+        None => {
+            if cfg!(debug_assertions) {
+                Level::Dbg
+            } else {
+                Level::Err
+            }
+        }
+    };
+
+    macro_rules! log {
+        ($level:expr, $fmt:literal $($expr:tt)*) => {
+            if $level <= $crate::log::LOG_LEVEL {
+                eprintln!("{:?}: {}", $level, format_args!($fmt $($expr)*));
+            }
+        };
+
+        ($level:expr, $($arg:expr),+) => {
+            if $level <= $crate::log::LOG_LEVEL {
+                $(eprintln!("[{}:{}:{}][{:?}]: {} = {:?}", line!(), column!(), file!(), $level, stringify!($arg), $arg);)*
+            }
+        };
+    }
+
+    macro_rules! err { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Err, $($arg)*) }; }
+    macro_rules! wrn { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Wrn, $($arg)*) }; }
+    macro_rules! inf { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Inf, $($arg)*) }; }
+    macro_rules! dbg { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Dbg, $($arg)*) }; }
+    macro_rules! trc { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Trc, $($arg)*) }; }
+
+    #[allow(unused_imports)]
+    pub(crate) use {dbg, err, inf, log, trc, wrn};
+}
+
 mod ty {
     use {
         crate::{
@@ -70,7 +173,6 @@ mod ty {
     pub type Func = u32;
     pub type Global = u32;
     pub type Module = u32;
-    pub type Param = u32;
     pub type Slice = u32;
 
     #[derive(Clone, Copy)]
@@ -100,10 +202,6 @@ mod ty {
 
         pub fn len(self) -> usize {
             self.0 as usize & Self::LEN_MASK
-        }
-
-        pub fn is_empty(self) -> bool {
-            self.0 == 0
         }
 
         pub fn empty() -> Self {
@@ -435,8 +533,8 @@ impl Default for Global {
             ty: Default::default(),
             offset: u32::MAX,
             data: Default::default(),
-            file: 0,
-            name: 0,
+            file: u32::MAX,
+            name: u32::MAX,
         }
     }
 }
@@ -511,7 +609,99 @@ struct Types {
     arrays: Vec<Array>,
 }
 
+fn emit(out: &mut Vec<u8>, (len, instr): (usize, [u8; instrs::MAX_SIZE])) {
+    out.extend_from_slice(&instr[..len]);
+}
+
 impl Types {
+    fn assemble(&mut self, to: &mut Vec<u8>) {
+        emit(to, instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
+        emit(to, instrs::tx());
+        self.dump_reachable(0, to);
+        Reloc::new(0, 3, 4).apply_jump(to, self.funcs[0].offset, 0);
+    }
+
+    fn dump_reachable(&mut self, from: ty::Func, to: &mut Vec<u8>) {
+        let mut frontier = vec![ty::Kind::Func(from).compress()];
+
+        while let Some(itm) = frontier.pop() {
+            match itm.expand() {
+                ty::Kind::Func(func) => {
+                    let fuc = &mut self.funcs[func as usize];
+                    if task::is_done(fuc.offset) {
+                        continue;
+                    }
+                    fuc.offset = to.len() as _;
+                    to.extend(&fuc.code);
+                    frontier.extend(fuc.relocs.iter().map(|r| r.target));
+                }
+                ty::Kind::Global(glob) => {
+                    let glb = &mut self.globals[glob as usize];
+                    if task::is_done(glb.offset) {
+                        continue;
+                    }
+                    glb.offset = to.len() as _;
+                    to.extend(&glb.data);
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        for fuc in &self.funcs {
+            if !task::is_done(fuc.offset) {
+                continue;
+            }
+
+            for rel in &fuc.relocs {
+                let offset = match rel.target.expand() {
+                    ty::Kind::Func(fun) => self.funcs[fun as usize].offset,
+                    ty::Kind::Global(glo) => self.globals[glo as usize].offset,
+                    _ => unreachable!(),
+                };
+                rel.reloc.apply_jump(to, offset, fuc.offset);
+            }
+        }
+    }
+
+    pub fn disasm(
+        &self,
+        mut sluce: &[u8],
+        files: &[parser::Ast],
+        output: &mut impl std::io::Write,
+        eca_handler: impl FnMut(&mut &[u8]),
+    ) -> std::io::Result<()> {
+        use crate::DisasmItem;
+        let functions = self
+            .funcs
+            .iter()
+            .filter(|f| task::is_done(f.offset))
+            .map(|f| {
+                let name = if f.file != u32::MAX {
+                    let file = &files[f.file as usize];
+                    let Expr::BinOp { left: &Expr::Ident { name, .. }, .. } =
+                        f.expr.get(file).unwrap()
+                    else {
+                        unreachable!()
+                    };
+                    name
+                } else {
+                    "target_fn"
+                };
+                (f.offset, (name, f.code.len() as u32, DisasmItem::Func))
+            })
+            .chain(self.globals.iter().filter(|g| task::is_done(g.offset)).map(|g| {
+                let name = if g.file == u32::MAX {
+                    std::str::from_utf8(&g.data).unwrap()
+                } else {
+                    let file = &files[g.file as usize];
+                    file.ident_str(g.name)
+                };
+                (g.offset, (name, g.data.len() as Size, DisasmItem::Global))
+            }))
+            .collect::<BTreeMap<_, _>>();
+        crate::disasm(&mut sluce, &functions, output, eca_handler)
+    }
+
     fn parama(&self, ret: impl Into<ty::Id>) -> ParamAlloc {
         ParamAlloc(2 + (9..=16).contains(&self.size_of(ret.into())) as u8..12)
     }
@@ -620,88 +810,6 @@ impl Types {
             _ => self.size_of(ty).max(1),
         }
     }
-}
-
-mod ident {
-    pub type Ident = u32;
-
-    const LEN_BITS: u32 = 6;
-
-    pub fn len(ident: u32) -> u32 {
-        ident & ((1 << LEN_BITS) - 1)
-    }
-
-    pub fn is_null(ident: u32) -> bool {
-        (ident >> LEN_BITS) == 0
-    }
-
-    pub fn pos(ident: u32) -> u32 {
-        (ident >> LEN_BITS).saturating_sub(1)
-    }
-
-    pub fn new(pos: u32, len: u32) -> u32 {
-        debug_assert!(len < (1 << LEN_BITS));
-        ((pos + 1) << LEN_BITS) | len
-    }
-
-    pub fn range(ident: u32) -> std::ops::Range<usize> {
-        let (len, pos) = (len(ident) as usize, pos(ident) as usize);
-        pos..pos + len
-    }
-}
-
-mod log {
-    #![allow(unused_macros)]
-
-    #[derive(PartialOrd, PartialEq, Ord, Eq, Debug)]
-    pub enum Level {
-        Err,
-        Wrn,
-        Inf,
-        Dbg,
-        Trc,
-    }
-
-    pub const LOG_LEVEL: Level = match option_env!("LOG_LEVEL") {
-        Some(val) => match val.as_bytes()[0] {
-            b'e' => Level::Err,
-            b'w' => Level::Wrn,
-            b'i' => Level::Inf,
-            b'd' => Level::Dbg,
-            b't' => Level::Trc,
-            _ => panic!("Invalid log level."),
-        },
-        None => {
-            if cfg!(debug_assertions) {
-                Level::Dbg
-            } else {
-                Level::Err
-            }
-        }
-    };
-
-    macro_rules! log {
-        ($level:expr, $fmt:literal $($expr:tt)*) => {
-            if $level <= $crate::log::LOG_LEVEL {
-                eprintln!("{:?}: {}", $level, format_args!($fmt $($expr)*));
-            }
-        };
-
-        ($level:expr, $($arg:expr),+) => {
-            if $level <= $crate::log::LOG_LEVEL {
-                $(eprintln!("[{}:{}:{}][{:?}]: {} = {:?}", line!(), column!(), file!(), $level, stringify!($arg), $arg);)*
-            }
-        };
-    }
-
-    macro_rules! err { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Err, $($arg)*) }; }
-    macro_rules! wrn { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Wrn, $($arg)*) }; }
-    macro_rules! inf { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Inf, $($arg)*) }; }
-    macro_rules! dbg { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Dbg, $($arg)*) }; }
-    macro_rules! trc { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Trc, $($arg)*) }; }
-
-    #[allow(unused_imports)]
-    pub(crate) use {dbg, err, inf, log, trc, wrn};
 }
 
 #[inline]
@@ -1463,7 +1571,9 @@ pub fn run_compiler(
         if options.dump_asm {
             codegen.disasm(out)?;
         } else {
-            codegen.dump(out)?;
+            let mut buf = Vec::new();
+            codegen.assemble(&mut buf);
+            out.write_all(&buf)?;
         }
     }
 

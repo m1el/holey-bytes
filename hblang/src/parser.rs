@@ -1,6 +1,5 @@
 use {
     crate::{
-        codegen,
         ident::{self, Ident},
         lexer::{self, Lexer, Token, TokenKind},
     },
@@ -224,7 +223,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         let is_ct = token.kind == TokenKind::CtIdent;
         let name = self.lexer.slice(token.range());
 
-        if let Some(builtin) = codegen::ty::from_str(name) {
+        if let Some(builtin) = crate::ty::from_str(name) {
             return (builtin, 0);
         }
 

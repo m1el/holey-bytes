@@ -10,12 +10,12 @@ use {
             idfl::{self},
             Expr, ExprRef, FileId, Pos,
         },
-        ty, Field, Func, Reloc, Sig, Struct, SymKey, TypedReloc, Types,
+        task, ty, Field, Func, Reloc, Sig, Struct, SymKey, TypedReloc, Types,
     },
     core::fmt,
     std::{
         cell::RefCell,
-        collections::{hash_map, BTreeMap},
+        collections::hash_map,
         fmt::{Debug, Display, Write},
         hash::{Hash as _, Hasher},
         mem::{self, MaybeUninit},
@@ -331,7 +331,7 @@ impl BitSet {
 
 type Nid = u16;
 
-mod reg {
+pub mod reg {
 
     pub const STACK_PTR: Reg = 254;
     pub const ZERO: Reg = 0;
@@ -1327,7 +1327,7 @@ impl ItemCtx {
     }
 
     fn emit(&mut self, instr: (usize, [u8; instrs::MAX_SIZE])) {
-        emit(&mut self.code, instr);
+        crate::emit(&mut self.code, instr);
     }
 
     fn free_loc(&mut self, loc: impl Into<Option<Loc>>) {
@@ -1337,29 +1337,9 @@ impl ItemCtx {
     }
 }
 
-fn emit(out: &mut Vec<u8>, (len, instr): (usize, [u8; instrs::MAX_SIZE])) {
-    out.extend_from_slice(&instr[..len]);
-}
-
 fn write_reloc(doce: &mut [u8], offset: usize, value: i64, size: u16) {
     let value = value.to_ne_bytes();
     doce[offset..offset + size as usize].copy_from_slice(&value[..size as usize]);
-}
-
-mod task {
-    use super::Offset;
-
-    pub fn unpack(offset: Offset) -> Result<Offset, usize> {
-        if offset >> 31 != 0 {
-            Err((offset & !(1 << 31)) as usize)
-        } else {
-            Ok(offset)
-        }
-    }
-
-    pub fn id(index: usize) -> Offset {
-        1 << 31 | index as u32
-    }
 }
 
 struct FTask {
@@ -1415,83 +1395,6 @@ impl Codegen {
         self.find_or_declare(0, 0, None, "main");
         self.make_func_reachable(0);
         self.complete_call_graph_low();
-    }
-
-    fn assemble(&mut self, to: &mut Vec<u8>) {
-        emit(to, instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
-        emit(to, instrs::tx());
-        self.dump_reachable(0, to);
-        Reloc::new(0, 3, 4).apply_jump(to, self.tys.funcs[0].offset, 0);
-    }
-
-    fn dump_reachable(&mut self, from: ty::Func, to: &mut Vec<u8>) {
-        let mut frontier = vec![ty::Kind::Func(from).compress()];
-
-        while let Some(itm) = frontier.pop() {
-            match itm.expand() {
-                ty::Kind::Func(func) => {
-                    let fuc = &mut self.tys.funcs[func as usize];
-                    if task::unpack(fuc.offset).is_ok() {
-                        continue;
-                    }
-                    fuc.offset = to.len() as _;
-                    to.extend(&fuc.code);
-                    frontier.extend(fuc.relocs.iter().map(|r| r.target));
-                }
-                ty::Kind::Global(glob) => {
-                    let glb = &mut self.tys.globals[glob as usize];
-                    if task::unpack(glb.offset).is_ok() {
-                        continue;
-                    }
-                    glb.offset = to.len() as _;
-                    to.extend(&glb.data);
-                }
-                _ => unreachable!(),
-            }
-        }
-
-        for fuc in &self.tys.funcs {
-            if task::unpack(fuc.offset).is_err() {
-                continue;
-            }
-
-            for rel in &fuc.relocs {
-                let offset = match rel.target.expand() {
-                    ty::Kind::Func(fun) => self.tys.funcs[fun as usize].offset,
-                    ty::Kind::Global(glo) => self.tys.globals[glo as usize].offset,
-                    _ => unreachable!(),
-                };
-                rel.reloc.apply_jump(to, offset, fuc.offset);
-            }
-        }
-    }
-
-    pub fn disasm(
-        &mut self,
-        mut sluce: &[u8],
-        output: &mut impl std::io::Write,
-    ) -> std::io::Result<()> {
-        use crate::DisasmItem;
-        let functions = self
-            .tys
-            .funcs
-            .iter()
-            .filter(|f| task::unpack(f.offset).is_ok())
-            .map(|f| {
-                let file = &self.files[f.file as usize];
-                let Expr::BinOp { left: &Expr::Ident { name, .. }, .. } = f.expr.get(file).unwrap()
-                else {
-                    unreachable!()
-                };
-                (f.offset, (name, f.code.len() as u32, DisasmItem::Func))
-            })
-            .chain(self.tys.globals.iter().filter(|g| task::unpack(g.offset).is_ok()).map(|g| {
-                let file = &self.files[g.file as usize];
-
-                (g.offset, (file.ident_str(g.name), self.tys.size_of(g.ty), DisasmItem::Global))
-            }))
-            .collect::<BTreeMap<_, _>>();
-        crate::disasm(&mut sluce, &functions, output, |_| {})
     }
 
     fn make_func_reachable(&mut self, func: ty::Func) {
@@ -2556,7 +2459,10 @@ impl Codegen {
                         1..=8 => {
                             let reg = params.next();
                             if i == index as usize - 1 {
-                                emit(&mut self.ci.code, instrs::cp(node_loc!(self, expr).reg, reg));
+                                crate::emit(
+                                    &mut self.ci.code,
+                                    instrs::cp(node_loc!(self, expr).reg, reg),
+                                );
                             }
                         }
                         s => todo!("{s}"),
@@ -3142,10 +3048,10 @@ mod tests {
         }
 
         let mut out = Vec::new();
-        codegen.assemble(&mut out);
+        codegen.tys.assemble(&mut out);
 
         let mut buf = Vec::<u8>::new();
-        let err = codegen.disasm(&out, &mut buf);
+        let err = codegen.tys.disasm(&out, &codegen.files, &mut buf, |_| {});
         output.push_str(String::from_utf8(buf).unwrap().as_str());
         if let Err(e) = err {
             writeln!(output, "!!! asm is invalid: {e}").unwrap();
