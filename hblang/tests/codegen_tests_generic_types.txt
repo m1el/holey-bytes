@@ -32,6 +32,19 @@ deinit:
     LD r31, r254, 0a, 24h
     ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
+new:
+    ADDI64 r254, r254, -24d
+    ST r31, r254, 0a, 24h
+    CP r32, r1
+    LI64 r33, 0d
+    ST r33, r32, 0a, 8h
+    LI64 r33, 0d
+    ST r33, r32, 8a, 8h
+    LI64 r33, 0d
+    ST r33, r32, 16a, 8h
+    LD r31, r254, 0a, 24h
+    ADDI64 r254, r254, 24d
+    JALA r0, r31, 0a
 free:
     ADDI64 r254, r254, -40d
     ST r31, r254, 0a, 40h
@@ -124,19 +137,6 @@ malloc:
     LD r31, r254, 0a, 32h
     ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
-new:
-    ADDI64 r254, r254, -24d
-    ST r31, r254, 0a, 24h
-    CP r32, r1
-    LI64 r33, 0d
-    ST r33, r32, 0a, 8h
-    LI64 r33, 0d
-    ST r33, r32, 8a, 8h
-    LI64 r33, 0d
-    ST r33, r32, 16a, 8h
-    LD r31, r254, 0a, 24h
-    ADDI64 r254, r254, 24d
-    JALA r0, r31, 0a
-code size: 1332
+code size: 1201
 ret: 69
 status: Ok(())

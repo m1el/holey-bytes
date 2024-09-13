@@ -156,6 +156,6 @@ line:
  2: LD r31, r254, 48a, 32h
     ADDI64 r254, r254, 80d
     JALA r0, r31, 0a
-code size: 1416
+code size: 1400
 ret: 0
 status: Ok(())

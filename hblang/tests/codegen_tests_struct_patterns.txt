@@ -60,6 +60,6 @@ fib:
  1: LD r31, r254, 0a, 32h
     ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
-code size: 464
+code size: 452
 ret: 0
 status: Ok(())
