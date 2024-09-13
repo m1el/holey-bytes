@@ -1250,8 +1250,6 @@ impl Drop for Ast {
     fn drop(&mut self) {
         let inner = unsafe { self.0.as_ref() };
         if inner.ref_count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) == 1 {
-            unsafe { std::ptr::drop_in_place(self.0.as_ptr()) };
-
             let layout = AstInner::layout(inner.symbols.len());
             unsafe {
                 std::alloc::dealloc(self.0.as_ptr() as _, layout);

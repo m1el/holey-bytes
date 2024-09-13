@@ -6,7 +6,7 @@ use {
         lexer::{self, TokenKind},
         log,
         parser::{self, find_symbol, idfl, CtorField, Expr, ExprRef, FileId, Pos},
-        HashMap,
+        HashMap, LoggedMem,
     },
     std::{collections::BTreeMap, fmt::Display, ops::Range, rc::Rc},
 };
@@ -1174,69 +1174,6 @@ struct Pool {
     cis: Vec<ItemCtx>,
     outputs: Vec<Output>,
     arg_locs: Vec<Loc>,
-}
-
-#[derive(Default)]
-pub struct LoggedMem {
-    pub mem: hbvm::mem::HostMemory,
-}
-
-impl hbvm::mem::Memory for LoggedMem {
-    unsafe fn load(
-        &mut self,
-        addr: hbvm::mem::Address,
-        target: *mut u8,
-        count: usize,
-    ) -> Result<(), hbvm::mem::LoadError> {
-        log::trc!(
-            "load: {:x} {:?}",
-            addr.get(),
-            core::slice::from_raw_parts(addr.get() as *const u8, count)
-                .iter()
-                .rev()
-                .map(|&b| format!("{b:02x}"))
-                .collect::<String>()
-        );
-        self.mem.load(addr, target, count)
-    }
-
-    unsafe fn store(
-        &mut self,
-        addr: hbvm::mem::Address,
-        source: *const u8,
-        count: usize,
-    ) -> Result<(), hbvm::mem::StoreError> {
-        log::trc!(
-            "store: {:x} {:?}",
-            addr.get(),
-            core::slice::from_raw_parts(source, count)
-                .iter()
-                .rev()
-                .map(|&b| format!("{b:02x}"))
-                .collect::<String>()
-        );
-        self.mem.store(addr, source, count)
-    }
-
-    unsafe fn prog_read<T: Copy>(&mut self, addr: hbvm::mem::Address) -> T {
-        log::trc!(
-            "read-typed: {:x} {} {:?}",
-            addr.get(),
-            std::any::type_name::<T>(),
-            if core::mem::size_of::<T>() == 1
-                && let Some(nm) =
-                    instrs::NAMES.get(std::ptr::read(addr.get() as *const u8) as usize)
-            {
-                nm.to_string()
-            } else {
-                core::slice::from_raw_parts(addr.get() as *const u8, core::mem::size_of::<T>())
-                    .iter()
-                    .map(|&b| format!("{:02x}", b))
-                    .collect::<String>()
-            }
-        );
-        self.mem.prog_read(addr)
-    }
 }
 
 const VM_STACK_SIZE: usize = 1024 * 1024 * 2;

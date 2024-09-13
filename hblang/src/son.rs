@@ -12,14 +12,14 @@ use {
         },
         HashMap,
     },
-    core::fmt,
+    core::{fmt, panic},
     std::{
         cell::RefCell,
         collections::{hash_map, BTreeMap},
-        fmt::{Display, Write},
+        fmt::{Debug, Display, Write},
         hash::{Hash as _, Hasher},
         mem::{self, MaybeUninit},
-        ops::{self, Deref, DerefMut, Range},
+        ops::{self, Deref, DerefMut, Not, Range},
         ptr::Unique,
         rc::Rc,
     },
@@ -45,7 +45,7 @@ impl Drop for Drom {
     }
 }
 
-const VC_SIZE: usize = std::mem::size_of::<AllocedVc>();
+const VC_SIZE: usize = 16;
 const INLINE_ELEMS: usize = VC_SIZE / std::mem::size_of::<Nid>() - 1;
 
 union Vc {
@@ -53,27 +53,65 @@ union Vc {
     alloced: AllocedVc,
 }
 
+impl Default for Vc {
+    fn default() -> Self {
+        Vc { inline: InlineVc { elems: MaybeUninit::uninit(), cap: 0 } }
+    }
+}
+
+impl Debug for Vc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.as_slice().fmt(f)
+    }
+}
+
 impl Vc {
     fn is_inline(&self) -> bool {
-        unsafe { self.inline.len <= INLINE_ELEMS as u32 }
+        unsafe { self.inline.cap <= INLINE_ELEMS as Nid }
     }
 
     fn layout(&self) -> Option<std::alloc::Layout> {
         unsafe {
             self.is_inline()
+                .not()
                 .then(|| std::alloc::Layout::array::<Nid>(self.alloced.cap as _).unwrap_unchecked())
         }
     }
 
     fn len(&self) -> usize {
-        unsafe { self.inline.len as _ }
+        unsafe {
+            if self.is_inline() {
+                self.inline.cap as _
+            } else {
+                self.alloced.len as _
+            }
+        }
     }
 
-    fn as_ptr(&self) -> *mut Nid {
+    fn len_mut(&mut self) -> &mut Nid {
+        unsafe {
+            if self.is_inline() {
+                &mut self.inline.cap
+            } else {
+                &mut self.alloced.len
+            }
+        }
+    }
+
+    fn as_ptr(&self) -> *const Nid {
         unsafe {
             match self.is_inline() {
-                true => self.alloced.base.as_ptr(),
-                false => { self.inline.elems }.as_mut_ptr().cast(),
+                true => self.inline.elems.as_ptr().cast(),
+                false => self.alloced.base.as_ptr(),
+            }
+        }
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut Nid {
+        unsafe {
+            match self.is_inline() {
+                true => self.inline.elems.as_mut_ptr().cast(),
+                false => self.alloced.base.as_ptr(),
             }
         }
     }
@@ -83,7 +121,63 @@ impl Vc {
     }
 
     fn as_slice_mut(&mut self) -> &mut [Nid] {
-        unsafe { std::slice::from_raw_parts_mut(self.as_ptr(), self.len()) }
+        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr(), self.len()) }
+    }
+
+    fn push(&mut self, value: Nid) {
+        if let Some(layout) = self.layout()
+            && unsafe { self.alloced.len == self.alloced.cap }
+        {
+            unsafe {
+                self.alloced.cap *= 2;
+                self.alloced.base = Unique::new_unchecked(
+                    std::alloc::realloc(
+                        self.alloced.base.as_ptr().cast(),
+                        layout,
+                        self.alloced.cap as usize * std::mem::size_of::<Nid>(),
+                    )
+                    .cast(),
+                );
+            }
+        } else if self.len() == INLINE_ELEMS {
+            unsafe {
+                let mut allcd =
+                    Self::alloc((self.inline.cap + 1).next_power_of_two() as _, self.len());
+                std::ptr::copy_nonoverlapping(self.as_ptr(), allcd.as_mut_ptr(), self.len());
+                *self = allcd;
+            }
+        }
+
+        unsafe {
+            *self.len_mut() += 1;
+            self.as_mut_ptr().add(self.len() - 1).write(value);
+        }
+    }
+
+    unsafe fn alloc(cap: usize, len: usize) -> Self {
+        debug_assert!(cap > INLINE_ELEMS);
+        let layout = unsafe { std::alloc::Layout::array::<Nid>(cap).unwrap_unchecked() };
+        let alloc = unsafe { std::alloc::alloc(layout) };
+        unsafe {
+            Vc {
+                alloced: AllocedVc {
+                    base: Unique::new_unchecked(alloc.cast()),
+                    len: len as _,
+                    cap: cap as _,
+                },
+            }
+        }
+    }
+
+    fn swap_remove(&mut self, index: usize) {
+        let len = self.len() - 1;
+        self.as_slice_mut().swap(index, len);
+        *self.len_mut() -= 1;
+    }
+
+    fn remove(&mut self, index: usize) {
+        self.as_slice_mut().copy_within(index + 1.., index);
+        *self.len_mut() -= 1;
     }
 }
 
@@ -99,21 +193,78 @@ impl Drop for Vc {
 
 impl Clone for Vc {
     fn clone(&self) -> Self {
-        if self.is_inline() {
-            unsafe { std::ptr::read(self) }
-        } else {
-            let layout = unsafe { std::alloc::Layout::array::<Nid>(self.len()).unwrap_unchecked() };
-            let alloc = unsafe { std::alloc::alloc(layout) };
-            unsafe { std::ptr::copy_nonoverlapping(self.as_ptr(), alloc.cast(), self.len()) };
+        self.as_slice().into()
+    }
+}
+
+impl IntoIterator for Vc {
+    type IntoIter = VcIntoIter;
+    type Item = Nid;
+
+    fn into_iter(self) -> Self::IntoIter {
+        VcIntoIter { start: 0, end: self.len(), vc: self }
+    }
+}
+
+struct VcIntoIter {
+    start: usize,
+    end: usize,
+    vc: Vc,
+}
+
+impl Iterator for VcIntoIter {
+    type Item = Nid;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.start == self.end {
+            return None;
+        }
+
+        let ret = unsafe { std::ptr::read(self.vc.as_slice().get_unchecked(self.start)) };
+        self.start += 1;
+        Some(ret)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.end - self.start;
+        (len, Some(len))
+    }
+}
+
+impl DoubleEndedIterator for VcIntoIter {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.start == self.end {
+            return None;
+        }
+
+        self.end -= 1;
+        Some(unsafe { std::ptr::read(self.vc.as_slice().get_unchecked(self.end)) })
+    }
+}
+
+impl ExactSizeIterator for VcIntoIter {}
+
+impl<const SIZE: usize> From<[Nid; SIZE]> for Vc {
+    fn from(value: [Nid; SIZE]) -> Self {
+        value.as_slice().into()
+    }
+}
+
+impl<'a> From<&'a [Nid]> for Vc {
+    fn from(value: &'a [Nid]) -> Self {
+        if value.len() <= INLINE_ELEMS {
+            let mut dflt = Self::default();
             unsafe {
-                Vc {
-                    alloced: AllocedVc {
-                        base: Unique::new_unchecked(alloc.cast()),
-                        len: self.alloced.len,
-                        cap: self.alloced.cap,
-                    },
-                }
-            }
+                std::ptr::copy_nonoverlapping(value.as_ptr(), dflt.as_mut_ptr(), value.len())
+            };
+            dflt.inline.cap = value.len() as _;
+            dflt
+        } else {
+            let mut allcd = unsafe { Self::alloc(value.len(), value.len()) };
+            unsafe {
+                std::ptr::copy_nonoverlapping(value.as_ptr(), allcd.as_mut_ptr(), value.len())
+            };
+            allcd
         }
     }
 }
@@ -135,16 +286,16 @@ impl DerefMut for Vc {
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct InlineVc {
+    cap: Nid,
     elems: MaybeUninit<[Nid; INLINE_ELEMS]>,
-    len: Nid,
 }
 
 #[derive(Clone, Copy)]
 #[repr(C)]
 struct AllocedVc {
+    cap: Nid,
+    len: Nid,
     base: Unique<Nid>,
-    cap: u32,
-    len: u32,
 }
 
 #[derive(Default)]
@@ -162,7 +313,8 @@ impl BitSet {
     }
 
     #[track_caller]
-    pub fn set(&mut self, idx: usize) -> bool {
+    pub fn set(&mut self, idx: Nid) -> bool {
+        let idx = idx as usize;
         let data_idx = idx / Self::ELEM_SIZE;
         let sub_idx = idx % Self::ELEM_SIZE;
         let prev = self.data[data_idx] & (1 << sub_idx);
@@ -170,14 +322,15 @@ impl BitSet {
         prev == 0
     }
 
-    fn unset(&mut self, idx: usize) {
+    fn unset(&mut self, idx: Nid) {
+        let idx = idx as usize;
         let data_idx = idx / Self::ELEM_SIZE;
         let sub_idx = idx % Self::ELEM_SIZE;
         self.data[data_idx] &= !(1 << sub_idx);
     }
 }
 
-type Nid = u32;
+type Nid = u16;
 
 mod reg {
 
@@ -572,7 +725,7 @@ mod ty {
 }
 
 struct LookupEntry {
-    nid: u32,
+    nid: Nid,
     hash: u64,
 }
 
@@ -599,22 +752,24 @@ impl std::hash::Hash for LookupEntry {
     }
 }
 
+type Lookup = std::collections::hash_map::HashMap<
+    LookupEntry,
+    (),
+    std::hash::BuildHasherDefault<IdentityHash>,
+>;
+
 struct Nodes {
-    values: Vec<Result<Node, u32>>,
+    values: Vec<Result<Node, Nid>>,
     visited: BitSet,
-    free: u32,
-    lookup: std::collections::hash_map::HashMap<
-        LookupEntry,
-        (),
-        std::hash::BuildHasherDefault<IdentityHash>,
-    >,
+    free: Nid,
+    lookup: Lookup,
 }
 
 impl Default for Nodes {
     fn default() -> Self {
         Self {
             values: Default::default(),
-            free: u32::MAX,
+            free: Nid::MAX,
             lookup: Default::default(),
             visited: Default::default(),
         }
@@ -622,7 +777,7 @@ impl Default for Nodes {
 }
 
 impl Nodes {
-    fn remove_low(&mut self, id: u32) -> Node {
+    fn remove_low(&mut self, id: Nid) -> Node {
         let value = mem::replace(&mut self.values[id as usize], Err(self.free)).unwrap();
         self.free = id;
         value
@@ -631,15 +786,10 @@ impl Nodes {
     fn clear(&mut self) {
         self.values.clear();
         self.lookup.clear();
-        self.free = u32::MAX;
+        self.free = Nid::MAX;
     }
 
-    fn new_node_nop(
-        &mut self,
-        ty: impl Into<ty::Id>,
-        kind: Kind,
-        inps: impl Into<Vec<Nid>>,
-    ) -> Nid {
+    fn new_node_nop(&mut self, ty: impl Into<ty::Id>, kind: Kind, inps: impl Into<Vc>) -> Nid {
         let ty = ty.into();
 
         let node = Node { inputs: inps.into(), kind, ty, ..Default::default() };
@@ -656,13 +806,13 @@ impl Nodes {
             lookup_meta = Some((entry, hash));
         }
 
-        if self.free == u32::MAX {
+        if self.free == Nid::MAX {
             self.free = self.values.len() as _;
-            self.values.push(Err(u32::MAX));
+            self.values.push(Err(Nid::MAX));
         }
 
         let free = self.free;
-        for &d in &node.inputs {
+        for &d in node.inputs.as_slice() {
             debug_assert_ne!(d, free);
             self.values[d as usize].as_mut().unwrap().outputs.push(free);
         }
@@ -675,12 +825,8 @@ impl Nodes {
     }
 
     fn find_node<'a>(
-        lookup: &'a mut std::collections::hash_map::HashMap<
-            LookupEntry,
-            (),
-            std::hash::BuildHasherDefault<IdentityHash>,
-        >,
-        values: &[Result<Node, u32>],
+        lookup: &'a mut Lookup,
+        values: &[Result<Node, Nid>],
         node: &Node,
     ) -> (
         hash_map::RawEntryMut<'a, LookupEntry, (), std::hash::BuildHasherDefault<IdentityHash>>,
@@ -710,7 +856,7 @@ impl Nodes {
         }
     }
 
-    fn new_node(&mut self, ty: impl Into<ty::Id>, kind: Kind, inps: impl Into<Vec<u32>>) -> Nid {
+    fn new_node(&mut self, ty: impl Into<ty::Id>, kind: Kind, inps: impl Into<Vc>) -> Nid {
         let id = self.new_node_nop(ty, kind, inps);
         if let Some(opt) = self.peephole(id) {
             debug_assert_ne!(opt, id);
@@ -950,7 +1096,7 @@ impl Nodes {
                     write!(f, "{:?}.{}", self[self[node].inputs[0]].kind, index)?;
                 } else if is_ready() {
                     writeln!(f, "{}: {:?}", node, self[node].kind)?;
-                    for &o in &self[node].outputs {
+                    for &o in self[node].outputs.iter() {
                         if self.is_cfg(o) {
                             self.fmt(f, o, rcs)?;
                         }
@@ -964,7 +1110,7 @@ impl Nodes {
 
                 writeln!(f, "{}: {:?}", node, self[node].kind)?;
 
-                for &o in &self[node].outputs {
+                for &o in self[node].outputs.iter() {
                     self.fmt(f, o, rcs)?;
                 }
             }
@@ -978,7 +1124,7 @@ impl Nodes {
                         self.fmt(f, value, rcs)?;
                     }
                     writeln!(f, ")")?;
-                    for &o in &self[node].outputs {
+                    for &o in self[node].outputs.iter() {
                         if self.is_cfg(o) {
                             self.fmt(f, o, rcs)?;
                         }
@@ -1052,7 +1198,7 @@ impl Nodes {
 
     fn basic_blocks_low(&mut self, out: &mut String, mut node: Nid) -> std::fmt::Result {
         let iter = |nodes: &Nodes, node| nodes[node].outputs.clone().into_iter().rev();
-        while self.visited.set(node as _) {
+        while self.visited.set(node) {
             match self[node].kind {
                 Kind::Start => {
                     writeln!(out, "start: {}", self[node].depth)?;
@@ -1098,7 +1244,7 @@ impl Nodes {
                 Kind::CInt { .. } => unreachable!(),
                 Kind::Phi => unreachable!(),
                 Kind::Tuple { .. } => {
-                    writeln!(out, "b{node}: {}", self[node].depth)?;
+                    writeln!(out, "b{node}: {} {:?}", self[node].depth, self[node].outputs)?;
                     let mut cfg_index = Nid::MAX;
                     for o in iter(self, node) {
                         self.basic_blocks_instr(out, o)?;
@@ -1111,8 +1257,11 @@ impl Nodes {
                 Kind::BinOp { .. } => unreachable!(),
                 Kind::Call { .. } => {
                     let mut cfg_index = Nid::MAX;
+                    let mut print_ret = true;
                     for o in iter(self, node) {
-                        if self[o].inputs[0] == node {
+                        if self[o].inputs[0] == node
+                            && (self[node].outputs[0] != o || std::mem::take(&mut print_ret))
+                        {
                             self.basic_blocks_instr(out, o)?;
                         }
                         if self.is_cfg(o) {
@@ -1154,7 +1303,7 @@ impl Nodes {
             }
 
             let mut allowed_cfgs = 1 + (node.kind == Kind::If) as usize;
-            for &o in &node.outputs {
+            for &o in node.outputs.iter() {
                 if self.is_cfg(i) {
                     if allowed_cfgs == 0 && self.is_cfg(o) {
                         log::err!(
@@ -1166,13 +1315,6 @@ impl Nodes {
                     } else {
                         allowed_cfgs += self.is_cfg(o) as usize;
                     }
-                }
-                if matches!(node.kind, Kind::Region | Kind::Loop)
-                    && !self.is_cfg(o)
-                    && self[o].kind != Kind::Phi
-                {
-                    log::err!("unexpected output node on region: {:?}", self[o].kind);
-                    failed = true;
                 }
 
                 let other = match &self.values[o as usize] {
@@ -1209,7 +1351,7 @@ impl Nodes {
             for i in 0..nodes[from].inputs.len() {
                 let n = nodes[from].inputs[i];
                 if n != Nid::MAX
-                    && nodes.visited.set(n as usize)
+                    && nodes.visited.set(n)
                     && !nodes.is_cfg(n)
                     && (for_each(n, &nodes[n]) || climb_impl(nodes, n, for_each))
                 {
@@ -1257,16 +1399,16 @@ impl Nodes {
     }
 }
 
-impl ops::Index<u32> for Nodes {
+impl ops::Index<Nid> for Nodes {
     type Output = Node;
 
-    fn index(&self, index: u32) -> &Self::Output {
+    fn index(&self, index: Nid) -> &Self::Output {
         self.values[index as usize].as_ref().unwrap()
     }
 }
 
-impl ops::IndexMut<u32> for Nodes {
-    fn index_mut(&mut self, index: u32) -> &mut Self::Output {
+impl ops::IndexMut<Nid> for Nodes {
+    fn index_mut(&mut self, index: Nid) -> &mut Self::Output {
         self.values[index as usize].as_mut().unwrap()
     }
 }
@@ -1337,15 +1479,16 @@ impl fmt::Display for Kind {
 }
 
 #[derive(Debug, Default)]
+//#[repr(align(64))]
 struct Node {
-    inputs: Vec<Nid>,
-    outputs: Vec<Nid>,
+    inputs: Vc,
+    outputs: Vc,
     kind: Kind,
-    color: u32,
-    depth: u32,
-    lock_rc: u32,
+    color: Color,
+    depth: IDomDepth,
+    lock_rc: LockRc,
     ty: ty::Id,
-    loop_depth: u32,
+    loop_depth: LoopDepth,
 }
 
 impl Node {
@@ -1384,6 +1527,11 @@ impl fmt::Display for Nodes {
 type Offset = u32;
 type Size = u32;
 type ArrayLen = u32;
+type Color = u16;
+type LoopDepth = u16;
+type CallCount = u16;
+type LockRc = u16;
+type IDomDepth = u16;
 
 struct Loop {
     node: Nid,
@@ -1400,8 +1548,8 @@ struct Variable {
 
 struct ColorMeta {
     rc: u32,
-    depth: u32,
-    call_count: u32,
+    depth: LoopDepth,
+    call_count: CallCount,
     loc: Loc,
 }
 
@@ -1418,11 +1566,11 @@ struct ItemCtx {
     end: Nid,
     ctrl: Nid,
 
-    loop_depth: u32,
+    loop_depth: LoopDepth,
     colors: Vec<ColorMeta>,
-    call_count: u32,
+    call_count: u16,
     filled: Vec<Nid>,
-    delayed_frees: Vec<u32>,
+    delayed_frees: Vec<Color>,
 
     loops: Vec<Loop>,
     vars: Vec<Variable>,
@@ -1433,7 +1581,7 @@ struct ItemCtx {
 }
 
 impl ItemCtx {
-    fn next_color(&mut self) -> u32 {
+    fn next_color(&mut self) -> Color {
         self.colors.push(ColorMeta {
             rc: 0,
             call_count: self.call_count,
@@ -1448,7 +1596,7 @@ impl ItemCtx {
         self.set_color(node, color);
     }
 
-    fn set_color(&mut self, node: Nid, color: u32) {
+    fn set_color(&mut self, node: Nid, color: Color) {
         if self.nodes[node].color != 0 {
             debug_assert_ne!(self.nodes[node].color, color);
             self.colors[self.nodes[node].color as usize - 1].rc -= 1;
@@ -1457,7 +1605,7 @@ impl ItemCtx {
         self.colors[color as usize - 1].rc += 1;
     }
 
-    fn recolor(&mut self, node: Nid, from: u32, to: u32) {
+    fn recolor(&mut self, node: Nid, from: Color, to: Color) {
         if from == to {
             return;
         }
@@ -2097,7 +2245,7 @@ impl Codegen {
                 for var in &mut self.ci.vars {
                     var.value = 0;
                 }
-                self.ci.nodes[0].lock_rc += self.ci.vars.len() as u32;
+                self.ci.nodes[0].lock_rc += self.ci.vars.len() as LockRc;
 
                 self.expr(body);
 
@@ -2200,7 +2348,7 @@ impl Codegen {
                     ),
                 );
 
-                let mut inps = vec![self.ci.ctrl];
+                let mut inps = Vc::from([self.ci.ctrl]);
                 for ((arg, carg), tyx) in args.iter().zip(cargs).zip(sig.args.range()) {
                     let ty = self.tys.args[tyx];
                     if self.tys.size_of(ty) == 0 {
@@ -2382,8 +2530,8 @@ impl Codegen {
             let ty = self.ci.nodes[var.value].ty;
             if self.ci.nodes.unlock_remove(var.value) {
                 // mark as unused
-                orig_vars[i].id = u32::MAX;
-                orig_vars[i].value = ty.repr();
+                orig_vars[i].id = ty.repr();
+                orig_vars[i].value = Nid::MAX;
             }
         }
 
@@ -2393,8 +2541,6 @@ impl Codegen {
             //self.ci.nodes.graphviz();
             log::inf!("{id} {name}: ");
             self.ci.nodes.basic_blocks();
-
-            return;
 
             #[cfg(debug_assertions)]
             {
@@ -2413,7 +2559,7 @@ impl Codegen {
             let call_count = self.ci.call_count;
             '_color_args: {
                 for var in &orig_vars {
-                    if var.id != u32::MAX {
+                    if var.value != Nid::MAX {
                         self.ci.set_next_color(var.value);
                     }
                 }
@@ -2618,7 +2764,7 @@ impl Codegen {
     }
 
     #[must_use = "dont forget to drop the location"]
-    fn color_expr_consume(&mut self, expr: Nid) -> Option<u32> {
+    fn color_expr_consume(&mut self, expr: Nid) -> Option<Color> {
         if self.ci.nodes[expr].lock_rc == 0 && self.ci.nodes[expr].kind != Kind::Phi {
             self.ci.nodes[expr].depth = self.ci.loop_depth;
             self.color_expr(expr);
@@ -2653,7 +2799,7 @@ impl Codegen {
     }
 
     #[must_use]
-    fn use_colored_expr(&mut self, expr: Nid) -> Option<u32> {
+    fn use_colored_expr(&mut self, expr: Nid) -> Option<Color> {
         self.ci.nodes[expr].lock_rc += 1;
         debug_assert_ne!(self.ci.nodes[expr].color, 0, "{:?}", self.ci.nodes[expr].kind);
         (self.ci.nodes[expr].lock_rc as usize >= self.ci.nodes[expr].outputs.len()
@@ -2941,10 +3087,10 @@ impl Codegen {
     }
 
     fn emit_expr(&mut self, expr: Nid) {
-        if self.ci.nodes[expr].depth == u32::MAX {
+        if self.ci.nodes[expr].depth == IDomDepth::MAX {
             return;
         }
-        self.ci.nodes[expr].depth = u32::MAX;
+        self.ci.nodes[expr].depth = IDomDepth::MAX;
         self.ci.filled.push(expr);
 
         match self.ci.nodes[expr].kind {
@@ -2963,8 +3109,8 @@ impl Codegen {
 
                 let mut params = self.tys.parama(self.ci.ret.unwrap());
                 for (i, var) in self.ci.vars.iter().enumerate() {
-                    if var.id == u32::MAX {
-                        match self.tys.size_of(ty::Id::from_bt(var.value)) {
+                    if var.value == Nid::MAX {
+                        match self.tys.size_of(ty::Id::from_bt(var.id)) {
                             0 => {}
                             1..=8 => _ = params.next(),
                             s => todo!("{s}"),
@@ -2994,7 +3140,7 @@ impl Codegen {
 
                 if let Kind::CInt { value } = self.ci.nodes[right].kind
                     && (node_loc!(self, right) == Loc::default()
-                        || self.ci.nodes[right].depth != u32::MAX)
+                        || self.ci.nodes[right].depth != IDomDepth::MAX)
                     && let Some(op) = Self::imm_math_op(op, ty.is_signed(), self.tys.size_of(ty))
                 {
                     let instr =
@@ -3361,7 +3507,7 @@ impl Codegen {
     }
 
     fn gcm(&mut self) {
-        fn loop_depth(target: Nid, nodes: &mut Nodes) -> u32 {
+        fn loop_depth(target: Nid, nodes: &mut Nodes) -> LoopDepth {
             if nodes[target].loop_depth != 0 {
                 return nodes[target].loop_depth;
             }
@@ -3402,7 +3548,7 @@ impl Codegen {
                 || nodes[then].kind == Kind::If
         }
 
-        fn idepth(nodes: &mut Nodes, target: Nid) -> u32 {
+        fn idepth(nodes: &mut Nodes, target: Nid) -> IDomDepth {
             if target == 0 {
                 return 0;
             }
@@ -3433,7 +3579,7 @@ impl Codegen {
         }
 
         fn push_up(nodes: &mut Nodes, node: Nid) {
-            if !nodes.visited.set(node as _) {
+            if !nodes.visited.set(node) {
                 return;
             }
 
@@ -3475,7 +3621,7 @@ impl Codegen {
         }
 
         fn push_down(nodes: &mut Nodes, node: Nid) {
-            if !nodes.visited.set(node as _) {
+            if !nodes.visited.set(node) {
                 return;
             }
 
@@ -3551,75 +3697,12 @@ impl Codegen {
     }
 }
 
-#[derive(Default)]
-pub struct LoggedMem {
-    pub mem: hbvm::mem::HostMemory,
-}
-
-impl hbvm::mem::Memory for LoggedMem {
-    unsafe fn load(
-        &mut self,
-        addr: hbvm::mem::Address,
-        target: *mut u8,
-        count: usize,
-    ) -> Result<(), hbvm::mem::LoadError> {
-        log::trc!(
-            "load: {:x} {:?}",
-            addr.get(),
-            core::slice::from_raw_parts(addr.get() as *const u8, count)
-                .iter()
-                .rev()
-                .map(|&b| format!("{b:02x}"))
-                .collect::<String>()
-        );
-        self.mem.load(addr, target, count)
-    }
-
-    unsafe fn store(
-        &mut self,
-        addr: hbvm::mem::Address,
-        source: *const u8,
-        count: usize,
-    ) -> Result<(), hbvm::mem::StoreError> {
-        log::trc!(
-            "store: {:x} {:?}",
-            addr.get(),
-            core::slice::from_raw_parts(source, count)
-                .iter()
-                .rev()
-                .map(|&b| format!("{b:02x}"))
-                .collect::<String>()
-        );
-        self.mem.store(addr, source, count)
-    }
-
-    unsafe fn prog_read<T: Copy>(&mut self, addr: hbvm::mem::Address) -> T {
-        log::trc!(
-            "read-typed: {:x} {} {:?}",
-            addr.get(),
-            std::any::type_name::<T>(),
-            if core::mem::size_of::<T>() == 1
-                && let Some(nm) =
-                    instrs::NAMES.get(std::ptr::read(addr.get() as *const u8) as usize)
-            {
-                nm.to_string()
-            } else {
-                core::slice::from_raw_parts(addr.get() as *const u8, core::mem::size_of::<T>())
-                    .iter()
-                    .map(|&b| format!("{:02x}", b))
-                    .collect::<String>()
-            }
-        );
-        self.mem.prog_read(addr)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use {
         crate::{
             parser::{self, FileId},
-            son::LoggedMem,
+            LoggedMem,
         },
         std::io,
     };
@@ -3656,13 +3739,13 @@ mod tests {
         let mut last_start = 0;
         let mut last_module_name = "test";
         for (i, m) in input.match_indices("// in module: ") {
-            parser::test::format(ident, input[last_start..i].trim());
+            //parser::test::format(ident, input[last_start..i].trim());
             module_map.push((last_module_name, &input[last_start..i]));
             let (module_name, _) = input[i + m.len()..].split_once('\n').unwrap();
             last_module_name = module_name;
             last_start = i + m.len() + module_name.len() + 1;
         }
-        parser::test::format(ident, input[last_start..].trim());
+        //parser::test::format(ident, input[last_start..].trim());
         module_map.push((last_module_name, input[last_start..].trim()));
 
         let loader = |path: &str, _: &str| {
@@ -3701,8 +3784,6 @@ mod tests {
             writeln!(output, "!!! asm is invalid: {e}").unwrap();
             return;
         }
-
-        return;
 
         let mut stack = [0_u64; 128];
 
