@@ -2547,7 +2547,7 @@ impl Codegen {
 
     pub fn disasm(&mut self, output: &mut impl std::io::Write) -> std::io::Result<()> {
         let mut bin = Vec::new();
-        self.tys.assemble(&mut bin);
+        self.assemble(&mut bin);
         self.tys.disasm(&bin, &self.files, output, |_| {})
     }
 
@@ -2701,5 +2701,6 @@ mod tests {
         writing_into_string => README;
         request_page => README;
         tests_ptr_to_ptr_copy => README;
+        something_somehow => README;
     }
 }

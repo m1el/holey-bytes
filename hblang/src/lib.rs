@@ -862,11 +862,11 @@ fn disasm(
 
         let mut label_count = 0;
         while let Some(&byte) = binary.first() {
-            let inst = instr_from_byte(byte)?;
             let offset: i32 = (prev.len() - binary.len()).try_into().unwrap();
             if offset as u32 == off + len {
                 break;
             }
+            let Ok(inst) = instr_from_byte(byte) else { break };
             instrs::parse_args(binary, inst, &mut buf).ok_or(std::io::ErrorKind::OutOfMemory)?;
 
             for op in buf.drain(..) {
@@ -903,11 +903,14 @@ fn disasm(
 
         binary.take(..off as usize).unwrap();
         while let Some(&byte) = binary.first() {
-            let inst = instr_from_byte(byte).unwrap();
             let offset: i32 = (prev.len() - binary.len()).try_into().unwrap();
             if offset as u32 == off + len {
                 break;
             }
+            let Ok(inst) = instr_from_byte(byte) else {
+                writeln!(out, "invalid instr {byte}")?;
+                break;
+            };
             instrs::parse_args(binary, inst, &mut buf).unwrap();
 
             if let Some(label) = labels.get(&offset.try_into().unwrap()) {

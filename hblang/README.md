@@ -913,3 +913,25 @@ main := fn(): int {
 	return back_buffer[1024 * 2]
 }
 ```
+
+#### something_somehow
+```hb
+foo := @use("foo.hb")
+main := fn(): void {
+	foo.blue
+	foo.red
+	return
+}
+
+// in module: foo.hb
+
+bar := @use("bar.hb")
+default := bar
+blue := default.blue
+red := default.red
+
+// in module: bar.hb
+Color := struct {r: u8, g: u8, b: u8, a: u8}
+red := Color.(255, 0, 0, 0)
+blue := Color.(1, 0, 1, 0)
+```
