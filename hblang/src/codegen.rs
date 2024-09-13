@@ -1383,35 +1383,11 @@ impl Codegen {
                 loc: Loc::ct(value as u64),
             }),
             E::If { cond, then, mut else_, .. } => {
-                #[allow(clippy::type_complexity)]
-                fn cond_op(
-                    op: TokenKind,
-                    signed: bool,
-                ) -> Option<(fn(u8, u8, i16) -> (usize, [u8; instrs::MAX_SIZE]), bool)>
-                {
-                    Some((
-                        match op {
-                            TokenKind::Le if signed => instrs::jgts,
-                            TokenKind::Le => instrs::jgtu,
-                            TokenKind::Lt if signed => instrs::jlts,
-                            TokenKind::Lt => instrs::jltu,
-                            TokenKind::Ge if signed => instrs::jlts,
-                            TokenKind::Ge => instrs::jltu,
-                            TokenKind::Gt if signed => instrs::jgts,
-                            TokenKind::Gt => instrs::jgtu,
-                            TokenKind::Eq => instrs::jne,
-                            TokenKind::Ne => instrs::jeq,
-                            _ => return None,
-                        },
-                        matches!(op, TokenKind::Lt | TokenKind::Gt),
-                    ))
-                }
-
                 let mut then = Some(then);
                 let jump_offset;
                 if let &E::BinOp { left, op, right } = cond
                     && let ty = self.infer_type(left)
-                    && let Some((op, swapped)) = cond_op(op, ty.is_signed())
+                    && let Some((op, swapped)) = op.cond_op(ty.is_signed())
                 {
                     let left = self.expr_ctx(left, Ctx::default())?;
                     let right = self.expr_ctx(right, Ctx::default())?;
@@ -1419,7 +1395,7 @@ impl Codegen {
                     let rsize = self.tys.size_of(right.ty);
                     let left_reg = self.loc_to_reg(&left.loc, lsize);
                     let right_reg = self.loc_to_reg(&right.loc, rsize);
-                    jump_offset = self.local_offset();
+                    jump_offset = self.ci.code.len();
                     self.ci.emit(op(left_reg.get(), right_reg.get(), 0));
                     self.ci.free_loc(left.loc);
                     self.ci.free_loc(right.loc);
@@ -1431,7 +1407,7 @@ impl Codegen {
                 } else {
                     let cond = self.expr_ctx(cond, Ctx::default().with_ty(ty::BOOL))?;
                     let reg = self.loc_to_reg(&cond.loc, 1);
-                    jump_offset = self.local_offset();
+                    jump_offset = self.ci.code.len();
                     self.ci.emit(jeq(reg.get(), 0, 0));
                     self.ci.free_loc(cond.loc);
                     self.ci.regs.free(reg);
@@ -1441,38 +1417,38 @@ impl Codegen {
                     if let Some(then) = then { self.expr(then).is_none() } else { false };
                 let mut else_unreachable = false;
 
-                let mut jump = self.local_offset() as i64 - jump_offset as i64;
+                let mut jump = self.ci.code.len() as i64 - jump_offset as i64;
 
                 if let Some(else_) = else_ {
-                    let else_jump_offset = self.local_offset();
+                    let else_jump_offset = self.ci.code.len();
                     if !then_unreachable {
                         self.ci.emit(jmp(0));
-                        jump = self.local_offset() as i64 - jump_offset as i64;
+                        jump = self.ci.code.len() as i64 - jump_offset as i64;
                     }
 
                     else_unreachable = self.expr(else_).is_none();
 
                     if !then_unreachable {
-                        let jump = self.local_offset() as i64 - else_jump_offset as i64;
-                        write_reloc(self.local_code(), else_jump_offset as usize + 1, jump, 4);
+                        let jump = self.ci.code.len() as i64 - else_jump_offset as i64;
+                        write_reloc(&mut self.ci.code, else_jump_offset + 1, jump, 4);
                     }
                 }
 
-                write_reloc(self.local_code(), jump_offset as usize + 3, jump, 2);
+                write_reloc(&mut self.ci.code, jump_offset + 3, jump, 2);
 
                 (!then_unreachable || !else_unreachable).then_some(Value::void())
             }
             E::Loop { body, .. } => 'a: {
-                let loop_start = self.local_offset();
+                let loop_start = self.ci.code.len();
                 self.ci.loops.push(Loop {
                     var_count: self.ci.vars.len() as _,
-                    offset: loop_start,
+                    offset: loop_start as _,
                     reloc_base: self.ci.loop_relocs.len() as u32,
                 });
                 let body_unreachable = self.expr(body).is_none();
 
                 if !body_unreachable {
-                    let loop_end = self.local_offset();
+                    let loop_end = self.ci.code.len();
                     self.ci.emit(jmp(loop_start as i32 - loop_end as i32));
                 }
 
@@ -1504,7 +1480,7 @@ impl Codegen {
             }
             E::Continue { .. } => {
                 let loop_ = self.ci.loops.last().unwrap();
-                let offset = self.local_offset();
+                let offset = self.ci.code.len();
                 self.ci.emit(jmp(loop_.offset as i32 - offset as i32));
                 None
             }
@@ -1570,7 +1546,7 @@ impl Codegen {
                 let signed = ty.is_signed();
 
                 if let Loc::Ct { value: CtValue(mut imm), derefed } = right.loc
-                    && let Some(oper) = Self::imm_math_op(op, signed, size)
+                    && let Some(oper) = op.imm_math_op(signed, size)
                 {
                     if derefed {
                         let mut dst = [0u8; 8];
@@ -1623,7 +1599,7 @@ impl Codegen {
                     }
                 }
 
-                if let Some(op) = Self::math_op(op, signed, size) {
+                if let Some(op) = op.math_op(signed, size) {
                     self.ci.emit(op(dst.get(), lhs.get(), rhs.get()));
                     self.ci.regs.free(lhs);
                     self.ci.regs.free(rhs);
@@ -1952,7 +1928,7 @@ impl Codegen {
         let lhs = self.loc_to_reg(left, size);
 
         if let Loc::Ct { value, derefed: false } = right
-            && let Some(op) = Self::imm_math_op(op, signed, size)
+            && let Some(op) = op.imm_math_op(signed, size)
         {
             self.ci.emit(op(lhs.get(), lhs.get(), value.0));
             return Some(if let Some(value) = ctx.into_value() {
@@ -1965,7 +1941,7 @@ impl Codegen {
 
         let rhs = self.loc_to_reg(right, size);
 
-        if let Some(op) = Self::math_op(op, signed, size) {
+        if let Some(op) = op.math_op(signed, size) {
             self.ci.emit(op(lhs.get(), lhs.get(), rhs.get()));
             self.ci.regs.free(rhs);
             return if let Some(value) = ctx.into_value() {
@@ -1977,76 +1953,6 @@ impl Codegen {
         }
 
         unimplemented!("{:#?}", op)
-    }
-
-    #[allow(clippy::type_complexity)]
-    fn math_op(
-        op: TokenKind,
-        signed: bool,
-        size: u32,
-    ) -> Option<fn(u8, u8, u8) -> (usize, [u8; instrs::MAX_SIZE])> {
-        use TokenKind as T;
-
-        macro_rules! div { ($($op:ident),*) => {[$(|a, b, c| $op(a, ZERO, b, c)),*]}; }
-        macro_rules! rem { ($($op:ident),*) => {[$(|a, b, c| $op(ZERO, a, b, c)),*]}; }
-
-        let ops = match op {
-            T::Add => [add8, add16, add32, add64],
-            T::Sub => [sub8, sub16, sub32, sub64],
-            T::Mul => [mul8, mul16, mul32, mul64],
-            T::Div if signed => div!(dirs8, dirs16, dirs32, dirs64),
-            T::Div => div!(diru8, diru16, diru32, diru64),
-            T::Mod if signed => rem!(dirs8, dirs16, dirs32, dirs64),
-            T::Mod => rem!(diru8, diru16, diru32, diru64),
-            T::Band => return Some(and),
-            T::Bor => return Some(or),
-            T::Xor => return Some(xor),
-            T::Shl => [slu8, slu16, slu32, slu64],
-            T::Shr if signed => [srs8, srs16, srs32, srs64],
-            T::Shr => [sru8, sru16, sru32, sru64],
-            _ => return None,
-        };
-
-        Some(ops[size.ilog2() as usize])
-    }
-
-    #[allow(clippy::type_complexity)]
-    fn imm_math_op(
-        op: TokenKind,
-        signed: bool,
-        size: u32,
-    ) -> Option<fn(u8, u8, u64) -> (usize, [u8; instrs::MAX_SIZE])> {
-        use TokenKind as T;
-
-        macro_rules! def_op {
-            ($name:ident |$a:ident, $b:ident, $c:ident| $($tt:tt)*) => {
-                macro_rules! $name {
-                    ($$($$op:ident),*) => {
-                        [$$(
-                            |$a, $b, $c: u64| $$op($($tt)*),
-                        )*]
-                    }
-                }
-            };
-        }
-
-        def_op!(basic_op | a, b, c | a, b, c as _);
-        def_op!(sub_op | a, b, c | a, b, c.wrapping_neg() as _);
-
-        let ops = match op {
-            T::Add => basic_op!(addi8, addi16, addi32, addi64),
-            T::Sub => sub_op!(addi8, addi16, addi32, addi64),
-            T::Mul => basic_op!(muli8, muli16, muli32, muli64),
-            T::Band => return Some(andi),
-            T::Bor => return Some(ori),
-            T::Xor => return Some(xori),
-            T::Shr if signed => basic_op!(srui8, srui16, srui32, srui64),
-            T::Shr => basic_op!(srui8, srui16, srui32, srui64),
-            T::Shl => basic_op!(slui8, slui16, slui32, slui64),
-            _ => return None,
-        };
-
-        Some(ops[size.ilog2() as usize])
     }
 
     fn handle_global(&mut self, id: ty::Global) -> Option<Value> {
@@ -2706,14 +2612,6 @@ impl Codegen {
 
     fn cfile(&self) -> &parser::Ast {
         &self.files[self.ci.file as usize]
-    }
-
-    fn local_code(&mut self) -> &mut [u8] {
-        &mut self.ci.code
-    }
-
-    fn local_offset(&self) -> u32 {
-        self.ci.code.len() as _
     }
 
     fn pack_args(&mut self, pos: Pos, arg_base: usize) -> ty::Tuple {

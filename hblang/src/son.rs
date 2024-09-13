@@ -332,7 +332,6 @@ impl BitSet {
 type Nid = u16;
 
 pub mod reg {
-
     pub const STACK_PTR: Reg = 254;
     pub const ZERO: Reg = 0;
     pub const RET: Reg = 1;
@@ -2245,8 +2244,7 @@ impl Codegen {
                                 unreachable!()
                             };
 
-                            let Some((op, swpd)) =
-                                Self::cond_op(op, self.ci.nodes[left].ty.is_signed())
+                            let Some((op, swpd)) = op.cond_op(self.ci.nodes[left].ty.is_signed())
                             else {
                                 break 'optimize_cond;
                             };
@@ -2488,8 +2486,8 @@ impl Codegen {
                 } else {
                     self.emit_expr_consume(right);
 
-                    let op = Self::math_op(op, ty.is_signed(), self.tys.size_of(ty))
-                        .expect("TODO: what now?");
+                    let op =
+                        op.math_op(ty.is_signed(), self.tys.size_of(ty)).expect("TODO: what now?");
 
                     let instr = op(
                         node_loc!(self, expr).reg,
@@ -2558,56 +2556,6 @@ impl Codegen {
             T::Shr if signed => basic_op!(srui8, srui16, srui32, srui64),
             T::Shr => basic_op!(srui8, srui16, srui32, srui64),
             T::Shl => basic_op!(slui8, slui16, slui32, slui64),
-            _ => return None,
-        };
-
-        Some(ops[size.ilog2() as usize])
-    }
-
-    #[allow(clippy::type_complexity)]
-    fn cond_op(
-        op: TokenKind,
-        signed: bool,
-    ) -> Option<(fn(u8, u8, i16) -> (usize, [u8; instrs::MAX_SIZE]), bool)> {
-        Some((
-            match op {
-                TokenKind::Le if signed => instrs::jgts,
-                TokenKind::Le => instrs::jgtu,
-                TokenKind::Lt if signed => instrs::jlts,
-                TokenKind::Lt => instrs::jltu,
-                TokenKind::Eq => instrs::jne,
-                TokenKind::Ne => instrs::jeq,
-                _ => return None,
-            },
-            matches!(op, TokenKind::Lt | TokenKind::Gt),
-        ))
-    }
-
-    #[allow(clippy::type_complexity)]
-    fn math_op(
-        op: TokenKind,
-        signed: bool,
-        size: u32,
-    ) -> Option<fn(u8, u8, u8) -> (usize, [u8; instrs::MAX_SIZE])> {
-        use {instrs::*, TokenKind as T};
-
-        macro_rules! div { ($($op:ident),*) => {[$(|a, b, c| $op(a, reg::ZERO, b, c)),*]}; }
-        macro_rules! rem { ($($op:ident),*) => {[$(|a, b, c| $op(reg::ZERO, a, b, c)),*]}; }
-
-        let ops = match op {
-            T::Add => [add8, add16, add32, add64],
-            T::Sub => [sub8, sub16, sub32, sub64],
-            T::Mul => [mul8, mul16, mul32, mul64],
-            T::Div if signed => div!(dirs8, dirs16, dirs32, dirs64),
-            T::Div => div!(diru8, diru16, diru32, diru64),
-            T::Mod if signed => rem!(dirs8, dirs16, dirs32, dirs64),
-            T::Mod => rem!(diru8, diru16, diru32, diru64),
-            T::Band => return Some(and),
-            T::Bor => return Some(or),
-            T::Xor => return Some(xor),
-            T::Shl => [slu8, slu16, slu32, slu64],
-            T::Shr if signed => [srs8, srs16, srs32, srs64],
-            T::Shr => [sru8, sru16, sru32, sru64],
             _ => return None,
         };
 
