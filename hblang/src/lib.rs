@@ -10,6 +10,7 @@
     hash_raw_entry,
     portable_simd,
     iter_collect_into,
+    new_uninit,
     ptr_metadata,
     slice_ptr_get,
     slice_take,
