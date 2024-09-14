@@ -297,9 +297,18 @@ impl<'a, 'b> Parser<'a, 'b> {
                     self.ns_bound = self.idents.len();
                     self.expect_advance(T::LBrace);
                     self.collect_list(T::Comma, T::RBrace, |s| {
-                        let name = s.expect_advance(T::Ident);
-                        s.expect_advance(T::Colon);
-                        (s.move_str(name), s.expr())
+                        let tok = s.token;
+                        if s.advance_if(T::Comment) {
+                            CommentOr::Comment { literal: s.move_str(tok), pos: tok.start }
+                        } else {
+                            let name = s.expect_advance(T::Ident);
+                            s.expect_advance(T::Colon);
+                            CommentOr::Or(StructField {
+                                pos: name.start,
+                                name: s.move_str(name),
+                                ty: s.expr(),
+                            })
+                        }
                     })
                 },
                 captured: {
@@ -350,6 +359,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                         s.declare(name.start, id, None);
                         s.expect_advance(T::Colon);
                         Arg {
+                            pos: name.start,
                             name: s.move_str(name),
                             is_ct: name.kind == T::CtIdent,
                             id,
@@ -578,11 +588,18 @@ pub fn find_symbol(symbols: &[Symbol], id: Ident) -> &Symbol {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Arg<'a> {
+    pub pos: u32,
     pub name: &'a str,
     pub id: Ident,
     pub is_ct: bool,
     pub index: IdentIndex,
     pub ty: Expr<'a>,
+}
+
+impl Poser for Arg<'_> {
+    fn posi(&self) -> Pos {
+        self.pos
+    }
 }
 
 macro_rules! generate_expr {
@@ -732,7 +749,7 @@ generate_expr! {
         /// `'struct' LIST('{', ',', '}', Ident ':' Expr)`
         Struct {
             pos:      Pos,
-            fields:   &'a [(&'a str, Self)],
+            fields:   &'a [CommentOr<'a, StructField<'a>>],
             captured: &'a [Ident],
             trailing_comma: bool,
         },
@@ -833,6 +850,19 @@ impl<'a> Expr<'a> {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct StructField<'a> {
+    pub pos: Pos,
+    pub name: &'a str,
+    pub ty: Expr<'a>,
+}
+
+impl Poser for StructField<'_> {
+    fn posi(&self) -> Pos {
+        self.pos
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CtorField<'a> {
     pub pos: Pos,
@@ -840,19 +870,49 @@ pub struct CtorField<'a> {
     pub value: Expr<'a>,
 }
 
-trait Poser {
-    fn posi(self) -> Pos;
-}
-
-impl Poser for Pos {
-    fn posi(self) -> Pos {
-        self
+impl Poser for CtorField<'_> {
+    fn posi(&self) -> Pos {
+        self.pos
     }
 }
 
-impl<'a> Poser for &Expr<'a> {
-    fn posi(self) -> Pos {
+trait Poser {
+    fn posi(&self) -> Pos;
+}
+
+impl Poser for Pos {
+    fn posi(&self) -> Pos {
+        *self
+    }
+}
+
+impl<'a> Poser for Expr<'a> {
+    fn posi(&self) -> Pos {
         self.pos()
+    }
+}
+
+impl<'a, T: Poser> Poser for CommentOr<'a, T> {
+    fn posi(&self) -> Pos {
+        match self {
+            CommentOr::Or(expr) => expr.posi(),
+            CommentOr::Comment { pos, .. } => *pos,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CommentOr<'a, T> {
+    Or(T),
+    Comment { literal: &'a str, pos: Pos },
+}
+
+impl<'a, T: Copy> CommentOr<'a, T> {
+    pub fn or(&self) -> Option<T> {
+        match *self {
+            CommentOr::Or(v) => Some(v),
+            CommentOr::Comment { .. } => None,
+        }
     }
 }
 
@@ -874,20 +934,35 @@ impl<'a> fmt::Display for Expr<'a> {
             static DISPLAY_BUFFER: Cell<String> = const { Cell::new(String::new()) };
         }
 
-        fn fmt_list<T>(
+        fn fmt_list<T: Poser>(
             f: &mut fmt::Formatter,
             trailing: bool,
             end: &str,
+            sep: &str,
             list: &[T],
             fmt: impl Fn(&T, &mut fmt::Formatter) -> fmt::Result,
         ) -> fmt::Result {
+            fmt_list_low(f, trailing, end, sep, list, |v, f| {
+                fmt(v, f)?;
+                Ok(true)
+            })
+        }
+
+        fn fmt_list_low<T: Poser>(
+            f: &mut fmt::Formatter,
+            trailing: bool,
+            end: &str,
+            sep: &str,
+            list: &[T],
+            fmt: impl Fn(&T, &mut fmt::Formatter) -> Result<bool, fmt::Error>,
+        ) -> fmt::Result {
             if !trailing {
-                let first = &mut true;
+                let mut first = true;
                 for expr in list {
-                    if !std::mem::take(first) {
-                        write!(f, ", ")?;
+                    if !std::mem::take(&mut first) {
+                        write!(f, "{sep} ")?;
                     }
-                    fmt(expr, f)?;
+                    first = !fmt(expr, f)?;
                 }
                 return write!(f, "{end}");
             }
@@ -895,12 +970,28 @@ impl<'a> fmt::Display for Expr<'a> {
             writeln!(f)?;
             INDENT.with(|i| i.set(i.get() + 1));
             let res = (|| {
-                for stmt in list {
+                for (i, stmt) in list.iter().enumerate() {
                     for _ in 0..INDENT.with(|i| i.get()) {
                         write!(f, "\t")?;
                     }
-                    fmt(stmt, f)?;
-                    writeln!(f, ",")?;
+                    let add_sep = fmt(stmt, f)?;
+                    if add_sep {
+                        write!(f, "{sep}")?;
+                    }
+                    let source: &str = unsafe { &*FMT_SOURCE.with(|s| s.get()) };
+                    if let Some(expr) = list.get(i + 1)
+                        && let Some(rest) = source.get(expr.posi() as usize..)
+                    {
+                        if insert_needed_semicolon(rest) {
+                            write!(f, ";")?;
+                        }
+                        if preserve_newlines(&source[..expr.posi() as usize]) > 1 {
+                            writeln!(f)?;
+                        }
+                    }
+                    if add_sep {
+                        writeln!(f)?;
+                    }
                 }
                 Ok(())
             })();
@@ -937,8 +1028,6 @@ impl<'a> fmt::Display for Expr<'a> {
             Consecutive => Expr::UnOp { .. },
         }
 
-        let source: &str = unsafe { &*FMT_SOURCE.with(|s| s.get()) };
-
         match *self {
             Self::Ct { value, .. } => write!(f, "$: {}", value),
             Self::String { literal, .. } => write!(f, "{}", literal),
@@ -947,12 +1036,16 @@ impl<'a> fmt::Display for Expr<'a> {
             Self::Field { target, name: field } => write!(f, "{}.{field}", Postfix(target)),
             Self::Directive { name, args, .. } => {
                 write!(f, "@{name}(")?;
-                fmt_list(f, false, ")", args, fmt::Display::fmt)
+                fmt_list(f, false, ")", ",", args, fmt::Display::fmt)
             }
             Self::Struct { fields, trailing_comma, .. } => {
                 write!(f, "struct {{")?;
-                fmt_list(f, trailing_comma, "}", fields, |(name, val), f| {
-                    write!(f, "{name}: {val}",)
+                fmt_list_low(f, trailing_comma, "}", ",", fields, |field, f| {
+                    match field {
+                        CommentOr::Or(StructField { name, ty, .. }) => write!(f, "{name}: {ty}")?,
+                        CommentOr::Comment { literal, .. } => write!(f, "{literal}")?,
+                    }
+                    Ok(field.or().is_some())
                 })
             }
             Self::Ctor { ty, fields, trailing_comma, .. } => {
@@ -967,14 +1060,14 @@ impl<'a> fmt::Display for Expr<'a> {
                         write!(f, "{name}: {value}")
                     }
                 };
-                fmt_list(f, trailing_comma, "}", fields, fmt_field)
+                fmt_list(f, trailing_comma, "}", ",", fields, fmt_field)
             }
             Self::Tupl { ty, fields, trailing_comma, .. } => {
                 if let Some(ty) = ty {
                     write!(f, "{}", Unary(ty))?;
                 }
                 write!(f, ".(")?;
-                fmt_list(f, trailing_comma, ")", fields, fmt::Display::fmt)
+                fmt_list(f, trailing_comma, ")", ",", fields, fmt::Display::fmt)
             }
             Self::Slice { item, size, .. } => match size {
                 Some(size) => write!(f, "[{item}; {size}]"),
@@ -994,7 +1087,7 @@ impl<'a> fmt::Display for Expr<'a> {
             Self::Loop { body, .. } => write!(f, "loop {body}"),
             Self::Closure { ret, body, args, .. } => {
                 write!(f, "fn(")?;
-                fmt_list(f, false, "", args, |arg, f| {
+                fmt_list(f, false, "", ",", args, |arg, f| {
                     if arg.is_ct {
                         write!(f, "$")?;
                     }
@@ -1005,7 +1098,7 @@ impl<'a> fmt::Display for Expr<'a> {
             }
             Self::Call { func, args, trailing_comma } => {
                 write!(f, "{}(", Postfix(func))?;
-                fmt_list(f, trailing_comma, ")", args, fmt::Display::fmt)
+                fmt_list(f, trailing_comma, ")", ",", args, fmt::Display::fmt)
             }
             Self::Return { val: Some(val), .. } => write!(f, "return {val}"),
             Self::Return { val: None, .. } => write!(f, "return"),
@@ -1013,34 +1106,7 @@ impl<'a> fmt::Display for Expr<'a> {
             Self::Ident { name, is_ct: false, .. } => write!(f, "{name}"),
             Self::Block { stmts, .. } => {
                 write!(f, "{{")?;
-                writeln!(f)?;
-                INDENT.with(|i| i.set(i.get() + 1));
-                let res = (|| {
-                    for (i, stmt) in stmts.iter().enumerate() {
-                        for _ in 0..INDENT.with(|i| i.get()) {
-                            write!(f, "\t")?;
-                        }
-                        write!(f, "{stmt}")?;
-                        if let Some(expr) = stmts.get(i + 1)
-                            && let Some(rest) = source.get(expr.pos() as usize..)
-                        {
-                            if insert_needed_semicolon(rest) {
-                                write!(f, ";")?;
-                            }
-                            if preserve_newlines(&source[..expr.pos() as usize]) > 1 {
-                                writeln!(f)?;
-                            }
-                        }
-                        writeln!(f)?;
-                    }
-                    Ok(())
-                })();
-                INDENT.with(|i| i.set(i.get() - 1));
-                for _ in 0..INDENT.with(|i| i.get()) {
-                    write!(f, "\t")?;
-                }
-                write!(f, "}}")?;
-                res
+                fmt_list(f, true, "}", "", stmts, fmt::Display::fmt)
             }
             Self::Number { value, radix, .. } => match radix {
                 Radix::Decimal => write!(f, "{value}"),
@@ -1080,6 +1146,7 @@ impl<'a> fmt::Display for Expr<'a> {
                     }
                 };
 
+                let source: &str = unsafe { &*FMT_SOURCE.with(|s| s.get()) };
                 display_branch(f, left)?;
                 if let Some(mut prev) = source.get(..right.pos() as usize) {
                     prev = prev.trim_end();

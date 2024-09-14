@@ -150,6 +150,8 @@ drop := fn(a: int): void {
 #### structs
 ```hb
 Ty := struct {
+	// comment
+
 	a: int,
 	b: int,
 }

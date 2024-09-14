@@ -8,7 +8,7 @@ use {
         parser::{
             self,
             idfl::{self},
-            Expr, ExprRef, FileId, Pos,
+            CommentOr, Expr, ExprRef, FileId, Pos, StructField,
         },
         task, ty, Field, Func, Reloc, Sig, Struct, SymKey, TypedReloc, Types,
     },
@@ -1397,10 +1397,11 @@ impl Codegen {
         self.expr_ctx(expr, Ctx::default())
     }
 
-    fn build_struct(&mut self, fields: &[(&str, Expr)]) -> ty::Struct {
+    fn build_struct(&mut self, fields: &[CommentOr<StructField>]) -> ty::Struct {
         let fields = fields
             .iter()
-            .map(|&(name, ty)| Field { name: name.into(), ty: self.ty(&ty) })
+            .filter_map(CommentOr::or)
+            .map(|sf| Field { name: sf.name.into(), ty: self.ty(&sf.ty) })
             .collect();
         self.tys.structs.push(Struct { fields });
         self.tys.structs.len() as u32 - 1
