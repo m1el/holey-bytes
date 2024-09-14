@@ -113,7 +113,7 @@ where
                     DIRS64 => self.dir::<i64>(),
                     NEG => handler!(self, |OpsRR(tg, a0)| {
                         // Bit negation
-                        self.write_reg(tg, !self.read_reg(a0).cast::<u64>())
+                        self.write_reg(tg, self.read_reg(a0).cast::<u64>().wrapping_neg())
                     }),
                     NOT => handler!(self, |OpsRR(tg, a0)| {
                         // Logical negation

@@ -224,10 +224,6 @@ mod ty {
     }
 
     impl Id {
-        pub const fn from_bt(bt: u32) -> Self {
-            Self(unsafe { NonZeroU32::new_unchecked(bt) })
-        }
-
         pub fn is_signed(self) -> bool {
             (I8..=INT).contains(&self.repr())
         }

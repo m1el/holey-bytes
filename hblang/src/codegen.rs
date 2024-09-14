@@ -830,10 +830,6 @@ impl Codegen {
                     ),
                 }
             }
-            E::UnOp { op: T::Xor, val, .. } => {
-                let val = self.ty(val);
-                Some(Value::ty(self.tys.make_ptr(val)))
-            }
             E::Directive { name: "inline", args: [func_ast, args @ ..], .. } => {
                 let ty::Kind::Func(mut func) = self.ty(func_ast).expand() else {
                     self.report(func_ast.pos(), "first argument of inline needs to be a function");
@@ -1179,6 +1175,42 @@ impl Codegen {
                         format_args!("the field operation is not supported: {smh:?}"),
                     ),
                 }
+            }
+            E::UnOp { op: T::Sub, val, pos } => {
+                let value = self.expr(val)?;
+
+                if !value.ty.is_integer() {
+                    self.report(pos, format_args!("cant negate '{}'", self.ty_display(value.ty)));
+                }
+
+                let size = self.tys.size_of(value.ty);
+
+                let (oper, dst, drop_loc) = if let Some(dst) = &ctx.loc
+                    && dst.is_reg()
+                    && let Some(dst) = ctx.loc.take()
+                {
+                    (
+                        self.loc_to_reg(&value.loc, size),
+                        if dst.is_ref() {
+                            self.loc_to_reg(&dst, size)
+                        } else {
+                            self.loc_to_reg(dst, size)
+                        },
+                        value.loc,
+                    )
+                } else {
+                    let oper = self.loc_to_reg(value.loc, size);
+                    (oper.as_ref(), oper, Loc::default())
+                };
+
+                self.ci.emit(neg(dst.get(), oper.get()));
+                self.ci.free_loc(drop_loc);
+
+                Some(Value::new(value.ty, dst))
+            }
+            E::UnOp { op: T::Xor, val, .. } => {
+                let val = self.ty(val);
+                Some(Value::ty(self.tys.make_ptr(val)))
             }
             E::UnOp { op: T::Band, val, pos } => {
                 let mut val = self.expr(val)?;
@@ -2701,6 +2733,5 @@ mod tests {
         writing_into_string => README;
         request_page => README;
         tests_ptr_to_ptr_copy => README;
-        something_somehow => README;
     }
 }

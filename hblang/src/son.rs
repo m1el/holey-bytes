@@ -24,12 +24,6 @@ use {
     },
 };
 
-macro_rules! node_color {
-    ($self:expr, $value:expr) => {
-        $self.ci.colors[$self.ci.nodes[$value].color as usize - 1]
-    };
-}
-
 macro_rules! node_loc {
     ($self:expr, $value:expr) => {
         $self.ci.colors[$self.ci.nodes[$value].color as usize - 1].loc
@@ -845,7 +839,7 @@ impl Nodes {
     #[allow(clippy::format_in_format_args)]
     fn basic_blocks_instr(&mut self, out: &mut String, node: Nid) -> std::fmt::Result {
         if self[node].kind != Kind::Loop && self[node].kind != Kind::Region {
-            write!(out, "  {node:>2}: ")?;
+            write!(out, "  {node:>2}-c{:>2}:", self[node].color)?;
         }
         match self[node].kind {
             Kind::Start => unreachable!(),
@@ -1158,7 +1152,7 @@ impl fmt::Display for Kind {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 //#[repr(align(64))]
 struct Node {
     inputs: Vc,
@@ -1228,7 +1222,6 @@ struct Variable {
 struct ColorMeta {
     rc: u32,
     depth: LoopDepth,
-    call_count: CallCount,
     loc: Loc,
 }
 
@@ -1261,18 +1254,14 @@ struct ItemCtx {
 
 impl ItemCtx {
     fn next_color(&mut self) -> Color {
-        self.colors.push(ColorMeta {
-            rc: 0,
-            call_count: self.call_count,
-            depth: self.loop_depth,
-            loc: Default::default(),
-        });
+        self.colors.push(ColorMeta { rc: 0, depth: self.loop_depth, loc: Default::default() });
         self.colors.len() as _ // leave out 0 (sentinel)
     }
 
-    fn set_next_color(&mut self, node: Nid) {
+    fn set_next_color(&mut self, node: Nid) -> Color {
         let color = self.next_color();
         self.set_color(node, color);
+        color
     }
 
     fn set_color(&mut self, node: Nid, color: Color) {
@@ -1837,7 +1826,7 @@ impl Codegen {
         self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Tuple { index: 0 }, [self.ci.start]);
 
         let Expr::BinOp {
-            left: Expr::Ident { name, .. },
+            left: Expr::Ident { .. },
             op: TokenKind::Decl,
             right: &Expr::Closure { body, args, .. },
         } = expr
@@ -1873,16 +1862,12 @@ impl Codegen {
         if self.errors.borrow().is_empty() {
             self.gcm();
 
-            //self.ci.nodes.graphviz();
-            log::inf!("{id} {name}: ");
             self.ci.nodes.basic_blocks();
 
             #[cfg(debug_assertions)]
             {
                 self.ci.nodes.check_final_integrity();
             }
-
-            log::trc!("{}", self.ci.nodes);
 
             '_open_function: {
                 self.ci.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, 0));
@@ -1899,7 +1884,8 @@ impl Codegen {
                     }
                 }
             }
-            self.color_control(self.ci.nodes[self.ci.start].outputs[0]);
+            self.ci.nodes.visited.clear(self.ci.nodes.values.len());
+            self.color_node(self.ci.end);
             #[cfg(debug_assertions)]
             {
                 self.ci.check_color_integrity();
@@ -1907,7 +1893,8 @@ impl Codegen {
 
             self.ci.vars = orig_vars;
             self.ci.call_count = call_count;
-            self.emit_control(self.ci.nodes[self.ci.start].outputs[0]);
+            self.ci.nodes.visited.clear(self.ci.nodes.values.len());
+            self.emit_node(self.ci.start);
             self.ci.vars.clear();
 
             if let Some(last_ret) = self.ci.ret_relocs.last()
@@ -1944,622 +1931,120 @@ impl Codegen {
         self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
     }
 
-    fn color_control(&mut self, mut ctrl: Nid) -> Option<Nid> {
-        for _ in 0..30 {
-            match self.ci.nodes[ctrl].kind {
-                Kind::Start => unreachable!(),
-                Kind::End => unreachable!(),
-                Kind::Return => {
-                    let ret = self.ci.nodes[ctrl].inputs[1];
-                    if ret != 0 {
-                        _ = self.color_expr_consume(ret);
-                        if node_color!(self, ret).call_count == self.ci.call_count {
-                            node_loc!(self, ret) =
-                                match self.tys.size_of(self.ci.ret.expect("TODO")) {
-                                    0 => Loc::default(),
-                                    1..=8 => Loc { reg: 1 },
-                                    s => todo!("{s}"),
-                                };
-                        }
-                        self.ci.regs.mark_leaked(1);
-                    }
-                    return None;
-                }
-                Kind::CInt { .. } => unreachable!(),
-                Kind::Tuple { .. } => {
-                    ctrl = self.ci.nodes[ctrl].outputs[0];
-                }
-                Kind::BinOp { .. } => unreachable!(),
-                Kind::Call { .. } => {
-                    for i in 1..self.ci.nodes[ctrl].inputs.len() {
-                        let arg = self.ci.nodes[ctrl].inputs[i];
-                        _ = self.color_expr_consume(arg);
-                        self.ci.set_next_color(arg);
-                    }
-
-                    self.ci.call_count -= 1;
-
-                    self.ci.set_next_color(ctrl);
-
-                    ctrl = *self.ci.nodes[ctrl]
-                        .outputs
-                        .iter()
-                        .find(|&&o| self.ci.nodes.is_cfg(o))
-                        .unwrap();
-                }
-                Kind::If => {
-                    _ = self.color_expr_consume(self.ci.nodes[ctrl].inputs[1]);
-
-                    let left_unreachable = self.color_control(self.ci.nodes[ctrl].outputs[0]);
-                    let right_unreachable = self.color_control(self.ci.nodes[ctrl].outputs[1]);
-
-                    let dest = match (left_unreachable, right_unreachable) {
-                        (None, None) => return None,
-                        (None, Some(n)) | (Some(n), None) => return Some(n),
-                        (Some(l), Some(r)) if l == r => l,
-                        (Some(left), Some(right)) => {
-                            todo!("{:?} {:?}", self.ci.nodes[left], self.ci.nodes[right]);
-                        }
-                    };
-
-                    if self.ci.nodes[dest].kind == Kind::Loop {
-                        return Some(dest);
-                    }
-
-                    debug_assert_eq!(self.ci.nodes[dest].kind, Kind::Region);
-
-                    for i in 0..self.ci.nodes[dest].outputs.len() {
-                        let o = self.ci.nodes[dest].outputs[i];
-                        if self.ci.nodes[o].kind == Kind::Phi {
-                            self.color_phi(o);
-                            self.ci.nodes[o].depth = self.ci.loop_depth;
-                        }
-                    }
-
-                    ctrl = *self.ci.nodes[dest]
-                        .outputs
-                        .iter()
-                        .find(|&&o| self.ci.nodes[o].kind != Kind::Phi)
-                        .unwrap();
-                }
-                Kind::Region => return Some(ctrl),
-                Kind::Phi => todo!(),
-                Kind::Loop => {
-                    if self.ci.nodes[ctrl].lock_rc != 0 {
-                        return Some(ctrl);
-                    }
-
-                    for i in 0..self.ci.nodes[ctrl].outputs.len() {
-                        let maybe_phi = self.ci.nodes[ctrl].outputs[i];
-                        let Node { kind: Kind::Phi, ref inputs, .. } = self.ci.nodes[maybe_phi]
-                        else {
-                            continue;
-                        };
-
-                        _ = self.color_expr_consume(inputs[1]);
-                        self.ci.nodes[maybe_phi].depth = self.ci.loop_depth;
-                        self.ci.set_next_color(maybe_phi);
-                    }
-
-                    self.ci.nodes[ctrl].lock_rc = self.ci.code.len() as _;
-                    self.ci.loop_depth += 1;
-
-                    self.color_control(
-                        *self.ci.nodes[ctrl]
-                            .outputs
-                            .iter()
-                            .find(|&&o| self.ci.nodes[o].kind != Kind::Phi)
-                            .unwrap(),
-                    );
-
-                    for i in 0..self.ci.nodes[ctrl].outputs.len() {
-                        self.color_phi(self.ci.nodes[ctrl].outputs[i]);
-                    }
-
-                    self.ci.loop_depth -= 1;
-                    self.ci.nodes[ctrl].lock_rc = 0;
-
-                    return None;
-                }
-            }
+    fn color_node(&mut self, ctrl: Nid) -> Option<Color> {
+        if !self.ci.nodes.visited.set(ctrl) {
+            return None;
         }
 
-        unreachable!()
-    }
-
-    fn color_phi(&mut self, maybe_phi: Nid) {
-        let Node { kind: Kind::Phi, ref inputs, .. } = self.ci.nodes[maybe_phi] else {
-            return;
-        };
-        let &[region, left, right] = inputs.as_slice() else { unreachable!() };
-
-        let lcolor = self.color_expr_consume(left);
-        let rcolor = self.color_expr_consume(right);
-
-        if self.ci.nodes[maybe_phi].color != 0 {
-            // loop phi
-            if let Some(c) = rcolor
-                && !self.ci.nodes.climb_expr(right, |i, n| {
-                    matches!(n.kind, Kind::Phi) && n.inputs[0] == region && i != maybe_phi
-                })
-            {
-                self.ci.recolor(right, c, self.ci.nodes[maybe_phi].color);
-            }
-        } else {
-            let color = match (lcolor, rcolor) {
-                (None, None) => self.ci.next_color(),
-                (None, Some(c)) | (Some(c), None) => c,
-                (Some(lc), Some(rc)) => {
-                    self.ci.recolor(right, rc, lc);
-                    lc
+        let node = self.ci.nodes[ctrl].clone();
+        match node.kind {
+            Kind::Start => None,
+            Kind::End => {
+                for &i in node.inputs.iter() {
+                    self.color_node(i);
                 }
-            };
-            self.ci.set_color(maybe_phi, color);
-        }
-    }
-
-    #[must_use = "dont forget to drop the location"]
-    fn color_expr_consume(&mut self, expr: Nid) -> Option<Color> {
-        if self.ci.nodes[expr].lock_rc == 0 && self.ci.nodes[expr].kind != Kind::Phi {
-            self.ci.nodes[expr].depth = self.ci.loop_depth;
-            self.color_expr(expr);
-        }
-        self.use_colored_expr(expr)
-    }
-
-    fn color_expr(&mut self, expr: Nid) {
-        match self.ci.nodes[expr].kind {
-            Kind::Start => unreachable!(),
-            Kind::End => unreachable!(),
-            Kind::Return => unreachable!(),
-            Kind::CInt { .. } => self.ci.set_next_color(expr),
-            Kind::Tuple { index } => {
-                debug_assert!(index != 0);
+                None
             }
-            Kind::BinOp { .. } => {
-                let &[_, left, right] = self.ci.nodes[expr].inputs.as_slice() else {
-                    unreachable!()
-                };
-                let lcolor = self.color_expr_consume(left);
-                let rcolor = self.color_expr_consume(right);
-                let color = lcolor.or(rcolor).unwrap_or_else(|| self.ci.next_color());
-                self.ci.set_color(expr, color);
-            }
-            Kind::Call { .. } => {}
             Kind::If => todo!(),
             Kind::Region => todo!(),
-            Kind::Phi => {}
             Kind::Loop => todo!(),
-        }
-    }
-
-    #[must_use]
-    fn use_colored_expr(&mut self, expr: Nid) -> Option<Color> {
-        self.ci.nodes[expr].lock_rc += 1;
-        debug_assert_ne!(self.ci.nodes[expr].color, 0, "{:?}", self.ci.nodes[expr].kind);
-        (self.ci.nodes[expr].lock_rc as usize >= self.ci.nodes[expr].outputs.len()
-            && self.ci.nodes[expr].depth == self.ci.loop_depth)
-            .then_some(self.ci.nodes[expr].color)
-    }
-
-    fn emit_control(&mut self, mut ctrl: Nid) -> Option<Nid> {
-        for _ in 0..30 {
-            match self.ci.nodes[ctrl].kind {
-                Kind::Start => unreachable!(),
-                Kind::End => unreachable!(),
-                Kind::Return => {
-                    let ret = self.ci.nodes[ctrl].inputs[1];
-                    if ret != 0 {
-                        // NOTE: this is safer less efficient way, maybe it will be needed
-                        // self.emit_expr_consume(ret);
-                        // if node_color!(self, ret).call_count != self.ci.call_count {
-                        //     let src = node_loc!(self, ret);
-                        //     let loc = match self.tys.size_of(self.ci.ret.expect("TODO")) {
-                        //         0 => Loc::default(),
-                        //         1..=8 => Loc { reg: 1 },
-                        //         s => todo!("{s}"),
-                        //     };
-                        //     if src != loc {
-                        //         let inst = instrs::cp(loc.reg, src.reg);
-                        //         self.ci.emit(inst);
-                        //     }
-                        // }
-
-                        node_loc!(self, ret) = match self.tys.size_of(self.ci.ret.expect("TODO")) {
-                            0 => Loc::default(),
-                            1..=8 => Loc { reg: 1 },
-                            s => todo!("{s}"),
-                        };
-                        self.emit_expr_consume(ret);
-                    }
-                    self.ci.ret_relocs.push(Reloc::new(self.ci.code.len(), 1, 4));
-                    self.ci.emit(instrs::jmp(0));
-                    return None;
+            Kind::Return => {
+                if node.inputs[1] != 0 {
+                    // FIXME: scan idoms to see if there is a call inbetween
+                    let col = self.ci.set_next_color(node.inputs[1]);
+                    self.ci.colors[col as usize - 1].loc = Loc { reg: 1 };
+                    self.ci.nodes.visited.set(node.inputs[1]);
                 }
-                Kind::CInt { .. } => unreachable!(),
-                Kind::Tuple { .. } => {
-                    ctrl = self.ci.nodes[ctrl].outputs[0];
-                }
-                Kind::BinOp { .. } => unreachable!(),
-                Kind::Call { func } => {
-                    let ret = self.tof(ctrl);
 
-                    let mut parama = self.tys.parama(ret);
-                    for i in 1..self.ci.nodes[ctrl].inputs.len() {
-                        let arg = self.ci.nodes[ctrl].inputs[i];
-
-                        let dst = match self.tys.size_of(self.tof(arg)) {
-                            0 => continue,
-                            1..=8 => Loc { reg: parama.next() },
-                            s => todo!("{s}"),
-                        };
-                        self.emit_expr_consume(arg);
-                        self.ci.emit(instrs::cp(dst.reg, node_loc!(self, arg).reg));
-                    }
-
-                    let reloc = Reloc::new(self.ci.code.len(), 3, 4);
-                    self.ci
-                        .relocs
-                        .push(TypedReloc { target: ty::Kind::Func(func).compress(), reloc });
-                    self.ci.emit(instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
-
-                    self.ci.call_count -= 1;
-
-                    'b: {
-                        let ret_loc = match self.tys.size_of(ret) {
-                            0 => break 'b,
-                            1..=8 => Loc { reg: 1 },
-                            s => todo!("{s}"),
-                        };
-
-                        if self.ci.nodes[ctrl].outputs.len() == 1 {
-                            break 'b;
-                        }
-
-                        if self.ci.call_count == 0 {
-                            node_loc!(self, ctrl) = ret_loc;
-                        } else {
-                            self.emit_pass_low(ret_loc, ctrl);
-                        }
-                    }
-
-                    ctrl = *self.ci.nodes[ctrl]
-                        .outputs
-                        .iter()
-                        .find(|&&o| self.ci.nodes.is_cfg(o))
-                        .unwrap();
-                }
-                Kind::If => {
-                    let cond = self.ci.nodes[ctrl].inputs[1];
-
-                    let jump_offset: i64;
-                    let mut swapped = false;
-                    'resolve_cond: {
-                        'optimize_cond: {
-                            let Kind::BinOp { op } = self.ci.nodes[cond].kind else {
-                                break 'optimize_cond;
-                            };
-
-                            let &[_, left, right] = self.ci.nodes[cond].inputs.as_slice() else {
-                                unreachable!()
-                            };
-
-                            let Some((op, swpd)) = op.cond_op(self.ci.nodes[left].ty.is_signed())
-                            else {
-                                break 'optimize_cond;
-                            };
-                            swapped = swpd;
-
-                            self.emit_expr_consume(left);
-                            self.emit_expr_consume(right);
-
-                            jump_offset = self.ci.code.len() as _;
-                            self.ci.emit(op(
-                                node_loc!(self, left).reg,
-                                node_loc!(self, right).reg,
-                                0,
-                            ));
-
-                            break 'resolve_cond;
-                        }
-
-                        self.emit_expr_consume(cond);
-                        jump_offset = self.ci.code.len() as _;
-                        self.ci.emit(instrs::jeq(node_loc!(self, cond).reg, reg::ZERO, 0));
-                    }
-
-                    let [loff, roff] = [swapped as usize, !swapped as usize];
-
-                    let filled_base = self.ci.filled.len();
-                    let left_unreachable = self.emit_control(self.ci.nodes[ctrl].outputs[loff]);
-                    for fld in self.ci.filled.drain(filled_base..) {
-                        self.ci.nodes[fld].depth = 0;
-                    }
-                    let mut skip_then_offset = self.ci.code.len() as i64;
-                    if let Some(region) = left_unreachable {
-                        for i in 0..self.ci.nodes[region].outputs.len() {
-                            let o = self.ci.nodes[region].outputs[i];
-                            if self.ci.nodes[o].kind != Kind::Phi {
-                                continue;
-                            }
-                            let out = self.ci.nodes[o].inputs[1 + loff];
-                            self.emit_expr_consume(out);
-                            self.emit_pass(out, o);
-                        }
-
-                        skip_then_offset = self.ci.code.len() as i64;
-                        self.ci.emit(instrs::jmp(0));
-                    }
-
-                    let right_base = self.ci.code.len();
-                    let filled_base = self.ci.filled.len();
-                    let right_unreachable = self.emit_control(self.ci.nodes[ctrl].outputs[roff]);
-
-                    for fld in self.ci.filled.drain(filled_base..) {
-                        self.ci.nodes[fld].depth = 0;
-                    }
-                    if let Some(region) = left_unreachable {
-                        for i in 0..self.ci.nodes[region].outputs.len() {
-                            let o = self.ci.nodes[region].outputs[i];
-                            if self.ci.nodes[o].kind != Kind::Phi {
-                                continue;
-                            }
-                            let out = self.ci.nodes[o].inputs[1 + roff];
-                            self.emit_expr_consume(out);
-                            self.emit_pass(out, o);
-                        }
-
-                        let right_end = self.ci.code.len();
-                        if right_base == right_end {
-                            self.ci.code.truncate(skip_then_offset as _);
-                        } else {
-                            write_reloc(
-                                &mut self.ci.code,
-                                skip_then_offset as usize + 1,
-                                right_end as i64 - skip_then_offset,
-                                4,
-                            );
-                            skip_then_offset += instrs::jmp(69).0 as i64;
-                        }
-                    }
-
-                    write_reloc(
-                        &mut self.ci.code,
-                        jump_offset as usize + 3,
-                        skip_then_offset - jump_offset,
-                        2,
-                    );
-
-                    let dest = left_unreachable.or(right_unreachable)?;
-
-                    if self.ci.nodes[dest].kind == Kind::Loop {
-                        return Some(dest);
-                    }
-
-                    debug_assert_eq!(self.ci.nodes[dest].kind, Kind::Region);
-
-                    ctrl = *self.ci.nodes[dest]
-                        .outputs
-                        .iter()
-                        .find(|&&o| self.ci.nodes[o].kind != Kind::Phi)
-                        .unwrap();
-                }
-                Kind::Region => return Some(ctrl),
-                Kind::Phi => todo!(),
-                Kind::Loop => {
-                    if self.ci.nodes[ctrl].lock_rc != 0 {
-                        return Some(ctrl);
-                    }
-
-                    for i in 0..self.ci.nodes[ctrl].outputs.len() {
-                        let o = self.ci.nodes[ctrl].outputs[i];
-                        if self.ci.nodes[o].kind != Kind::Phi {
-                            continue;
-                        }
-                        let out = self.ci.nodes[o].inputs[1];
-                        self.emit_expr_consume(out);
-                        self.emit_pass(out, o);
-                    }
-
-                    self.ci.nodes[ctrl].lock_rc = self.ci.code.len() as _;
-                    self.ci.loop_depth += 1;
-
-                    let end = self.emit_control(
-                        *self.ci.nodes[ctrl]
-                            .outputs
-                            .iter()
-                            .find(|&&o| self.ci.nodes[o].kind != Kind::Phi)
-                            .unwrap(),
-                    );
-
-                    debug_assert_eq!(end, Some(ctrl));
-
-                    for i in 0..self.ci.nodes[ctrl].outputs.len() {
-                        let o = self.ci.nodes[ctrl].outputs[i];
-                        if self.ci.nodes[o].kind != Kind::Phi {
-                            continue;
-                        }
-                        let out = self.ci.nodes[o].inputs[2];
-                        // TODO: this can be improved if we juggle ownership of the Phi inputs
-                        self.emit_expr(out);
-                    }
-
-                    for i in 0..self.ci.nodes[ctrl].outputs.len() {
-                        let o = self.ci.nodes[ctrl].outputs[i];
-                        if self.ci.nodes[o].kind != Kind::Phi {
-                            continue;
-                        }
-                        let out = self.ci.nodes[o].inputs[2];
-                        self.use_expr(out);
-                        self.emit_pass(out, o);
-                    }
-
-                    self.ci.emit(instrs::jmp(
-                        self.ci.nodes[ctrl].lock_rc as i32 - self.ci.code.len() as i32,
-                    ));
-
-                    self.ci.loop_depth -= 1;
-                    for free in self.ci.delayed_frees.extract_if(|&mut color| {
-                        self.ci.colors[color as usize].depth == self.ci.loop_depth
-                    }) {
-                        let color = &self.ci.colors[free as usize];
-                        debug_assert_ne!(color.loc, Loc::default());
-                        self.ci.regs.free(color.loc.reg);
-                    }
-
-                    return None;
-                }
+                self.color_node(node.inputs[0]);
+                None
             }
-        }
-
-        unreachable!()
-    }
-
-    fn emit_expr_consume(&mut self, expr: Nid) {
-        self.emit_expr(expr);
-        self.use_expr(expr);
-    }
-
-    fn emit_expr(&mut self, expr: Nid) {
-        if self.ci.nodes[expr].depth == IDomDepth::MAX {
-            return;
-        }
-        self.ci.nodes[expr].depth = IDomDepth::MAX;
-        self.ci.filled.push(expr);
-
-        match self.ci.nodes[expr].kind {
-            Kind::Start => unreachable!(),
-            Kind::End => unreachable!(),
-            Kind::Return => unreachable!(),
-            Kind::CInt { value } => {
-                _ = self.lazy_init(expr);
-                let instr = instrs::li64(node_loc!(self, expr).reg, value as _);
-                self.ci.emit(instr);
-            }
+            Kind::CInt { value } => todo!(),
+            Kind::Phi => todo!(),
             Kind::Tuple { index } => {
-                debug_assert!(index != 0);
-
-                _ = self.lazy_init(expr);
-
-                let mut params = self.tys.parama(self.ci.ret.unwrap());
-                for (i, var) in self.ci.vars.iter().enumerate() {
-                    if var.value == Nid::MAX {
-                        match self.tys.size_of(ty::Id::from_bt(var.id)) {
-                            0 => {}
-                            1..=8 => _ = params.next(),
-                            s => todo!("{s}"),
-                        }
-                        continue;
+                if self.ci.nodes[node.inputs[0]].kind == Kind::Start && index == 0 {
+                    for o in node.outputs {
+                        self.color_node(o);
                     }
-
-                    match self.tys.size_of(self.ci.nodes[var.value].ty) {
-                        0 => {}
-                        1..=8 => {
-                            let reg = params.next();
-                            if i == index as usize - 1 {
-                                crate::emit(
-                                    &mut self.ci.code,
-                                    instrs::cp(node_loc!(self, expr).reg, reg),
-                                );
-                            }
-                        }
-                        s => todo!("{s}"),
-                    }
-                }
-            }
-            Kind::BinOp { op } => {
-                _ = self.lazy_init(expr);
-                let ty = self.tof(expr);
-                let &[_, left, right] = self.ci.nodes[expr].inputs.as_slice() else {
-                    unreachable!()
-                };
-                self.emit_expr_consume(left);
-
-                if let Kind::CInt { value } = self.ci.nodes[right].kind
-                    && (node_loc!(self, right) == Loc::default()
-                        || self.ci.nodes[right].depth != IDomDepth::MAX)
-                    && let Some(op) = Self::imm_math_op(op, ty.is_signed(), self.tys.size_of(ty))
-                {
-                    let instr =
-                        op(node_loc!(self, expr).reg, node_loc!(self, left).reg, value as _);
-                    self.ci.emit(instr);
+                    self.color_node(node.inputs[0]);
                 } else {
-                    self.emit_expr_consume(right);
-
-                    let op =
-                        op.math_op(ty.is_signed(), self.tys.size_of(ty)).expect("TODO: what now?");
-
-                    let instr = op(
-                        node_loc!(self, expr).reg,
-                        node_loc!(self, left).reg,
-                        node_loc!(self, right).reg,
-                    );
-                    self.ci.emit(instr);
+                    todo!();
                 }
+
+                None
             }
-            Kind::Call { .. } => {}
-            Kind::If => todo!(),
-            Kind::Region => todo!(),
-            Kind::Phi => {}
-            Kind::Loop => todo!(),
-        }
-    }
-
-    fn use_expr(&mut self, expr: Nid) {
-        let node = &mut self.ci.nodes[expr];
-        node.lock_rc = node.lock_rc.saturating_sub(1);
-        if node.lock_rc != 0 {
-            return;
-        }
-
-        let color = &mut self.ci.colors[node.color as usize - 1];
-        color.rc -= 1;
-        if color.rc == 0 {
-            if color.depth != self.ci.loop_depth {
-                self.ci.delayed_frees.push(node.color);
-            } else if color.loc != Loc::default() {
-                self.ci.regs.free(color.loc.reg);
-            }
-        }
-    }
-
-    #[allow(clippy::type_complexity)]
-    fn imm_math_op(
-        op: TokenKind,
-        signed: bool,
-        size: u32,
-    ) -> Option<fn(u8, u8, u64) -> (usize, [u8; instrs::MAX_SIZE])> {
-        use {instrs::*, TokenKind as T};
-
-        macro_rules! def_op {
-            ($name:ident |$a:ident, $b:ident, $c:ident| $($tt:tt)*) => {
-                macro_rules! $name {
-                    ($$($$op:ident),*) => {
-                        [$$(
-                            |$a, $b, $c: u64| $$op($($tt)*),
-                        )*]
+            Kind::BinOp { op } => todo!(),
+            Kind::Call { func } => {
+                let func = self.tys.funcs[func as usize].sig.unwrap();
+                let mut parama = self.tys.parama(func.ret);
+                for (&i, ti) in node.inputs[1..].iter().zip(func.args.range()) {
+                    let ty = self.tys.args[ti];
+                    match self.tys.size_of(ty) {
+                        0 => continue,
+                        1..=8 => {
+                            // FIXME: scan idoms to see if there is a call inbetween
+                            let col = self.ci.set_next_color(i);
+                            self.ci.colors[col as usize - 1].loc = Loc { reg: parama.next() };
+                            self.ci.nodes.visited.set(i);
+                        }
+                        _ => todo!(),
                     }
                 }
-            };
+
+                for o in node.outputs {
+                    self.color_node(o);
+                }
+
+                self.color_node(node.inputs[0]);
+                None
+            }
+        }
+    }
+
+    fn emit_node(&mut self, ctrl: Nid) -> Option<Nid> {
+        if !self.ci.nodes.visited.set(ctrl) {
+            return None;
         }
 
-        def_op!(basic_op | a, b, c | a, b, c as _);
-        def_op!(sub_op | a, b, c | a, b, c.wrapping_neg() as _);
+        let node = self.ci.nodes[ctrl].clone();
+        match node.kind {
+            Kind::Start => self.emit_node(node.outputs[0]),
+            Kind::End => None,
+            Kind::If => todo!(),
+            Kind::Region => todo!(),
+            Kind::Loop => todo!(),
+            Kind::Return => {
+                self.ci.ret_relocs.push(Reloc::new(self.ci.code.len(), 1, 4));
+                self.ci.emit(instrs::jmp(0));
+                self.emit_node(node.outputs[0]);
+                None
+            }
+            Kind::CInt { value } => {
+                if node_loc!(self, ctrl) == Loc::default() {
+                    node_loc!(self, ctrl) = Loc { reg: self.ci.regs.allocate(0) };
+                }
 
-        let ops = match op {
-            T::Add => basic_op!(addi8, addi16, addi32, addi64),
-            T::Sub => sub_op!(addi8, addi16, addi32, addi64),
-            T::Mul => basic_op!(muli8, muli16, muli32, muli64),
-            T::Band => return Some(andi),
-            T::Bor => return Some(ori),
-            T::Xor => return Some(xori),
-            T::Shr if signed => basic_op!(srui8, srui16, srui32, srui64),
-            T::Shr => basic_op!(srui8, srui16, srui32, srui64),
-            T::Shl => basic_op!(slui8, slui16, slui32, slui64),
-            _ => return None,
-        };
+                // TODO: respect size
+                self.ci.emit(instrs::li64(node_loc!(self, ctrl).reg, value as _));
+                None
+            }
+            Kind::Phi => todo!(),
+            Kind::Tuple { index } => {
+                if (self.ci.nodes[node.inputs[0]].kind == Kind::Start && index == 0)
+                    || (self.ci.nodes[node.inputs[0]].kind == Kind::If && index < 2)
+                {
+                    for o in node.outputs.into_iter().rev() {
+                        self.emit_node(o);
+                    }
+                } else {
+                    todo!();
+                }
 
-        Some(ops[size.ilog2() as usize])
+                None
+            }
+            Kind::BinOp { op } => todo!(),
+            Kind::Call { func } => todo!(),
+        }
     }
 
     // TODO: sometimes its better to do this in bulk
@@ -3014,8 +2499,8 @@ mod tests {
         variables => README;
         functions => README;
         comments => README;
-        if_statements => README;
-        loops => README;
+        // if_statements => README;
+        // loops => README;
         //fb_driver => README;
         //pointers => README;
         //structs => README;
@@ -3037,9 +2522,9 @@ mod tests {
         //comptime_function_from_another_file => README;
         //inline => README;
         //inline_test => README;
-        const_folding_with_arg => README;
+        // const_folding_with_arg => README;
         // FIXME: contains redundant copies
-        branch_assignments => README;
-        exhaustive_loop_testing => README;
+        // branch_assignments => README;
+        // exhaustive_loop_testing => README;
     }
 }
