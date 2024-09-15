@@ -461,23 +461,22 @@ main := fn(): int {
 	height := 30
 	x := 0
 	y := 0
-	t := 0
+	//t := 0
 	i := 0
 
 	loop {
-		if x < width {
-			t += set_pixel(x, y, width)
+		if x < height {
+			//t += set_pixel(x, y, height)
 			x += 1
+			i += 1
 		} else {
 			x = 0
 			y += 1
-			if set_pixel(x, y, width) != i return 0
+			if set_pixel(x, y, height) != i return 0
+			if y == width break
 		}
-
-		i += 1
-		if y == width break
 	}
-	return t
+	return i
 }
 ```
 
@@ -682,6 +681,8 @@ line := fn(buffer: Buffer, p0: Point, p1: Point, color: ColorBGRA, thickness: in
 		}
 	} else {
 		if p0.y > p1.y {
+			// blah, test leading new line on directives
+
 			@inline(line_high, buffer, p1, p0, color)
 		} else {
 			@inline(line_high, buffer, p0, p1, color)
@@ -791,21 +792,21 @@ main := fn(): int {
 		return 2
 	}
 
-	//if state_change_in_break(0) != 0 {
-	//	return 3
-	//}
+	if state_change_in_break(0) != 0 {
+		return 3
+	}
 
-	//if state_change_in_break(4) != 10 {
-	//	return 4
-	//}
+	if state_change_in_break(4) != 10 {
+		return 4
+	}
 
-	//if continue_and_state_change(0) != 10 {
-	//	return 5
-	//}
+	if continue_and_state_change(10) != 10 {
+		return 5
+	}
 
-	//if continue_and_state_change(3) != 0 {
-	//	return 6
-	//}
+	if continue_and_state_change(3) != 0 {
+		return 6
+	}
 
 	return 0
 }
@@ -818,31 +819,31 @@ multiple_breaks := fn(arg: int): int {
 	return arg
 }
 
-//state_change_in_break := fn(arg: int): int {
-//	loop if arg < 10 {
-//		if arg == 3 {
-//			arg = 0
-//			break
-//		}
-//		arg += 1
-//	} else break
-//	return arg
-//}
+state_change_in_break := fn(arg: int): int {
+	loop if arg < 10 {
+		if arg == 3 {
+			arg = 0
+			break
+		}
+		arg += 1
+	} else break
+	return arg
+}
 
-//continue_and_state_change := fn(arg: int): int {
-//	loop if arg < 10 {
-//		if arg == 2 {
-//			arg = 4
-//			continue
-//		}
-//		if arg == 3 {
-//			arg = 0
-//			break
-//		}
-//		arg += 1
-//	} else break
-//	return arg
-//}
+continue_and_state_change := fn(arg: int): int {
+	loop if arg < 10 {
+		if arg == 2 {
+			arg = 4
+			continue
+		}
+		if arg == 3 {
+			arg = 0
+			break
+		}
+		arg += 1
+	} else break
+	return arg
+}
 ```
 
 #### writing_into_string

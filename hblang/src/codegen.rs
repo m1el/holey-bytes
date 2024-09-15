@@ -1581,7 +1581,7 @@ impl Codegen {
                 let signed = ty.is_signed();
 
                 if let Loc::Ct { value: CtValue(mut imm), derefed } = right.loc
-                    && let Some(oper) = op.imm_math_op(signed, size)
+                    && let Some(oper) = op.imm_binop(signed, size)
                 {
                     if derefed {
                         let mut dst = [0u8; 8];
@@ -1634,7 +1634,7 @@ impl Codegen {
                     }
                 }
 
-                if let Some(op) = op.math_op(signed, size) {
+                if let Some(op) = op.binop(signed, size) {
                     self.ci.emit(op(dst.get(), lhs.get(), rhs.get()));
                     self.ci.regs.free(lhs);
                     self.ci.regs.free(rhs);
@@ -1963,7 +1963,7 @@ impl Codegen {
         let lhs = self.loc_to_reg(left, size);
 
         if let Loc::Ct { value, derefed: false } = right
-            && let Some(op) = op.imm_math_op(signed, size)
+            && let Some(op) = op.imm_binop(signed, size)
         {
             self.ci.emit(op(lhs.get(), lhs.get(), value.0));
             return Some(if let Some(value) = ctx.into_value() {
@@ -1976,7 +1976,7 @@ impl Codegen {
 
         let rhs = self.loc_to_reg(right, size);
 
-        if let Some(op) = op.math_op(signed, size) {
+        if let Some(op) = op.binop(signed, size) {
             self.ci.emit(op(lhs.get(), lhs.get(), rhs.get()));
             self.ci.regs.free(rhs);
             return if let Some(value) = ctx.into_value() {

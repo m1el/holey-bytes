@@ -1,4 +1,4 @@
-use crate::instrs;
+use crate::{instrs, EncodedInstr};
 
 const fn ascii_mask(chars: &[u8]) -> u128 {
     let mut eq = 0;
@@ -171,10 +171,7 @@ pub enum TokenKind {
 
 impl TokenKind {
     #[allow(clippy::type_complexity)]
-    pub fn cond_op(
-        self,
-        signed: bool,
-    ) -> Option<(fn(u8, u8, i16) -> (usize, [u8; instrs::MAX_SIZE]), bool)> {
+    pub fn cond_op(self, signed: bool) -> Option<(fn(u8, u8, i16) -> EncodedInstr, bool)> {
         Some((
             match self {
                 Self::Le if signed => instrs::jgts,
@@ -193,12 +190,7 @@ impl TokenKind {
         ))
     }
 
-    #[allow(clippy::type_complexity)]
-    pub fn math_op(
-        self,
-        signed: bool,
-        size: u32,
-    ) -> Option<fn(u8, u8, u8) -> (usize, [u8; instrs::MAX_SIZE])> {
+    pub fn binop(self, signed: bool, size: u32) -> Option<fn(u8, u8, u8) -> EncodedInstr> {
         use instrs::*;
 
         macro_rules! div { ($($op:ident),*) => {[$(|a, b, c| $op(a, 0, b, c)),*]}; }
@@ -225,11 +217,7 @@ impl TokenKind {
     }
 
     #[allow(clippy::type_complexity)]
-    pub fn imm_math_op(
-        self,
-        signed: bool,
-        size: u32,
-    ) -> Option<fn(u8, u8, u64) -> (usize, [u8; instrs::MAX_SIZE])> {
+    pub fn imm_binop(self, signed: bool, size: u32) -> Option<fn(u8, u8, u64) -> EncodedInstr> {
         use instrs::*;
         macro_rules! def_op {
             ($name:ident |$a:ident, $b:ident, $c:ident| $($tt:tt)*) => {
@@ -275,15 +263,15 @@ impl TokenKind {
         matches!(self, S::Eq | S::Ne | S::Bor | S::Xor | S::Band | S::Add | S::Mul)
     }
 
-    pub fn apply(self, a: i64, b: i64) -> i64 {
+    pub fn apply_binop(self, a: i64, b: i64) -> i64 {
         match self {
-            TokenKind::Add => a.wrapping_add(b),
-            TokenKind::Sub => a.wrapping_sub(b),
-            TokenKind::Mul => a.wrapping_mul(b),
-            TokenKind::Div => a.wrapping_div(b),
-            TokenKind::Shl => a.wrapping_shl(b as _),
-            TokenKind::Eq => (a == b) as i64,
-            TokenKind::Band => a & b,
+            Self::Add => a.wrapping_add(b),
+            Self::Sub => a.wrapping_sub(b),
+            Self::Mul => a.wrapping_mul(b),
+            Self::Div => a.wrapping_div(b),
+            Self::Shl => a.wrapping_shl(b as _),
+            Self::Eq => (a == b) as i64,
+            Self::Band => a & b,
             s => todo!("{s}"),
         }
     }
@@ -292,6 +280,20 @@ impl TokenKind {
         self.precedence() != Self::Eq.precedence()
             && self.precedence() != Self::Gt.precedence()
             && self.precedence() != Self::Eof.precedence()
+    }
+
+    pub fn unop(&self) -> Option<fn(u8, u8) -> EncodedInstr> {
+        Some(match self {
+            Self::Sub => instrs::neg,
+            _ => return None,
+        })
+    }
+
+    pub fn apply_unop(&self, value: i64) -> i64 {
+        match self {
+            Self::Sub => value.wrapping_neg(),
+            s => todo!("{s}"),
+        }
     }
 }
 

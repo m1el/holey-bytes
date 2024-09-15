@@ -251,6 +251,8 @@ mod ty {
             let (oa, ob) = (Self(self.0.min(ob.0)), Self(self.0.max(ob.0)));
             let (a, b) = (oa.strip_pointer(), ob.strip_pointer());
             Some(match () {
+                _ if oa == Self::from(NEVER) => ob,
+                _ if ob == Self::from(NEVER) => oa,
                 _ if oa == ob => oa,
                 _ if oa.is_pointer() && ob.is_pointer() => return None,
                 _ if a.is_signed() && b.is_signed() || a.is_unsigned() && b.is_unsigned() => ob,
@@ -467,8 +469,13 @@ mod ty {
     }
 }
 
+type EncodedInstr = (usize, [u8; instrs::MAX_SIZE]);
 type Offset = u32;
 type Size = u32;
+
+fn emit(out: &mut Vec<u8>, (len, instr): EncodedInstr) {
+    out.extend_from_slice(&instr[..len]);
+}
 
 #[derive(PartialEq, Eq, Hash)]
 struct SymKey {
@@ -604,10 +611,6 @@ struct Types {
     structs: Vec<Struct>,
     ptrs: Vec<Ptr>,
     arrays: Vec<Array>,
-}
-
-fn emit(out: &mut Vec<u8>, (len, instr): (usize, [u8; instrs::MAX_SIZE])) {
-    out.extend_from_slice(&instr[..len]);
 }
 
 impl Types {
@@ -1462,7 +1465,10 @@ fn test_run_vm(out: &[u8], output: &mut String) {
     let mut stack = [0_u64; 1024 * 20];
 
     let mut vm = unsafe {
-        hbvm::Vm::<_, 0>::new(LoggedMem::default(), hbvm::mem::Address::new(out.as_ptr() as u64))
+        hbvm::Vm::<_, { 1024 * 100 }>::new(
+            LoggedMem::default(),
+            hbvm::mem::Address::new(out.as_ptr() as u64),
+        )
     };
 
     vm.write_reg(codegen::STACK_PTR, unsafe { stack.as_mut_ptr().add(stack.len()) } as u64);

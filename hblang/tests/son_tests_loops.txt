@@ -1,4 +1,28 @@
 main:
-code size: 8
-ret: 0
-status: Err(Unreachable)
+    ADDI64 r254, r254, -8d
+    ST r31, r254, 0a, 8h
+    LI64 r2, 10d
+    JAL r31, r0, :fib
+    LD r31, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
+    JALA r0, r31, 0a
+fib:
+    ADDI64 r254, r254, -40d
+    ST r31, r254, 0a, 40h
+    LI64 r32, 1d
+    LI64 r33, 0d
+    CP r1, r33
+    CP r34, r32
+ 2: JNE r2, r33, :0
+    JMP :1
+ 0: ADD64 r35, r34, r1
+    SUB64 r2, r2, r32
+    CP r1, r34
+    CP r34, r35
+    JMP :2
+ 1: LD r31, r254, 0a, 40h
+    ADDI64 r254, r254, 40d
+    JALA r0, r31, 0a
+code size: 198
+ret: 55
+status: Ok(())

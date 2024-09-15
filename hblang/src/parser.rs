@@ -281,7 +281,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 }
             }
             T::Directive => E::Directive {
-                pos,
+                pos: pos - 1, // need to undo the directive shift
                 name: self.move_str(token),
                 args: {
                     self.expect_advance(T::LParen);
