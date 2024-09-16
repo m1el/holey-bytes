@@ -41,6 +41,8 @@ impl Drop for Drom {
 
 const VC_SIZE: usize = 16;
 const INLINE_ELEMS: usize = VC_SIZE / 2 - 1;
+const VOID: Nid = 0;
+const NEVER: Nid = 1;
 
 union Vc {
     inline: InlineVc,
@@ -908,7 +910,7 @@ impl Nodes {
     fn basic_blocks(&mut self) {
         let mut out = String::new();
         self.visited.clear(self.values.len());
-        self.basic_blocks_low(&mut out, 0).unwrap();
+        self.basic_blocks_low(&mut out, VOID).unwrap();
         log::inf!("{out}");
     }
 
@@ -1013,7 +1015,7 @@ impl Nodes {
 
         if !self[*lvalue].is_lazy_phi() {
             self.unlock(*value);
-            let inps = [loob.node, *lvalue, 0];
+            let inps = [loob.node, *lvalue, VOID];
             self.unlock(inps[1]);
             let ty = self[inps[1]].ty;
             let phi = self.new_node_nop(ty, Kind::Phi, inps);
@@ -1210,8 +1212,6 @@ struct ItemCtx {
     task_base: usize,
 
     nodes: Nodes,
-    start: Nid,
-    end: Nid,
     ctrl: Nid,
 
     loop_depth: LoopDepth,
@@ -1288,7 +1288,7 @@ impl ItemCtx {
                     v,
                     Ok(Node { kind: Kind::Tuple { index: 1.. },
                         color: 1..,
-                    inputs, .. }) if inputs.first() == Some(&0)
+                    inputs, .. }) if inputs.first() == Some(&VOID)
                 )
             })
             .count();
@@ -1393,11 +1393,11 @@ impl Codegen {
         let msg = "i know nothing about this name gal which is vired \
                             because we parsed succesfully";
         match *expr {
-            Expr::Comment { .. } => Some(0),
+            Expr::Comment { .. } => Some(VOID),
             Expr::Ident { pos, id, .. } => {
                 let Some(index) = self.ci.vars.iter().position(|v| v.id == id) else {
                     self.report(pos, msg);
-                    return Some(self.ci.end);
+                    return Some(NEVER);
                 };
 
                 self.ci.nodes.load_loop_value(
@@ -1412,7 +1412,7 @@ impl Codegen {
                 let value = self.expr(right)?;
                 self.ci.nodes.lock(value);
                 self.ci.vars.push(Variable { id, value });
-                Some(0)
+                Some(VOID)
             }
             Expr::BinOp { left: &Expr::Ident { id, pos, .. }, op: TokenKind::Assign, right } => {
                 let value = self.expr(right)?;
@@ -1420,12 +1420,12 @@ impl Codegen {
 
                 let Some(var) = self.ci.vars.iter_mut().find(|v| v.id == id) else {
                     self.report(pos, msg);
-                    return Some(self.ci.end);
+                    return Some(NEVER);
                 };
 
                 let prev = std::mem::replace(&mut var.value, value);
                 self.ci.nodes.unlock_remove(prev);
-                Some(0)
+                Some(VOID)
             }
             Expr::BinOp { left, op, right } => {
                 let lhs = self.expr_ctx(left, ctx)?;
@@ -1440,7 +1440,7 @@ impl Codegen {
                     false,
                     "right operand",
                 );
-                let inps = [0, lhs, rhs];
+                let inps = [VOID, lhs, rhs];
                 Some(self.ci.nodes.new_node(ty::bin_ret(ty, op), Kind::BinOp { op }, inps))
             }
             Expr::UnOp { pos, op, val } => {
@@ -1451,8 +1451,7 @@ impl Codegen {
                         format_args!("cant negate '{}'", self.ty_display(self.tof(val))),
                     );
                 }
-                // TODO: rename 0 to void
-                Some(self.ci.nodes.new_node(self.tof(val), Kind::UnOp { op }, [0, val]))
+                Some(self.ci.nodes.new_node(self.tof(val), Kind::UnOp { op }, [VOID, val]))
             }
             Expr::If { cond, then, else_, .. } => {
                 let cond = self.expr_ctx(cond, Ctx::default().with_ty(ty::BOOL))?;
@@ -1473,7 +1472,7 @@ impl Codegen {
                     if let Some(branch) = branch {
                         return self.expr(branch);
                     } else {
-                        return Some(0);
+                        return Some(VOID);
                     }
                 }
 
@@ -1504,14 +1503,14 @@ impl Codegen {
                     for then_var in then_scope {
                         self.ci.nodes.unlock_remove(then_var.value);
                     }
-                    return Some(0);
+                    return Some(VOID);
                 } else if rcntrl == Nid::MAX {
                     for else_var in &self.ci.vars {
                         self.ci.nodes.unlock_remove(else_var.value);
                     }
                     self.ci.vars = then_scope;
                     self.ci.ctrl = lcntrl;
-                    return Some(0);
+                    return Some(VOID);
                 }
 
                 self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Region, [lcntrl, rcntrl]);
@@ -1529,7 +1528,7 @@ impl Codegen {
 
                 self.ci.vars = else_scope;
 
-                Some(0)
+                Some(VOID)
             }
             Expr::Loop { body, .. } => {
                 self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Loop, [self.ci.ctrl; 2]);
@@ -1541,9 +1540,9 @@ impl Codegen {
                 });
 
                 for var in &mut self.ci.vars {
-                    var.value = 0;
+                    var.value = VOID;
                 }
-                self.ci.nodes[0].lock_rc += self.ci.vars.len() as LockRc;
+                self.ci.nodes[VOID].lock_rc += self.ci.vars.len() as LockRc;
 
                 self.expr(body);
 
@@ -1573,7 +1572,7 @@ impl Codegen {
                 self.ci.nodes[node].outputs.swap(idx, 0);
 
                 if bre == Nid::MAX {
-                    self.ci.ctrl = self.ci.end;
+                    self.ci.ctrl = NEVER;
                     return None;
                 }
                 self.ci.ctrl = bre;
@@ -1587,7 +1586,7 @@ impl Codegen {
                 {
                     self.ci.nodes.unlock(loop_var.value);
 
-                    if loop_var.value != 0 {
+                    if loop_var.value != VOID {
                         self.ci.nodes.unlock(scope_var.value);
                         if loop_var.value != scope_var.value {
                             scope_var.value =
@@ -1596,7 +1595,7 @@ impl Codegen {
                         } else {
                             let phi = &self.ci.nodes[scope_var.value];
                             debug_assert_eq!(phi.kind, Kind::Phi);
-                            debug_assert_eq!(phi.inputs[2], 0);
+                            debug_assert_eq!(phi.inputs[2], VOID);
                             let prev = phi.inputs[1];
                             self.ci.nodes.replace(scope_var.value, prev);
                             scope_var.value = prev;
@@ -1604,7 +1603,7 @@ impl Codegen {
                         }
                     }
 
-                    if dest_var.value == 0 {
+                    if dest_var.value == VOID {
                         self.ci.nodes.unlock(dest_var.value);
                         dest_var.value = scope_var.value;
                         self.ci.nodes.lock(dest_var.value);
@@ -1615,7 +1614,7 @@ impl Codegen {
 
                 self.ci.nodes.unlock(self.ci.ctrl);
 
-                Some(0)
+                Some(VOID)
             }
             Expr::Break { pos } => self.jump_to(pos, 1),
             Expr::Continue { pos } => self.jump_to(pos, 0),
@@ -1630,7 +1629,7 @@ impl Codegen {
                             self.ty_display(func.compress())
                         ),
                     );
-                    return Some(self.ci.end);
+                    return Some(NEVER);
                 };
 
                 self.make_func_reachable(func);
@@ -1679,7 +1678,7 @@ impl Codegen {
                 let value = if let Some(val) = val {
                     self.expr_ctx(val, Ctx { ty: self.ci.ret })?
                 } else {
-                    0
+                    VOID
                 };
 
                 let inps = [self.ci.ctrl, value];
@@ -1688,8 +1687,8 @@ impl Codegen {
                 self.report_log_to(pos, "returning here", out);
                 self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Return, inps);
 
-                self.ci.nodes[self.ci.end].inputs.push(self.ci.ctrl);
-                self.ci.nodes[self.ci.ctrl].outputs.push(self.ci.end);
+                self.ci.nodes[NEVER].inputs.push(self.ci.ctrl);
+                self.ci.nodes[self.ci.ctrl].outputs.push(NEVER);
 
                 let expected = *self.ci.ret.get_or_insert(self.tof(value));
                 _ = self.assert_ty(pos, self.tof(value), expected, true, "return value");
@@ -1699,7 +1698,7 @@ impl Codegen {
             Expr::Block { stmts, .. } => {
                 let base = self.ci.vars.len();
 
-                let mut ret = Some(0);
+                let mut ret = Some(VOID);
                 for stmt in stmts {
                     ret = ret.and(self.expr(stmt));
                     if let Some(id) = ret {
@@ -1726,11 +1725,11 @@ impl Codegen {
             Expr::Number { value, .. } => Some(self.ci.nodes.new_node(
                 ctx.ty.filter(|ty| ty.is_integer() || ty.is_pointer()).unwrap_or(ty::INT.into()),
                 Kind::CInt { value },
-                [0],
+                [VOID],
             )),
             ref e => {
                 self.report_unhandled_ast(e, "bruh");
-                Some(self.ci.end)
+                Some(NEVER)
             }
         }
     }
@@ -1765,7 +1764,7 @@ impl Codegen {
             loob.ctrl[id] = reg;
         }
 
-        self.ci.ctrl = self.ci.end;
+        self.ci.ctrl = NEVER;
         None
     }
 
@@ -1832,9 +1831,11 @@ impl Codegen {
         };
         let prev_ci = std::mem::replace(&mut self.ci, repl);
 
-        self.ci.start = self.ci.nodes.new_node(ty::VOID, Kind::Start, []);
-        self.ci.end = self.ci.nodes.new_node(ty::NEVER, Kind::End, []);
-        self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Tuple { index: 0 }, [self.ci.start]);
+        let start = self.ci.nodes.new_node(ty::VOID, Kind::Start, []);
+        debug_assert_eq!(start, VOID);
+        let end = self.ci.nodes.new_node(ty::NEVER, Kind::End, []);
+        debug_assert_eq!(end, NEVER);
+        self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Tuple { index: 0 }, [VOID]);
 
         let Expr::BinOp {
             left: Expr::Ident { .. },
@@ -1848,7 +1849,7 @@ impl Codegen {
         let mut sig_args = sig.args.range();
         for (arg, index) in args.iter().zip(1u32..) {
             let ty = self.tys.args[sig_args.next().unwrap()];
-            let value = self.ci.nodes.new_node(ty, Kind::Tuple { index }, [self.ci.start]);
+            let value = self.ci.nodes.new_node(ty, Kind::Tuple { index }, [VOID]);
             self.ci.nodes.lock(value);
             let sym = parser::find_symbol(&ast.symbols, arg.id);
             assert!(sym.flags & idfl::COMPTIME == 0, "TODO");
@@ -1883,7 +1884,7 @@ impl Codegen {
             self.ci.nodes.basic_blocks();
 
             self.ci.nodes.visited.clear(self.ci.nodes.values.len());
-            self.color_node(self.ci.end);
+            self.color_node(NEVER);
 
             let call_count = self.ci.call_count;
             let mut parama = self.tys.parama(sig.ret);
@@ -1924,7 +1925,7 @@ impl Codegen {
             self.ci.vars = orig_vars;
             self.ci.call_count = call_count;
             self.ci.nodes.visited.clear(self.ci.nodes.values.len());
-            self.emit_node(self.ci.start, self.ci.start);
+            self.emit_node(VOID, VOID);
             self.ci.vars.clear();
 
             if let Some(last_ret) = self.ci.ret_relocs.last()
@@ -2003,7 +2004,7 @@ impl Codegen {
                 None
             }
             Kind::Return => {
-                if node.inputs[1] != 0 {
+                if node.inputs[1] != VOID {
                     let col = self.ci.set_next_color(node.inputs[1]);
                     if check_no_calls(node.inputs[1], &mut self.ci.nodes) {
                         self.ci.colors[col as usize - 1].loc = Loc { reg: 1 };
@@ -2174,7 +2175,7 @@ impl Codegen {
 
         let node = self.ci.nodes[ctrl].clone();
         match node.kind {
-            Kind::Start => self.emit_node(node.outputs[0], self.ci.start),
+            Kind::Start => self.emit_node(node.outputs[0], VOID),
             Kind::End => None,
             Kind::If => {
                 let &[_, cond] = node.inputs.as_slice() else { unreachable!() };
@@ -2210,7 +2211,7 @@ impl Codegen {
                 None
             }
             Kind::Return => {
-                if node.inputs[1] != 0 {
+                if node.inputs[1] != VOID {
                     let loc = Loc { reg: 1 };
                     if node_loc!(self, node.inputs[1]) != loc {
                         self.ci.emit(instrs::cp(loc.reg, node_loc!(self, node.inputs[1]).reg));
@@ -2537,10 +2538,10 @@ impl Codegen {
 
     fn gcm(&mut self) {
         self.ci.nodes.visited.clear(self.ci.nodes.values.len());
-        push_up(&mut self.ci.nodes, self.ci.end);
+        push_up(&mut self.ci.nodes, NEVER);
         // TODO: handle infinte loops
         self.ci.nodes.visited.clear(self.ci.nodes.values.len());
-        push_down(&mut self.ci.nodes, self.ci.start);
+        push_down(&mut self.ci.nodes, VOID);
     }
 }
 
@@ -2571,7 +2572,7 @@ fn loop_depth(target: Nid, nodes: &mut Nodes) -> LoopDepth {
                 } else {
                     idom(nodes, cursor)
                 };
-                debug_assert_ne!(next, 0);
+                debug_assert_ne!(next, VOID);
                 if let Kind::Tuple { index } = nodes[cursor].kind
                     && nodes[next].kind == Kind::If
                 {
@@ -2610,7 +2611,7 @@ fn better(nodes: &mut Nodes, is: Nid, then: Nid) -> bool {
 }
 
 fn idepth(nodes: &mut Nodes, target: Nid) -> IDomDepth {
-    if target == 0 {
+    if target == VOID {
         return 0;
     }
     if nodes[target].depth == 0 {
@@ -2644,7 +2645,7 @@ fn push_up(nodes: &mut Nodes, node: Nid) {
             push_up(nodes, i);
         }
     } else {
-        let mut max = 0;
+        let mut max = VOID;
         for i in 0..nodes[node].inputs.len() {
             let i = nodes[node].inputs[i];
             let is_call = matches!(nodes[i].kind, Kind::Call { .. });
@@ -2662,7 +2663,7 @@ fn push_up(nodes: &mut Nodes, node: Nid) {
             nodes.check_dominance(node, max, false);
         }
 
-        if max == 0 {
+        if max == VOID {
             return;
         }
 
@@ -2745,7 +2746,7 @@ fn use_block(target: Nid, from: Nid, nodes: &mut Nodes) -> Nid {
 
 fn idom(nodes: &mut Nodes, target: Nid) -> Nid {
     match nodes[target].kind {
-        Kind::Start => 0,
+        Kind::Start => VOID,
         Kind::End => unreachable!(),
         Kind::Loop
         | Kind::CInt { .. }
@@ -2785,7 +2786,7 @@ fn scan_idom(
         return None;
     }
     Some(match nodes[target].kind {
-        Kind::Start => 0,
+        Kind::Start => VOID,
         Kind::End => unreachable!(),
         Kind::Loop
         | Kind::CInt { .. }
@@ -2823,7 +2824,7 @@ fn walk_use_doms(
         out = use_block(target, out, nodes);
         while out != dom {
             debug_assert!(idepth(nodes, out) > idepth(nodes, dom),);
-            debug_assert_ne!(out, 0);
+            debug_assert_ne!(out, VOID);
             out = match scan_idom(nodes, out, &mut all) {
                 Some(next) => next,
                 None => return false,
@@ -2867,7 +2868,7 @@ fn is_last_branch_use(target: Nid, us: Nid, nodes: &mut Nodes) -> bool {
             if idepth(nodes, odom) < idepth(nodes, us) {
                 continue 'o;
             }
-            debug_assert_ne!(odom, 0);
+            debug_assert_ne!(odom, VOID);
         }
 
         return false;

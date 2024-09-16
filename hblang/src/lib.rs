@@ -18,7 +18,7 @@
     extract_if,
     ptr_internals
 )]
-#![allow(internal_features, clippy::format_collect)]
+#![allow(stable_features, internal_features, clippy::format_collect)]
 
 use {
     self::{
