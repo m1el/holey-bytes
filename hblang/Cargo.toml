@@ -9,4 +9,3 @@ path = "src/main.rs"
 
 [dependencies]
 hbvm = { path = "../hbvm", features = ["nightly"] }
-regalloc2 = { git = "https://github.com/jakubDoka/regalloc2.git" }

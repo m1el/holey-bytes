@@ -317,8 +317,12 @@ fib_iter := fn(n: int): int {
 #### arrays
 ```hb
 main := fn(): int {
+	addr := @as(u16, 0x1FF)
+	msg := [u8].(0, 0, @as(u8, addr & 0xFF), @as(u8, addr >> 8 & 0xFF))
+	_force_stack := &msg
+
 	arr := [int].(1, 2, 4)
-	return pass(&arr)
+	return pass(&arr) + msg[3]
 }
 
 pass := fn(arr: ^[int; 3]): int {

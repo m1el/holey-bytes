@@ -1677,7 +1677,11 @@ impl Codegen {
 
         Some(match ctx.loc {
             Some(dest) => {
-                self.store_typed(value.loc, dest, value.ty);
+                self.store_sized(
+                    value.loc,
+                    dest,
+                    self.tys.size_of(ctx.ty.unwrap_or(value.ty)).min(self.tys.size_of(value.ty)),
+                );
                 Value { ty: value.ty, loc: Loc::ct(0) }
             }
             None => value,

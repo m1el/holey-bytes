@@ -3,12 +3,6 @@
 version = 3
 
 [[package]]
-name = "hashbrown"
-version = "0.14.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
-
-[[package]]
 name = "hbbytecode"
 version = "0.1.0"
 
@@ -21,7 +15,6 @@ name = "hblang"
 version = "0.1.0"
 dependencies = [
  "hbvm",
- "regalloc2",
 ]
 
 [[package]]
@@ -53,28 +46,6 @@ checksum = "fd3f7eed9d3848f8b98834af67102b720745c4ec028fcd0aa0239277e7de374f"
 dependencies = [
  "libc",
 ]
-
-[[package]]
-name = "regalloc2"
-version = "0.10.2"
-source = "git+https://github.com/jakubDoka/regalloc2.git#34d8424a0d74746d231a96239fdb32e3d5ec0245"
-dependencies = [
- "hashbrown",
- "rustc-hash",
- "smallvec",
-]
-
-[[package]]
-name = "rustc-hash"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "583034fd73374156e66797ed8e5b0d5690409c9226b22d87cb7f19821c05d152"
-
-[[package]]
-name = "smallvec"
-version = "1.13.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c5e1a9a646d36c3599cd173a41282daf47c44583ad367b8e6837255952e5c67"
 
 [[package]]
 name = "xtask"
