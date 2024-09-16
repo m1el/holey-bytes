@@ -2249,12 +2249,12 @@ impl Codegen {
                 if node.color != 0 {
                     let &[_, lhs, rhs] = node.inputs.as_slice() else { unreachable!() };
 
+                    self.lazy_init(ctrl);
                     if self.ci.nodes[rhs].color == 0
                         && let Kind::CInt { value } = self.ci.nodes[rhs].kind
                         && let Some(op) =
                             op.imm_binop(node.ty.is_signed(), self.tys.size_of(node.ty))
                     {
-                        self.lazy_init(ctrl);
                         self.ci.emit(op(
                             node_loc!(self, ctrl).reg,
                             node_loc!(self, lhs).reg,
@@ -2263,7 +2263,6 @@ impl Codegen {
                     } else if let Some(op) =
                         op.binop(node.ty.is_signed(), self.tys.size_of(node.ty))
                     {
-                        self.lazy_init(ctrl);
                         self.ci.emit(op(
                             node_loc!(self, ctrl).reg,
                             node_loc!(self, lhs).reg,
