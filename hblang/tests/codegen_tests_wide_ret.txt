@@ -3,6 +3,8 @@ main:
     ST r31, r254, 16a, 32h
     CP r32, r3
     CP r33, r4
+    JAL r31, r0, :small_struct
+    CP r34, r1
     LI64 r34, 0d
     ST r34, r254, 8a, 1h
     LI64 r34, 0d
@@ -26,6 +28,18 @@ main:
     LD r31, r254, 16a, 32h
     ADDI64 r254, r254, 48d
     JALA r0, r31, 0a
-code size: 309
+small_struct:
+    ADDI64 r254, r254, -20d
+    ST r31, r254, 4a, 16h
+    LI64 r32, 0d
+    ST r32, r254, 0a, 2h
+    LI64 r32, 0d
+    ST r32, r254, 2a, 2h
+    CP r1, r0
+    LD r1, r254, 0a, 4h
+    LD r31, r254, 4a, 16h
+    ADDI64 r254, r254, 20d
+    JALA r0, r31, 0a
+code size: 440
 ret: 0
 status: Ok(())
