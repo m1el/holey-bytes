@@ -898,13 +898,21 @@ impl Codegen {
             E::Directive { name: "TypeOf", args: [expr], .. } => {
                 Some(Value::ty(self.infer_type(expr)))
             }
-            E::Directive { name: "eca", args: [ret_ty, args @ ..], .. } => {
-                let ty = self.ty(ret_ty);
+            E::Directive { name: "eca", args, pos } => {
+                let Some(ty) = ctx.ty else {
+                    self.report(
+                        pos,
+                        "type to return form eca is unknown, use `@as(<type>, @eca(...<expr>))`",
+                    );
+                };
 
                 let mut parama = self.tys.parama(ty);
                 let base = self.pool.arg_locs.len();
                 for arg in args {
                     let arg = self.expr(arg)?;
+                    if arg.ty == ty::Id::from(ty::TYPE) {
+                        self.report(pos, "na na na nana, no passing types to ecas");
+                    }
                     self.pass_arg(&arg, &mut parama);
                     self.pool.arg_locs.push(arg.loc);
                 }
@@ -932,7 +940,7 @@ impl Codegen {
                 let Some(ty) = ctx.ty else {
                     self.report(
                         expr.pos(),
-                        "type to cast to is unknown, use `@as(<type>, <expr>)`",
+                        "type to cast to is unknown, use `@as(<type>, @intcast(<expr>))`",
                     );
                 };
                 let mut val = self.expr(val)?;
