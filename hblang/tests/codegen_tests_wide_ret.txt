@@ -1,0 +1,31 @@
+main:
+    ADDI64 r254, r254, -48d
+    ST r31, r254, 16a, 32h
+    CP r32, r3
+    CP r33, r4
+    LI64 r34, 0d
+    ST r34, r254, 8a, 1h
+    LI64 r34, 0d
+    ST r34, r254, 9a, 1h
+    LI64 r34, 0d
+    ST r34, r254, 10a, 1h
+    LI64 r34, 0d
+    ST r34, r254, 11a, 1h
+    LI64 r34, 0d
+    ST r34, r254, 12a, 1h
+    LI64 r34, 0d
+    ST r34, r254, 13a, 1h
+    LI64 r34, 0d
+    ST r34, r254, 14a, 1h
+    LI64 r34, 0d
+    ST r34, r254, 15a, 1h
+    LD r34, r254, 8a, 8h
+    ST r34, r254, 0a, 8h
+    ST r34, r254, 8a, 8h
+    LD r1, r254, 0a, 16h
+    LD r31, r254, 16a, 32h
+    ADDI64 r254, r254, 48d
+    JALA r0, r31, 0a
+code size: 309
+ret: 0
+status: Ok(())
