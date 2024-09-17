@@ -237,7 +237,7 @@ main := fn(): int {
 	size_of_Type_in_bytes := @sizeof(foo.Type)
 	align_of_Type_in_bytes := @alignof(foo.Type)
 	hardcoded_pointer := @as(^u8, @bitcast(10))
-	ecall_that_returns_int := @eca(int, 1, foo.Type.(10, 20), 5, 6)
+	ecall_that_returns_int := @as(int, @eca(1, foo.Type.(10, 20), 5, 6))
 	return @inline(foo.foo)
 }
 
@@ -399,8 +399,8 @@ modify := fn($num: ^int): void {
 MALLOC_SYS_CALL := 69
 FREE_SYS_CALL := 96
 
-malloc := fn(size: uint, align: uint): ^void return @eca(^void, MALLOC_SYS_CALL, size, align)
-free := fn(ptr: ^void, size: uint, align: uint): void return @eca(void, FREE_SYS_CALL, ptr, size, align)
+malloc := fn(size: uint, align: uint): ^void return @eca(MALLOC_SYS_CALL, size, align)
+free := fn(ptr: ^void, size: uint, align: uint): void return @eca(FREE_SYS_CALL, ptr, size, align)
 
 Vec := fn($Elem: type): type {
 	return struct {
@@ -773,7 +773,7 @@ screenidx := fn(orange: int): int {
 // in module: random.hb
 
 integer := fn(min: int, max: int): int {
-	rng := @eca(int, 3, 4)
+	rng := @as(int, @eca(3, 4))
 
 	if min != 0 | max != 0 {
 		return rng % (max - min + 1) + min
@@ -804,7 +804,7 @@ main := fn(): void {
 
 // in module: random.hb
 integer_range := fn(min: uint, max: int): uint {
-	return @eca(uint, 3, 4) % (@bitcast(max) - min + 1) + min
+	return @eca(3, 4) % (@bitcast(max) - min + 1) + min
 }
 ```
 
@@ -899,7 +899,7 @@ request_page := fn(page_count: u8): ^u8 {
 	msg := "\{00}\{01}xxxxxxxx\0"
 	msg_page_count := msg + 1;
 	*msg_page_count = page_count
-	return @eca(^u8, 3, 2, msg, 12)
+	return @eca(3, 2, msg, 12)
 }
 
 create_back_buffer := fn(total_pages: int): ^u32 {
