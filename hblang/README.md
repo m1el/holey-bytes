@@ -356,6 +356,19 @@ main := fn(): int {
 }
 ```
 
+#### wide_ret
+```hb
+OemIdent := struct {
+	dos_version: [u8; 8],
+	dos_version_name: [u8; 8],
+}
+
+main := fn(major: int, minor: int): OemIdent {
+	ver := [u8].(0, 0, 0, 0, 0, 0, 0, 0)
+	return OemIdent.(ver, ver)
+}
+```
+
 ### Incomplete Examples
 
 #### comptime_pointers

@@ -1375,11 +1375,11 @@ impl Codegen {
                         Some(self.ci.inline_ret_loc.as_ref())
                     }
                     0 => None,
-                    1..=8 => Some(Loc::reg(1)),
-                    9..=16 => None,
+                    1..=16 => Some(Loc::reg(1)),
+                    //9..=16 => None,
                     _ => Some(Loc::reg(self.ci.ret_reg.as_ref()).into_derefed()),
                 };
-                let loc_is_none = loc.is_none();
+                //let loc_is_none = loc.is_none();
                 let value = if let Some(val) = val {
                     self.expr_ctx(val, Ctx { ty: self.ci.ret, loc })?
                 } else {
@@ -1391,11 +1391,11 @@ impl Codegen {
                     Some(ret) => _ = self.assert_ty(pos, value.ty, ret, "return type"),
                 }
 
-                if let 9..=16 = size
-                    && loc_is_none
-                {
-                    self.store_sized(value.loc, Loc::reg(1), size);
-                }
+                //if let 9..=16 = size
+                //    && loc_is_none
+                //{
+                //    self.store_sized(value.loc, Loc::reg(1), size);
+                //}
 
                 self.ci.ret_relocs.push(Reloc::new(self.ci.code.len(), 1, 4));
                 self.ci.emit(jmp(0));
@@ -2286,6 +2286,25 @@ impl Codegen {
                     self.ci.emit(cp(dst.get(), src.get()));
                 }
             }
+            (lpat!(false, src, 0, None), lpat!(false, dst, off, None)) => {
+                assert!(size <= 8);
+                let off_rem = 8 * (off % 8);
+                let freg = dst.get() + (off / 8) as u8;
+                if size < 8 {
+                    let mask = !(((1u64 << (8 * size)) - 1) << off_rem);
+                    self.ci.emit(andi(freg, freg, mask));
+                    if off_rem == 0 {
+                        self.ci.emit(or(freg, freg, src.get()));
+                    } else {
+                        let tmp = self.ci.regs.allocate();
+                        self.ci.emit(slui64(tmp.get(), src.get(), off_rem as _));
+                        self.ci.emit(or(freg, freg, src.get()));
+                        self.ci.regs.free(tmp);
+                    }
+                } else {
+                    self.ci.emit(cp(freg, src.get()));
+                }
+            }
             (lpat!(true, src, soff, ref ssta), lpat!(false, dst, 0, None)) => {
                 if size < 8 {
                     self.ci.emit(cp(dst.get(), 0));
@@ -2748,5 +2767,6 @@ mod tests {
         writing_into_string => README;
         request_page => README;
         tests_ptr_to_ptr_copy => README;
+        wide_ret => README;
     }
 }
