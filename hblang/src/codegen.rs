@@ -1369,24 +1369,32 @@ impl Codegen {
                 tk => Some(Value::ty(tk.compress())),
             },
             E::Return { pos, val, .. } => {
-                let ty = if let Some(val) = val {
-                    let size = self.ci.ret.map_or(17, |ty| self.tys.size_of(ty));
-                    let loc = match size {
-                        _ if self.ci.inline_ret_loc != Loc::default() => {
-                            Some(self.ci.inline_ret_loc.as_ref())
-                        }
-                        0 => None,
-                        1..=16 => Some(Loc::reg(1)),
-                        _ => Some(Loc::reg(self.ci.ret_reg.as_ref()).into_derefed()),
-                    };
-                    self.expr_ctx(val, Ctx { ty: self.ci.ret, loc })?.ty
+                let size = self.ci.ret.map_or(17, |ty| self.tys.size_of(ty));
+                let loc = match size {
+                    _ if self.ci.inline_ret_loc != Loc::default() => {
+                        Some(self.ci.inline_ret_loc.as_ref())
+                    }
+                    0 => None,
+                    1..=8 => Some(Loc::reg(1)),
+                    9..=16 => None,
+                    _ => Some(Loc::reg(self.ci.ret_reg.as_ref()).into_derefed()),
+                };
+                let loc_is_none = loc.is_none();
+                let value = if let Some(val) = val {
+                    self.expr_ctx(val, Ctx { ty: self.ci.ret, loc })?
                 } else {
-                    ty::VOID.into()
+                    Value::void()
                 };
 
                 match self.ci.ret {
-                    None => self.ci.ret = Some(ty),
-                    Some(ret) => _ = self.assert_ty(pos, ty, ret, "return type"),
+                    None => self.ci.ret = Some(value.ty),
+                    Some(ret) => _ = self.assert_ty(pos, value.ty, ret, "return type"),
+                }
+
+                if let 9..=16 = size
+                    && loc_is_none
+                {
+                    self.store_sized(value.loc, Loc::reg(1), size);
                 }
 
                 self.ci.ret_relocs.push(Reloc::new(self.ci.code.len(), 1, 4));
