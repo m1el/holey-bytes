@@ -363,7 +363,17 @@ OemIdent := struct {
 	dos_version_name: [u8; 8],
 }
 
+Stru := struct {
+	a: u16,
+	b: u16,
+}
+
+small_struct := fn(): Stru {
+	return .{a: 0, b: 0}
+}
+
 main := fn(major: int, minor: int): OemIdent {
+	small_struct()
 	ver := [u8].(0, 0, 0, 0, 0, 0, 0, 0)
 	return OemIdent.(ver, ver)
 }

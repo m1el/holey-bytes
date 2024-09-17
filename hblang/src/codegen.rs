@@ -1086,7 +1086,7 @@ impl Codegen {
                 Some(Value::new(self.tys.make_ptr(ty::U8.into()), reg))
             }
             E::Ctor { pos, ty, fields, .. } => {
-                let (ty, loc) = self.prepare_struct_ctor(pos, ctx, ty, fields.len());
+                let (ty, loc) = self.prepare_struct_ctor(pos, &mut ctx, ty, fields.len());
 
                 let ty::Kind::Struct(stru) = ty.expand() else {
                     self.report(
@@ -1103,10 +1103,16 @@ impl Codegen {
                     let value = self.expr_ctx(value, Ctx::default().with_loc(loc).with_ty(ty))?;
                     self.ci.free_loc(value.loc);
                 }
-                return Some(Value { ty, loc });
+
+                if let Some(dst_loc) = ctx.loc {
+                    self.store_typed(loc, &dst_loc, ty);
+                    return Some(Value { ty, loc: dst_loc });
+                } else {
+                    return Some(Value { ty, loc });
+                }
             }
             E::Tupl { pos, ty, fields, .. } => {
-                let (ty, loc) = self.prepare_struct_ctor(pos, ctx, ty, fields.len());
+                let (ty, loc) = self.prepare_struct_ctor(pos, &mut ctx, ty, fields.len());
 
                 match ty.expand() {
                     ty::Kind::Struct(stru) => {
@@ -1141,7 +1147,12 @@ impl Codegen {
                     ),
                 }
 
-                return Some(Value { ty, loc });
+                if let Some(dst_loc) = ctx.loc {
+                    self.store_typed(loc, &dst_loc, ty);
+                    return Some(Value { ty, loc: dst_loc });
+                } else {
+                    return Some(Value { ty, loc });
+                }
             }
             E::Field { target, name: field } => {
                 let checkpoint = self.ci.snap();
@@ -1375,11 +1386,9 @@ impl Codegen {
                         Some(self.ci.inline_ret_loc.as_ref())
                     }
                     0 => None,
-                    1..=8 => Some(Loc::reg(1)),
-                    9..=16 => None,
+                    1..=16 => Some(Loc::reg(1)),
                     _ => Some(Loc::reg(self.ci.ret_reg.as_ref()).into_derefed()),
                 };
-                let loc_is_none = loc.is_none();
                 let value = if let Some(val) = val {
                     self.expr_ctx(val, Ctx { ty: self.ci.ret, loc })?
                 } else {
@@ -1389,12 +1398,6 @@ impl Codegen {
                 match self.ci.ret {
                     None => self.ci.ret = Some(value.ty),
                     Some(ret) => _ = self.assert_ty(pos, value.ty, ret, "return type"),
-                }
-
-                if let 9..=16 = size
-                    && loc_is_none
-                {
-                    self.store_sized(value.loc, Loc::reg(1), size);
                 }
 
                 self.ci.ret_relocs.push(Reloc::new(self.ci.code.len(), 1, 4));
@@ -1899,7 +1902,7 @@ impl Codegen {
     fn prepare_struct_ctor(
         &mut self,
         pos: Pos,
-        ctx: Ctx,
+        ctx: &mut Ctx,
         ty: Option<&Expr>,
         field_len: usize,
     ) -> (ty::Id, Loc) {
@@ -1935,8 +1938,11 @@ impl Codegen {
         }
 
         let size = self.tys.size_of(ty);
-        let loc = ctx.loc.unwrap_or_else(|| Loc::stack(self.ci.stack.allocate(size)));
-        (ty, loc)
+        if ctx.loc.as_ref().map_or(true, |l| l.is_reg()) {
+            (ty, Loc::stack(self.ci.stack.allocate(size)))
+        } else {
+            (ty, ctx.loc.take().unwrap_or_else(|| Loc::stack(self.ci.stack.allocate(size))))
+        }
     }
 
     fn struct_op(
