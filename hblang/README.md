@@ -241,7 +241,7 @@ main := fn(): int {
 	return @inline(foo.foo)
 }
 
-// in module: fooasd.hb
+// in module: foo.hb
 
 Type := struct {
 	brah: int,

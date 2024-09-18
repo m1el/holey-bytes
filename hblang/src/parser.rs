@@ -5,8 +5,10 @@ use {
     },
     std::{
         cell::{Cell, UnsafeCell},
+        ffi::OsStr,
         fmt, io,
         ops::{Deref, Not},
+        path::PathBuf,
         ptr::NonNull,
         sync::atomic::AtomicUsize,
     },
@@ -1239,6 +1241,12 @@ impl AstInner<[Symbol]> {
     }
 }
 
+pub fn display_rel_path(path: &(impl AsRef<OsStr> + ?Sized)) -> std::path::Display {
+    static CWD: std::sync::LazyLock<PathBuf> =
+        std::sync::LazyLock::new(|| std::env::current_dir().unwrap_or_default());
+    std::path::Path::new(path).strip_prefix(&*CWD).unwrap_or(std::path::Path::new(path)).display()
+}
+
 pub fn report_to(
     file: &str,
     path: &str,
@@ -1247,7 +1255,7 @@ pub fn report_to(
     out: &mut impl fmt::Write,
 ) {
     let (line, mut col) = lexer::line_col(file.as_bytes(), pos);
-    _ = writeln!(out, "{}:{}:{}: {}", path, line, col, msg);
+    _ = writeln!(out, "{}:{}:{}: {}", display_rel_path(path), line, col, msg);
 
     let line = &file[file[..pos as usize].rfind('\n').map_or(0, |i| i + 1)
         ..file[pos as usize..].find('\n').unwrap_or(file.len()) + pos as usize];

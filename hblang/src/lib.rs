@@ -30,7 +30,7 @@ use {
     parser::Ast,
     std::{
         collections::{hash_map, BTreeMap, VecDeque},
-        io::{self, Read},
+        io,
         ops::Range,
         path::{Path, PathBuf},
         rc::Rc,
@@ -1170,7 +1170,12 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
 
     impl std::fmt::Display for CantLoadFile {
         fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            write!(f, "can't load file: {} (from: {})", self.path.display(), self.from.display(),)
+            write!(
+                f,
+                "can't load file: {} (from: {})",
+                parser::display_rel_path(&self.path),
+                parser::display_rel_path(&self.from),
+            )
         }
     }
 
@@ -1182,27 +1187,6 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
 
     impl From<CantLoadFile> for io::Error {
         fn from(e: CantLoadFile) -> Self {
-            io::Error::new(io::ErrorKind::InvalidData, e)
-        }
-    }
-
-    #[derive(Debug)]
-    struct InvalidFileData(std::str::Utf8Error);
-
-    impl std::fmt::Display for InvalidFileData {
-        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            write!(f, "invalid file data")
-        }
-    }
-
-    impl std::error::Error for InvalidFileData {
-        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-            Some(&self.0)
-        }
-    }
-
-    impl From<InvalidFileData> for io::Error {
-        fn from(e: InvalidFileData) -> Self {
             io::Error::new(io::ErrorKind::InvalidData, e)
         }
     }
@@ -1236,7 +1220,7 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
             let ImportPath::Git { link, chk, .. } = path else {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
-                    format!("can't find file: {}", physiscal_path.display()),
+                    format!("can't find file: {}", parser::display_rel_path(&physiscal_path)),
                 ));
             };
 
@@ -1261,7 +1245,7 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
         Ok(id)
     };
 
-    let execute_task = |(_, path, command): Task, buffer: &mut Vec<u8>| {
+    let execute_task = |(_, path, command): Task| {
         if let Some(mut command) = command {
             let output = command.output()?;
             if !output.status.success() {
@@ -1274,21 +1258,15 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
         let path = path.to_str().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("path contains invalid characters: {}", path.display()),
+                format!("path contains invalid characters: {}", parser::display_rel_path(&path)),
             )
         })?;
-        let mut file = std::fs::File::open(path)?;
-        file.read_to_end(buffer)?;
-        let src = std::str::from_utf8(buffer).map_err(InvalidFileData)?;
-        Ok(Ast::new(path, src.to_owned(), &loader))
+        Ok(Ast::new(path, std::fs::read_to_string(path)?, &loader))
     };
 
     let thread = || {
-        let mut buffer = Vec::new();
         while let Some(task @ (indx, ..)) = tasks.pop() {
-            let res = execute_task(task, &mut buffer);
-            buffer.clear();
-
+            let res = execute_task(task);
             let mut ast = ast.lock().unwrap();
             let len = ast.len().max(indx as usize + 1);
             ast.resize_with(len, || Err(io::ErrorKind::InvalidData.into()));
