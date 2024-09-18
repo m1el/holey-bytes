@@ -1128,11 +1128,7 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
                 }
             };
 
-            path.canonicalize().map_err(|source| CantLoadFile {
-                path,
-                from: PathBuf::from(from),
-                source,
-            })
+            path.canonicalize().map_err(|source| CantLoadFile { path, source })
         }
     }
 
@@ -1164,18 +1160,12 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     #[derive(Debug)]
     struct CantLoadFile {
         path: PathBuf,
-        from: PathBuf,
         source: io::Error,
     }
 
     impl std::fmt::Display for CantLoadFile {
         fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            write!(
-                f,
-                "can't load file: {} (from: {})",
-                parser::display_rel_path(&self.path),
-                parser::display_rel_path(&self.from),
-            )
+            write!(f, "can't load file: {}", parser::display_rel_path(&self.path),)
         }
     }
 
