@@ -1070,91 +1070,13 @@ impl<T> TaskQueueInner<T> {
 }
 
 pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
-    const GIT_DEPS_DIR: &str = "git-deps";
+    fn resolve(path: &str, from: &str) -> Result<PathBuf, CantLoadFile> {
+        let path = match Path::new(from).parent() {
+            Some(parent) => PathBuf::from_iter([parent, Path::new(path)]),
+            None => PathBuf::from(path),
+        };
 
-    enum Chk<'a> {
-        Branch(&'a str),
-        Rev(&'a str),
-        Tag(&'a str),
-    }
-
-    enum ImportPath<'a> {
-        Rel { path: &'a str },
-        Git { link: &'a str, path: &'a str, chk: Option<Chk<'a>> },
-    }
-
-    impl<'a> TryFrom<&'a str> for ImportPath<'a> {
-        type Error = ParseImportError;
-
-        fn try_from(value: &'a str) -> Result<Self, Self::Error> {
-            let (prefix, path) = value.split_once(':').unwrap_or(("", value));
-
-            match prefix {
-                "rel" | "" => Ok(Self::Rel { path }),
-                "git" => {
-                    let (link, path) =
-                        path.split_once(':').ok_or(ParseImportError::ExpectedPath)?;
-                    let (link, params) = link.split_once('?').unwrap_or((link, ""));
-                    let chk = params.split('&').filter_map(|s| s.split_once('=')).find_map(
-                        |(key, value)| match key {
-                            "branch" => Some(Chk::Branch(value)),
-                            "rev" => Some(Chk::Rev(value)),
-                            "tag" => Some(Chk::Tag(value)),
-                            _ => None,
-                        },
-                    );
-                    Ok(Self::Git { link, path, chk })
-                }
-                _ => Err(ParseImportError::InvalidPrefix),
-            }
-        }
-    }
-
-    fn preprocess_git(link: &str) -> &str {
-        let link = link.strip_prefix("https://").unwrap_or(link);
-        link.strip_suffix(".git").unwrap_or(link)
-    }
-
-    impl<'a> ImportPath<'a> {
-        fn resolve(&self, from: &str) -> Result<PathBuf, CantLoadFile> {
-            let path = match self {
-                Self::Rel { path } => match Path::new(from).parent() {
-                    Some(parent) => PathBuf::from_iter([parent, Path::new(path)]),
-                    None => PathBuf::from(path),
-                },
-                Self::Git { path, link, .. } => {
-                    let link = preprocess_git(link);
-                    PathBuf::from_iter([GIT_DEPS_DIR, link, path])
-                }
-            };
-
-            path.canonicalize().map_err(|source| CantLoadFile { path, source })
-        }
-    }
-
-    #[derive(Debug)]
-    enum ParseImportError {
-        ExpectedPath,
-        InvalidPrefix,
-    }
-
-    impl std::fmt::Display for ParseImportError {
-        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            match self {
-                Self::ExpectedPath => "expected path".fmt(f),
-                Self::InvalidPrefix => "invalid prefix, expected one of rel, \
-                    git or none followed by colon"
-                    .fmt(f),
-            }
-        }
-    }
-
-    impl std::error::Error for ParseImportError {}
-
-    impl From<ParseImportError> for io::Error {
-        fn from(e: ParseImportError) -> Self {
-            io::Error::new(io::ErrorKind::InvalidInput, e)
-        }
+        path.canonicalize().map_err(|source| CantLoadFile { path, source })
     }
 
     #[derive(Debug)]
@@ -1181,16 +1103,22 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
         }
     }
 
-    type Task = (u32, PathBuf, Option<std::process::Command>);
+    type Task = (u32, PathBuf);
 
     let seen = Mutex::new(HashMap::<PathBuf, u32>::default());
     let tasks = TaskQueue::<Task>::new(extra_threads + 1);
     let ast = Mutex::new(Vec::<io::Result<Ast>>::new());
 
     let loader = |path: &str, from: &str| {
-        let path = ImportPath::try_from(path)?;
+        if path.starts_with("rel:") {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "`rel:` prefix was removed and is now equivalent to no prefix (remove it)"
+                    .to_string(),
+            ));
+        }
 
-        let physiscal_path = path.resolve(from)?;
+        let physiscal_path = resolve(path, from)?;
 
         let id = {
             let mut seen = seen.lock().unwrap();
@@ -1206,45 +1134,18 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
             }
         };
 
-        let command = if !physiscal_path.exists() {
-            let ImportPath::Git { link, chk, .. } = path else {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    format!("can't find file: {}", parser::display_rel_path(&physiscal_path)),
-                ));
-            };
+        if !physiscal_path.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("can't find file: {}", parser::display_rel_path(&physiscal_path)),
+            ));
+        }
 
-            let root = PathBuf::from_iter([GIT_DEPS_DIR, preprocess_git(link)]);
-
-            let mut command = std::process::Command::new("git");
-            command.args(["clone", "--depth", "1"]);
-            if let Some(chk) = chk {
-                command.args(match chk {
-                    Chk::Branch(b) => ["--branch", b],
-                    Chk::Tag(t) => ["--tag", t],
-                    Chk::Rev(r) => ["--rev", r],
-                });
-            }
-            command.arg(link).arg(root);
-            Some(command)
-        } else {
-            None
-        };
-
-        tasks.push((id, physiscal_path, command));
+        tasks.push((id, physiscal_path));
         Ok(id)
     };
 
-    let execute_task = |(_, path, command): Task| {
-        if let Some(mut command) = command {
-            let output = command.output()?;
-            if !output.status.success() {
-                let msg =
-                    format!("git command failed: {}", String::from_utf8_lossy(&output.stderr));
-                return Err(io::Error::new(io::ErrorKind::Other, msg));
-            }
-        }
-
+    let execute_task = |(_, path): Task| {
         let path = path.to_str().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -1266,7 +1167,7 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
 
     let path = Path::new(root).canonicalize()?;
     seen.lock().unwrap().insert(path.clone(), 0);
-    tasks.push((0, path, None));
+    tasks.push((0, path));
 
     if extra_threads == 0 {
         thread();
