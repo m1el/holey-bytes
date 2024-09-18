@@ -371,6 +371,10 @@ impl<'a> Lexer<'a> {
         Self { pos, bytes: input.as_bytes() }
     }
 
+    pub fn source(&self) -> &'a str {
+        unsafe { std::str::from_utf8_unchecked(self.bytes) }
+    }
+
     pub fn slice(&self, tok: std::ops::Range<usize>) -> &'a str {
         unsafe { std::str::from_utf8_unchecked(&self.bytes[tok]) }
     }
@@ -510,10 +514,6 @@ impl<'a> Lexer<'a> {
         } else {
             false
         }
-    }
-
-    pub fn line_col(&self, pos: u32) -> (usize, usize) {
-        line_col(self.bytes, pos)
     }
 }
 

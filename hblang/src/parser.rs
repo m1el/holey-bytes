@@ -95,20 +95,20 @@ impl<'a, 'b> Parser<'a, 'b> {
         let f = self.collect_list(TokenKind::Semi, TokenKind::Eof, |s| s.expr_low(true));
 
         self.pop_scope(0);
-        let has_undeclared = !self.idents.is_empty();
+        let mut errors = String::new();
         for id in self.idents.drain(..) {
-            let (line, col) = self.lexer.line_col(ident::pos(id.ident));
-            eprintln!(
-                "{}:{}:{} => undeclared identifier: {}",
+            report_to(
+                self.lexer.source(),
                 self.path,
-                line,
-                col,
-                self.lexer.slice(ident::range(id.ident))
+                id.ident,
+                format_args!("undeclared identifier: {}", self.lexer.slice(ident::range(id.ident))),
+                &mut errors,
             );
         }
 
-        if has_undeclared {
+        if !errors.is_empty() {
             // TODO: we need error recovery
+            eprintln!("{errors}");
             unreachable!();
         }
 
@@ -193,7 +193,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                     self.declare_rec(value, top_level)
                 }
             }
-            _ => self.report_pos(expr.pos(), "cant declare this shit (yet)"),
+            _ => self.report(expr.pos(), "cant declare this shit (yet)"),
         }
     }
 
@@ -201,7 +201,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         if let Some(index) = index_to_check
             && index != 0
         {
-            self.report_pos(
+            self.report(
                 pos,
                 format_args!(
                     "out of order declaration not allowed: {}",
@@ -212,7 +212,7 @@ impl<'a, 'b> Parser<'a, 'b> {
 
         let index = self.idents.binary_search_by_key(&id, |s| s.ident).expect("fck up");
         if std::mem::replace(&mut self.idents[index].declared, true) {
-            self.report_pos(
+            self.report(
                 pos,
                 format_args!("redeclaration of identifier: {}", self.lexer.slice(ident::range(id))),
             )
@@ -276,7 +276,9 @@ impl<'a, 'b> Parser<'a, 'b> {
                     path: self.arena.alloc_str(path),
                     id: match (self.loader)(path, self.path) {
                         Ok(id) => id,
-                        Err(e) => self.report(format_args!("error loading dependency: {e:#}")),
+                        Err(e) => {
+                            self.report(str.start, format_args!("error loading dependency: {e:#}"))
+                        }
                     },
                 }
             }
@@ -408,7 +410,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                     pos,
                     value: match u64::from_str_radix(slice, radix as u32) {
                         Ok(value) => value,
-                        Err(e) => self.report(format_args!("invalid number: {e}")),
+                        Err(e) => self.report(token.start, format_args!("invalid number: {e}")),
                     } as i64,
                     radix,
                 }
@@ -419,7 +421,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 expr
             }
             T::Comment => Expr::Comment { pos, literal: self.move_str(token) },
-            tok => self.report(format_args!("unexpected token: {tok:?}")),
+            tok => self.report(token.start, format_args!("unexpected token: {tok:?}")),
         };
 
         loop {
@@ -497,7 +499,10 @@ impl<'a, 'b> Parser<'a, 'b> {
         if matches!(self.token.kind, TokenKind::Ident | TokenKind::CtIdent) {
             self.next()
         } else {
-            self.report(format_args!("expected identifier, found {:?}", self.token.kind))
+            self.report(
+                self.token.start,
+                format_args!("expected identifier, found {:?}", self.token.kind),
+            )
         }
     }
 
@@ -552,20 +557,19 @@ impl<'a, 'b> Parser<'a, 'b> {
 
     fn expect_advance(&mut self, kind: TokenKind) -> Token {
         if self.token.kind != kind {
-            self.report(format_args!("expected {:?}, found {:?}", kind, self.token.kind));
+            self.report(
+                self.token.start,
+                format_args!("expected {:?}, found {:?}", kind, self.token.kind),
+            );
         }
         self.next()
     }
 
     #[track_caller]
-    fn report(&self, msg: impl fmt::Display) -> ! {
-        self.report_pos(self.token.start, msg)
-    }
-
-    #[track_caller]
-    fn report_pos(&self, pos: Pos, msg: impl fmt::Display) -> ! {
-        let (line, col) = self.lexer.line_col(pos);
-        eprintln!("{}:{}:{} => {}", self.path, line, col, msg);
+    fn report(&self, pos: Pos, msg: impl fmt::Display) -> ! {
+        let mut str = String::new();
+        report_to(self.lexer.source(), self.path, pos, msg, &mut str);
+        eprintln!("{str}");
         unreachable!();
     }
 
@@ -1231,17 +1235,26 @@ impl AstInner<[Symbol]> {
     }
 
     pub fn report_to(&self, pos: Pos, msg: impl fmt::Display, out: &mut impl fmt::Write) {
-        let str = &self.file;
-        let (line, mut col) = lexer::line_col(str.as_bytes(), pos);
-        _ = writeln!(out, "{}:{}:{}: {}", self.path, line, col, msg);
-
-        let line = &str[str[..pos as usize].rfind('\n').map_or(0, |i| i + 1)
-            ..str[pos as usize..].find('\n').unwrap_or(str.len()) + pos as usize];
-        col += line.matches('\t').count() * 3;
-
-        _ = writeln!(out, "{}", line.replace("\t", "    "));
-        _ = writeln!(out, "{}^", " ".repeat(col - 1));
+        report_to(&self.file, &self.path, pos, msg, out);
     }
+}
+
+pub fn report_to(
+    file: &str,
+    path: &str,
+    pos: Pos,
+    msg: impl fmt::Display,
+    out: &mut impl fmt::Write,
+) {
+    let (line, mut col) = lexer::line_col(file.as_bytes(), pos);
+    _ = writeln!(out, "{}:{}:{}: {}", path, line, col, msg);
+
+    let line = &file[file[..pos as usize].rfind('\n').map_or(0, |i| i + 1)
+        ..file[pos as usize..].find('\n').unwrap_or(file.len()) + pos as usize];
+    col += line.matches('\t').count() * 3;
+
+    _ = writeln!(out, "{}", line.replace("\t", "    "));
+    _ = writeln!(out, "{}^", " ".repeat(col - 1));
 }
 
 #[derive(PartialEq, Eq, Hash)]
