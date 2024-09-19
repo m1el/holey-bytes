@@ -21,16 +21,6 @@ main:
  1: LD r31, r254, 24a, 24h
     ADDI64 r254, r254, 48d
     JALA r0, r31, 0a
-pass:
-    ADDI64 r254, r254, -32d
-    ST r31, r254, 0a, 32h
-    CP r32, r2
-    LD r33, r32, 0a, 8h
-    LD r34, r32, 8a, 8h
-    SUB64 r1, r33, r34
-    LD r31, r254, 0a, 32h
-    ADDI64 r254, r254, 32d
-    JALA r0, r31, 0a
 odher_pass:
     ADDI64 r254, r254, -32d
     ST r31, r254, 0a, 32h
@@ -38,6 +28,16 @@ odher_pass:
     CP r33, r1
     CP r34, r33
     BMC r32, r34, 24h
+    LD r31, r254, 0a, 32h
+    ADDI64 r254, r254, 32d
+    JALA r0, r31, 0a
+pass:
+    ADDI64 r254, r254, -32d
+    ST r31, r254, 0a, 32h
+    CP r32, r2
+    LD r33, r32, 0a, 8h
+    LD r34, r32, 8a, 8h
+    SUB64 r1, r33, r34
     LD r31, r254, 0a, 32h
     ADDI64 r254, r254, 32d
     JALA r0, r31, 0a

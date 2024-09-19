@@ -1,12 +1,3 @@
-main:
-    ADDI64 r254, r254, -16d
-    ST r31, r254, 0a, 16h
-    LI64 r2, 400d
-    JAL r31, r0, :create_back_buffer
-    CP r32, r1
-    LD r31, r254, 0a, 16h
-    ADDI64 r254, r254, 16d
-    JALA r0, r31, 0a
 create_back_buffer:
     ADDI64 r254, r254, -32d
     ST r31, r254, 0a, 32h
@@ -37,6 +28,15 @@ create_back_buffer:
  3: CP r1, r33
  1: LD r31, r254, 0a, 32h
     ADDI64 r254, r254, 32d
+    JALA r0, r31, 0a
+main:
+    ADDI64 r254, r254, -16d
+    ST r31, r254, 0a, 16h
+    LI64 r2, 400d
+    JAL r31, r0, :create_back_buffer
+    CP r32, r1
+    LD r31, r254, 0a, 16h
+    ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
 request_page:
     ADDI64 r254, r254, -32d

@@ -2,7 +2,7 @@
 use {
     crate::{
         ident::{self, Ident},
-        instrs::{self, jal},
+        instrs::{self},
         lexer::{self, TokenKind},
         log,
         parser::{
@@ -10,9 +10,12 @@ use {
             idfl::{self},
             CommentOr, Expr, ExprRef, FileId, Pos, StructField,
         },
-        task, ty, Field, Func, Reloc, Sig, Struct, SymKey, TypedReloc, Types,
+        task,
+        ty::{self},
+        Field, Func, HashMap, Reloc, Sig, Struct, SymKey, TypedReloc, Types,
     },
     core::fmt,
+    regalloc2::VReg,
     std::{
         cell::RefCell,
         collections::hash_map,
@@ -23,21 +26,6 @@ use {
         ptr::Unique,
     },
 };
-
-macro_rules! node_loc {
-    ($self:expr, $value:expr) => {
-        $self.ci.colors[$self.ci.nodes[$value].color as usize - 1].loc
-        //$self.ci.colors[dbg!(&$self.ci.nodes[$value]).color as usize - 1].loc
-    };
-}
-
-struct Drom(&'static str);
-
-impl Drop for Drom {
-    fn drop(&mut self) {
-        log::inf!("{}", self.0);
-    }
-}
 
 const VC_SIZE: usize = 16;
 const INLINE_ELEMS: usize = VC_SIZE / 2 - 1;
@@ -82,10 +70,6 @@ impl Vc {
                 self.alloced.len as _
             }
         }
-    }
-
-    fn find(&self, needle: Nid) -> usize {
-        self.iter().position(|&n| n == needle).unwrap()
     }
 
     fn len_mut(&mut self) -> &mut Nid {
@@ -321,20 +305,6 @@ impl BitSet {
         self.data[data_idx] |= 1 << sub_idx;
         prev == 0
     }
-
-    fn unset(&mut self, idx: Nid) {
-        let idx = idx as usize;
-        let data_idx = idx / Self::ELEM_SIZE;
-        let sub_idx = idx % Self::ELEM_SIZE;
-        self.data[data_idx] &= !(1 << sub_idx);
-    }
-
-    fn get(&self, idx: Nid) -> bool {
-        let idx = idx as usize;
-        let data_idx = idx / Self::ELEM_SIZE;
-        let sub_idx = idx % Self::ELEM_SIZE;
-        self.data[data_idx] & (1 << sub_idx) == 1
-    }
 }
 
 type Nid = u16;
@@ -346,70 +316,6 @@ pub mod reg {
     pub const RET_ADDR: Reg = 31;
 
     pub type Reg = u8;
-
-    #[derive(Default)]
-    struct AllocMeta {
-        rc: u16,
-        depth: u16,
-        #[cfg(debug_assertions)]
-        allocated_at: Option<std::backtrace::Backtrace>,
-    }
-
-    struct Metas([AllocMeta; 256]);
-
-    impl Default for Metas {
-        fn default() -> Self {
-            Metas(std::array::from_fn(|_| AllocMeta::default()))
-        }
-    }
-
-    #[derive(Default)]
-    pub struct Alloc {
-        meta: Metas,
-        free: Vec<Reg>,
-        max_used: Reg,
-    }
-
-    impl Alloc {
-        pub fn init(&mut self) {
-            self.free.clear();
-            self.free.extend((32..=253).rev());
-            self.max_used = RET_ADDR;
-        }
-
-        pub fn allocate(&mut self, depth: u16) -> Reg {
-            let reg = self.free.pop().expect("TODO: we need to spill");
-            self.max_used = self.max_used.max(reg);
-            self.meta.0[reg as usize] = AllocMeta {
-                depth,
-                rc: 1,
-                #[cfg(debug_assertions)]
-                allocated_at: Some(std::backtrace::Backtrace::capture()),
-            };
-            reg
-        }
-
-        pub fn dup(&mut self, reg: Reg) {
-            self.meta.0[reg as usize].rc += 1;
-        }
-
-        pub fn free(&mut self, reg: Reg) {
-            if self.meta.0[reg as usize].rc == 1 {
-                self.free.push(reg);
-                self.meta.0[reg as usize] = Default::default();
-            } else {
-                self.meta.0[reg as usize].rc -= 1;
-            }
-        }
-
-        pub fn pushed_size(&self) -> usize {
-            ((self.max_used as usize).saturating_sub(RET_ADDR as usize) + 1) * 8
-        }
-
-        pub fn mark_leaked(&mut self, reg: u8) {
-            self.meta.0[reg as usize].rc = u16::MAX;
-        }
-    }
 }
 
 struct LookupEntry {
@@ -480,7 +386,8 @@ impl Nodes {
     fn new_node_nop(&mut self, ty: impl Into<ty::Id>, kind: Kind, inps: impl Into<Vc>) -> Nid {
         let ty = ty.into();
 
-        let node = Node { inputs: inps.into(), kind, ty, ..Default::default() };
+        let node =
+            Node { ralloc_backref: u16::MAX, inputs: inps.into(), kind, ty, ..Default::default() };
 
         let mut lookup_meta = None;
         if !node.is_lazy_phi() {
@@ -784,7 +691,7 @@ impl Nodes {
     #[allow(clippy::format_in_format_args)]
     fn basic_blocks_instr(&mut self, out: &mut String, node: Nid) -> std::fmt::Result {
         if self[node].kind != Kind::Loop && self[node].kind != Kind::Region {
-            write!(out, "  {node:>2}-c{:>2}: ", self[node].color)?;
+            write!(out, "  {node:>2}-c{:>2}: ", self[node].ralloc_backref)?;
         }
         match self[node].kind {
             Kind::Start => unreachable!(),
@@ -1064,6 +971,10 @@ impl Nodes {
             dominated = idom(self, dominated);
         }
     }
+
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut Node> {
+        self.values.iter_mut().flat_map(Result::as_mut)
+    }
 }
 
 impl ops::Index<Nid> for Nodes {
@@ -1110,29 +1021,29 @@ pub enum Kind {
 
 impl Kind {
     fn is_pinned(&self) -> bool {
-        self.is_cfg() || matches!(self, Kind::Phi)
+        self.is_cfg() || matches!(self, Self::Phi)
     }
 
     fn is_cfg(&self) -> bool {
         matches!(
             self,
-            Kind::Start
-                | Kind::End
-                | Kind::Return
-                | Kind::Tuple { .. }
-                | Kind::Call { .. }
-                | Kind::If
-                | Kind::Region
-                | Kind::Loop
+            Self::Start
+                | Self::End
+                | Self::Return
+                | Self::Tuple { .. }
+                | Self::Call { .. }
+                | Self::If
+                | Self::Region
+                | Self::Loop
         )
     }
 
     fn ends_basic_block(&self) -> bool {
-        matches!(self, Kind::Return | Kind::If | Kind::End)
+        matches!(self, Self::Return | Self::If | Self::End)
     }
 
     fn starts_basic_block(&self) -> bool {
-        matches!(self, Kind::Start | Kind::End | Kind::Tuple { .. } | Kind::Region | Kind::Loop)
+        matches!(self, Self::Start | Self::End | Self::Tuple { .. } | Self::Region | Self::Loop)
     }
 }
 
@@ -1154,7 +1065,7 @@ struct Node {
     inputs: Vc,
     outputs: Vc,
     kind: Kind,
-    color: Color,
+    ralloc_backref: RallocBRef,
     depth: IDomDepth,
     lock_rc: LockRc,
     ty: ty::Id,
@@ -1178,7 +1089,7 @@ impl Node {
 
 type Offset = u32;
 type Size = u32;
-type Color = u16;
+type RallocBRef = u16;
 type LoopDepth = u16;
 type CallCount = u16;
 type LockRc = u16;
@@ -1215,14 +1126,12 @@ struct ItemCtx {
     ctrl: Nid,
 
     loop_depth: LoopDepth,
-    colors: Vec<ColorMeta>,
     call_count: u16,
     filled: Vec<Nid>,
-    delayed_frees: Vec<Color>,
+    delayed_frees: Vec<RallocBRef>,
 
     loops: Vec<Loop>,
     vars: Vec<Variable>,
-    regs: reg::Alloc,
     ret_relocs: Vec<Reloc>,
     relocs: Vec<TypedReloc>,
     jump_relocs: Vec<(Nid, Reloc)>,
@@ -1230,80 +1139,8 @@ struct ItemCtx {
 }
 
 impl ItemCtx {
-    fn next_color(&mut self) -> Color {
-        self.colors.push(ColorMeta { rc: 0, depth: self.loop_depth, loc: Default::default() });
-        self.colors.len() as _ // leave out 0 (sentinel)
-    }
-
-    fn set_next_color(&mut self, node: Nid) -> Color {
-        let color = self.next_color();
-        self.set_color(node, color);
-        color
-    }
-
-    fn set_color(&mut self, node: Nid, color: Color) {
-        if self.nodes[node].color == color {
-            return;
-        }
-        if self.nodes[node].color != 0 {
-            self.colors[self.nodes[node].color as usize - 1].rc -= 1;
-        }
-        self.nodes[node].color = color;
-        self.colors[color as usize - 1].rc += 1;
-    }
-
-    fn recolor(&mut self, node: Nid, from: Color, to: Color) {
-        if from == to {
-            return;
-        }
-
-        if self.nodes[node].color != from {
-            return;
-        }
-
-        self.set_color(node, to);
-
-        for i in 0..self.nodes[node].inputs.len() {
-            self.recolor(self.nodes[node].inputs[i], from, to);
-        }
-    }
-
-    fn check_color_integrity(&self) {
-        let node_count = self
-            .nodes
-            .values
-            .iter()
-            .filter(|v| {
-                matches!(
-                    v,
-                    Ok(Node {
-                        kind: Kind::BinOp { .. }
-                            | Kind::Call { .. }
-                            | Kind::Phi
-                            | Kind::CInt { .. },
-                        color: 1..,
-                        ..
-                    })
-                ) || matches!(
-                    v,
-                    Ok(Node { kind: Kind::Tuple { index: 1.. },
-                        color: 1..,
-                    inputs, .. }) if inputs.first() == Some(&VOID)
-                )
-            })
-            .count();
-        let color_count = self.colors.iter().map(|c| c.rc).sum::<u32>();
-        debug_assert_eq!(node_count, color_count as usize);
-    }
-
     fn emit(&mut self, instr: (usize, [u8; instrs::MAX_SIZE])) {
         crate::emit(&mut self.code, instr);
-    }
-
-    fn free_loc(&mut self, loc: impl Into<Option<Loc>>) {
-        if let Some(loc) = loc.into() {
-            self.regs.free(loc.reg);
-        }
     }
 }
 
@@ -1364,7 +1201,7 @@ impl Codegen {
     pub fn generate(&mut self) {
         self.find_or_declare(0, 0, None, "main");
         self.make_func_reachable(0);
-        self.complete_call_graph_low();
+        self.complete_call_graph();
     }
 
     fn make_func_reachable(&mut self, func: ty::Func) {
@@ -1803,10 +1640,6 @@ impl Codegen {
     }
 
     fn complete_call_graph(&mut self) {
-        self.complete_call_graph_low();
-    }
-
-    fn complete_call_graph_low(&mut self) {
         while self.ci.task_base < self.tasks.len()
             && let Some(task_slot) = self.tasks.pop()
         {
@@ -1879,53 +1712,13 @@ impl Codegen {
                 self.ci.emit(instrs::st(reg::RET_ADDR, reg::STACK_PTR, 0, 0));
             }
 
-            self.ci.regs.init();
-
             self.ci.nodes.basic_blocks();
-
-            self.ci.nodes.visited.clear(self.ci.nodes.values.len());
-            self.color_node(NEVER);
-
-            let call_count = self.ci.call_count;
-            let mut parama = self.tys.parama(sig.ret);
-            '_color_args: {
-                for (var, ti) in orig_vars.iter().zip(sig.args.range()) {
-                    let ty = self.tys.args[ti];
-                    let mut col = self.ci.nodes[var.value].color;
-                    if col == 0 {
-                        col = self.ci.set_next_color(var.value);
-                    }
-                    match self.tys.size_of(ty) {
-                        0 => continue,
-                        1..=8 => {
-                            let loc = Loc { reg: parama.next() };
-                            let slot = &mut self.ci.colors[col as usize - 1].loc;
-
-                            if *slot != Loc::default() {
-                                self.emit_pass_low(loc, var.value);
-                            } else if check_no_calls(var.value, &mut self.ci.nodes) {
-                                *slot = loc;
-                            } else {
-                                *slot = Loc { reg: self.ci.regs.allocate(0) };
-                                self.emit_pass_low(loc, var.value);
-                            }
-                        }
-                        _ => todo!(),
-                    }
-                }
-            }
 
             //self.ci.nodes.graphviz();
 
-            #[cfg(debug_assertions)]
-            {
-                self.ci.check_color_integrity();
-            }
-
             self.ci.vars = orig_vars;
-            self.ci.call_count = call_count;
             self.ci.nodes.visited.clear(self.ci.nodes.values.len());
-            self.emit_node(VOID, VOID);
+            let saved = self.emit_body(sig);
             self.ci.vars.clear();
 
             if let Some(last_ret) = self.ci.ret_relocs.last()
@@ -1947,7 +1740,7 @@ impl Codegen {
             }
 
             '_close_function: {
-                let pushed = self.ci.regs.pushed_size() as i64;
+                let pushed = (saved as i64 + 1) * 8;
                 let stack = 0;
 
                 write_reloc(&mut self.ci.code, 3, -(pushed + stack), 8);
@@ -1963,356 +1756,539 @@ impl Codegen {
         self.tys.funcs[id as usize].code.append(&mut self.ci.code);
         self.tys.funcs[id as usize].relocs.append(&mut self.ci.relocs);
         self.ci.nodes.clear();
-        self.ci.colors.clear();
         self.ci.filled.clear();
         self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
     }
 
-    fn color_node(&mut self, ctrl: Nid) -> Option<Color> {
-        if !self.ci.nodes.visited.set(ctrl) {
-            return None;
+    fn emit_body(&mut self, sig: Sig) -> usize {
+        // FIXME: make this more efficient (allocated with arena)
+
+        #[derive(Debug)]
+        struct Block {
+            nid: Nid,
+            preds: Vec<regalloc2::Block>,
+            succs: Vec<regalloc2::Block>,
+            instrs: regalloc2::InstRange,
+            params: Vec<regalloc2::VReg>,
+            branch_blockparams: Vec<regalloc2::VReg>,
         }
 
-        let node = self.ci.nodes[ctrl].clone();
-        match node.kind {
-            Kind::Start => None,
-            Kind::End => {
-                for &i in node.inputs.iter() {
-                    self.color_node(i);
-                }
-                None
-            }
-            Kind::If => {
-                let &[pred, _] = node.inputs.as_slice() else { unreachable!() };
-                self.color_node(pred);
-                None
-            }
-            Kind::Region => {
-                for o in node.outputs {
-                    self.color_node(o);
-                }
-                self.color_node(node.inputs[0]);
-                self.color_node(node.inputs[1]);
-                None
-            }
-            Kind::Loop => {
-                self.color_node(node.inputs[1]);
-                for o in node.outputs {
-                    self.color_node(o);
-                }
-                self.color_node(node.inputs[0]);
-                None
-            }
-            Kind::Return => {
-                if node.inputs[1] != VOID {
-                    let col = self.ci.set_next_color(node.inputs[1]);
-                    if check_no_calls(node.inputs[1], &mut self.ci.nodes) {
-                        self.ci.colors[col as usize - 1].loc = Loc { reg: 1 };
-                    }
-                }
+        #[derive(Debug)]
+        struct Instr {
+            nid: Nid,
+            ops: Vec<regalloc2::Operand>,
+        }
 
-                self.color_node(node.inputs[0]);
-                None
-            }
-            Kind::CInt { .. } => {
-                if node.color == 0 && node.lock_rc as usize != node.outputs.len() {
-                    self.ci.set_next_color(ctrl);
-                }
+        struct Function<'a> {
+            sig: Sig,
+            nodes: &'a mut Nodes,
+            tys: &'a Types,
+            blocks: Vec<Block>,
+            instrs: Vec<Instr>,
+        }
 
-                None
-            }
-            Kind::Phi => {
-                if node.color == 0 {
-                    self.ci.set_next_color(ctrl);
-                }
+        impl Debug for Function<'_> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                for (i, block) in self.blocks.iter().enumerate() {
+                    writeln!(f, "sb{i}{:?}-{:?}:", block.params, block.preds)?;
 
-                fn is_tangled_phy(
-                    target: Nid,
-                    phi: Nid,
-                    min_idepth: IDomDepth,
-                    nodes: &mut Nodes,
-                ) -> bool {
-                    for i in nodes[target].inputs.clone() {
-                        if nodes.is_cfg(i) {
-                            continue;
-                        }
-
-                        if idepth(nodes, i) < min_idepth {
-                            continue;
-                        }
-
-                        if i == phi {
-                            continue;
-                        }
-
-                        if nodes[i].kind == Kind::Phi && nodes[i].inputs[0] == nodes[phi].inputs[0]
-                        {
-                            return true;
-                        }
-
-                        if is_tangled_phy(i, phi, min_idepth, nodes) {
-                            return true;
-                        }
+                    for inst in block.instrs.iter() {
+                        let instr = &self.instrs[inst.index()];
+                        writeln!(
+                            f,
+                            "{}: i{:?}:{:?}",
+                            inst.index(),
+                            self.nodes[instr.nid].kind,
+                            instr.ops
+                        )?;
                     }
 
-                    false
+                    writeln!(f, "eb{i}{:?}-{:?}:", block.branch_blockparams, block.succs)?;
                 }
+                Ok(())
+            }
+        }
 
-                let is_region = self.ci.nodes[node.inputs[0]].kind == Kind::Region;
-                let is_independent_phy = is_region
-                    || !is_tangled_phy(
-                        ctrl,
-                        ctrl,
-                        idepth(&mut self.ci.nodes, node.inputs[0]),
-                        &mut self.ci.nodes,
+        impl<'a> Function<'a> {
+            fn new(nodes: &'a mut Nodes, tys: &'a Types, sig: Sig) -> Self {
+                let mut s = Self {
+                    nodes,
+                    tys,
+                    sig,
+                    blocks: Default::default(),
+                    instrs: Default::default(),
+                };
+                s.nodes.visited.clear(s.nodes.values.len());
+                s.emit_node(VOID, VOID);
+                s.add_block(0);
+                s.blocks.pop();
+                s
+            }
+
+            fn add_block(&mut self, nid: Nid) -> RallocBRef {
+                if let Some(prev) = self.blocks.last_mut() {
+                    prev.instrs = regalloc2::InstRange::new(
+                        prev.instrs.first(),
+                        regalloc2::Inst::new(self.instrs.len()),
                     );
-                let &[_, l, r] = node.inputs.as_slice() else { unreachable!() };
-                if is_independent_phy && is_last_branch_use(l, ctrl, &mut self.ci.nodes) {
-                    self.ci.set_color(l, self.ci.nodes[ctrl].color);
-                }
-                if is_independent_phy && is_last_branch_use(r, ctrl, &mut self.ci.nodes) {
-                    self.ci.set_color(r, self.ci.nodes[ctrl].color);
                 }
 
-                None
+                self.blocks.push(Block {
+                    nid,
+                    preds: Default::default(),
+                    succs: Default::default(),
+                    instrs: regalloc2::InstRange::new(
+                        regalloc2::Inst::new(self.instrs.len()),
+                        regalloc2::Inst::new(self.instrs.len() + 1),
+                    ),
+                    params: Default::default(),
+                    branch_blockparams: Default::default(),
+                });
+                self.blocks.len() as RallocBRef - 1
             }
-            Kind::Tuple { index } => {
-                if (self.ci.nodes[node.inputs[0]].kind == Kind::Start && index == 0)
-                    || (self.ci.nodes[node.inputs[0]].kind == Kind::If && index < 2)
-                {
-                    for o in node.outputs {
-                        self.color_node(o);
+
+            fn add_instr(&mut self, nid: Nid, ops: Vec<regalloc2::Operand>) {
+                self.instrs.push(Instr { nid, ops });
+            }
+
+            fn urg(&mut self, nid: Nid) -> regalloc2::Operand {
+                regalloc2::Operand::reg_use(self.rg(nid))
+            }
+
+            fn def_nid(&mut self, _nid: Nid) {}
+
+            fn drg(&mut self, nid: Nid) -> regalloc2::Operand {
+                self.def_nid(nid);
+                regalloc2::Operand::reg_def(self.rg(nid))
+            }
+
+            fn rg(&self, nid: Nid) -> VReg {
+                regalloc2::VReg::new(nid as _, regalloc2::RegClass::Int)
+            }
+
+            fn emit_node(&mut self, nid: Nid, prev: Nid) {
+                if matches!(self.nodes[nid].kind, Kind::Region | Kind::Loop) {
+                    let prev_bref = self.nodes[prev].ralloc_backref;
+                    let node = self.nodes[nid].clone();
+
+                    let idx = 1 + node.inputs.iter().position(|&i| i == prev).unwrap();
+
+                    for ph in node.outputs {
+                        if self.nodes[ph].kind != Kind::Phi {
+                            continue;
+                        }
+
+                        let rg = self.rg(self.nodes[ph].inputs[idx]);
+                        self.blocks[prev_bref as usize].branch_blockparams.push(rg);
                     }
-                    self.color_node(node.inputs[0]);
+
+                    self.add_instr(nid, vec![]);
+
+                    match (self.nodes[nid].kind, self.nodes.visited.set(nid)) {
+                        (Kind::Loop, false) => {
+                            for i in node.inputs {
+                                self.bridge(i, nid);
+                            }
+                            return;
+                        }
+                        (Kind::Region, true) => return,
+                        _ => {}
+                    }
+                } else if !self.nodes.visited.set(nid) {
+                    return;
                 }
 
-                None
-            }
-            Kind::BinOp { .. } => {
-                let can_optimize = matches!(node.kind, Kind::BinOp { op } if op.cond_op(false).is_some())
-                    && matches!(node.outputs.as_slice(), &[stmt] if self.ci.nodes[stmt].kind == Kind::If);
+                let node = self.nodes[nid].clone();
+                match node.kind {
+                    Kind::Start => self.emit_node(node.outputs[0], VOID),
+                    Kind::End => {}
+                    Kind::If => {
+                        self.nodes[nid].ralloc_backref = self.nodes[prev].ralloc_backref;
 
-                if node.color == 0 && !can_optimize {
-                    self.ci.set_next_color(ctrl);
-                }
+                        let &[_, cond] = node.inputs.as_slice() else { unreachable!() };
+                        let &[mut then, mut else_] = node.outputs.as_slice() else {
+                            unreachable!()
+                        };
 
-                let &[_, lhs, rhs] = node.inputs.as_slice() else { unreachable!() };
+                        if let Kind::BinOp { op } = self.nodes[cond].kind
+                            && let Some((_, swapped)) = op.cond_op(node.ty.is_signed())
+                        {
+                            if swapped {
+                                std::mem::swap(&mut then, &mut else_);
+                            }
+                            let &[_, lhs, rhs] = self.nodes[cond].inputs.as_slice() else {
+                                unreachable!()
+                            };
+                            let ops = vec![self.urg(lhs), self.urg(rhs)];
+                            self.add_instr(nid, ops);
+                        } else {
+                            todo!()
+                        }
 
-                if !self.ci.nodes.is_const(rhs) || can_optimize {
-                    self.color_node(rhs);
-                } else {
-                    self.ci.nodes[rhs].lock_rc += 1;
-                }
-
-                self.color_node(lhs);
-
-                None
-            }
-            Kind::UnOp { .. } => {
-                if node.color == 0 {
-                    self.ci.set_next_color(ctrl);
-                }
-                self.color_node(node.inputs[1]);
-                None
-            }
-            Kind::Call { func } => {
-                if node.color == 0 {
-                    self.ci.set_next_color(ctrl);
-                }
-
-                let func = self.tys.funcs[func as usize].sig.unwrap();
-                let mut parama = self.tys.parama(func.ret);
-                for (&i, ti) in node.inputs[1..].iter().zip(func.args.range()) {
-                    let ty = self.tys.args[ti];
-                    match self.tys.size_of(ty) {
-                        0 => continue,
-                        1..=8 => {
-                            let col = self.ci.set_next_color(i);
-                            let loc = Loc { reg: parama.next() };
-                            if check_no_calls(i, &mut self.ci.nodes) {
-                                self.ci.colors[col as usize - 1].loc = loc;
+                        self.emit_node(then, nid);
+                        self.emit_node(else_, nid);
+                    }
+                    Kind::Region | Kind::Loop => {
+                        self.nodes[nid].ralloc_backref = self.add_block(nid);
+                        if node.kind == Kind::Region {
+                            for i in node.inputs {
+                                self.bridge(i, nid);
                             }
                         }
-                        _ => todo!(),
+                        let mut block = vec![];
+                        for ph in node.outputs.clone() {
+                            if self.nodes[ph].kind != Kind::Phi {
+                                continue;
+                            }
+                            self.def_nid(ph);
+                            block.push(self.rg(ph));
+                        }
+                        self.blocks[self.nodes[nid].ralloc_backref as usize].params = block;
+                        for o in node.outputs.into_iter().rev() {
+                            self.emit_node(o, nid);
+                        }
+                    }
+                    Kind::Return => {
+                        let ops = if node.inputs[1] != VOID {
+                            vec![regalloc2::Operand::reg_fixed_use(
+                                self.rg(node.inputs[1]),
+                                regalloc2::PReg::new(1, regalloc2::RegClass::Int),
+                            )]
+                        } else {
+                            vec![]
+                        };
+                        self.add_instr(nid, ops);
+                        self.emit_node(node.outputs[0], nid);
+                    }
+                    Kind::CInt { .. } => {
+                        let ops = vec![self.drg(nid)];
+                        self.add_instr(nid, ops);
+                    }
+                    Kind::Phi => {}
+                    Kind::Tuple { index } => {
+                        let is_start = self.nodes[node.inputs[0]].kind == Kind::Start && index == 0;
+                        if is_start || (self.nodes[node.inputs[0]].kind == Kind::If && index < 2) {
+                            self.nodes[nid].ralloc_backref = self.add_block(nid);
+                            self.bridge(prev, nid);
+
+                            if is_start {
+                                let mut parama = self.tys.parama(self.sig.ret);
+                                for (arg, ti) in self.nodes[VOID]
+                                    .clone()
+                                    .outputs
+                                    .into_iter()
+                                    .skip(1)
+                                    .zip(self.sig.args.range())
+                                {
+                                    let ty = self.tys.args[ti];
+                                    match self.tys.size_of(ty) {
+                                        0 => continue,
+                                        1..=8 => {
+                                            self.def_nid(arg);
+                                            self.add_instr(NEVER, vec![
+                                                regalloc2::Operand::reg_fixed_def(
+                                                    self.rg(arg),
+                                                    regalloc2::PReg::new(
+                                                        parama.next() as _,
+                                                        regalloc2::RegClass::Int,
+                                                    ),
+                                                ),
+                                            ]);
+                                        }
+                                        _ => todo!(),
+                                    }
+                                }
+                            }
+
+                            for o in node.outputs.into_iter().rev() {
+                                self.emit_node(o, nid);
+                            }
+                        } else {
+                            todo!();
+                        }
+                    }
+                    Kind::BinOp { op } => {
+                        let &[_, lhs, rhs] = node.inputs.as_slice() else { unreachable!() };
+
+                        let ops = if let Kind::CInt { .. } = self.nodes[rhs].kind
+                            && op.imm_binop(node.ty.is_signed(), 8).is_some()
+                        {
+                            vec![self.drg(nid), self.urg(lhs)]
+                        } else if op.binop(node.ty.is_signed(), 8).is_some() {
+                            vec![self.drg(nid), self.urg(lhs), self.urg(rhs)]
+                        } else if op.cond_op(node.ty.is_signed()).is_some() {
+                            return;
+                        } else {
+                            todo!("{op}")
+                        };
+                        self.add_instr(nid, ops);
+                    }
+                    Kind::UnOp { .. } => {
+                        let ops = vec![self.drg(nid), self.urg(node.inputs[1])];
+                        self.add_instr(nid, ops);
+                    }
+                    Kind::Call { func } => {
+                        self.nodes[nid].ralloc_backref = self.nodes[prev].ralloc_backref;
+                        let mut ops = vec![];
+
+                        let fuc = self.tys.funcs[func as usize].sig.unwrap();
+                        if self.tys.size_of(fuc.ret) != 0 {
+                            self.def_nid(nid);
+                            ops.push(regalloc2::Operand::reg_fixed_def(
+                                self.rg(nid),
+                                regalloc2::PReg::new(1, regalloc2::RegClass::Int),
+                            ));
+                        }
+
+                        let mut parama = self.tys.parama(fuc.ret);
+                        for (&i, ti) in node.inputs[1..].iter().zip(fuc.args.range()) {
+                            let ty = self.tys.args[ti];
+                            match self.tys.size_of(ty) {
+                                0 => continue,
+                                1..=8 => {
+                                    ops.push(regalloc2::Operand::reg_fixed_use(
+                                        self.rg(i),
+                                        regalloc2::PReg::new(
+                                            parama.next() as _,
+                                            regalloc2::RegClass::Int,
+                                        ),
+                                    ));
+                                }
+                                _ => todo!(),
+                            }
+                        }
+
+                        self.add_instr(nid, ops);
+
+                        for o in node.outputs.into_iter().rev() {
+                            if self.nodes[o].inputs[0] == nid {
+                                self.emit_node(o, nid);
+                            }
+                        }
                     }
                 }
+            }
 
-                for o in node.outputs {
-                    self.color_node(o);
+            fn bridge(&mut self, pred: u16, succ: u16) {
+                if self.nodes[pred].ralloc_backref == u16::MAX
+                    || self.nodes[succ].ralloc_backref == u16::MAX
+                {
+                    return;
                 }
-
-                self.color_node(node.inputs[0]);
-                None
+                self.blocks[self.nodes[pred].ralloc_backref as usize]
+                    .succs
+                    .push(regalloc2::Block::new(self.nodes[succ].ralloc_backref as usize));
+                self.blocks[self.nodes[succ].ralloc_backref as usize]
+                    .preds
+                    .push(regalloc2::Block::new(self.nodes[pred].ralloc_backref as usize));
             }
         }
-    }
 
-    fn emit_node(&mut self, ctrl: Nid, prev: Nid) -> Option<Nid> {
-        if matches!(self.ci.nodes[ctrl].kind, Kind::Region | Kind::Loop) {
-            let node = self.ci.nodes[ctrl].clone();
+        impl<'a> regalloc2::Function for Function<'a> {
+            fn num_insts(&self) -> usize {
+                self.instrs.len()
+            }
 
-            let idx = 1 + node.inputs.iter().position(|&i| i == prev).unwrap();
+            fn num_blocks(&self) -> usize {
+                self.blocks.len()
+            }
 
-            for ph in node.outputs {
-                if self.ci.nodes[ph].kind != Kind::Phi {
+            fn entry_block(&self) -> regalloc2::Block {
+                regalloc2::Block(0)
+            }
+
+            fn block_insns(&self, block: regalloc2::Block) -> regalloc2::InstRange {
+                self.blocks[block.index()].instrs
+            }
+
+            fn block_succs(&self, block: regalloc2::Block) -> &[regalloc2::Block] {
+                &self.blocks[block.index()].succs
+            }
+
+            fn block_preds(&self, block: regalloc2::Block) -> &[regalloc2::Block] {
+                &self.blocks[block.index()].preds
+            }
+
+            fn block_params(&self, block: regalloc2::Block) -> &[regalloc2::VReg] {
+                &self.blocks[block.index()].params
+            }
+
+            fn is_ret(&self, insn: regalloc2::Inst) -> bool {
+                self.nodes[self.instrs[insn.index()].nid].kind == Kind::Return
+            }
+
+            fn is_branch(&self, insn: regalloc2::Inst) -> bool {
+                matches!(
+                    self.nodes[self.instrs[insn.index()].nid].kind,
+                    Kind::If | Kind::Tuple { .. } | Kind::Loop | Kind::Region
+                )
+            }
+
+            fn branch_blockparams(
+                &self,
+                block: regalloc2::Block,
+                _insn: regalloc2::Inst,
+                _succ_idx: usize,
+            ) -> &[regalloc2::VReg] {
+                debug_assert!(
+                    self.blocks[block.index()].succs.len() == 1
+                        || self.blocks[block.index()].branch_blockparams.is_empty()
+                );
+
+                &self.blocks[block.index()].branch_blockparams
+            }
+
+            fn inst_operands(&self, insn: regalloc2::Inst) -> &[regalloc2::Operand] {
+                &self.instrs[insn.index()].ops
+            }
+
+            fn inst_clobbers(&self, insn: regalloc2::Inst) -> regalloc2::PRegSet {
+                if matches!(self.nodes[self.instrs[insn.index()].nid].kind, Kind::Call { .. }) {
+                    let mut set = regalloc2::PRegSet::default();
+                    for i in 2..12 {
+                        set.add(regalloc2::PReg::new(i, regalloc2::RegClass::Int));
+                    }
+                    set
+                } else {
+                    regalloc2::PRegSet::default()
+                }
+            }
+
+            fn num_vregs(&self) -> usize {
+                self.nodes.values.len()
+            }
+
+            fn spillslot_size(&self, regclass: regalloc2::RegClass) -> usize {
+                match regclass {
+                    regalloc2::RegClass::Int => 1,
+                    regalloc2::RegClass::Float => unreachable!(),
+                    regalloc2::RegClass::Vector => unreachable!(),
+                }
+            }
+        }
+
+        let mut nodes = std::mem::take(&mut self.ci.nodes);
+
+        let func = Function::new(&mut nodes, &self.tys, sig);
+        let env = regalloc2::MachineEnv {
+            preferred_regs_by_class: [
+                (1..13).map(|i| regalloc2::PReg::new(i, regalloc2::RegClass::Int)).collect(),
+                vec![],
+                vec![],
+            ],
+            non_preferred_regs_by_class: [
+                (13..64).map(|i| regalloc2::PReg::new(i, regalloc2::RegClass::Int)).collect(),
+                vec![],
+                vec![],
+            ],
+            scratch_by_class: Default::default(),
+            fixed_stack_slots: Default::default(),
+        };
+        let options = regalloc2::RegallocOptions { verbose_log: false, validate_ssa: true };
+        let output = regalloc2::run(&func, &env, &options).unwrap_or_else(|err| panic!("{err}"));
+
+        let mut saved_regs = HashMap::<u8, u8>::default();
+        let mut atr = |allc: regalloc2::Allocation| {
+            debug_assert!(allc.is_reg());
+            let hvenc = regalloc2::PReg::from_index(allc.index()).hw_enc() as u8;
+            if hvenc <= 12 {
+                return hvenc;
+            }
+            let would_insert = saved_regs.len() as u8 + reg::RET_ADDR + 1;
+            *saved_regs.entry(hvenc).or_insert(would_insert)
+        };
+
+        for (i, block) in func.blocks.iter().enumerate() {
+            let blk = regalloc2::Block(i as _);
+            func.nodes[block.nid].offset = self.ci.code.len() as _;
+            for instr_or_edit in output.block_insts_and_edits(&func, blk) {
+                let inst = match instr_or_edit {
+                    regalloc2::InstOrEdit::Inst(inst) => inst,
+                    regalloc2::InstOrEdit::Edit(&regalloc2::Edit::Move { from, to }) => {
+                        self.ci.emit(instrs::cp(atr(to), atr(from)));
+                        continue;
+                    }
+                };
+
+                let nid = func.instrs[inst.index()].nid;
+                if nid == NEVER {
                     continue;
-                }
-
-                self.emit_pass(self.ci.nodes[ph].inputs[idx], ph);
-            }
-
-            match (self.ci.nodes[ctrl].kind, self.ci.nodes.visited.set(ctrl)) {
-                (Kind::Region, true) | (Kind::Loop, false) => {
-                    self.ci.jump_relocs.push((ctrl, Reloc::new(self.ci.code.len(), 1, 4)));
-                    self.ci.emit(instrs::jmp(0));
-                    return None;
-                }
-                _ => {}
-            }
-        } else if !self.ci.nodes.visited.set(ctrl) {
-            return None;
-        }
-
-        let node = self.ci.nodes[ctrl].clone();
-        match node.kind {
-            Kind::Start => self.emit_node(node.outputs[0], VOID),
-            Kind::End => None,
-            Kind::If => {
-                let &[_, cond] = node.inputs.as_slice() else { unreachable!() };
-                let &[mut then, mut else_] = node.outputs.as_slice() else { unreachable!() };
-
-                if let Kind::BinOp { op } = self.ci.nodes[cond].kind
-                    && let Some((op, swapped)) = op.cond_op(node.ty.is_signed())
-                {
-                    self.ci.nodes[cond].offset = self.ci.code.len() as _;
-                    if swapped {
-                        std::mem::swap(&mut then, &mut else_);
-                    }
-                    let &[_, lhs, rhs] = self.ci.nodes[cond].inputs.as_slice() else {
-                        unreachable!()
-                    };
-                    self.ci.emit(op(node_loc!(self, lhs).reg, node_loc!(self, rhs).reg, 0));
-                } else {
-                    todo!()
-                }
-
-                self.emit_node(then, ctrl);
-                let jump = self.ci.code.len() as i64 - self.ci.nodes[cond].offset as i64;
-                self.emit_node(else_, ctrl);
-                write_reloc(&mut self.ci.code, self.ci.nodes[cond].offset as usize + 3, jump, 2);
-
-                None
-            }
-            Kind::Region | Kind::Loop => {
-                self.ci.nodes[ctrl].offset = self.ci.code.len() as _;
-                for o in node.outputs.into_iter().rev() {
-                    self.emit_node(o, ctrl);
-                }
-                None
-            }
-            Kind::Return => {
-                if node.inputs[1] != VOID {
-                    let loc = Loc { reg: 1 };
-                    if node_loc!(self, node.inputs[1]) != loc {
-                        self.ci.emit(instrs::cp(loc.reg, node_loc!(self, node.inputs[1]).reg));
-                    }
-                }
-                self.ci.ret_relocs.push(Reloc::new(self.ci.code.len(), 1, 4));
-                self.ci.emit(instrs::jmp(0));
-                self.emit_node(node.outputs[0], ctrl);
-                None
-            }
-            Kind::CInt { value } => {
-                if node.color != 0 {
-                    if node_loc!(self, ctrl) == Loc::default() {
-                        node_loc!(self, ctrl) = Loc { reg: self.ci.regs.allocate(0) };
-                    }
-                    // TODO: respect size
-                    self.ci.emit(instrs::li64(node_loc!(self, ctrl).reg, value as _));
-                }
-                None
-            }
-            Kind::Phi => None,
-            Kind::Tuple { index } => {
-                if (self.ci.nodes[node.inputs[0]].kind == Kind::Start && index == 0)
-                    || (self.ci.nodes[node.inputs[0]].kind == Kind::If && index < 2)
-                {
-                    for o in node.outputs.into_iter().rev() {
-                        self.emit_node(o, ctrl);
-                    }
-                } else {
-                    todo!();
-                }
-
-                None
-            }
-            Kind::BinOp { op } => {
-                if node.color != 0 {
-                    let &[_, lhs, rhs] = node.inputs.as_slice() else { unreachable!() };
-
-                    self.lazy_init(ctrl);
-                    if self.ci.nodes[rhs].color == 0
-                        && let Kind::CInt { value } = self.ci.nodes[rhs].kind
-                        && let Some(op) =
-                            op.imm_binop(node.ty.is_signed(), self.tys.size_of(node.ty))
-                    {
-                        self.ci.emit(op(
-                            node_loc!(self, ctrl).reg,
-                            node_loc!(self, lhs).reg,
-                            value as _,
-                        ));
-                    } else if let Some(op) =
-                        op.binop(node.ty.is_signed(), self.tys.size_of(node.ty))
-                    {
-                        self.ci.emit(op(
-                            node_loc!(self, ctrl).reg,
-                            node_loc!(self, lhs).reg,
-                            node_loc!(self, rhs).reg,
-                        ));
-                    } else {
-                        todo!()
-                    }
-                }
-                None
-            }
-            Kind::UnOp { op } => {
-                if node.color != 0 {
-                    let op = op.unop().expect("TODO: unsupported unary operator");
-                    self.lazy_init(ctrl);
-                    self.ci
-                        .emit(op(node_loc!(self, ctrl).reg, node_loc!(self, node.inputs[1]).reg));
-                }
-                None
-            }
-            Kind::Call { func } => {
-                let fuc = self.tys.funcs[func as usize].sig.unwrap();
-                let mut parama = self.tys.parama(fuc.ret);
-                for (&i, ti) in node.inputs[1..].iter().zip(fuc.args.range()) {
-                    let ty = self.tys.args[ti];
-                    match self.tys.size_of(ty) {
-                        0 => continue,
-                        1..=8 => {
-                            let loc = Loc { reg: parama.next() };
-                            if node_loc!(self, i) != loc {
-                                self.ci.emit(instrs::cp(loc.reg, node_loc!(self, i).reg));
-                            }
+                };
+                let allocs = output.inst_allocs(inst);
+                let node = &func.nodes[nid];
+                match node.kind {
+                    Kind::Start => todo!(),
+                    Kind::End => todo!(),
+                    Kind::If => {
+                        let &[_, cond] = node.inputs.as_slice() else { unreachable!() };
+                        if let Kind::BinOp { op } = func.nodes[cond].kind
+                            && let Some((op, swapped)) = op.cond_op(node.ty.is_signed())
+                        {
+                            let rel = Reloc::new(self.ci.code.len(), 3, 2);
+                            self.ci.jump_relocs.push((node.outputs[!swapped as usize], rel));
+                            let &[lhs, rhs] = allocs else { unreachable!() };
+                            self.ci.emit(op(atr(lhs), atr(rhs), 0));
+                        } else {
+                            todo!()
                         }
-                        _ => todo!(),
                     }
-                }
+                    Kind::Loop | Kind::Region => {
+                        if node.ralloc_backref as usize != i + 1 {
+                            let rel = Reloc::new(self.ci.code.len(), 1, 4);
+                            self.ci.jump_relocs.push((nid, rel));
+                            self.ci.emit(instrs::jmp(0));
+                        }
+                    }
+                    Kind::Return => {
+                        if i != func.blocks.len() - 1 {
+                            let rel = Reloc::new(self.ci.code.len(), 1, 4);
+                            self.ci.ret_relocs.push(rel);
+                            self.ci.emit(instrs::jmp(0));
+                        }
+                    }
+                    Kind::CInt { value } => {
+                        self.ci.emit(instrs::li64(atr(allocs[0]), value as _));
+                    }
+                    Kind::Phi => todo!(),
+                    Kind::Tuple { .. } => todo!(),
+                    Kind::UnOp { op } => {
+                        let op = op.unop().expect("TODO: unary operator not supported");
+                        let &[dst, oper] = allocs else { unreachable!() };
+                        self.ci.emit(op(atr(dst), atr(oper)));
+                    }
+                    Kind::BinOp { op } => {
+                        let &[.., rhs] = node.inputs.as_slice() else { unreachable!() };
 
-                let reloc = Reloc::new(self.ci.code.len(), 3, 4);
-                self.ci.relocs.push(TypedReloc { target: ty::Kind::Func(func).compress(), reloc });
-                self.ci.emit(jal(reg::RET_ADDR, reg::ZERO, 0));
-                self.emit_pass_low(Loc { reg: 1 }, ctrl);
-                for o in node.outputs.into_iter().rev() {
-                    if self.ci.nodes[o].inputs[0] == ctrl {
-                        self.emit_node(o, ctrl);
+                        if let Kind::CInt { value } = func.nodes[rhs].kind
+                            && let Some(op) =
+                                op.imm_binop(node.ty.is_signed(), func.tys.size_of(node.ty))
+                        {
+                            let &[dst, lhs] = allocs else { unreachable!() };
+                            self.ci.emit(op(atr(dst), atr(lhs), value as _));
+                        } else if let Some(op) =
+                            op.binop(node.ty.is_signed(), func.tys.size_of(node.ty))
+                        {
+                            let &[dst, lhs, rhs] = allocs else { unreachable!() };
+                            self.ci.emit(op(atr(dst), atr(lhs), atr(rhs)));
+                        } else if op.cond_op(node.ty.is_signed()).is_some() {
+                        } else {
+                            todo!()
+                        }
+                    }
+                    Kind::Call { func } => {
+                        self.ci.relocs.push(TypedReloc {
+                            target: ty::Kind::Func(func).compress(),
+                            reloc: Reloc::new(self.ci.code.len(), 3, 4),
+                        });
+                        self.ci.emit(instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
                     }
                 }
-                None
             }
         }
+
+        self.ci.nodes = nodes;
+
+        saved_regs.len()
     }
 
     // TODO: sometimes its better to do this in bulk
@@ -2499,35 +2475,6 @@ impl Codegen {
         let sp = self.tys.args.windows(needle.len()).position(|val| val == needle).unwrap();
         self.tys.args.truncate((sp + needle.len()).max(arg_base));
         ty::Tuple::new(sp, len)
-    }
-
-    fn emit_pass(&mut self, src: Nid, dst: Nid) {
-        if self.ci.nodes[src].color == self.ci.nodes[dst].color {
-            return;
-        }
-        self.emit_pass_low(node_loc!(self, src), dst);
-    }
-
-    fn emit_pass_low(&mut self, src: Loc, dst: Nid) {
-        let loc = &mut node_loc!(self, dst);
-        if src != *loc {
-            if *loc == Loc::default() {
-                let reg = self.ci.regs.allocate(0);
-                *loc = Loc { reg };
-            }
-            let inst = instrs::cp(loc.reg, src.reg);
-            self.ci.emit(inst);
-        }
-    }
-
-    fn lazy_init(&mut self, expr: Nid) -> bool {
-        let loc = &mut node_loc!(self, expr);
-        if *loc == Loc::default() {
-            let reg = self.ci.regs.allocate(0);
-            *loc = Loc { reg };
-            return true;
-        }
-        false
     }
 
     fn fatal_report(&self, pos: Pos, msg: impl Display) -> ! {
@@ -2777,106 +2724,6 @@ fn common_dom(mut a: Nid, mut b: Nid, nodes: &mut Nodes) -> Nid {
     a
 }
 
-fn scan_idom(
-    nodes: &mut Nodes,
-    target: Nid,
-    pred: &mut impl FnMut(&mut Nodes, Nid) -> bool,
-) -> Option<Nid> {
-    if !pred(nodes, target) {
-        return None;
-    }
-    Some(match nodes[target].kind {
-        Kind::Start => VOID,
-        Kind::End => unreachable!(),
-        Kind::Loop
-        | Kind::CInt { .. }
-        | Kind::BinOp { .. }
-        | Kind::UnOp { .. }
-        | Kind::Call { .. }
-        | Kind::Phi
-        | Kind::Tuple { .. }
-        | Kind::Return
-        | Kind::If => nodes[target].inputs[0],
-        Kind::Region => {
-            let &[mut a, mut b] = nodes[target].inputs.as_slice() else { unreachable!() };
-            while a != b {
-                let [ldepth, rdepth] = [idepth(nodes, a), idepth(nodes, b)];
-                if ldepth >= rdepth {
-                    a = scan_idom(nodes, a, pred)?;
-                }
-                if ldepth <= rdepth {
-                    b = scan_idom(nodes, b, pred)?;
-                }
-            }
-            a
-        }
-    })
-}
-
-fn walk_use_doms(
-    target: Nid,
-    nodes: &mut Nodes,
-    mut all: impl FnMut(&mut Nodes, Nid) -> bool,
-) -> bool {
-    let dom =
-        if matches!(nodes[target].kind, Kind::Call { .. }) { target } else { idom(nodes, target) };
-    for mut out in nodes[target].outputs.clone().into_iter().skip(1) {
-        out = use_block(target, out, nodes);
-        while out != dom {
-            debug_assert!(idepth(nodes, out) > idepth(nodes, dom),);
-            debug_assert_ne!(out, VOID);
-            out = match scan_idom(nodes, out, &mut all) {
-                Some(next) => next,
-                None => return false,
-            };
-        }
-    }
-
-    true
-}
-
-fn check_no_calls(target: Nid, nodes: &mut Nodes) -> bool {
-    walk_use_doms(target, nodes, |nd, ud| !matches!(nd[ud].kind, Kind::Call { .. } | Kind::Loop))
-}
-
-fn is_last_branch_use(target: Nid, us: Nid, nodes: &mut Nodes) -> bool {
-    if nodes[target].outputs.len() == 1 {
-        return true;
-    }
-
-    let usdom = if matches!(nodes[us].kind, Kind::Call { .. }) { us } else { idom(nodes, us) };
-    let tadom =
-        if matches!(nodes[target].kind, Kind::Call { .. }) { target } else { idom(nodes, target) };
-    if loop_depth(usdom, nodes) > loop_depth(tadom, nodes) {
-        return false;
-    }
-
-    let outputs = nodes[target].outputs.clone();
-    'o: for o in outputs {
-        if o == us || idepth(nodes, o) < idepth(nodes, us) {
-            continue;
-        }
-
-        let mut odom = if matches!(nodes[o].kind, Kind::Call { .. }) { o } else { idom(nodes, o) };
-
-        if odom == usdom {
-            return nodes[usdom].outputs.find(us) < nodes[odom].outputs.find(o);
-        }
-
-        while odom != usdom {
-            odom = idom(nodes, odom);
-            if idepth(nodes, odom) < idepth(nodes, us) {
-                continue 'o;
-            }
-            debug_assert_ne!(odom, VOID);
-        }
-
-        return false;
-    }
-
-    true
-}
-
 #[cfg(test)]
 mod tests {
     use std::fmt::Write;
@@ -2884,6 +2731,7 @@ mod tests {
     const README: &str = include_str!("../README.md");
 
     fn generate(ident: &'static str, input: &'static str, output: &mut String) {
+        _ = env_logger::builder().is_test(true).try_init();
         let mut codegen =
             super::Codegen { files: crate::test_parse_files(ident, input), ..Default::default() };
 

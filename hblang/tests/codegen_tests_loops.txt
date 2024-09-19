@@ -1,11 +1,3 @@
-main:
-    ADDI64 r254, r254, -8d
-    ST r31, r254, 0a, 8h
-    LI64 r2, 10d
-    JAL r31, r0, :fib
-    LD r31, r254, 0a, 8h
-    ADDI64 r254, r254, 8d
-    JALA r0, r31, 0a
 fib:
     ADDI64 r254, r254, -40d
     ST r31, r254, 0a, 40h
@@ -24,6 +16,14 @@ fib:
  1: CP r1, r33
     LD r31, r254, 0a, 40h
     ADDI64 r254, r254, 40d
+    JALA r0, r31, 0a
+main:
+    ADDI64 r254, r254, -8d
+    ST r31, r254, 0a, 8h
+    LI64 r2, 10d
+    JAL r31, r0, :fib
+    LD r31, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
 code size: 218
 ret: 55

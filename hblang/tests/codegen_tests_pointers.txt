@@ -1,3 +1,10 @@
+drop:
+    ADDI64 r254, r254, -16d
+    ST r31, r254, 0a, 16h
+    CP r32, r2
+    LD r31, r254, 0a, 16h
+    ADDI64 r254, r254, 16d
+    JALA r0, r31, 0a
 main:
     ADDI64 r254, r254, -40d
     ST r31, r254, 8a, 32h
@@ -13,13 +20,6 @@ main:
     ADDI64 r1, r34, -2d
     LD r31, r254, 8a, 32h
     ADDI64 r254, r254, 40d
-    JALA r0, r31, 0a
-drop:
-    ADDI64 r254, r254, -16d
-    ST r31, r254, 0a, 16h
-    CP r32, r2
-    LD r31, r254, 0a, 16h
-    ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
 modify:
     ADDI64 r254, r254, -24d

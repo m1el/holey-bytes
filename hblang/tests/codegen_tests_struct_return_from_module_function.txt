@@ -1,3 +1,16 @@
+foo:
+    ADDI64 r254, r254, -32d
+    ST r31, r254, 16a, 16h
+    LI64 r32, 3d
+    ST r32, r254, 0a, 8h
+    LI64 r32, 2d
+    ST r32, r254, 8a, 4h
+    LI64 r32, 2d
+    ST r32, r254, 12a, 4h
+    LD r1, r254, 0a, 16h
+    LD r31, r254, 16a, 16h
+    ADDI64 r254, r254, 32d
+    JALA r0, r31, 0a
 main:
     ADDI64 r254, r254, -40d
     ST r31, r254, 16a, 24h
@@ -20,19 +33,6 @@ main:
     SUB64 r1, r32, r33
     LD r31, r254, 16a, 24h
     ADDI64 r254, r254, 40d
-    JALA r0, r31, 0a
-foo:
-    ADDI64 r254, r254, -32d
-    ST r31, r254, 16a, 16h
-    LI64 r32, 3d
-    ST r32, r254, 0a, 8h
-    LI64 r32, 2d
-    ST r32, r254, 8a, 4h
-    LI64 r32, 2d
-    ST r32, r254, 12a, 4h
-    LD r1, r254, 0a, 16h
-    LD r31, r254, 16a, 16h
-    ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
 code size: 341
 ret: 0

@@ -601,6 +601,19 @@ impl ParamAlloc {
     }
 }
 
+#[repr(packed)]
+#[allow(dead_code)]
+struct AbleOsExecutableHeader {
+    magic_number: [u8; 3],
+    executable_version: u32,
+
+    code_length: u64,
+    data_length: u64,
+    debug_length: u64,
+    config_length: u64,
+    metadata_length: u64,
+}
+
 #[derive(Default)]
 struct Types {
     syms: HashMap<SymKey, ty::Id>,
@@ -613,15 +626,24 @@ struct Types {
     arrays: Vec<Array>,
 }
 
+const HEADER_SIZE: usize = std::mem::size_of::<AbleOsExecutableHeader>();
+
 impl Types {
     fn assemble(&mut self, to: &mut Vec<u8>) {
+        to.extend([0u8; HEADER_SIZE]);
+
         emit(to, instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
         emit(to, instrs::tx());
-        self.dump_reachable(0, to);
-        Reloc::new(0, 3, 4).apply_jump(to, self.funcs[0].offset, 0);
+        let exe = self.dump_reachable(0, to);
+        Reloc::new(HEADER_SIZE, 3, 4).apply_jump(to, self.funcs[0].offset, 0);
+
+        unsafe { *to.as_mut_ptr().cast::<AbleOsExecutableHeader>() = exe }
     }
 
-    fn dump_reachable(&mut self, from: ty::Func, to: &mut Vec<u8>) {
+    fn dump_reachable(&mut self, from: ty::Func, to: &mut Vec<u8>) -> AbleOsExecutableHeader {
+        let mut used_funcs = vec![];
+        let mut used_globals = vec![];
+
         let mut frontier = vec![ty::Kind::Func(from).compress()];
 
         while let Some(itm) = frontier.pop() {
@@ -631,8 +653,8 @@ impl Types {
                     if task::is_done(fuc.offset) {
                         continue;
                     }
-                    fuc.offset = to.len() as _;
-                    to.extend(&fuc.code);
+                    fuc.offset = 0;
+                    used_funcs.push(func);
                     frontier.extend(fuc.relocs.iter().map(|r| r.target));
                 }
                 ty::Kind::Global(glob) => {
@@ -640,18 +662,31 @@ impl Types {
                     if task::is_done(glb.offset) {
                         continue;
                     }
-                    glb.offset = to.len() as _;
-                    to.extend(&glb.data);
+                    glb.offset = 0;
+                    used_globals.push(glob);
                 }
                 _ => unreachable!(),
             }
         }
 
-        for fuc in &self.funcs {
-            if !task::is_done(fuc.offset) {
-                continue;
-            }
+        for &func in &used_funcs {
+            let fuc = &mut self.funcs[func as usize];
+            fuc.offset = to.len() as _;
+            to.extend(&fuc.code);
+        }
 
+        let code_length = to.len();
+
+        for &global in &used_globals {
+            let global = &mut self.globals[global as usize];
+            global.offset = to.len() as _;
+            to.extend(&global.data);
+        }
+
+        let data_length = to.len() - code_length;
+
+        for func in used_funcs {
+            let fuc = &self.funcs[func as usize];
             for rel in &fuc.relocs {
                 let offset = match rel.target.expand() {
                     ty::Kind::Func(fun) => self.funcs[fun as usize].offset,
@@ -660,6 +695,16 @@ impl Types {
                 };
                 rel.reloc.apply_jump(to, offset, fuc.offset);
             }
+        }
+
+        AbleOsExecutableHeader {
+            magic_number: [0x15, 0x91, 0xD2],
+            executable_version: 0,
+            code_length: (code_length - HEADER_SIZE) as _,
+            data_length: data_length as _,
+            debug_length: 0,
+            config_length: 0,
+            metadata_length: 0,
         }
     }
 
@@ -892,7 +937,10 @@ fn disasm(
         *binary = prev;
     }
 
-    '_dump: for (&off, &(name, len, kind)) in functions.iter() {
+    let mut ordered = functions.iter().collect::<Vec<_>>();
+    ordered.sort_unstable_by_key(|(_, (name, _, _))| name);
+
+    '_dump: for (&off, &(name, len, kind)) in ordered {
         if matches!(kind, DisasmItem::Global) {
             continue;
         }
@@ -1336,7 +1384,7 @@ fn test_run_vm(out: &[u8], output: &mut String) {
     let mut vm = unsafe {
         hbvm::Vm::<_, { 1024 * 100 }>::new(
             LoggedMem::default(),
-            hbvm::mem::Address::new(out.as_ptr() as u64),
+            hbvm::mem::Address::new(out.as_ptr() as u64).wrapping_add(HEADER_SIZE),
         )
     };
 
@@ -1375,7 +1423,7 @@ fn test_run_vm(out: &[u8], output: &mut String) {
         }
     };
 
-    writeln!(output, "code size: {}", out.len()).unwrap();
+    writeln!(output, "code size: {}", out.len() - HEADER_SIZE).unwrap();
     writeln!(output, "ret: {:?}", vm.read_reg(1).0).unwrap();
     writeln!(output, "status: {:?}", stat).unwrap();
 }

@@ -1,3 +1,10 @@
+inl:
+    ADDI64 r254, r254, -16d
+    ST r31, r254, 0a, 16h
+    LRA r32, r0, :"luhahah\0"
+    LD r31, r254, 0a, 16h
+    ADDI64 r254, r254, 16d
+    JALA r0, r31, 0a
 main:
     ADDI64 r254, r254, -8d
     ST r31, r254, 0a, 8h
@@ -5,13 +12,6 @@ main:
     JAL r31, r0, :inl
     LD r31, r254, 0a, 8h
     ADDI64 r254, r254, 8d
-    JALA r0, r31, 0a
-inl:
-    ADDI64 r254, r254, -16d
-    ST r31, r254, 0a, 16h
-    LRA r32, r0, :"luhahah\0"
-    LD r31, r254, 0a, 16h
-    ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
 outl:
     ADDI64 r254, r254, -16d

@@ -1,45 +1,3 @@
-main:
-    ADDI64 r254, r254, -64d
-    ST r31, r254, 48a, 16h
-    LI64 r32, 0d
-    ST r32, r254, 0a, 8h
-    LI64 r32, 0d
-    ST r32, r254, 8a, 8h
-    LD r2, r254, 0a, 16h
-    LI64 r32, 0d
-    ST r32, r254, 16a, 8h
-    LI64 r32, 0d
-    ST r32, r254, 24a, 8h
-    LD r4, r254, 16a, 16h
-    LI64 r32, 0d
-    ST r32, r254, 32a, 8h
-    LI64 r32, 0d
-    ST r32, r254, 40a, 8h
-    LD r6, r254, 32a, 16h
-    LI64 r8, 10d
-    JAL r31, r0, :line
-    LI64 r32, 0d
-    ST r32, r254, 0a, 8h
-    LI64 r32, 0d
-    ST r32, r254, 8a, 8h
-    LD r2, r254, 0a, 16h
-    LI64 r32, 0d
-    ST r32, r254, 16a, 8h
-    LI64 r32, 0d
-    ST r32, r254, 24a, 8h
-    LD r4, r254, 16a, 16h
-    LI64 r32, 0d
-    ST r32, r254, 32a, 8h
-    LI64 r32, 0d
-    ST r32, r254, 40a, 8h
-    LD r6, r254, 32a, 16h
-    LI64 r8, 10d
-    JAL r31, r0, :rect_line
-    JAL r31, r0, :example
-    LI64 r1, 0d
-    LD r31, r254, 48a, 16h
-    ADDI64 r254, r254, 64d
-    JALA r0, r31, 0a
 example:
     ADDI64 r254, r254, -48d
     ST r31, r254, 0a, 48h
@@ -103,6 +61,69 @@ integer:
  1: LD r31, r254, 0a, 56h
     ADDI64 r254, r254, 56d
     JALA r0, r31, 0a
+line:
+    ADDI64 r254, r254, -80d
+    ST r31, r254, 48a, 32h
+    ST r2, r254, 16a, 16h
+    ST r4, r254, 0a, 16h
+    ST r6, r254, 32a, 16h
+    CP r32, r8
+    LI64 r33, 1d
+    JEQ r33, r0, :0
+    LD r33, r254, 16a, 8h
+    LD r34, r254, 0a, 8h
+    JGTS r33, r34, :1
+    JMP :1
+ 1: JMP :2
+ 0: LD r34, r254, 24a, 8h
+    LD r33, r254, 8a, 8h
+    JGTS r34, r33, :2
+    JMP :2
+ 2: LD r31, r254, 48a, 32h
+    ADDI64 r254, r254, 80d
+    JALA r0, r31, 0a
+main:
+    ADDI64 r254, r254, -64d
+    ST r31, r254, 48a, 16h
+    LI64 r32, 0d
+    ST r32, r254, 0a, 8h
+    LI64 r32, 0d
+    ST r32, r254, 8a, 8h
+    LD r2, r254, 0a, 16h
+    LI64 r32, 0d
+    ST r32, r254, 16a, 8h
+    LI64 r32, 0d
+    ST r32, r254, 24a, 8h
+    LD r4, r254, 16a, 16h
+    LI64 r32, 0d
+    ST r32, r254, 32a, 8h
+    LI64 r32, 0d
+    ST r32, r254, 40a, 8h
+    LD r6, r254, 32a, 16h
+    LI64 r8, 10d
+    JAL r31, r0, :line
+    LI64 r32, 0d
+    ST r32, r254, 0a, 8h
+    LI64 r32, 0d
+    ST r32, r254, 8a, 8h
+    LD r2, r254, 0a, 16h
+    LI64 r32, 0d
+    ST r32, r254, 16a, 8h
+    LI64 r32, 0d
+    ST r32, r254, 24a, 8h
+    LD r4, r254, 16a, 16h
+    LI64 r32, 0d
+    ST r32, r254, 32a, 8h
+    LI64 r32, 0d
+    ST r32, r254, 40a, 8h
+    LD r6, r254, 32a, 16h
+    LI64 r8, 10d
+    JAL r31, r0, :rect_line
+    JAL r31, r0, :example
+    LI64 r1, 0d
+    LD r31, r254, 48a, 16h
+    ADDI64 r254, r254, 64d
+    JALA r0, r31, 0a
 rect_line:
     ADDI64 r254, r254, -112d
     ST r31, r254, 48a, 64h
@@ -134,27 +155,6 @@ rect_line:
     JMP :5
  1: LD r31, r254, 48a, 64h
     ADDI64 r254, r254, 112d
-    JALA r0, r31, 0a
-line:
-    ADDI64 r254, r254, -80d
-    ST r31, r254, 48a, 32h
-    ST r2, r254, 16a, 16h
-    ST r4, r254, 0a, 16h
-    ST r6, r254, 32a, 16h
-    CP r32, r8
-    LI64 r33, 1d
-    JEQ r33, r0, :0
-    LD r33, r254, 16a, 8h
-    LD r34, r254, 0a, 8h
-    JGTS r33, r34, :1
-    JMP :1
- 1: JMP :2
- 0: LD r34, r254, 24a, 8h
-    LD r33, r254, 8a, 8h
-    JGTS r34, r33, :2
-    JMP :2
- 2: LD r31, r254, 48a, 32h
-    ADDI64 r254, r254, 80d
     JALA r0, r31, 0a
 code size: 1400
 ret: 0
