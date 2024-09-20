@@ -36,10 +36,6 @@ pub mod idfl {
         REFERENCED,
         COMPTIME,
     }
-
-    pub fn count(i: IdentFlags) -> IdentIndex {
-        (i & !ALL) as _
-    }
 }
 
 pub fn no_loader(_: &str, _: &str) -> io::Result<FileId> {
@@ -187,9 +183,8 @@ impl<'a, 'b> Parser<'a, 'b> {
     }
 
     fn declare_rec(&mut self, expr: &Expr, top_level: bool) {
-        let idx = |idx| top_level.not().then_some(idx);
         match *expr {
-            Expr::Ident { pos, id, index, .. } => self.declare(pos, id, idx(index)),
+            Expr::Ident { pos, id, is_first, .. } => self.declare(pos, id, is_first || top_level),
             Expr::Ctor { fields, .. } => {
                 for CtorField { value, .. } in fields {
                     self.declare_rec(value, top_level)
@@ -199,10 +194,8 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
     }
 
-    fn declare(&mut self, pos: Pos, id: Ident, index_to_check: Option<IdentIndex>) {
-        if let Some(index) = index_to_check
-            && index != 0
-        {
+    fn declare(&mut self, pos: Pos, id: Ident, valid_order: bool) {
+        if !valid_order {
             self.report(
                 pos,
                 format_args!(
@@ -221,28 +214,25 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
     }
 
-    fn resolve_ident(&mut self, token: Token) -> (Ident, IdentIndex) {
+    fn resolve_ident(&mut self, token: Token) -> (Ident, bool) {
         let is_ct = token.kind == TokenKind::CtIdent;
         let name = self.lexer.slice(token.range());
 
         if let Some(builtin) = crate::ty::from_str(name) {
-            return (builtin, 0);
+            return (builtin, false);
         }
 
-        let (i, id) = match self
+        let (i, id, bl) = match self
             .idents
             .iter_mut()
             .enumerate()
             .rfind(|(_, elem)| self.lexer.slice(ident::range(elem.ident)) == name)
         {
-            Some((i, elem)) => {
-                elem.flags += 1;
-                (i, elem)
-            }
+            Some((i, elem)) => (i, elem, false),
             None => {
                 let id = ident::new(token.start, name.len() as _);
                 self.idents.push(ScopeIdent { ident: id, declared: false, flags: 0 });
-                (self.idents.len() - 1, self.idents.last_mut().unwrap())
+                (self.idents.len() - 1, self.idents.last_mut().unwrap(), true)
             }
         };
 
@@ -252,7 +242,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             self.captured.push(id.ident);
         }
 
-        (id.ident, idfl::count(id.flags))
+        (id.ident, bl)
     }
 
     fn move_str(&mut self, range: Token) -> &'a str {
@@ -332,9 +322,9 @@ impl<'a, 'b> Parser<'a, 'b> {
                 trailing_comma: std::mem::take(&mut self.trailing_sep),
             },
             T::Ident | T::CtIdent => {
-                let (id, index) = self.resolve_ident(token);
+                let (id, is_first) = self.resolve_ident(token);
                 let name = self.move_str(token);
-                E::Ident { pos, is_ct: token.kind == T::CtIdent, name, id, index }
+                E::Ident { pos, is_ct: token.kind == T::CtIdent, name, id, is_first }
             }
             T::If => E::If {
                 pos,
@@ -359,15 +349,14 @@ impl<'a, 'b> Parser<'a, 'b> {
                     self.expect_advance(T::LParen);
                     self.collect_list(T::Comma, T::RParen, |s| {
                         let name = s.advance_ident();
-                        let (id, index) = s.resolve_ident(name);
-                        s.declare(name.start, id, None);
+                        let (id, _) = s.resolve_ident(name);
+                        s.declare(name.start, id, true);
                         s.expect_advance(T::Colon);
                         Arg {
                             pos: name.start,
                             name: s.move_str(name),
                             is_ct: name.kind == T::CtIdent,
                             id,
-                            index,
                             ty: s.expr(),
                         }
                     })
@@ -488,8 +477,8 @@ impl<'a, 'b> Parser<'a, 'b> {
                     value: if s.advance_if(TokenKind::Colon) {
                         s.expr()
                     } else {
-                        let (id, index) = s.resolve_ident(name_tok);
-                        Expr::Ident { pos: name_tok.start, is_ct: false, id, name, index }
+                        let (id, is_first) = s.resolve_ident(name_tok);
+                        Expr::Ident { pos: name_tok.start, is_ct: false, id, name, is_first }
                     },
                 }
             }),
@@ -598,7 +587,6 @@ pub struct Arg<'a> {
     pub name: &'a str,
     pub id: Ident,
     pub is_ct: bool,
-    pub index: IdentIndex,
     pub ty: Expr<'a>,
 }
 
@@ -710,11 +698,11 @@ generate_expr! {
         /// note: ':unicode:' is any utf-8 character except ascii
         /// `'[a-zA-Z_:unicode:][a-zA-Z0-9_:unicode:]*'`
         Ident {
-            pos:   Pos,
+            pos: Pos,
             is_ct: bool,
-            id:    Ident,
-            name:  &'a str,
-            index: IdentIndex,
+            is_first: bool,
+            id: Ident,
+            name: &'a str,
         },
         /// `LIST('{', [';'], '}', Expr)`
         Block {

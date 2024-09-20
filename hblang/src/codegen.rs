@@ -11,7 +11,8 @@ use {
         ty, Field, Func, Global, LoggedMem, ParamAlloc, Reloc, Sig, Struct, SymKey, TypedReloc,
         Types,
     },
-    std::fmt::Display,
+    core::panic,
+    std::{fmt::Display, usize},
 };
 
 type Offset = u32;
@@ -411,7 +412,6 @@ struct Loop {
 
 struct Variable {
     id: Ident,
-    uses_left: u32,
     value: Value,
 }
 
@@ -744,7 +744,7 @@ impl Codegen {
                             is_ct: false,
                             id,
                             name: "booodab",
-                            index: u16::MAX,
+                            is_first: false,
                         })
                         .map(|expr| self.expr(&expr))
                         .collect::<Option<Vec<_>>>()?;
@@ -854,13 +854,7 @@ impl Codegen {
                         args.iter().zip(sig.args.view(&self.tys.args).to_owned()).zip(cargs)
                     {
                         let loc = self.expr_ctx(arg, Ctx::default().with_ty(ty))?.loc;
-
-                        let sym = parser::find_symbol(&fast.symbols, carg.id).flags;
-                        self.ci.vars.push(Variable {
-                            id: carg.id,
-                            value: Value { ty, loc },
-                            uses_left: idfl::count(sym) as u32,
-                        });
+                        self.ci.vars.push(Variable { id: carg.id, value: Value { ty, loc } });
                     }
                 }
 
@@ -1364,7 +1358,6 @@ impl Codegen {
                 if let Some((var_index, var)) =
                     self.ci.vars.iter_mut().enumerate().find(|(_, v)| v.id == id) =>
             {
-                var.uses_left -= 1;
                 let loc = var.value.loc.as_ref();
                 Some(Value { ty: self.ci.vars[var_index].value.ty, loc })
             }
@@ -1731,11 +1724,7 @@ impl Codegen {
                     arg.loc
                 };
 
-                self.ci.vars.push(Variable {
-                    id: carg.id,
-                    value: Value { ty, loc },
-                    uses_left: idfl::count(sym.flags) as u32,
-                });
+                self.ci.vars.push(Variable { id: carg.id, value: Value { ty, loc } });
             }
 
             let args = self.pack_args(pos, arg_base);
@@ -1779,7 +1768,6 @@ impl Codegen {
                 .map(|v| Variable {
                     id: v.id,
                     value: Value { ty: v.value.ty, loc: v.value.loc.as_ref() },
-                    uses_left: v.uses_left,
                 })
                 .collect(),
             stack_relocs: self.ci.stack_relocs.clone(),
@@ -1848,15 +1836,11 @@ impl Codegen {
                     && size <= 8 =>
             {
                 let loc = Loc::ct(load_value(offset, size));
-                self.ci.vars.push(Variable { id, value: Value { ty, loc }, uses_left: u32::MAX });
+                self.ci.vars.push(Variable { id, value: Value { ty, loc } });
                 true
             }
             Expr::Ident { id, .. } => {
-                let var = Variable {
-                    id,
-                    value: Value { ty, loc: Loc::ct_ptr(offset as _) },
-                    uses_left: u32::MAX,
-                };
+                let var = Variable { id, value: Value { ty, loc: Loc::ct_ptr(offset as _) } };
                 self.ci.vars.push(var);
                 false
             }
@@ -1872,11 +1856,7 @@ impl Codegen {
                 if sym & idfl::REFERENCED != 0 {
                     loc = self.spill(loc, self.tys.size_of(right.ty));
                 }
-                self.ci.vars.push(Variable {
-                    id,
-                    value: Value { ty: right.ty, loc },
-                    uses_left: idfl::count(sym) as u32,
-                });
+                self.ci.vars.push(Variable { id, value: Value { ty: right.ty, loc } });
             }
             Expr::Ctor { pos, fields, .. } => {
                 let ty::Kind::Struct(idx) = right.ty.expand() else {
@@ -2089,11 +2069,7 @@ impl Codegen {
                 true => Loc::ty(self.tys.args[sig_args.next().unwrap()]),
                 false => self.load_arg(sym, ty, &mut parama),
             };
-            self.ci.vars.push(Variable {
-                id: arg.id,
-                value: Value { ty, loc },
-                uses_left: idfl::count(sym) as u32,
-            });
+            self.ci.vars.push(Variable { id: arg.id, value: Value { ty, loc } });
         }
 
         if self.tys.size_of(sig.ret) > 16 {
@@ -2292,25 +2268,6 @@ impl Codegen {
                     self.ci.emit(cp(dst.get(), src.get()));
                 }
             }
-            //(lpat!(false, src, 0, None), lpat!(false, dst, off, None)) => {
-            //    assert!(size <= 8);
-            //    let off_rem = 8 * (off % 8);
-            //    let freg = dst.get() + (off / 8) as u8;
-            //    if size < 8 {
-            //        let mask = !(((1u64 << (8 * size)) - 1) << off_rem);
-            //        self.ci.emit(andi(freg, freg, mask));
-            //        if off_rem == 0 {
-            //            self.ci.emit(or(freg, freg, src.get()));
-            //        } else {
-            //            let tmp = self.ci.regs.allocate();
-            //            self.ci.emit(slui64(tmp.get(), src.get(), off_rem as _));
-            //            self.ci.emit(or(freg, freg, src.get()));
-            //            self.ci.regs.free(tmp);
-            //        }
-            //    } else {
-            //        self.ci.emit(cp(freg, src.get()));
-            //    }
-            //}
             (lpat!(true, src, soff, ref ssta), lpat!(false, dst, 0, None)) => {
                 if size < 8 {
                     self.ci.emit(cp(dst.get(), 0));
@@ -2366,8 +2323,8 @@ impl Codegen {
         let trap = Self::read_trap(self.ct.vm.pc.get()).unwrap();
         self.ct.vm.pc = self.ct.vm.pc.wrapping_add(trap.size() + 1);
 
-        let mut extra_jump = 0;
-        let mut code_index = Some(self.ct.vm.pc.get() as usize - self.ci.code.as_ptr() as usize);
+        let mut code_index = self.ct.vm.pc.get() as usize - self.ct.code.as_ptr() as usize;
+        debug_assert!(code_index < self.ct.code.len());
 
         match *trap {
             trap::Trap::MakeStruct(trap::MakeStruct { file, struct_expr }) => {
@@ -2390,32 +2347,28 @@ impl Codegen {
                     self.ci.vars.push(Variable {
                         id,
                         value: Value::new(ty, Loc::ct(u64::from_ne_bytes(imm))),
-                        uses_left: u32::MAX,
                     });
                 }
 
                 let stru = ty::Kind::Struct(self.build_struct(fields)).compress();
                 self.ci.vars.truncate(prev_len);
                 self.ct.vm.write_reg(1, stru.repr() as u64);
+                debug_assert_ne!(stru.expand().inner(), 1);
             }
             trap::Trap::MomizedCall(trap::MomizedCall { func }) => {
                 let sym = SymKey { file: u32::MAX, ident: ty::Kind::Func(func).compress().repr() };
                 if let Some(&ty) = self.tys.syms.get(&sym) {
                     self.ct.vm.write_reg(1, ty.repr());
-                    extra_jump = jal(0, 0, 0).0 + tx().0;
                 } else {
-                    code_index = None;
                     self.run_vm();
                     self.tys.syms.insert(sym, self.ct.vm.read_reg(1).0.into());
                 }
+                code_index += jal(0, 0, 0).0 + tx().0;
             }
         }
 
-        if let Some(lpc) = code_index {
-            let offset = lpc + self.ci.code.as_ptr() as usize;
-            self.ct.vm.pc = hbvm::mem::Address::new(offset as _);
-        }
-        self.ct.vm.pc += extra_jump;
+        let offset = code_index + self.ct.code.as_ptr() as usize;
+        self.ct.vm.pc = hbvm::mem::Address::new(offset as _);
     }
 
     fn find_or_declare(
@@ -2588,7 +2541,8 @@ impl Codegen {
 
             self.tys.dump_reachable(last_fn as _, &mut self.ct.code);
             let entry = &mut self.ct.code[self.tys.funcs[last_fn].offset as usize] as *mut _ as _;
-            let prev_pc = std::mem::replace(&mut self.ct.vm.pc, hbvm::mem::Address::new(entry));
+            let prev_pc = std::mem::replace(&mut self.ct.vm.pc, hbvm::mem::Address::new(entry))
+                - self.ct.code.as_ptr() as usize;
 
             #[cfg(debug_assertions)]
             {
@@ -2600,12 +2554,12 @@ impl Codegen {
                 }) {
                     panic!("{e} {}", String::from_utf8(vc).unwrap());
                 } else {
-                    //log::inf!("{}", String::from_utf8(vc).unwrap());
+                    log::trc!("{}", String::from_utf8(vc).unwrap());
                 }
             }
 
             self.run_vm();
-            self.ct.vm.pc = prev_pc;
+            self.ct.vm.pc = prev_pc + self.ct.code.as_ptr() as usize;
 
             self.tys.funcs.pop().unwrap();
         }
@@ -2644,9 +2598,9 @@ impl Codegen {
         if let Some(res) = ty.try_upcast(expected) {
             res
         } else {
-            let ty = self.ty_display(ty);
-            let expected = self.ty_display(expected);
-            self.report(pos, format_args!("expected {hint} of type {expected}, got {ty}"));
+            let dty = self.ty_display(ty);
+            let dexpected = self.ty_display(expected);
+            self.report(pos, format_args!("expected {hint} of type {dexpected}, got {dty}",));
         }
     }
 

@@ -270,7 +270,8 @@ mod ty {
             self.0.get()
         }
 
-        pub(crate) fn is_struct(&self) -> bool {
+        #[allow(unused)]
+        pub fn is_struct(&self) -> bool {
             matches!(self.expand(), Kind::Struct(_))
         }
     }
@@ -442,7 +443,7 @@ mod ty {
                 }
                 TK::Struct(idx) => {
                     let record = &self.tys.structs[idx as usize];
-                    write!(f, "{{")?;
+                    write!(f, "[{idx}]{{")?;
                     for (i, &super::Field { ref name, ty }) in record.fields.iter().enumerate() {
                         if i != 0 {
                             write!(f, ", ")?;
@@ -481,7 +482,7 @@ fn emit(out: &mut Vec<u8>, (len, instr): EncodedInstr) {
     out.extend_from_slice(&instr[..len]);
 }
 
-#[derive(PartialEq, Eq, Hash)]
+#[derive(PartialEq, Eq, Hash, Debug)]
 struct SymKey {
     file: u32,
     ident: u32,
