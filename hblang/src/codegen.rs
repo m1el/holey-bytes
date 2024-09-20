@@ -12,7 +12,7 @@ use {
         Types,
     },
     core::panic,
-    std::{fmt::Display, usize},
+    std::fmt::Display,
 };
 
 type Offset = u32;

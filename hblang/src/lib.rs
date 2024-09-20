@@ -1,4 +1,5 @@
 #![feature(
+    assert_matches,
     let_chains,
     if_let_guard,
     macro_metavar_expr,

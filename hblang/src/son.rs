@@ -12,11 +12,12 @@ use {
         },
         task,
         ty::{self},
-        Field, Func, HashMap, Reloc, Sig, Struct, SymKey, TypedReloc, Types,
+        Field, Func, HashMap, Offset, Reloc, Sig, Size, Struct, SymKey, TypedReloc, Types,
     },
     core::fmt,
     regalloc2::VReg,
     std::{
+        assert_matches::debug_assert_matches,
         cell::RefCell,
         collections::hash_map,
         fmt::{Debug, Display, Write},
@@ -24,6 +25,7 @@ use {
         mem::{self, MaybeUninit},
         ops::{self, Deref, DerefMut, Not},
         ptr::Unique,
+        u32,
     },
 };
 
@@ -493,18 +495,11 @@ impl Nodes {
 
     fn peephole(&mut self, target: Nid) -> Option<Nid> {
         match self[target].kind {
-            Kind::Start => {}
-            Kind::End => {}
             Kind::BinOp { op } => return self.peephole_binop(target, op),
             Kind::UnOp { op } => return self.peephole_unop(target, op),
-            Kind::Return => {}
-            Kind::Tuple { .. } => {}
-            Kind::CInt { .. } => {}
-            Kind::Call { .. } => {}
             Kind::If => return self.peephole_if(target),
-            Kind::Region => {}
             Kind::Phi => return self.peephole_phi(target),
-            Kind::Loop => {}
+            _ => {}
         }
         None
     }
@@ -701,13 +696,20 @@ impl Nodes {
             Kind::Return => write!(out, " ret:      "),
             Kind::CInt { value } => write!(out, "cint: #{value:<4}"),
             Kind::Phi => write!(out, " phi:      "),
-            Kind::Tuple { index } => write!(out, " arg: {index:<5}"),
+            Kind::Arg { index } => write!(out, " arg: {index:<5}"),
             Kind::BinOp { op } | Kind::UnOp { op } => {
                 write!(out, "{:>4}:      ", op.name())
             }
             Kind::Call { func } => {
                 write!(out, "call: {func} {}  ", self[node].depth)
             }
+            Kind::Ctrl { index: u32::MAX } => write!(out, "ctrl: {:<5}", "entry"),
+            Kind::Ctrl { index: 0 } => write!(out, "ctrl: {:<5}", "then"),
+            Kind::Ctrl { index: 1 } => write!(out, "ctrl: {:<5}", "else"),
+            Kind::Stck { size } => write!(out, "stck: {size:<5}"),
+            Kind::Load { offset } => write!(out, "load: {offset:<5}"),
+            Kind::Stre { offset } => write!(out, "stre: {offset:<5}"),
+            _ => unreachable!(),
         }?;
 
         if self[node].kind != Kind::Loop && self[node].kind != Kind::Region {
@@ -731,7 +733,7 @@ impl Nodes {
                     let mut cfg_index = Nid::MAX;
                     for o in iter(self, node) {
                         self.basic_blocks_instr(out, o)?;
-                        if self[o].kind == (Kind::Tuple { index: 0 }) {
+                        if self[o].kind.is_cfg() {
                             cfg_index = o;
                         }
                     }
@@ -775,7 +777,7 @@ impl Nodes {
                 Kind::Return => {
                     node = self[node].outputs[0];
                 }
-                Kind::Tuple { .. } => {
+                Kind::Ctrl { .. } => {
                     writeln!(
                         out,
                         "b{node}: {} {} {:?}",
@@ -805,7 +807,14 @@ impl Nodes {
                     }
                     node = cfg_index;
                 }
-                Kind::CInt { .. } | Kind::Phi | Kind::BinOp { .. } | Kind::UnOp { .. } => {
+                Kind::Arg { .. }
+                | Kind::Stck { .. }
+                | Kind::Load { .. }
+                | Kind::Stre { .. }
+                | Kind::CInt { .. }
+                | Kind::Phi
+                | Kind::BinOp { .. }
+                | Kind::UnOp { .. } => {
                     unreachable!()
                 }
             }
@@ -996,26 +1005,52 @@ impl ops::IndexMut<Nid> for Nodes {
 pub enum Kind {
     #[default]
     Start,
+    // [terms...]
     End,
+    // [ctrl, cond]
     If,
+    // [lhs, rhs]
     Region,
+    // [entry, back]
     Loop,
+    // [ctrl, ?value]
     Return,
+    // [ctrl]
     CInt {
         value: i64,
     },
+    // [ctrl, lhs, rhs]
     Phi,
-    Tuple {
+    Arg {
         index: u32,
     },
+    // [ctrl]
+    Ctrl {
+        index: u32,
+    },
+    // [ctrl, oper]
     UnOp {
         op: lexer::TokenKind,
     },
+    // [ctrl, lhs, rhs]
     BinOp {
         op: lexer::TokenKind,
     },
+    // [ctrl, ...args]
     Call {
         func: ty::Func,
+    },
+    // [ctrl]
+    Stck {
+        size: Size,
+    },
+    // [ctrl, memory]
+    Load {
+        offset: Offset,
+    },
+    // [ctrl, memory]
+    Stre {
+        offset: Offset,
     },
 }
 
@@ -1030,7 +1065,8 @@ impl Kind {
             Self::Start
                 | Self::End
                 | Self::Return
-                | Self::Tuple { .. }
+                | Self::Ctrl { .. }
+                | Self::Arg { .. }
                 | Self::Call { .. }
                 | Self::If
                 | Self::Region
@@ -1043,7 +1079,7 @@ impl Kind {
     }
 
     fn starts_basic_block(&self) -> bool {
-        matches!(self, Self::Start | Self::End | Self::Tuple { .. } | Self::Region | Self::Loop)
+        matches!(self, Self::Start | Self::End | Self::Ctrl { .. } | Self::Region | Self::Loop)
     }
 }
 
@@ -1051,7 +1087,9 @@ impl fmt::Display for Kind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Kind::CInt { value } => write!(f, "#{value}"),
-            Kind::Tuple { index } => write!(f, "tupl[{index}]"),
+            Kind::Ctrl { index: u32::MAX } => write!(f, "ctrl[entry]"),
+            Kind::Ctrl { index: 0 } => write!(f, "ctrl[then]"),
+            Kind::Ctrl { index: 1 } => write!(f, "ctrl[else]"),
             Kind::BinOp { op } => write!(f, "{op}"),
             Kind::Call { func, .. } => write!(f, "call {func}"),
             slf => write!(f, "{slf:?}"),
@@ -1087,8 +1125,6 @@ impl Node {
     }
 }
 
-type Offset = u32;
-type Size = u32;
 type RallocBRef = u16;
 type LoopDepth = u16;
 type CallCount = u16;
@@ -1321,13 +1357,11 @@ impl Codegen {
                     self.ci.nodes.lock(el.value);
                 }
 
-                self.ci.ctrl =
-                    self.ci.nodes.new_node(ty::VOID, Kind::Tuple { index: 0 }, [if_node]);
+                self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Ctrl { index: 0 }, [if_node]);
                 let lcntrl = self.expr(then).map_or(Nid::MAX, |_| self.ci.ctrl);
 
                 let mut then_scope = std::mem::replace(&mut self.ci.vars, else_scope);
-                self.ci.ctrl =
-                    self.ci.nodes.new_node(ty::VOID, Kind::Tuple { index: 1 }, [if_node]);
+                self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Ctrl { index: 1 }, [if_node]);
                 let rcntrl = if let Some(else_) = else_ {
                     self.expr(else_).map_or(Nid::MAX, |_| self.ci.ctrl)
                 } else {
@@ -1671,7 +1705,7 @@ impl Codegen {
         debug_assert_eq!(start, VOID);
         let end = self.ci.nodes.new_node(ty::NEVER, Kind::End, []);
         debug_assert_eq!(end, NEVER);
-        self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Tuple { index: 0 }, [VOID]);
+        self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Ctrl { index: u32::MAX }, [VOID]);
 
         let Expr::BinOp {
             left: Expr::Ident { .. },
@@ -1683,9 +1717,9 @@ impl Codegen {
         };
 
         let mut sig_args = sig.args.range();
-        for (arg, index) in args.iter().zip(1u32..) {
+        for (arg, index) in args.iter().zip(0u32..) {
             let ty = self.tys.args[sig_args.next().unwrap()];
-            let value = self.ci.nodes.new_node(ty, Kind::Tuple { index }, [VOID]);
+            let value = self.ci.nodes.new_node(ty, Kind::Arg { index }, [VOID]);
             self.ci.nodes.lock(value);
             let sym = parser::find_symbol(&ast.symbols, arg.id);
             assert!(sym.flags & idfl::COMPTIME == 0, "TODO");
@@ -1715,7 +1749,7 @@ impl Codegen {
                 self.ci.emit(instrs::st(reg::RET_ADDR, reg::STACK_PTR, 0, 0));
             }
 
-            //self.ci.nodes.basic_blocks();
+            self.ci.nodes.basic_blocks();
             //self.ci.nodes.graphviz();
 
             self.ci.vars = orig_vars;
@@ -1816,8 +1850,6 @@ impl Codegen {
                 let allocs = output.inst_allocs(inst);
                 let node = &func.nodes[nid];
                 match node.kind {
-                    Kind::Start => todo!(),
-                    Kind::End => todo!(),
                     Kind::If => {
                         let &[_, cond] = node.inputs.as_slice() else { unreachable!() };
                         if let Kind::BinOp { op } = func.nodes[cond].kind
@@ -1848,8 +1880,6 @@ impl Codegen {
                     Kind::CInt { value } => {
                         self.ci.emit(instrs::li64(atr(allocs[0]), value as _));
                     }
-                    Kind::Phi => todo!(),
-                    Kind::Tuple { .. } => todo!(),
                     Kind::UnOp { op } => {
                         let op = op.unop().expect("TODO: unary operator not supported");
                         let &[dst, oper] = allocs else { unreachable!() };
@@ -1881,6 +1911,12 @@ impl Codegen {
                         });
                         self.ci.emit(instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
                     }
+                    Kind::Start | Kind::End | Kind::Phi | Kind::Arg { .. } | Kind::Ctrl { .. } => {
+                        unreachable!()
+                    }
+                    Kind::Stck { .. } => todo!(),
+                    Kind::Load { .. } => todo!(),
+                    Kind::Stre { .. } => todo!(),
                 }
             }
         }
@@ -2219,7 +2255,12 @@ impl<'a> Function<'a> {
 
         let node = self.nodes[nid].clone();
         match node.kind {
-            Kind::Start => self.emit_node(node.outputs[0], VOID),
+            Kind::Start => {
+                debug_assert_matches!(self.nodes[node.outputs[0]].kind, Kind::Ctrl {
+                    index: u32::MAX
+                });
+                self.emit_node(node.outputs[0], VOID)
+            }
             Kind::End => {}
             Kind::If => {
                 self.nodes[nid].ralloc_backref = self.nodes[prev].ralloc_backref;
@@ -2288,45 +2329,37 @@ impl<'a> Function<'a> {
                     self.add_instr(nid, ops);
                 }
             }
-            Kind::Phi => {}
-            Kind::Tuple { index } => {
-                let is_start = self.nodes[node.inputs[0]].kind == Kind::Start && index == 0;
-                if is_start || (self.nodes[node.inputs[0]].kind == Kind::If && index < 2) {
-                    self.nodes[nid].ralloc_backref = self.add_block(nid);
-                    self.bridge(prev, nid);
+            Kind::Ctrl { index: u32::MAX } => {
+                self.nodes[nid].ralloc_backref = self.add_block(nid);
+                self.bridge(prev, nid);
 
-                    if is_start {
-                        let mut parama = self.tys.parama(self.sig.ret);
-                        for (arg, ti) in self.nodes[VOID]
-                            .clone()
-                            .outputs
-                            .into_iter()
-                            .skip(1)
-                            .zip(self.sig.args.range())
-                        {
-                            let ty = self.tys.args[ti];
-                            match self.tys.size_of(ty) {
-                                0 => continue,
-                                1..=8 => {
-                                    self.def_nid(arg);
-                                    self.add_instr(NEVER, vec![regalloc2::Operand::reg_fixed_def(
-                                        self.rg(arg),
-                                        regalloc2::PReg::new(
-                                            parama.next() as _,
-                                            regalloc2::RegClass::Int,
-                                        ),
-                                    )]);
-                                }
-                                _ => todo!(),
-                            }
+                let mut parama = self.tys.parama(self.sig.ret);
+                for (arg, ti) in
+                    self.nodes[VOID].clone().outputs.into_iter().skip(1).zip(self.sig.args.range())
+                {
+                    let ty = self.tys.args[ti];
+                    match self.tys.size_of(ty) {
+                        0 => continue,
+                        1..=8 => {
+                            self.def_nid(arg);
+                            self.add_instr(NEVER, vec![regalloc2::Operand::reg_fixed_def(
+                                self.rg(arg),
+                                regalloc2::PReg::new(parama.next() as _, regalloc2::RegClass::Int),
+                            )]);
                         }
+                        _ => todo!(),
                     }
+                }
 
-                    for o in node.outputs.into_iter().rev() {
-                        self.emit_node(o, nid);
-                    }
-                } else {
-                    todo!();
+                for o in node.outputs.into_iter().rev() {
+                    self.emit_node(o, nid);
+                }
+            }
+            Kind::Ctrl { .. } => {
+                self.nodes[nid].ralloc_backref = self.add_block(nid);
+                self.bridge(prev, nid);
+                for o in node.outputs.into_iter().rev() {
+                    self.emit_node(o, nid);
                 }
             }
             Kind::BinOp { op } => {
@@ -2385,6 +2418,10 @@ impl<'a> Function<'a> {
                     }
                 }
             }
+            Kind::Phi | Kind::Arg { .. } => {}
+            Kind::Stck { .. } => todo!(),
+            Kind::Load { .. } => todo!(),
+            Kind::Stre { .. } => todo!(),
         }
     }
 
@@ -2439,7 +2476,7 @@ impl<'a> regalloc2::Function for Function<'a> {
     fn is_branch(&self, insn: regalloc2::Inst) -> bool {
         matches!(
             self.nodes[self.instrs[insn.index()].nid].kind,
-            Kind::If | Kind::Tuple { .. } | Kind::Loop | Kind::Region
+            Kind::If | Kind::Ctrl { .. } | Kind::Loop | Kind::Region
         )
     }
 
@@ -2492,7 +2529,7 @@ fn loop_depth(target: Nid, nodes: &mut Nodes) -> LoopDepth {
     }
 
     nodes[target].loop_depth = match nodes[target].kind {
-        Kind::Tuple { .. } | Kind::Call { .. } | Kind::Return | Kind::If => {
+        Kind::Ctrl { .. } | Kind::Call { .. } | Kind::Return | Kind::If => {
             loop_depth(nodes[target].inputs[0], nodes)
         }
         Kind::Region => {
@@ -2514,15 +2551,11 @@ fn loop_depth(target: Nid, nodes: &mut Nodes) -> LoopDepth {
                     idom(nodes, cursor)
                 };
                 debug_assert_ne!(next, VOID);
-                if let Kind::Tuple { index } = nodes[cursor].kind
-                    && nodes[next].kind == Kind::If
-                {
+                if let Kind::Ctrl { index: index @ ..=1 } = nodes[cursor].kind {
                     let other = *nodes[next]
                         .outputs
                         .iter()
-                        .find(
-                            |&&n| matches!(nodes[n].kind, Kind::Tuple { index: oi } if index != oi),
-                        )
+                        .find(|&&n| nodes[n].kind != Kind::Ctrl { index })
                         .unwrap();
                     if nodes[other].loop_depth == 0 {
                         nodes[other].loop_depth = depth - 1;
@@ -2533,9 +2566,7 @@ fn loop_depth(target: Nid, nodes: &mut Nodes) -> LoopDepth {
             depth
         }
         Kind::Start | Kind::End => 1,
-        Kind::CInt { .. } | Kind::Phi | Kind::BinOp { .. } | Kind::UnOp { .. } => {
-            unreachable!()
-        }
+        _ => unreachable!(),
     };
 
     if target == 19 {
@@ -2558,18 +2589,10 @@ fn idepth(nodes: &mut Nodes, target: Nid) -> IDomDepth {
     if nodes[target].depth == 0 {
         nodes[target].depth = match nodes[target].kind {
             Kind::End | Kind::Start => unreachable!(),
-            Kind::Loop
-            | Kind::CInt { .. }
-            | Kind::BinOp { .. }
-            | Kind::UnOp { .. }
-            | Kind::Call { .. }
-            | Kind::Phi
-            | Kind::Tuple { .. }
-            | Kind::Return
-            | Kind::If => idepth(nodes, nodes[target].inputs[0]),
             Kind::Region => {
                 idepth(nodes, nodes[target].inputs[0]).max(idepth(nodes, nodes[target].inputs[1]))
             }
+            _ => idepth(nodes, nodes[target].inputs[0]),
         } + 1;
     }
     nodes[target].depth
@@ -2689,19 +2712,11 @@ fn idom(nodes: &mut Nodes, target: Nid) -> Nid {
     match nodes[target].kind {
         Kind::Start => VOID,
         Kind::End => unreachable!(),
-        Kind::Loop
-        | Kind::CInt { .. }
-        | Kind::BinOp { .. }
-        | Kind::UnOp { .. }
-        | Kind::Call { .. }
-        | Kind::Phi
-        | Kind::Tuple { .. }
-        | Kind::Return
-        | Kind::If => nodes[target].inputs[0],
         Kind::Region => {
             let &[lcfg, rcfg] = nodes[target].inputs.as_slice() else { unreachable!() };
             common_dom(lcfg, rcfg, nodes)
         }
+        _ => nodes[target].inputs[0],
     }
 }
 
@@ -2725,6 +2740,8 @@ mod tests {
     const README: &str = include_str!("../README.md");
 
     fn generate(ident: &'static str, input: &'static str, output: &mut String) {
+        _ = env_logger::builder().is_test(true).try_init();
+
         let mut codegen =
             super::Codegen { files: crate::test_parse_files(ident, input), ..Default::default() };
 
