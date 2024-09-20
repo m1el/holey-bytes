@@ -109,17 +109,15 @@ mod stack {
         }
 
         pub fn free(&mut self, id: Id) {
-            if id.is_ref() {
-                return;
-            }
-            let meta = &mut self.meta[id.index()];
             std::mem::forget(id);
-            meta.rc -= 1;
-            if meta.rc != 0 {
-                return;
-            }
-            meta.offset = self.height;
-            self.height -= meta.size;
+            //if id.is_ref() {}
+            //let meta = &mut self.meta[id.index()];
+            //meta.rc -= 1;
+            //if meta.rc != 0 {
+            //    return;
+            //}
+            //meta.offset = self.height;
+            //self.height -= meta.size;
         }
 
         pub fn dup_id(&mut self, id: &Id) -> Id {
@@ -1367,13 +1365,7 @@ impl Codegen {
                     self.ci.vars.iter_mut().enumerate().find(|(_, v)| v.id == id) =>
             {
                 var.uses_left -= 1;
-                let loc = match var.uses_left == 0
-                    && !self.ci.loops.last().is_some_and(|l| l.var_count > var_index as u32)
-                {
-                    true => std::mem::take(&mut var.value.loc),
-                    false => var.value.loc.as_ref(),
-                };
-
+                let loc = var.value.loc.as_ref();
                 Some(Value { ty: self.ci.vars[var_index].value.ty, loc })
             }
             E::Ident { id, name, .. } => match self

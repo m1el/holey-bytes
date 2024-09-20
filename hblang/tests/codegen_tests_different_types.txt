@@ -1,6 +1,6 @@
 main:
-    ADDI64 r254, r254, -44d
-    ST r31, r254, 12a, 32h
+    ADDI64 r254, r254, -52d
+    ST r31, r254, 12a, 40h
     LI64 r32, 255d
     ST r32, r254, 0a, 1h
     LI64 r32, 0d
@@ -18,39 +18,39 @@ main:
     CP r34, r32
     MULI64 r34, r34, 4d
     ADD64 r33, r33, r34
-    CP r32, r0
-    LD r32, r33, 0a, 4h
-    LI64 r34, 2d
-    JEQ r32, r34, :0
+    CP r34, r0
+    LD r34, r33, 0a, 4h
+    LI64 r35, 2d
+    JEQ r34, r35, :0
     LI64 r1, 0d
     JMP :1
- 0: ADDI64 r34, r254, 8d
-    ADDI64 r34, r34, -4d
-    CP r32, r0
-    LD r32, r34, 0a, 4h
+ 0: ADDI64 r35, r254, 8d
+    ADDI64 r35, r35, -4d
+    CP r34, r0
+    LD r34, r35, 0a, 4h
     LI64 r33, 0d
-    JEQ r32, r33, :2
+    JEQ r34, r33, :2
     LI64 r1, 64d
     JMP :1
  2: CP r33, r0
     LD r33, r254, 4a, 4h
-    CP r32, r0
-    LD r32, r254, 8a, 4h
-    ADD32 r33, r33, r32
-    CP r32, r0
-    LD r32, r254, 0a, 1h
-    ADD32 r33, r33, r32
-    CP r32, r0
-    LD r32, r254, 1a, 1h
-    ADD32 r33, r33, r32
-    CP r32, r0
-    LD r32, r254, 2a, 1h
-    ADD32 r33, r33, r32
-    CP r32, r0
-    LD r32, r254, 3a, 1h
-    ADD32 r1, r33, r32
- 1: LD r31, r254, 12a, 32h
-    ADDI64 r254, r254, 44d
+    CP r34, r0
+    LD r34, r254, 8a, 4h
+    ADD32 r33, r33, r34
+    CP r34, r0
+    LD r34, r254, 0a, 1h
+    ADD32 r33, r33, r34
+    CP r34, r0
+    LD r34, r254, 1a, 1h
+    ADD32 r33, r33, r34
+    CP r34, r0
+    LD r34, r254, 2a, 1h
+    ADD32 r33, r33, r34
+    CP r34, r0
+    LD r34, r254, 3a, 1h
+    ADD32 r1, r33, r34
+ 1: LD r31, r254, 12a, 40h
+    ADDI64 r254, r254, 52d
     JALA r0, r31, 0a
 code size: 474
 ret: 512

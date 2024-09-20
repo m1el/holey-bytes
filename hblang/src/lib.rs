@@ -269,6 +269,10 @@ mod ty {
         pub const fn repr(self) -> u32 {
             self.0.get()
         }
+
+        pub(crate) fn is_struct(&self) -> bool {
+            matches!(self.expand(), Kind::Struct(_))
+        }
     }
 
     impl From<u64> for Id {

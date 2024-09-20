@@ -52,9 +52,10 @@ integer:
     OR r35, r35, r36
     JEQ r35, r0, :0
     CP r35, r34
-    SUB64 r33, r33, r32
-    ADDI64 r33, r33, 1d
-    DIRS64 r0, r35, r35, r33
+    CP r36, r33
+    SUB64 r36, r36, r32
+    ADDI64 r36, r36, 1d
+    DIRS64 r0, r35, r35, r36
     ADD64 r1, r35, r32
     JMP :1
  0: CP r1, r34
@@ -64,27 +65,27 @@ integer:
 line:
     ADDI64 r254, r254, -80d
     ST r31, r254, 48a, 32h
-    ST r2, r254, 16a, 16h
-    ST r4, r254, 0a, 16h
+    ST r2, r254, 0a, 16h
+    ST r4, r254, 16a, 16h
     ST r6, r254, 32a, 16h
     CP r32, r8
     LI64 r33, 1d
     JEQ r33, r0, :0
-    LD r33, r254, 16a, 8h
-    LD r34, r254, 0a, 8h
+    LD r33, r254, 0a, 8h
+    LD r34, r254, 16a, 8h
     JGTS r33, r34, :1
     JMP :1
  1: JMP :2
- 0: LD r34, r254, 24a, 8h
-    LD r33, r254, 8a, 8h
+ 0: LD r34, r254, 8a, 8h
+    LD r33, r254, 24a, 8h
     JGTS r34, r33, :2
     JMP :2
  2: LD r31, r254, 48a, 32h
     ADDI64 r254, r254, 80d
     JALA r0, r31, 0a
 main:
-    ADDI64 r254, r254, -64d
-    ST r31, r254, 48a, 16h
+    ADDI64 r254, r254, -112d
+    ST r31, r254, 96a, 16h
     LI64 r32, 0d
     ST r32, r254, 0a, 8h
     LI64 r32, 0d
@@ -103,26 +104,26 @@ main:
     LI64 r8, 10d
     JAL r31, r0, :line
     LI64 r32, 0d
-    ST r32, r254, 0a, 8h
+    ST r32, r254, 48a, 8h
     LI64 r32, 0d
-    ST r32, r254, 8a, 8h
-    LD r2, r254, 0a, 16h
+    ST r32, r254, 56a, 8h
+    LD r2, r254, 48a, 16h
     LI64 r32, 0d
-    ST r32, r254, 16a, 8h
+    ST r32, r254, 64a, 8h
     LI64 r32, 0d
-    ST r32, r254, 24a, 8h
-    LD r4, r254, 16a, 16h
+    ST r32, r254, 72a, 8h
+    LD r4, r254, 64a, 16h
     LI64 r32, 0d
-    ST r32, r254, 32a, 8h
+    ST r32, r254, 80a, 8h
     LI64 r32, 0d
-    ST r32, r254, 40a, 8h
-    LD r6, r254, 32a, 16h
+    ST r32, r254, 88a, 8h
+    LD r6, r254, 80a, 16h
     LI64 r8, 10d
     JAL r31, r0, :rect_line
     JAL r31, r0, :example
     LI64 r1, 0d
-    LD r31, r254, 48a, 16h
-    ADDI64 r254, r254, 64d
+    LD r31, r254, 96a, 16h
+    ADDI64 r254, r254, 112d
     JALA r0, r31, 0a
 rect_line:
     ADDI64 r254, r254, -112d
@@ -156,6 +157,6 @@ rect_line:
  1: LD r31, r254, 48a, 64h
     ADDI64 r254, r254, 112d
     JALA r0, r31, 0a
-code size: 1400
+code size: 1403
 ret: 0
 status: Ok(())

@@ -197,7 +197,8 @@ main := fn(): int {
 	b := Point.(3, 4)
 
 	d := Rect.(a + b, b - a)
-	d2 := Rect.(Point.(0, 0) - b, a)
+	zp := Point.(0, 0)
+	d2 := Rect.(zp - b, a)
 	d2 += d
 
 	c := d2.a + d2.b

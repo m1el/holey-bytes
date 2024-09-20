@@ -8,7 +8,8 @@ deinit:
     CP r3, r33
     LI64 r4, 8d
     JAL r31, r0, :free
-    CP r1, r32
+    CP r33, r32
+    CP r1, r33
     JAL r31, r0, :new
     LD r31, r254, 0a, 24h
     ADDI64 r254, r254, 24d
@@ -124,19 +125,19 @@ push:
     LI64 r4, 8d
     JAL r31, r0, :free
  8: ST r34, r32, 0a, 8h
- 0: LD r34, r32, 0a, 8h
-    LD r39, r32, 8a, 8h
-    MULI64 r39, r39, 8d
-    ADD64 r34, r34, r39
-    CP r39, r34
-    ST r33, r39, 0a, 8h
-    LD r39, r32, 8a, 8h
-    ADDI64 r39, r39, 1d
-    ST r39, r32, 8a, 8h
-    CP r1, r34
+ 0: LD r39, r32, 0a, 8h
+    LD r38, r32, 8a, 8h
+    MULI64 r38, r38, 8d
+    ADD64 r39, r39, r38
+    CP r38, r39
+    ST r33, r38, 0a, 8h
+    LD r38, r32, 8a, 8h
+    ADDI64 r38, r38, 1d
+    ST r38, r32, 8a, 8h
+    CP r1, r39
  4: LD r31, r254, 0a, 72h
     ADDI64 r254, r254, 72d
     JALA r0, r31, 0a
-code size: 1201
+code size: 1204
 ret: 69
 status: Ok(())

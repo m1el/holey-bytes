@@ -1,17 +1,17 @@
 main:
-    ADDI64 r254, r254, -24d
-    ST r31, r254, 0a, 24h
+    ADDI64 r254, r254, -40d
+    ST r31, r254, 0a, 40h
     LRA r32, r0, :"abඞ\n\r\t56789\0"
     CP r2, r32
     JAL r31, r0, :str_len
-    CP r32, r1
-    LRA r33, r0, :"fff\0"
-    CP r2, r33
-    JAL r31, r0, :str_len
     CP r33, r1
-    ADD64 r1, r33, r32
-    LD r31, r254, 0a, 24h
-    ADDI64 r254, r254, 24d
+    LRA r34, r0, :"fff\0"
+    CP r2, r34
+    JAL r31, r0, :str_len
+    CP r35, r1
+    ADD64 r1, r35, r33
+    LD r31, r254, 0a, 40h
+    ADDI64 r254, r254, 40d
     JALA r0, r31, 0a
 str_len:
     ADDI64 r254, r254, -48d
