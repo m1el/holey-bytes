@@ -102,7 +102,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             report_to(
                 self.lexer.source(),
                 self.path,
-                id.ident,
+                ident::pos(id.ident),
                 format_args!("undeclared identifier: {}", self.lexer.slice(ident::range(id.ident))),
                 &mut errors,
             );

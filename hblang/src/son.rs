@@ -1280,6 +1280,9 @@ impl Codegen {
                 let inps = [VOID, lhs, rhs];
                 Some(self.ci.nodes.new_node(ty::bin_ret(ty, op), Kind::BinOp { op }, inps))
             }
+            Expr::UnOp { pos, op: TokenKind::Band, val } => {
+                todo!()
+            }
             Expr::UnOp { pos, op, val } => {
                 let val = self.expr_ctx(val, ctx)?;
                 if !self.tof(val).is_integer() {
@@ -1763,19 +1766,22 @@ impl Codegen {
         let mut nodes = std::mem::take(&mut self.ci.nodes);
 
         let func = Function::new(&mut nodes, &self.tys, sig);
-        let env = regalloc2::MachineEnv {
+        let mut env = regalloc2::MachineEnv {
             preferred_regs_by_class: [
-                (1..13).map(|i| regalloc2::PReg::new(i, regalloc2::RegClass::Int)).collect(),
+                (1..12).map(|i| regalloc2::PReg::new(i, regalloc2::RegClass::Int)).collect(),
                 vec![],
                 vec![],
             ],
             non_preferred_regs_by_class: [
-                (13..64).map(|i| regalloc2::PReg::new(i, regalloc2::RegClass::Int)).collect(),
+                (12..64).map(|i| regalloc2::PReg::new(i, regalloc2::RegClass::Int)).collect(),
                 vec![],
                 vec![],
             ],
             scratch_by_class: Default::default(),
             fixed_stack_slots: Default::default(),
+        };
+        if self.ci.call_count != 0 {
+            std::mem::swap(&mut env.preferred_regs_by_class, &mut env.non_preferred_regs_by_class);
         };
         let options = regalloc2::RegallocOptions { verbose_log: false, validate_ssa: true };
         let output = regalloc2::run(&func, &env, &options).unwrap_or_else(|err| panic!("{err}"));
@@ -2270,8 +2276,17 @@ impl<'a> Function<'a> {
                 self.emit_node(node.outputs[0], nid);
             }
             Kind::CInt { .. } => {
-                let ops = vec![self.drg(nid)];
-                self.add_instr(nid, ops);
+                let unused = node.outputs.into_iter().all(|o| {
+                    let ond = &self.nodes[o];
+                    matches!(ond.kind, Kind::BinOp { op }
+                        if op.imm_binop(ond.ty.is_signed(), 8).is_some()
+                            && op.cond_op(ond.ty.is_signed()).is_none())
+                });
+
+                if !unused {
+                    let ops = vec![self.drg(nid)];
+                    self.add_instr(nid, ops);
+                }
             }
             Kind::Phi => {}
             Kind::Tuple { index } => {
@@ -2747,7 +2762,7 @@ mod tests {
         if_statements => README;
         loops => README;
         fb_driver => README;
-        //pointers => README;
+        pointers => README;
         //structs => README;
         //different_types => README;
         //struct_operators => README;
@@ -2768,8 +2783,15 @@ mod tests {
         //inline => README;
         //inline_test => README;
         const_folding_with_arg => README;
-        // FIXME: contains redundant copies
         branch_assignments => README;
         exhaustive_loop_testing => README;
+        //idk => README;
+        //comptime_min_reg_leak => README;
+        //some_generic_code => README;
+        //integer_inference_issues => README;
+        //writing_into_string => README;
+        //request_page => README;
+        //tests_ptr_to_ptr_copy => README;
+        //wide_ret => README;
     }
 }

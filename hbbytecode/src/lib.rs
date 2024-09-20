@@ -116,7 +116,7 @@ pub fn disasm(
 
         let prev = *binary;
 
-        *binary = &binary[..off as usize];
+        *binary = &binary[off as usize..];
 
         let mut label_count = 0;
         while let Some(&byte) = binary.first() {
@@ -168,7 +168,7 @@ pub fn disasm(
 
         writeln!(out, "{name}:")?;
 
-        *binary = &binary[..off as usize];
+        *binary = &binary[off as usize..];
         while let Some(&byte) = binary.first() {
             let offset: i32 = (prev.len() - binary.len()).try_into().unwrap();
             if offset as u32 == off + len {
@@ -219,7 +219,9 @@ pub fn disasm(
                 } else {
                     let local_has_oob = global_offset < off
                         || global_offset > off + len
-                        || instr_from_byte(prev[global_offset as usize]).is_err()
+                        || prev
+                            .get(global_offset as usize)
+                            .map_or(true, |&b| instr_from_byte(b).is_err())
                         || prev[global_offset as usize] == 0;
                     has_oob |= local_has_oob;
                     let label = labels.get(&global_offset).unwrap();

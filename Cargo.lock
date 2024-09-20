@@ -58,7 +58,7 @@ dependencies = [
 [[package]]
 name = "regalloc2"
 version = "0.10.2"
-source = "git+https://github.com/jakubDoka/regalloc2#7e74b2fde4f022816cded93ab5685e46f8e3a159"
+source = "git+https://github.com/jakubDoka/regalloc2#52b2bbe908e78af1715de88f562f62a83e36ca96"
 dependencies = [
  "hashbrown",
  "rustc-hash",
