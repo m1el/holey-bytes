@@ -20,6 +20,7 @@ version = "0.1.0"
 name = "hblang"
 version = "0.1.0"
 dependencies = [
+ "hbbytecode",
  "hbvm",
  "regalloc2",
 ]

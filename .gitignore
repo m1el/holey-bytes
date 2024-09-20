@@ -1,7 +1,4 @@
 /target
-/hbbytecode/src/opcode.rs
-/hbbytecode/src/ops.rs
-/hblang/src/instrs.rs
-/hblang/src/disasm.rs
+/hbbytecode/src/instrs.rs
 /.rgignore
-rust-ice-*
+rustc-ice-*

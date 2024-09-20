@@ -27,6 +27,7 @@ use {
         son::reg,
         ty::ArrayLen,
     },
+    hbbytecode as instrs,
     parser::Ast,
     std::{
         collections::{hash_map, BTreeMap, VecDeque},
@@ -52,7 +53,6 @@ pub mod codegen;
 pub mod parser;
 pub mod son;
 
-mod instrs;
 mod lexer;
 
 mod task {
@@ -715,7 +715,7 @@ impl Types {
         output: &mut impl std::io::Write,
         eca_handler: impl FnMut(&mut &[u8]),
     ) -> std::io::Result<()> {
-        use crate::DisasmItem;
+        use instrs::DisasmItem;
         let functions = self
             .funcs
             .iter()
@@ -744,7 +744,7 @@ impl Types {
                 (g.offset, (name, g.data.len() as Size, DisasmItem::Global))
             }))
             .collect::<BTreeMap<_, _>>();
-        crate::disasm(&mut sluce, &functions, output, eca_handler)
+        instrs::disasm(&mut sluce, &functions, output, eca_handler)
     }
 
     fn parama(&self, ret: impl Into<ty::Id>) -> ParamAlloc {
@@ -855,181 +855,6 @@ impl Types {
             _ => self.size_of(ty).max(1),
         }
     }
-}
-
-#[inline]
-unsafe fn encode<T>(instr: T) -> (usize, [u8; instrs::MAX_SIZE]) {
-    let mut buf = [0; instrs::MAX_SIZE];
-    std::ptr::write(buf.as_mut_ptr() as *mut T, instr);
-    (std::mem::size_of::<T>(), buf)
-}
-
-#[inline]
-fn decode<T>(binary: &mut &[u8]) -> Option<T> {
-    unsafe { Some(std::ptr::read(binary.take(..std::mem::size_of::<T>())?.as_ptr() as *const T)) }
-}
-
-#[derive(Clone, Copy)]
-enum DisasmItem {
-    Func,
-    Global,
-}
-
-fn disasm(
-    binary: &mut &[u8],
-    functions: &BTreeMap<u32, (&str, u32, DisasmItem)>,
-    out: &mut impl std::io::Write,
-    mut eca_handler: impl FnMut(&mut &[u8]),
-) -> std::io::Result<()> {
-    use self::instrs::Instr;
-
-    fn instr_from_byte(b: u8) -> std::io::Result<Instr> {
-        if b as usize >= instrs::NAMES.len() {
-            return Err(std::io::ErrorKind::InvalidData.into());
-        }
-        Ok(unsafe { std::mem::transmute::<u8, Instr>(b) })
-    }
-
-    let mut labels = HashMap::<u32, u32>::default();
-    let mut buf = Vec::<instrs::Oper>::new();
-    let mut has_cycle = false;
-    let mut has_oob = false;
-
-    '_offset_pass: for (&off, &(_name, len, kind)) in functions.iter() {
-        if matches!(kind, DisasmItem::Global) {
-            continue;
-        }
-
-        let prev = *binary;
-
-        binary.take(..off as usize).unwrap();
-
-        let mut label_count = 0;
-        while let Some(&byte) = binary.first() {
-            let offset: i32 = (prev.len() - binary.len()).try_into().unwrap();
-            if offset as u32 == off + len {
-                break;
-            }
-            let Ok(inst) = instr_from_byte(byte) else { break };
-            instrs::parse_args(binary, inst, &mut buf).ok_or(std::io::ErrorKind::OutOfMemory)?;
-
-            for op in buf.drain(..) {
-                let rel = match op {
-                    instrs::Oper::O(rel) => rel,
-                    instrs::Oper::P(rel) => rel.into(),
-                    _ => continue,
-                };
-
-                has_cycle |= rel == 0;
-
-                let global_offset: u32 = (offset + rel).try_into().unwrap();
-                if functions.get(&global_offset).is_some() {
-                    continue;
-                }
-                label_count += labels.try_insert(global_offset, label_count).is_ok() as u32;
-            }
-
-            if matches!(inst, Instr::ECA) {
-                eca_handler(binary);
-            }
-        }
-
-        *binary = prev;
-    }
-
-    let mut ordered = functions.iter().collect::<Vec<_>>();
-    ordered.sort_unstable_by_key(|(_, (name, _, _))| name);
-
-    '_dump: for (&off, &(name, len, kind)) in ordered {
-        if matches!(kind, DisasmItem::Global) {
-            continue;
-        }
-        let prev = *binary;
-
-        writeln!(out, "{name}:")?;
-
-        binary.take(..off as usize).unwrap();
-        while let Some(&byte) = binary.first() {
-            let offset: i32 = (prev.len() - binary.len()).try_into().unwrap();
-            if offset as u32 == off + len {
-                break;
-            }
-            let Ok(inst) = instr_from_byte(byte) else {
-                writeln!(out, "invalid instr {byte}")?;
-                break;
-            };
-            instrs::parse_args(binary, inst, &mut buf).unwrap();
-
-            if let Some(label) = labels.get(&offset.try_into().unwrap()) {
-                write!(out, "{:>2}: ", label)?;
-            } else {
-                write!(out, "    ")?;
-            }
-
-            write!(out, "{inst:<8?} ")?;
-
-            'a: for (i, op) in buf.drain(..).enumerate() {
-                if i != 0 {
-                    write!(out, ", ")?;
-                }
-
-                let rel = 'b: {
-                    match op {
-                        instrs::Oper::O(rel) => break 'b rel,
-                        instrs::Oper::P(rel) => break 'b rel.into(),
-                        instrs::Oper::R(r) => write!(out, "r{r}")?,
-                        instrs::Oper::B(b) => write!(out, "{b}b")?,
-                        instrs::Oper::H(h) => write!(out, "{h}h")?,
-                        instrs::Oper::W(w) => write!(out, "{w}w")?,
-                        instrs::Oper::D(d) if (d as i64) < 0 => write!(out, "{}d", d as i64)?,
-                        instrs::Oper::D(d) => write!(out, "{d}d")?,
-                        instrs::Oper::A(a) => write!(out, "{a}a")?,
-                    }
-
-                    continue 'a;
-                };
-
-                let global_offset: u32 = (offset + rel).try_into().unwrap();
-                if let Some(&(name, ..)) = functions.get(&global_offset) {
-                    if name.contains('\0') {
-                        write!(out, ":{name:?}")?;
-                    } else {
-                        write!(out, ":{name}")?;
-                    }
-                } else {
-                    let local_has_oob = global_offset < off
-                        || global_offset > off + len
-                        || instr_from_byte(prev[global_offset as usize]).is_err()
-                        || prev[global_offset as usize] == 0;
-                    has_oob |= local_has_oob;
-                    let label = labels.get(&global_offset).unwrap();
-                    if local_has_oob {
-                        write!(out, "!!!!!!!!!{rel}")?;
-                    } else {
-                        write!(out, ":{label}")?;
-                    }
-                }
-            }
-
-            writeln!(out)?;
-
-            if matches!(inst, Instr::ECA) {
-                eca_handler(binary);
-            }
-        }
-
-        *binary = prev;
-    }
-
-    if has_oob {
-        return Err(std::io::ErrorKind::InvalidInput.into());
-    }
-
-    if has_cycle {
-        return Err(std::io::ErrorKind::TimedOut.into());
-    }
-
-    Ok(())
 }
 
 struct TaskQueue<T> {
