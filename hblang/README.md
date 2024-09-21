@@ -505,7 +505,7 @@ main := fn(): int {
 		}
 	}
 
-	width += 1
+	//width += 1
 
 	loop {
 		if width < y break

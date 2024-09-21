@@ -170,10 +170,12 @@ dependencies = [
 [[package]]
 name = "regalloc2"
 version = "0.10.2"
-source = "git+https://github.com/jakubDoka/regalloc2#52b2bbe908e78af1715de88f562f62a83e36ca96"
+source = "git+https://github.com/jakubDoka/regalloc2?branch=reuse-allocations#c1c7614b3a06d38113feaac11b4e4c9ab9e8f0c8"
 dependencies = [
  "hashbrown",
+ "log",
  "rustc-hash",
+ "slice-group-by",
  "smallvec",
 ]
 
@@ -211,6 +213,12 @@ name = "rustc-hash"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "583034fd73374156e66797ed8e5b0d5690409c9226b22d87cb7f19821c05d152"
+
+[[package]]
+name = "slice-group-by"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "826167069c09b99d56f31e9ae5c99049e932a98c9dc2dac47645b08dbbf76ba7"
 
 [[package]]
 name = "smallvec"

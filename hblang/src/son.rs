@@ -25,7 +25,6 @@ use {
         mem::{self, MaybeUninit},
         ops::{self, Deref, DerefMut, Not},
         ptr::Unique,
-        u32,
     },
 };
 
@@ -1800,6 +1799,7 @@ impl Codegen {
         let mut nodes = std::mem::take(&mut self.ci.nodes);
 
         let func = Function::new(&mut nodes, &self.tys, sig);
+        dbg!(&func);
         let mut env = regalloc2::MachineEnv {
             preferred_regs_by_class: [
                 (1..12).map(|i| regalloc2::PReg::new(i, regalloc2::RegClass::Int)).collect(),
@@ -2349,7 +2349,6 @@ impl<'a> Function<'a> {
             }
             Kind::Ctrl { index: u32::MAX } => {
                 self.nodes[nid].ralloc_backref = self.add_block(nid);
-                self.bridge(prev, nid);
 
                 let mut parama = self.tys.parama(self.sig.ret);
                 for (arg, ti) in
@@ -2475,16 +2474,16 @@ impl<'a> regalloc2::Function for Function<'a> {
         self.blocks[block.index()].instrs
     }
 
-    fn block_succs(&self, block: regalloc2::Block) -> impl Iterator<Item = regalloc2::Block> {
-        self.blocks[block.index()].succs.iter().copied()
+    fn block_succs(&self, block: regalloc2::Block) -> &[regalloc2::Block] {
+        &self.blocks[block.index()].succs
     }
 
-    fn block_preds(&self, block: regalloc2::Block) -> impl Iterator<Item = regalloc2::Block> {
-        self.blocks[block.index()].preds.iter().copied()
+    fn block_preds(&self, block: regalloc2::Block) -> &[regalloc2::Block] {
+        &self.blocks[block.index()].preds
     }
 
-    fn block_params(&self, block: regalloc2::Block) -> impl Iterator<Item = regalloc2::VReg> {
-        self.blocks[block.index()].params.iter().copied()
+    fn block_params(&self, block: regalloc2::Block) -> &[regalloc2::VReg] {
+        &self.blocks[block.index()].params
     }
 
     fn is_ret(&self, insn: regalloc2::Inst) -> bool {
@@ -2503,17 +2502,17 @@ impl<'a> regalloc2::Function for Function<'a> {
         block: regalloc2::Block,
         _insn: regalloc2::Inst,
         _succ_idx: usize,
-    ) -> impl Iterator<Item = regalloc2::VReg> {
+    ) -> &[regalloc2::VReg] {
         debug_assert!(
             self.blocks[block.index()].succs.len() == 1
                 || self.blocks[block.index()].branch_blockparams.is_empty()
         );
 
-        self.blocks[block.index()].branch_blockparams.iter().copied()
+        &self.blocks[block.index()].branch_blockparams
     }
 
-    fn inst_operands(&self, insn: regalloc2::Inst) -> impl Iterator<Item = regalloc2::Operand> {
-        self.instrs[insn.index()].ops.iter().copied()
+    fn inst_operands(&self, insn: regalloc2::Inst) -> &[regalloc2::Operand] {
+        &self.instrs[insn.index()].ops
     }
 
     fn inst_clobbers(&self, insn: regalloc2::Inst) -> regalloc2::PRegSet {
