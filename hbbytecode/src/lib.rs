@@ -35,7 +35,7 @@ impl TryFrom<u8> for Instr {
         }
 
         if value < NAMES.len() as u8 {
-            unsafe { Ok(std::mem::transmute::<u8, Instr>(value)) }
+            unsafe { Ok(core::mem::transmute::<u8, Instr>(value)) }
         } else {
             failed(value)
         }
@@ -50,8 +50,9 @@ unsafe fn encode<T>(instr: T) -> (usize, [u8; instrs::MAX_SIZE]) {
 }
 
 #[inline]
+#[cfg(feature = "disasm")]
 fn decode<T>(binary: &mut &[u8]) -> Option<T> {
-    let (front, rest) = std::mem::take(binary).split_at_checked(core::mem::size_of::<T>())?;
+    let (front, rest) = core::mem::take(binary).split_at_checked(core::mem::size_of::<T>())?;
     *binary = rest;
     unsafe { Some(core::ptr::read(front.as_ptr() as *const T)) }
 }

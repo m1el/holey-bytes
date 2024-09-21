@@ -1818,7 +1818,25 @@ impl Codegen {
             std::mem::swap(&mut env.preferred_regs_by_class, &mut env.non_preferred_regs_by_class);
         };
         let options = regalloc2::RegallocOptions { verbose_log: false, validate_ssa: true };
-        let output = regalloc2::run(&func, &env, &options).unwrap_or_else(|err| panic!("{err}"));
+        let iters = std::time::SystemTime::now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u32
+            % 300
+            + 300;
+        let mut output =
+            regalloc2::run(&func, &env, &options).unwrap_or_else(|err| panic!("{err}"));
+        let now = std::time::Instant::now();
+        for i in 0..iters {
+            output = regalloc2::run(&func, &env, &options).unwrap_or_else(|err| panic!("{err}"));
+            if (iters + i) % 2 == 0 {
+                std::mem::swap(
+                    &mut env.preferred_regs_by_class,
+                    &mut env.non_preferred_regs_by_class,
+                );
+            }
+        }
+        eprintln!("took: {:?}", now.elapsed().checked_div(iters).unwrap());
 
         let mut saved_regs = HashMap::<u8, u8>::default();
         let mut atr = |allc: regalloc2::Allocation| {

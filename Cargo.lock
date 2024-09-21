@@ -173,7 +173,6 @@ version = "0.10.2"
 source = "git+https://github.com/jakubDoka/regalloc2#52b2bbe908e78af1715de88f562f62a83e36ca96"
 dependencies = [
  "hashbrown",
- "log",
  "rustc-hash",
  "smallvec",
 ]

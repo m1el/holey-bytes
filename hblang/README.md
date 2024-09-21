@@ -504,6 +504,14 @@ main := fn(): int {
 			if y == width break
 		}
 	}
+
+	width += 1
+
+	loop {
+		if width < y break
+		y += 1
+	}
+
 	return i
 }
 ```
