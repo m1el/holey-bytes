@@ -719,13 +719,17 @@ impl Codegen {
         self.expr_ctx(expr, Ctx::default())
     }
 
-    fn build_struct(&mut self, fields: &[CommentOr<StructField>]) -> ty::Struct {
+    fn build_struct(
+        &mut self,
+        explicit_alignment: Option<u32>,
+        fields: &[CommentOr<StructField>],
+    ) -> ty::Struct {
         let fields = fields
             .iter()
             .filter_map(CommentOr::or)
             .map(|sf| Field { name: sf.name.into(), ty: self.ty(&sf.ty) })
             .collect();
-        self.tys.structs.push(Struct { fields });
+        self.tys.structs.push(Struct { fields, explicit_alignment });
         self.tys.structs.len() as u32 - 1
     }
 
@@ -733,9 +737,11 @@ impl Codegen {
         use {Expr as E, TokenKind as T};
         let value = match *expr {
             E::Mod { id, .. } => Some(Value::ty(ty::Kind::Module(id).compress())),
-            E::Struct { fields, captured, .. } => {
+            E::Struct { fields, captured, packed, .. } => {
                 if captured.is_empty() {
-                    Some(Value::ty(ty::Kind::Struct(self.build_struct(fields)).compress()))
+                    Some(Value::ty(
+                        ty::Kind::Struct(self.build_struct(packed.then_some(1), fields)).compress(),
+                    ))
                 } else {
                     let values = captured
                         .iter()
@@ -1940,7 +1946,12 @@ impl Codegen {
                 .unwrap_or_else(|| Loc::stack(self.ci.stack.allocate(self.tys.size_of(ty))));
             let mut offset = 0;
             for &Field { ty, .. } in self.tys.structs[stuct as usize].fields.clone().iter() {
-                offset = Types::align_up(offset, self.tys.align_of(ty));
+                offset = Types::align_up(
+                    offset,
+                    self.tys.structs[stuct as usize]
+                        .explicit_alignment
+                        .unwrap_or(self.tys.align_of(ty)),
+                );
                 let size = self.tys.size_of(ty);
                 let ctx = Ctx::from(Value { ty, loc: loc.as_ref().offset(offset) });
                 let left = left.as_ref().offset(offset);
@@ -2329,7 +2340,8 @@ impl Codegen {
         match *trap {
             trap::Trap::MakeStruct(trap::MakeStruct { file, struct_expr }) => {
                 let cfile = self.files[file as usize].clone();
-                let &Expr::Struct { fields, captured, .. } = struct_expr.get(&cfile).unwrap()
+                let &Expr::Struct { fields, captured, packed, .. } =
+                    struct_expr.get(&cfile).unwrap()
                 else {
                     unreachable!()
                 };
@@ -2350,7 +2362,8 @@ impl Codegen {
                     });
                 }
 
-                let stru = ty::Kind::Struct(self.build_struct(fields)).compress();
+                let stru =
+                    ty::Kind::Struct(self.build_struct(packed.then_some(1), fields)).compress();
                 self.ci.vars.truncate(prev_len);
                 self.ct.vm.write_reg(1, stru.repr() as u64);
                 debug_assert_ne!(stru.expand().inner(), 1);
@@ -2443,8 +2456,8 @@ impl Codegen {
             Expr::BinOp {
                 left: &Expr::Ident { .. },
                 op: TokenKind::Decl,
-                right: Expr::Struct { fields, .. },
-            } => ty::Kind::Struct(self.build_struct(fields)),
+                right: Expr::Struct { fields, packed, .. },
+            } => ty::Kind::Struct(self.build_struct(packed.then_some(1), fields)),
             Expr::BinOp { left, op: TokenKind::Decl, right } => {
                 let gid = self.tys.globals.len() as ty::Global;
                 self.tys.globals.push(Global { file, name: ident, ..Default::default() });

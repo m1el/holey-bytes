@@ -10,7 +10,8 @@ path = "src/main.rs"
 [dependencies]
 hbbytecode = { version = "0.1.0", path = "../hbbytecode" }
 hbvm = { path = "../hbvm", features = ["nightly"] }
-regalloc2 = { git = "https://github.com/jakubDoka/regalloc2", branch = "reuse-allocations", features = ["trace-log"] }
+regalloc2 = "0.10.2"
+#regalloc2 = { path = "../../regalloc2/" }#git = "https://github.com/jakubDoka/regalloc2", branch = "reuse-allocations", features = [] }
 
 [dev-dependencies]
 env_logger = "0.11.5"

@@ -2,7 +2,7 @@
 use {
     crate::{
         ident::{self, Ident},
-        instrs::{self},
+        instrs,
         lexer::{self, TokenKind},
         log,
         parser::{
@@ -12,7 +12,7 @@ use {
         },
         task,
         ty::{self},
-        Field, Func, HashMap, Offset, Reloc, Sig, Size, Struct, SymKey, TypedReloc, Types,
+        Field, Func, Offset, Reloc, Sig, Size, Struct, SymKey, TypedReloc, Types,
     },
     core::fmt,
     regalloc2::VReg,
@@ -1251,13 +1251,17 @@ impl Codegen {
         self.expr_ctx(expr, Ctx::default())
     }
 
-    fn build_struct(&mut self, fields: &[CommentOr<StructField>]) -> ty::Struct {
+    fn build_struct(
+        &mut self,
+        explicit_alignment: Option<u32>,
+        fields: &[CommentOr<StructField>],
+    ) -> ty::Struct {
         let fields = fields
             .iter()
             .filter_map(CommentOr::or)
             .map(|sf| Field { name: sf.name.into(), ty: self.ty(&sf.ty) })
             .collect();
-        self.tys.structs.push(Struct { fields });
+        self.tys.structs.push(Struct { fields, explicit_alignment });
         self.tys.structs.len() as u32 - 1
     }
 
@@ -1315,7 +1319,7 @@ impl Codegen {
                 let inps = [VOID, lhs, rhs];
                 Some(self.ci.nodes.new_node(ty::bin_ret(ty, op), Kind::BinOp { op }, inps))
             }
-            Expr::UnOp { pos, op: TokenKind::Band, val } => {
+            Expr::UnOp { pos: _, op: TokenKind::Band, val: _ } => {
                 todo!()
             }
             Expr::UnOp { pos, op, val } => {
@@ -1466,6 +1470,11 @@ impl Codegen {
                                 self.ci.nodes.modify_input(scope_var.value, 2, loop_var.value);
                             self.ci.nodes.lock(scope_var.value);
                         } else {
+                            if dest_var.value == scope_var.value {
+                                self.ci.nodes.unlock(dest_var.value);
+                                dest_var.value = VOID;
+                                self.ci.nodes.lock(dest_var.value);
+                            }
                             let phi = &self.ci.nodes[scope_var.value];
                             debug_assert_eq!(phi.kind, Kind::Phi);
                             debug_assert_eq!(phi.inputs[2], VOID);
@@ -1481,6 +1490,11 @@ impl Codegen {
                         dest_var.value = scope_var.value;
                         self.ci.nodes.lock(dest_var.value);
                     }
+
+                    debug_assert!(
+                        self.ci.nodes[dest_var.value].kind != Kind::Phi
+                            || self.ci.nodes[dest_var.value].inputs[2] != 0
+                    );
 
                     self.ci.nodes.unlock_remove(scope_var.value);
                 }
@@ -1748,7 +1762,7 @@ impl Codegen {
                 self.ci.emit(instrs::st(reg::RET_ADDR, reg::STACK_PTR, 0, 0));
             }
 
-            self.ci.nodes.basic_blocks();
+            //self.ci.nodes.basic_blocks();
             //self.ci.nodes.graphviz();
 
             self.ci.vars = orig_vars;
@@ -1799,15 +1813,14 @@ impl Codegen {
         let mut nodes = std::mem::take(&mut self.ci.nodes);
 
         let func = Function::new(&mut nodes, &self.tys, sig);
-        dbg!(&func);
         let mut env = regalloc2::MachineEnv {
             preferred_regs_by_class: [
-                (1..12).map(|i| regalloc2::PReg::new(i, regalloc2::RegClass::Int)).collect(),
+                (1..5).map(|i| regalloc2::PReg::new(i, regalloc2::RegClass::Int)).collect(),
                 vec![],
                 vec![],
             ],
             non_preferred_regs_by_class: [
-                (12..64).map(|i| regalloc2::PReg::new(i, regalloc2::RegClass::Int)).collect(),
+                (12..16).map(|i| regalloc2::PReg::new(i, regalloc2::RegClass::Int)).collect(),
                 vec![],
                 vec![],
             ],
@@ -1817,131 +1830,131 @@ impl Codegen {
         if self.ci.call_count != 0 {
             std::mem::swap(&mut env.preferred_regs_by_class, &mut env.non_preferred_regs_by_class);
         };
-        let options = regalloc2::RegallocOptions { verbose_log: false, validate_ssa: true };
-        let iters = std::time::SystemTime::now()
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u32
-            % 300
-            + 300;
-        let mut output =
-            regalloc2::run(&func, &env, &options).unwrap_or_else(|err| panic!("{err}"));
+        let options = regalloc2::RegallocOptions { verbose_log: false, validate_ssa: false };
+        let iters = std::hint::black_box(10000);
+
+        //let mut ctx = regalloc2::Ctx::default();
+        //regalloc2::run_with_ctx(&func, &env, &options, &mut ctx)
+        //    .unwrap_or_else(|err| panic!("{err}"));
+        //let now = std::time::Instant::now();
+        //for _ in 0..iters {
+        //    regalloc2::run_with_ctx(&func, &env, &options, &mut ctx)
+        //        .unwrap_or_else(|err| panic!("{err}"));
+        //}
+        //eprintln!("took: {:?}", now.elapsed().checked_div(iters).unwrap());
+
         let now = std::time::Instant::now();
-        for i in 0..iters {
-            output = regalloc2::run(&func, &env, &options).unwrap_or_else(|err| panic!("{err}"));
-            if (iters + i) % 2 == 0 {
-                std::mem::swap(
-                    &mut env.preferred_regs_by_class,
-                    &mut env.non_preferred_regs_by_class,
-                );
-            }
+        for _ in 0..iters {
+            regalloc2::run(&func, &env, &options).unwrap_or_else(|err| panic!("{err}"));
         }
         eprintln!("took: {:?}", now.elapsed().checked_div(iters).unwrap());
 
-        let mut saved_regs = HashMap::<u8, u8>::default();
-        let mut atr = |allc: regalloc2::Allocation| {
-            debug_assert!(allc.is_reg());
-            let hvenc = regalloc2::PReg::from_index(allc.index()).hw_enc() as u8;
-            if hvenc <= 12 {
-                return hvenc;
-            }
-            let would_insert = saved_regs.len() as u8 + reg::RET_ADDR + 1;
-            *saved_regs.entry(hvenc).or_insert(would_insert)
-        };
+        0
 
-        for (i, block) in func.blocks.iter().enumerate() {
-            let blk = regalloc2::Block(i as _);
-            func.nodes[block.nid].offset = self.ci.code.len() as _;
-            for instr_or_edit in output.block_insts_and_edits(&func, blk) {
-                let inst = match instr_or_edit {
-                    regalloc2::InstOrEdit::Inst(inst) => inst,
-                    regalloc2::InstOrEdit::Edit(&regalloc2::Edit::Move { from, to }) => {
-                        self.ci.emit(instrs::cp(atr(to), atr(from)));
-                        continue;
-                    }
-                };
+        //let mut saved_regs = HashMap::<u8, u8>::default();
+        //let mut atr = |allc: regalloc2::Allocation| {
+        //    debug_assert!(allc.is_reg());
+        //    let hvenc = regalloc2::PReg::from_index(allc.index()).hw_enc() as u8;
+        //    if hvenc <= 12 {
+        //        return hvenc;
+        //    }
+        //    let would_insert = saved_regs.len() as u8 + reg::RET_ADDR + 1;
+        //    *saved_regs.entry(hvenc).or_insert(would_insert)
+        //};
 
-                let nid = func.instrs[inst.index()].nid;
-                if nid == NEVER {
-                    continue;
-                };
-                let allocs = output.inst_allocs(inst);
-                let node = &func.nodes[nid];
-                match node.kind {
-                    Kind::If => {
-                        let &[_, cond] = node.inputs.as_slice() else { unreachable!() };
-                        if let Kind::BinOp { op } = func.nodes[cond].kind
-                            && let Some((op, swapped)) = op.cond_op(node.ty.is_signed())
-                        {
-                            let rel = Reloc::new(self.ci.code.len(), 3, 2);
-                            self.ci.jump_relocs.push((node.outputs[!swapped as usize], rel));
-                            let &[lhs, rhs] = allocs else { unreachable!() };
-                            self.ci.emit(op(atr(lhs), atr(rhs), 0));
-                        } else {
-                            todo!()
-                        }
-                    }
-                    Kind::Loop | Kind::Region => {
-                        if node.ralloc_backref as usize != i + 1 {
-                            let rel = Reloc::new(self.ci.code.len(), 1, 4);
-                            self.ci.jump_relocs.push((nid, rel));
-                            self.ci.emit(instrs::jmp(0));
-                        }
-                    }
-                    Kind::Return => {
-                        if i != func.blocks.len() - 1 {
-                            let rel = Reloc::new(self.ci.code.len(), 1, 4);
-                            self.ci.ret_relocs.push(rel);
-                            self.ci.emit(instrs::jmp(0));
-                        }
-                    }
-                    Kind::CInt { value } => {
-                        self.ci.emit(instrs::li64(atr(allocs[0]), value as _));
-                    }
-                    Kind::UnOp { op } => {
-                        let op = op.unop().expect("TODO: unary operator not supported");
-                        let &[dst, oper] = allocs else { unreachable!() };
-                        self.ci.emit(op(atr(dst), atr(oper)));
-                    }
-                    Kind::BinOp { op } => {
-                        let &[.., rhs] = node.inputs.as_slice() else { unreachable!() };
+        //for (i, block) in func.blocks.iter().enumerate() {
+        //    let blk = regalloc2::Block(i as _);
+        //    func.nodes[block.nid].offset = self.ci.code.len() as _;
+        //    for instr_or_edit in ctx.output.block_insts_and_edits(&func, blk) {
+        //        let inst = match instr_or_edit {
+        //            regalloc2::InstOrEdit::Inst(inst) => inst,
+        //            regalloc2::InstOrEdit::Edit(&regalloc2::Edit::Move { from, to }) => {
+        //                self.ci.emit(instrs::cp(atr(to), atr(from)));
+        //                continue;
+        //            }
+        //        };
 
-                        if let Kind::CInt { value } = func.nodes[rhs].kind
-                            && let Some(op) =
-                                op.imm_binop(node.ty.is_signed(), func.tys.size_of(node.ty))
-                        {
-                            let &[dst, lhs] = allocs else { unreachable!() };
-                            self.ci.emit(op(atr(dst), atr(lhs), value as _));
-                        } else if let Some(op) =
-                            op.binop(node.ty.is_signed(), func.tys.size_of(node.ty))
-                        {
-                            let &[dst, lhs, rhs] = allocs else { unreachable!() };
-                            self.ci.emit(op(atr(dst), atr(lhs), atr(rhs)));
-                        } else if op.cond_op(node.ty.is_signed()).is_some() {
-                        } else {
-                            todo!()
-                        }
-                    }
-                    Kind::Call { func } => {
-                        self.ci.relocs.push(TypedReloc {
-                            target: ty::Kind::Func(func).compress(),
-                            reloc: Reloc::new(self.ci.code.len(), 3, 4),
-                        });
-                        self.ci.emit(instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
-                    }
-                    Kind::Start | Kind::End | Kind::Phi | Kind::Arg { .. } | Kind::Ctrl { .. } => {
-                        unreachable!()
-                    }
-                    Kind::Stck { .. } => todo!(),
-                    Kind::Load { .. } => todo!(),
-                    Kind::Stre { .. } => todo!(),
-                }
-            }
-        }
+        //        let nid = func.instrs[inst.index()].nid;
+        //        if nid == NEVER {
+        //            continue;
+        //        };
+        //        let allocs = ctx.output.inst_allocs(inst);
+        //        let node = &func.nodes[nid];
+        //        match node.kind {
+        //            Kind::If => {
+        //                let &[_, cond] = node.inputs.as_slice() else { unreachable!() };
+        //                if let Kind::BinOp { op } = func.nodes[cond].kind
+        //                    && let Some((op, swapped)) = op.cond_op(node.ty.is_signed())
+        //                {
+        //                    let rel = Reloc::new(self.ci.code.len(), 3, 2);
+        //                    self.ci.jump_relocs.push((node.outputs[!swapped as usize], rel));
+        //                    let &[lhs, rhs] = allocs else { unreachable!() };
+        //                    self.ci.emit(op(atr(lhs), atr(rhs), 0));
+        //                } else {
+        //                    todo!()
+        //                }
+        //            }
+        //            Kind::Loop | Kind::Region => {
+        //                if node.ralloc_backref as usize != i + 1 {
+        //                    let rel = Reloc::new(self.ci.code.len(), 1, 4);
+        //                    self.ci.jump_relocs.push((nid, rel));
+        //                    self.ci.emit(instrs::jmp(0));
+        //                }
+        //            }
+        //            Kind::Return => {
+        //                if i != func.blocks.len() - 1 {
+        //                    let rel = Reloc::new(self.ci.code.len(), 1, 4);
+        //                    self.ci.ret_relocs.push(rel);
+        //                    self.ci.emit(instrs::jmp(0));
+        //                }
+        //            }
+        //            Kind::CInt { value } => {
+        //                self.ci.emit(instrs::li64(atr(allocs[0]), value as _));
+        //            }
+        //            Kind::UnOp { op } => {
+        //                let op = op.unop().expect("TODO: unary operator not supported");
+        //                let &[dst, oper] = allocs else { unreachable!() };
+        //                self.ci.emit(op(atr(dst), atr(oper)));
+        //            }
+        //            Kind::BinOp { op } => {
+        //                let &[.., rhs] = node.inputs.as_slice() else { unreachable!() };
 
-        self.ci.nodes = nodes;
+        //                if let Kind::CInt { value } = func.nodes[rhs].kind
+        //                    && let Some(op) =
+        //                        op.imm_binop(node.ty.is_signed(), func.tys.size_of(node.ty))
+        //                {
+        //                    let &[dst, lhs] = allocs else { unreachable!() };
+        //                    self.ci.emit(op(atr(dst), atr(lhs), value as _));
+        //                } else if let Some(op) =
+        //                    op.binop(node.ty.is_signed(), func.tys.size_of(node.ty))
+        //                {
+        //                    let &[dst, lhs, rhs] = allocs else { unreachable!() };
+        //                    self.ci.emit(op(atr(dst), atr(lhs), atr(rhs)));
+        //                } else if op.cond_op(node.ty.is_signed()).is_some() {
+        //                } else {
+        //                    todo!()
+        //                }
+        //            }
+        //            Kind::Call { func } => {
+        //                self.ci.relocs.push(TypedReloc {
+        //                    target: ty::Kind::Func(func).compress(),
+        //                    reloc: Reloc::new(self.ci.code.len(), 3, 4),
+        //                });
+        //                self.ci.emit(instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
+        //            }
+        //            Kind::Start | Kind::End | Kind::Phi | Kind::Arg { .. } | Kind::Ctrl { .. } => {
+        //                unreachable!()
+        //            }
+        //            Kind::Stck { .. } => todo!(),
+        //            Kind::Load { .. } => todo!(),
+        //            Kind::Stre { .. } => todo!(),
+        //        }
+        //    }
+        //}
 
-        saved_regs.len()
+        //self.ci.nodes = nodes;
+
+        //saved_regs.len()
     }
 
     // TODO: sometimes its better to do this in bulk
@@ -2042,7 +2055,7 @@ impl Codegen {
                 left: &Expr::Ident { .. },
                 op: TokenKind::Decl,
                 right: Expr::Struct { fields, .. },
-            } => ty::Kind::Struct(self.build_struct(fields)),
+            } => ty::Kind::Struct(self.build_struct(None, fields)),
             Expr::BinOp { .. } => {
                 todo!()
             }

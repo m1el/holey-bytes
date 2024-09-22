@@ -3,7 +3,6 @@ resolver = "2"
 members = ["hbbytecode", "hbvm", "hbxrt", "xtask", "hblang", "hbjit"]
 
 [profile.release]
-strip = true
 lto = true
 codegen-units = 1
 panic = "abort"

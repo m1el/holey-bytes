@@ -582,6 +582,7 @@ struct Field {
 }
 
 struct Struct {
+    explicit_alignment: Option<u32>,
     fields: Rc<[Field]>,
 }
 
@@ -762,7 +763,7 @@ impl Types {
         let until = record.fields.iter().position(|f| f.name.as_ref() == field)?;
         let mut offset = 0;
         for &Field { ty, .. } in &record.fields[..until] {
-            offset = Self::align_up(offset, self.align_of(ty));
+            offset = Self::align_up(offset, record.explicit_alignment.unwrap_or(self.align_of(ty)));
             offset += self.size_of(ty);
         }
         Some((offset, record.fields[until].ty))
@@ -833,7 +834,7 @@ impl Types {
                 let mut offset = 0u32;
                 let record = &self.structs[stru as usize];
                 for &Field { ty, .. } in record.fields.iter() {
-                    let align = self.align_of(ty);
+                    let align = record.explicit_alignment.unwrap_or(self.align_of(ty));
                     offset = Self::align_up(offset, align);
                     offset += self.size_of(ty);
                 }
@@ -845,12 +846,16 @@ impl Types {
 
     fn align_of(&self, ty: ty::Id) -> Size {
         match ty.expand() {
-            ty::Kind::Struct(stru) => self.structs[stru as usize]
-                .fields
-                .iter()
-                .map(|&Field { ty, .. }| self.align_of(ty))
-                .max()
-                .unwrap(),
+            ty::Kind::Struct(stru) => {
+                self.structs[stru as usize].explicit_alignment.unwrap_or_else(|| {
+                    self.structs[stru as usize]
+                        .fields
+                        .iter()
+                        .map(|&Field { ty, .. }| self.align_of(ty))
+                        .max()
+                        .unwrap()
+                })
+            }
             ty::Kind::Slice(arr) => {
                 let arr = &self.arrays[arr as usize];
                 match arr.len {

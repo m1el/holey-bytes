@@ -162,6 +162,10 @@ Ty2 := struct {
 }
 
 main := fn(): int {
+	if @sizeof(packed struct {a: u8, b: u16}) != 3 {
+		return 9001
+	}
+
 	finst := Ty2.{ty: Ty.{a: 4, b: 1}, c: 3}
 	inst := odher_pass(finst)
 	if inst.c == 3 {
@@ -505,11 +509,223 @@ main := fn(): int {
 		}
 	}
 
-	//width += 1
+	width += 1
 
 	loop {
-		if width < y break
-		y += 1
+		if x < height {
+			//t += set_pixel(x, y, height)
+			x += 1
+			i += 1
+		} else {
+			x = 0
+			y += 1
+			if set_pixel(x, y, height) != i return 0
+			if y == width break
+		}
+	}
+
+	width += 1
+
+	loop {
+		if x < height {
+			//t += set_pixel(x, y, height)
+			x += 1
+			i += 1
+		} else {
+			x = 0
+			y += 1
+			if set_pixel(x, y, height) != i return 0
+			if y == width break
+		}
+	}
+
+	width += 1
+
+	loop {
+		if x < height {
+			//t += set_pixel(x, y, height)
+			x += 1
+			i += 1
+		} else {
+			x = 0
+			y += 1
+			if set_pixel(x, y, height) != i return 0
+			if y == width break
+		}
+	}
+
+	loop {
+		if x < height {
+			//t += set_pixel(x, y, height)
+			x += 1
+			i += 1
+		} else {
+			x = 0
+			y += 1
+			if set_pixel(x, y, height) != i return 0
+			if y == width break
+		}
+	}
+
+	width += 1
+
+	loop {
+		if x < height {
+			//t += set_pixel(x, y, height)
+			x += 1
+			i += 1
+		} else {
+			x = 0
+			y += 1
+			if set_pixel(x, y, height) != i return 0
+			if y == width break
+		}
+	}
+
+	width += 1
+
+	loop {
+		if x < height {
+			//t += set_pixel(x, y, height)
+			x += 1
+			i += 1
+		} else {
+			x = 0
+			y += 1
+			if set_pixel(x, y, height) != i return 0
+			if y == width break
+		}
+	}
+
+	width += 1
+
+	loop {
+		if x < height {
+			//t += set_pixel(x, y, height)
+			x += 1
+			i += 1
+		} else {
+			x = 0
+			y += 1
+			if set_pixel(x, y, height) != i return 0
+			if y == width break
+		}
+	}
+
+	loop {
+		if x < height {
+			//t += set_pixel(x, y, height)
+			x += 1
+			i += 1
+		} else {
+			x = 0
+			y += 1
+			if set_pixel(x, y, height) != i return 0
+			if y == width break
+		}
+	}
+
+	width += 1
+
+	loop {
+		if x < height {
+			//t += set_pixel(x, y, height)
+			x += 1
+			i += 1
+		} else {
+			x = 0
+			y += 1
+			if set_pixel(x, y, height) != i return 0
+			if y == width break
+		}
+	}
+
+	width += 1
+
+	loop {
+		if x < height {
+			//t += set_pixel(x, y, height)
+			x += 1
+			i += 1
+		} else {
+			x = 0
+			y += 1
+			if set_pixel(x, y, height) != i return 0
+			if y == width break
+		}
+	}
+
+	width += 1
+
+	loop {
+		if x < height {
+			//t += set_pixel(x, y, height)
+			x += 1
+			i += 1
+		} else {
+			x = 0
+			y += 1
+			if set_pixel(x, y, height) != i return 0
+			if y == width break
+		}
+	}
+
+	loop {
+		if x < height {
+			//t += set_pixel(x, y, height)
+			x += 1
+			i += 1
+		} else {
+			x = 0
+			y += 1
+			if set_pixel(x, y, height) != i return 0
+			if y == width break
+		}
+	}
+
+	width += 1
+
+	loop {
+		if x < height {
+			//t += set_pixel(x, y, height)
+			x += 1
+			i += 1
+		} else {
+			x = 0
+			y += 1
+			if set_pixel(x, y, height) != i return 0
+			if y == width break
+		}
+	}
+
+	width += 1
+
+	loop {
+		if x < height {
+			//t += set_pixel(x, y, height)
+			x += 1
+			i += 1
+		} else {
+			x = 0
+			y += 1
+			if set_pixel(x, y, height) != i return 0
+			if y == width break
+		}
+	}
+
+	width += 1
+
+	loop {
+		if x < height {
+			//t += set_pixel(x, y, height)
+			x += 1
+			i += 1
+		} else {
+			x = 0
+			y += 1
+			if set_pixel(x, y, height) != i return 0
+			if y == width break
+		}
 	}
 
 	return i

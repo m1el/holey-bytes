@@ -64,6 +64,7 @@ pub struct Parser<'a, 'b> {
     symbols: &'b mut Symbols,
     ns_bound: usize,
     trailing_sep: bool,
+    packed: bool,
     idents: Vec<ScopeIdent>,
     captured: Vec<Ident>,
 }
@@ -80,6 +81,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             symbols,
             ns_bound: 0,
             trailing_sep: false,
+            packed: false,
             idents: Vec::new(),
             captured: Vec::new(),
         }
@@ -286,7 +288,20 @@ impl<'a, 'b> Parser<'a, 'b> {
             T::False => E::Bool { pos, value: false },
             T::Idk => E::Idk { pos },
             T::DQuote => E::String { pos, literal: self.move_str(token) },
+            T::Packed => {
+                self.packed = true;
+                let expr = self.unit_expr();
+                if self.packed {
+                    self.report(
+                        expr.pos(),
+                        "this can not be packed \
+                        (unlike your mom that gets packed every day by me)",
+                    );
+                }
+                expr
+            }
             T::Struct => E::Struct {
+                packed: std::mem::take(&mut self.packed),
                 fields: {
                     self.ns_bound = self.idents.len();
                     self.expect_advance(T::LBrace);
@@ -746,6 +761,7 @@ generate_expr! {
             fields:   &'a [CommentOr<'a, StructField<'a>>],
             captured: &'a [Ident],
             trailing_comma: bool,
+            packed: bool,
         },
         /// `[Expr] LIST('.{', ',', '}', Ident [':' Expr])`
         Ctor {
@@ -1032,7 +1048,11 @@ impl<'a> fmt::Display for Expr<'a> {
                 write!(f, "@{name}(")?;
                 fmt_list(f, false, ")", ",", args, fmt::Display::fmt)
             }
-            Self::Struct { fields, trailing_comma, .. } => {
+            Self::Struct { fields, trailing_comma, packed, .. } => {
+                if packed {
+                    write!(f, "packed ")?;
+                }
+
                 write!(f, "struct {{")?;
                 fmt_list_low(f, trailing_comma, "}", ",", fields, |field, f| {
                     match field {
