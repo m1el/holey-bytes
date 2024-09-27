@@ -817,7 +817,7 @@ impl Types {
         match ty.expand() {
             ty::Kind::Ptr(_) => 8,
             ty::Kind::Builtin(ty::VOID) => 0,
-            ty::Kind::Builtin(ty::NEVER) => unreachable!(),
+            ty::Kind::Builtin(ty::NEVER) => 0,
             ty::Kind::Builtin(ty::INT | ty::UINT) => 8,
             ty::Kind::Builtin(ty::I32 | ty::U32 | ty::TYPE) => 4,
             ty::Kind::Builtin(ty::I16 | ty::U16) => 2,
