@@ -40,12 +40,15 @@ use {
     },
 };
 
+#[cfg(test)]
+const README: &str = include_str!("../README.md");
+
 #[macro_export]
 macro_rules! run_tests {
-    ($runner:path: $($name:ident => $input:expr;)*) => {$(
+    ($runner:path: $($name:ident;)*) => {$(
         #[test]
         fn $name() {
-            $crate::run_test(std::any::type_name_of_val(&$name), stringify!($name), $input, $runner);
+            $crate::run_test(std::any::type_name_of_val(&$name), stringify!($name), $crate::README, $runner);
         }
     )*};
 }

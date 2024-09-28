@@ -3076,8 +3076,6 @@ fn common_dom(mut a: Nid, mut b: Nid, nodes: &mut Nodes) -> Nid {
 mod tests {
     use std::fmt::Write;
 
-    const README: &str = include_str!("../README.md");
-
     fn generate(ident: &'static str, input: &'static str, output: &mut String) {
         _ = env_logger::builder().is_test(true).try_init();
 
@@ -3111,44 +3109,44 @@ mod tests {
     }
 
     crate::run_tests! { generate:
-        arithmetic => README;
-        variables => README;
-        functions => README;
-        comments => README;
-        if_statements => README;
-        loops => README;
-        fb_driver => README;
-        pointers => README;
-        //structs => README;
-        //different_types => README;
-        //struct_operators => README;
-        //directives => README;
-        //global_variables => README;
-        //generic_types => README;
-        //generic_functions => README;
-        //c_strings => README;
-        //struct_patterns => README;
-        //arrays => README;
-        //struct_return_from_module_function => README;
-        ////comptime_pointers => README;
-        //sort_something_viredly => README;
-        hex_octal_binary_literals => README;
-        //comptime_min_reg_leak => README;
-        ////structs_in_registers => README;
-        //comptime_function_from_another_file => README;
-        //inline => README;
-        //inline_test => README;
-        const_folding_with_arg => README;
-        branch_assignments => README;
-        exhaustive_loop_testing => README;
-        //idk => README;
-        //comptime_min_reg_leak => README;
-        //some_generic_code => README;
-        //integer_inference_issues => README;
-        //writing_into_string => README;
-        //request_page => README;
-        //tests_ptr_to_ptr_copy => README;
-        //wide_ret => README;
-        pointer_opts => README;
+        arithmetic;
+        variables;
+        functions;
+        comments;
+        if_statements;
+        loops;
+        fb_driver;
+        pointers;
+        //structs;
+        //different_types;
+        //struct_operators;
+        //directives;
+        //global_variables;
+        //generic_types;
+        //generic_functions;
+        //c_strings;
+        //struct_patterns;
+        //arrays;
+        //struct_return_from_module_function;
+        ////comptime_pointers;
+        //sort_something_viredly;
+        hex_octal_binary_literals;
+        //comptime_min_reg_leak;
+        ////structs_in_registers;
+        //comptime_function_from_another_file;
+        //inline;
+        //inline_test;
+        const_folding_with_arg;
+        branch_assignments;
+        exhaustive_loop_testing;
+        //idk;
+        //comptime_min_reg_leak;
+        //some_generic_code;
+        //integer_inference_issues;
+        //writing_into_string;
+        //request_page;
+        //tests_ptr_to_ptr_copy;
+        //wide_ret;
+        pointer_opts;
     }
 }
