@@ -866,6 +866,13 @@ impl Types {
             _ => self.size_of(ty).max(1),
         }
     }
+
+    fn base_of(&self, ty: ty::Id) -> Option<ty::Id> {
+        match ty.expand() {
+            ty::Kind::Ptr(p) => Some(self.ptrs[p as usize].base),
+            _ => None,
+        }
+    }
 }
 
 struct TaskQueue<T> {

@@ -947,3 +947,23 @@ main := fn(): int {
 	return back_buffer[1024 * 2]
 }
 ```
+
+#### pointer_opts
+```hb
+main := fn(): int {
+	mem := &0;
+	*mem = 1;
+	*mem = 2
+
+	b := *mem + *mem
+	clobber(mem)
+
+	b -= *mem
+	return b
+}
+
+clobber := fn(cb: ^int): void {
+	*cb = 4
+	return
+}
+```
