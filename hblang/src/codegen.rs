@@ -8,8 +8,8 @@ use {
         parser::{
             self, find_symbol, idfl, CommentOr, CtorField, Expr, ExprRef, FileId, Pos, StructField,
         },
-        ty, Field, Func, Global, LoggedMem, ParamAlloc, Reloc, Sig, Struct, SymKey, TypedReloc,
-        Types,
+        ty, Field, Func, Global, LoggedMem, OffsetIter, ParamAlloc, Reloc, Sig, Struct, SymKey,
+        TypedReloc, Types,
     },
     core::panic,
     std::fmt::Display,
@@ -483,13 +483,6 @@ impl ItemCtx {
     }
 
     fn emit(&mut self, (len, instr): (usize, [u8; instrs::MAX_SIZE])) {
-        let name = instrs::NAMES[instr[0] as usize];
-        log::trc!(
-            "{:08x}: {}: {}",
-            self.code.len(),
-            name,
-            instr.iter().take(len).skip(1).map(|b| format!("{:02x}", b)).collect::<String>()
-        );
         self.code.extend_from_slice(&instr[..len]);
     }
 
@@ -729,7 +722,7 @@ impl Codegen {
             .filter_map(CommentOr::or)
             .map(|sf| Field { name: sf.name.into(), ty: self.ty(&sf.ty) })
             .collect();
-        self.tys.structs.push(Struct { fields, explicit_alignment });
+        self.tys.structs.push(Struct { name: 0, file: 0, fields, explicit_alignment });
         self.tys.structs.len() as u32 - 1
     }
 
@@ -1122,15 +1115,13 @@ impl Codegen {
 
                 match ty.expand() {
                     ty::Kind::Struct(stru) => {
-                        let mut offset = 0;
-                        let sfields = self.tys.structs[stru as usize].fields.clone();
-                        for (sfield, field) in sfields.iter().zip(fields) {
+                        let mut oiter = OffsetIter::new(stru);
+                        for field in fields {
+                            let (ty, offset) = oiter.next_ty(&self.tys).unwrap();
                             let loc = loc.as_ref().offset(offset);
-                            let ctx = Ctx::default().with_loc(loc).with_ty(sfield.ty);
+                            let ctx = Ctx::default().with_loc(loc).with_ty(ty);
                             let value = self.expr_ctx(field, ctx)?;
                             self.ci.free_loc(value.loc);
-                            offset += self.tys.size_of(sfield.ty);
-                            offset = Types::align_up(offset, self.tys.align_of(sfield.ty));
                         }
                     }
                     ty::Kind::Slice(arr) => {
@@ -1944,21 +1935,14 @@ impl Codegen {
                 .loc
                 .or_else(|| right.take_owned())
                 .unwrap_or_else(|| Loc::stack(self.ci.stack.allocate(self.tys.size_of(ty))));
-            let mut offset = 0;
-            for &Field { ty, .. } in self.tys.structs[stuct as usize].fields.clone().iter() {
-                offset = Types::align_up(
-                    offset,
-                    self.tys.structs[stuct as usize]
-                        .explicit_alignment
-                        .unwrap_or(self.tys.align_of(ty)),
-                );
-                let size = self.tys.size_of(ty);
+
+            let mut oiter = OffsetIter::new(stuct);
+            while let Some((ty, offset)) = oiter.next_ty(&self.tys) {
                 let ctx = Ctx::from(Value { ty, loc: loc.as_ref().offset(offset) });
                 let left = left.as_ref().offset(offset);
                 let right = right.as_ref().offset(offset);
                 let value = self.struct_op(op, ty, ctx, left, right)?;
                 self.ci.free_loc(value.loc);
-                offset += size;
             }
 
             self.ci.free_loc(left);
@@ -2317,9 +2301,10 @@ impl Codegen {
         Reloc::pack_srel(stack, off)
     }
 
-    // TODO: sometimes its better to do this in bulk
     fn ty(&mut self, expr: &Expr) -> ty::Id {
-        ty::Id::from(self.eval_const(expr, ty::TYPE))
+        self.tys
+            .ty(self.ci.file, expr, &self.files)
+            .unwrap_or_else(|| ty::Id::from(self.eval_const(expr, ty::TYPE)))
     }
 
     fn read_trap(addr: u64) -> Option<&'static trap::Trap> {

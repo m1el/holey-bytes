@@ -34,7 +34,7 @@ impl TryFrom<u8> for Instr {
             Err(value)
         }
 
-        if value < NAMES.len() as u8 {
+        if value < COUNT {
             unsafe { Ok(core::mem::transmute::<u8, Instr>(value)) }
         } else {
             failed(value)
@@ -99,10 +99,7 @@ pub fn disasm(
     };
 
     fn instr_from_byte(b: u8) -> std::io::Result<Instr> {
-        if b as usize >= instrs::NAMES.len() {
-            return Err(std::io::ErrorKind::InvalidData.into());
-        }
-        Ok(unsafe { std::mem::transmute::<u8, Instr>(b) })
+        b.try_into().map_err(|_| std::io::ErrorKind::InvalidData.into())
     }
 
     let mut labels = HashMap::<u32, u32>::default();

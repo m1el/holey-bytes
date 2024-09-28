@@ -1,20 +1,20 @@
-#![allow(dead_code)]
 use {
     crate::{
-        ident::{self, Ident},
+        ident::Ident,
         instrs,
         lexer::{self, TokenKind},
         log,
         parser::{
             self,
             idfl::{self},
-            CommentOr, Expr, ExprRef, FileId, Pos, StructField,
+            Expr, ExprRef, FileId, Pos,
         },
         task,
         ty::{self},
-        Field, Func, HashMap, Offset, Reloc, Sig, Size, Struct, SymKey, TypedReloc, Types,
+        vc::{BitSet, Vc},
+        Func, HashMap, Offset, Reloc, Sig, Size, SymKey, TypedReloc, Types,
     },
-    core::fmt,
+    core::{fmt, format_args as fa},
     regalloc2::VReg,
     std::{
         assert_matches::debug_assert_matches,
@@ -23,293 +23,14 @@ use {
         convert::identity,
         fmt::{Debug, Display, Write},
         hash::{Hash as _, Hasher},
-        mem::{self, MaybeUninit},
-        ops::{self, Deref, DerefMut, Not},
-        ptr::Unique,
+        mem, ops,
     },
 };
 
-const VC_SIZE: usize = 16;
-const INLINE_ELEMS: usize = VC_SIZE / 2 - 1;
 const VOID: Nid = 0;
 const NEVER: Nid = 1;
 const ENTRY: Nid = 2;
 const MEM: Nid = 3;
-
-union Vc {
-    inline: InlineVc,
-    alloced: AllocedVc,
-}
-
-impl Default for Vc {
-    fn default() -> Self {
-        Vc { inline: InlineVc { elems: MaybeUninit::uninit(), cap: 0 } }
-    }
-}
-
-impl Debug for Vc {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.as_slice().fmt(f)
-    }
-}
-
-impl Vc {
-    fn is_inline(&self) -> bool {
-        unsafe { self.inline.cap <= INLINE_ELEMS as Nid }
-    }
-
-    fn layout(&self) -> Option<std::alloc::Layout> {
-        unsafe {
-            self.is_inline()
-                .not()
-                .then(|| std::alloc::Layout::array::<Nid>(self.alloced.cap as _).unwrap_unchecked())
-        }
-    }
-
-    fn len(&self) -> usize {
-        unsafe {
-            if self.is_inline() {
-                self.inline.cap as _
-            } else {
-                self.alloced.len as _
-            }
-        }
-    }
-
-    fn len_mut(&mut self) -> &mut Nid {
-        unsafe {
-            if self.is_inline() {
-                &mut self.inline.cap
-            } else {
-                &mut self.alloced.len
-            }
-        }
-    }
-
-    fn as_ptr(&self) -> *const Nid {
-        unsafe {
-            match self.is_inline() {
-                true => self.inline.elems.as_ptr().cast(),
-                false => self.alloced.base.as_ptr(),
-            }
-        }
-    }
-
-    fn as_mut_ptr(&mut self) -> *mut Nid {
-        unsafe {
-            match self.is_inline() {
-                true => self.inline.elems.as_mut_ptr().cast(),
-                false => self.alloced.base.as_ptr(),
-            }
-        }
-    }
-
-    fn as_slice(&self) -> &[Nid] {
-        unsafe { std::slice::from_raw_parts(self.as_ptr(), self.len()) }
-    }
-
-    fn as_slice_mut(&mut self) -> &mut [Nid] {
-        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr(), self.len()) }
-    }
-
-    fn push(&mut self, value: Nid) {
-        if let Some(layout) = self.layout()
-            && unsafe { self.alloced.len == self.alloced.cap }
-        {
-            unsafe {
-                self.alloced.cap *= 2;
-                self.alloced.base = Unique::new_unchecked(
-                    std::alloc::realloc(
-                        self.alloced.base.as_ptr().cast(),
-                        layout,
-                        self.alloced.cap as usize * std::mem::size_of::<Nid>(),
-                    )
-                    .cast(),
-                );
-            }
-        } else if self.len() == INLINE_ELEMS {
-            unsafe {
-                let mut allcd =
-                    Self::alloc((self.inline.cap + 1).next_power_of_two() as _, self.len());
-                std::ptr::copy_nonoverlapping(self.as_ptr(), allcd.as_mut_ptr(), self.len());
-                *self = allcd;
-            }
-        }
-
-        unsafe {
-            *self.len_mut() += 1;
-            self.as_mut_ptr().add(self.len() - 1).write(value);
-        }
-    }
-
-    unsafe fn alloc(cap: usize, len: usize) -> Self {
-        debug_assert!(cap > INLINE_ELEMS);
-        let layout = unsafe { std::alloc::Layout::array::<Nid>(cap).unwrap_unchecked() };
-        let alloc = unsafe { std::alloc::alloc(layout) };
-        unsafe {
-            Vc {
-                alloced: AllocedVc {
-                    base: Unique::new_unchecked(alloc.cast()),
-                    len: len as _,
-                    cap: cap as _,
-                },
-            }
-        }
-    }
-
-    fn swap_remove(&mut self, index: usize) {
-        let len = self.len() - 1;
-        self.as_slice_mut().swap(index, len);
-        *self.len_mut() -= 1;
-    }
-
-    fn remove(&mut self, index: usize) {
-        self.as_slice_mut().copy_within(index + 1.., index);
-        *self.len_mut() -= 1;
-    }
-}
-
-impl Drop for Vc {
-    fn drop(&mut self) {
-        if let Some(layout) = self.layout() {
-            unsafe {
-                std::alloc::dealloc(self.alloced.base.as_ptr().cast(), layout);
-            }
-        }
-    }
-}
-
-impl Clone for Vc {
-    fn clone(&self) -> Self {
-        self.as_slice().into()
-    }
-}
-
-impl IntoIterator for Vc {
-    type IntoIter = VcIntoIter;
-    type Item = Nid;
-
-    fn into_iter(self) -> Self::IntoIter {
-        VcIntoIter { start: 0, end: self.len(), vc: self }
-    }
-}
-
-struct VcIntoIter {
-    start: usize,
-    end: usize,
-    vc: Vc,
-}
-
-impl Iterator for VcIntoIter {
-    type Item = Nid;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.start == self.end {
-            return None;
-        }
-
-        let ret = unsafe { std::ptr::read(self.vc.as_slice().get_unchecked(self.start)) };
-        self.start += 1;
-        Some(ret)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        let len = self.end - self.start;
-        (len, Some(len))
-    }
-}
-
-impl DoubleEndedIterator for VcIntoIter {
-    fn next_back(&mut self) -> Option<Self::Item> {
-        if self.start == self.end {
-            return None;
-        }
-
-        self.end -= 1;
-        Some(unsafe { std::ptr::read(self.vc.as_slice().get_unchecked(self.end)) })
-    }
-}
-
-impl ExactSizeIterator for VcIntoIter {}
-
-impl<const SIZE: usize> From<[Nid; SIZE]> for Vc {
-    fn from(value: [Nid; SIZE]) -> Self {
-        value.as_slice().into()
-    }
-}
-
-impl<'a> From<&'a [Nid]> for Vc {
-    fn from(value: &'a [Nid]) -> Self {
-        if value.len() <= INLINE_ELEMS {
-            let mut dflt = Self::default();
-            unsafe {
-                std::ptr::copy_nonoverlapping(value.as_ptr(), dflt.as_mut_ptr(), value.len())
-            };
-            dflt.inline.cap = value.len() as _;
-            dflt
-        } else {
-            let mut allcd = unsafe { Self::alloc(value.len(), value.len()) };
-            unsafe {
-                std::ptr::copy_nonoverlapping(value.as_ptr(), allcd.as_mut_ptr(), value.len())
-            };
-            allcd
-        }
-    }
-}
-
-impl Deref for Vc {
-    type Target = [Nid];
-
-    fn deref(&self) -> &Self::Target {
-        self.as_slice()
-    }
-}
-
-impl DerefMut for Vc {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.as_slice_mut()
-    }
-}
-
-#[derive(Clone, Copy)]
-#[repr(C)]
-struct InlineVc {
-    cap: Nid,
-    elems: MaybeUninit<[Nid; INLINE_ELEMS]>,
-}
-
-#[derive(Clone, Copy)]
-#[repr(C)]
-struct AllocedVc {
-    cap: Nid,
-    len: Nid,
-    base: Unique<Nid>,
-}
-
-#[derive(Default)]
-struct BitSet {
-    data: Vec<usize>,
-}
-
-impl BitSet {
-    const ELEM_SIZE: usize = std::mem::size_of::<usize>() * 8;
-
-    pub fn clear(&mut self, bit_size: usize) {
-        let new_len = (bit_size + Self::ELEM_SIZE - 1) / Self::ELEM_SIZE;
-        self.data.clear();
-        self.data.resize(new_len, 0);
-    }
-
-    #[track_caller]
-    pub fn set(&mut self, idx: Nid) -> bool {
-        let idx = idx as usize;
-        let data_idx = idx / Self::ELEM_SIZE;
-        let sub_idx = idx % Self::ELEM_SIZE;
-        let prev = self.data[data_idx] & (1 << sub_idx);
-        self.data[data_idx] |= 1 << sub_idx;
-        prev == 0
-    }
-}
 
 type Nid = u16;
 
@@ -861,6 +582,7 @@ impl Nodes {
         log::inf!("{out}");
     }
 
+    #[allow(dead_code)]
     fn graphviz(&self) {
         let out = &mut String::new();
         _ = self.graphviz_low(out);
@@ -920,6 +642,7 @@ impl Nodes {
         //}
     }
 
+    #[expect(dead_code)]
     fn climb_expr(&mut self, from: Nid, mut for_each: impl FnMut(Nid, &Node) -> bool) -> bool {
         fn climb_impl(
             nodes: &mut Nodes,
@@ -942,6 +665,7 @@ impl Nodes {
         climb_impl(self, from, &mut for_each)
     }
 
+    #[expect(dead_code)]
     fn late_peephole(&mut self, target: Nid) -> Nid {
         if let Some(id) = self.peephole(target) {
             self.replace(target, id);
@@ -1012,6 +736,7 @@ impl Nodes {
         }
     }
 
+    #[expect(dead_code)]
     fn iter_mut(&mut self) -> impl Iterator<Item = &mut Node> {
         self.values.iter_mut().flat_map(Result::as_mut)
     }
@@ -1106,19 +831,6 @@ impl Kind {
     fn ends_basic_block(&self) -> bool {
         matches!(self, Self::Return | Self::If | Self::End)
     }
-
-    fn starts_basic_block(&self) -> bool {
-        matches!(
-            self,
-            Self::Start
-                | Self::End
-                | Self::Entry
-                | Self::Then
-                | Self::Else
-                | Self::Region
-                | Self::Loop
-        )
-    }
 }
 
 impl fmt::Display for Kind {
@@ -1165,7 +877,6 @@ impl Node {
 
 type RallocBRef = u16;
 type LoopDepth = u16;
-type CallCount = u16;
 type LockRc = u16;
 type IDomDepth = u16;
 
@@ -1182,12 +893,6 @@ struct Variable {
     value: Nid,
 }
 
-struct ColorMeta {
-    rc: u32,
-    depth: LoopDepth,
-    loc: Loc,
-}
-
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 struct MemKey {
     region: Nid,
@@ -1198,6 +903,7 @@ struct MemKey {
 #[derive(Default)]
 struct ItemCtx {
     file: FileId,
+    #[expect(dead_code)]
     id: ty::Id,
     ret: Option<ty::Id>,
 
@@ -1206,10 +912,8 @@ struct ItemCtx {
     nodes: Nodes,
     ctrl: Nid,
 
-    loop_depth: LoopDepth,
     call_count: u16,
     filled: Vec<Nid>,
-    delayed_frees: Vec<RallocBRef>,
 
     stack_size: Size,
     loops: Vec<Loop>,
@@ -1245,22 +949,6 @@ struct Ctx {
 impl Ctx {
     pub fn with_ty(self, ty: impl Into<ty::Id>) -> Self {
         Self { ty: Some(ty.into()) }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct Loc {
-    reg: reg::Reg,
-}
-
-#[derive(Default, Debug, Clone, Copy)]
-struct GenCtx {
-    loc: Option<Loc>,
-}
-
-impl GenCtx {
-    pub fn with_loc(self, loc: impl Into<Loc>) -> Self {
-        Self { loc: Some(loc.into()) }
     }
 }
 
@@ -1389,23 +1077,10 @@ impl Codegen {
         self.expr_ctx(expr, Ctx::default())
     }
 
-    fn build_struct(
-        &mut self,
-        explicit_alignment: Option<u32>,
-        fields: &[CommentOr<StructField>],
-    ) -> ty::Struct {
-        let fields = fields
-            .iter()
-            .filter_map(CommentOr::or)
-            .map(|sf| Field { name: sf.name.into(), ty: self.ty(&sf.ty) })
-            .collect();
-        self.tys.structs.push(Struct { fields, explicit_alignment });
-        self.tys.structs.len() as u32 - 1
-    }
-
     fn expr_ctx(&mut self, expr: &Expr, ctx: Ctx) -> Option<Nid> {
         let msg = "i know nothing about this name gal which is vired \
                             because we parsed succesfully";
+        // ordered by complexity of the expression
         match *expr {
             Expr::Comment { .. } => Some(VOID),
             Expr::Ident { pos, id, .. } => {
@@ -1421,6 +1096,70 @@ impl Codegen {
                 );
 
                 Some(self.ci.vars[index].value)
+            }
+            Expr::Number { value, .. } => Some(self.ci.nodes.new_node(
+                ctx.ty.filter(|ty| ty.is_integer() || ty.is_pointer()).unwrap_or(ty::INT.into()),
+                Kind::CInt { value },
+                [VOID],
+            )),
+            Expr::Return { pos, val } => {
+                let value = if let Some(val) = val {
+                    self.expr_ctx(val, Ctx { ty: self.ci.ret })?
+                } else {
+                    VOID
+                };
+
+                let mut inps = Vc::from([self.ci.ctrl, value]);
+                for m in self.ci.memories.iter() {
+                    inps.push(m.node);
+                }
+
+                let out = &mut String::new();
+                self.report_log_to(pos, "returning here", out);
+                self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Return, inps);
+
+                self.ci.nodes[NEVER].inputs.push(self.ci.ctrl);
+                self.ci.nodes[self.ci.ctrl].outputs.push(NEVER);
+
+                let expected = *self.ci.ret.get_or_insert(self.tof(value));
+                _ = self.assert_ty(pos, self.tof(value), expected, true, "return value");
+
+                None
+            }
+            Expr::UnOp { op: TokenKind::Band, val, .. } => {
+                let ctx = Ctx { ty: ctx.ty.and_then(|ty| self.tys.base_of(ty)) };
+
+                let mut val = self.expr_ctx(val, ctx)?;
+                let ty = self.tof(val);
+                if !matches!(self.ci.nodes[val].kind, Kind::Stck) {
+                    let ptr = self.tys.make_ptr(ty);
+                    let stck = self.ci.nodes.new_node_nop(ptr, Kind::Stck, [VOID, MEM]);
+                    self.ci.nodes[stck].offset = self.ci.stack_size;
+                    self.ci.stack_size += self.tys.size_of(ty);
+                    self.store_mem(stck, 0, val);
+                    val = stck;
+                }
+
+                Some(val)
+            }
+            Expr::UnOp { op: TokenKind::Mul, val, pos } => {
+                let ctx = Ctx { ty: ctx.ty.map(|ty| self.tys.make_ptr(ty)) };
+                let val = self.expr_ctx(val, ctx)?;
+                let Some(base) = self.get_load_type(val) else {
+                    self.report(
+                        pos,
+                        fa!("the '{}' can not be dereferneced", self.ty_display(self.tof(val))),
+                    );
+                    return Some(NEVER);
+                };
+                Some(self.load_mem(val, 0, base))
+            }
+            Expr::UnOp { pos, op: op @ TokenKind::Sub, val } => {
+                let val = self.expr_ctx(val, ctx)?;
+                if !self.tof(val).is_integer() {
+                    self.report(pos, fa!("cant negate '{}'", self.ty_display(self.tof(val))));
+                }
+                Some(self.ci.nodes.new_node(self.tof(val), Kind::UnOp { op }, [VOID, val]))
             }
             Expr::BinOp { left: &Expr::Ident { id, .. }, op: TokenKind::Decl, right } => {
                 let value = self.expr(right)?;
@@ -1451,10 +1190,7 @@ impl Codegen {
                 let base = self.get_load_type(val).unwrap_or_else(|| {
                     self.report(
                         pos,
-                        format_args!(
-                            "the '{}' can not be dereferneced",
-                            self.ty_display(self.tof(val))
-                        ),
+                        fa!("the '{}' can not be dereferneced", self.ty_display(self.tof(val))),
                     );
                     ty::NEVER.into()
                 });
@@ -1479,121 +1215,127 @@ impl Codegen {
                 let inps = [VOID, lhs, rhs];
                 Some(self.ci.nodes.new_node(ty::bin_ret(ty, op), Kind::BinOp { op }, inps))
             }
-            Expr::UnOp { op: TokenKind::Band, val, .. } => {
-                let ctx = Ctx { ty: ctx.ty.and_then(|ty| self.tys.base_of(ty)) };
-
-                let mut val = self.expr_ctx(val, ctx)?;
-                let ty = self.tof(val);
-                if !matches!(self.ci.nodes[val].kind, Kind::Stck) {
-                    let ptr = self.tys.make_ptr(ty);
-                    let stck = self.ci.nodes.new_node_nop(ptr, Kind::Stck, [VOID, MEM]);
-                    self.ci.nodes[stck].offset = self.ci.stack_size;
-                    self.ci.stack_size += self.tys.size_of(ty);
-                    self.store_mem(stck, 0, val);
-                    val = stck;
-                }
-
-                Some(val)
+            Expr::Directive { name: "sizeof", args: [ty], .. } => {
+                let ty = self.ty(ty);
+                Some(self.ci.nodes.new_node_nop(
+                    ty::INT,
+                    Kind::CInt { value: self.tys.size_of(ty) as _ },
+                    [VOID],
+                ))
             }
-            Expr::UnOp { op: TokenKind::Mul, val, pos } => {
-                let ctx = Ctx { ty: ctx.ty.map(|ty| self.tys.make_ptr(ty)) };
-                let val = self.expr_ctx(val, ctx)?;
-                let Some(base) = self.get_load_type(val) else {
+            Expr::Call { func: &Expr::Ident { pos, id, name, .. }, args, .. } => {
+                self.ci.call_count += 1;
+                let func = self.find_or_declare(pos, self.ci.file, Some(id), name);
+                let ty::Kind::Func(func) = func else {
                     self.report(
                         pos,
-                        format_args!(
-                            "the '{}' can not be dereferneced",
-                            self.ty_display(self.tof(val))
+                        fa!("compiler cant (yet) call '{}'", self.ty_display(func.compress())),
+                    );
+                    return Some(NEVER);
+                };
+
+                self.make_func_reachable(func);
+
+                let fuc = &self.tys.funcs[func as usize];
+                let sig = fuc.sig.expect("TODO: generic functions");
+                let ast = self.files[fuc.file as usize].clone();
+                let Expr::BinOp { right: &Expr::Closure { args: cargs, .. }, .. } =
+                    fuc.expr.get(&ast).unwrap()
+                else {
+                    unreachable!()
+                };
+
+                self.assert_report(
+                    args.len() == cargs.len(),
+                    pos,
+                    fa!(
+                        "expected {} function argumenr{}, got {}",
+                        cargs.len(),
+                        if cargs.len() == 1 { "" } else { "s" },
+                        args.len()
+                    ),
+                );
+
+                let mut inps = Vc::from([self.ci.ctrl]);
+                for ((arg, carg), tyx) in args.iter().zip(cargs).zip(sig.args.range()) {
+                    let ty = self.tys.args[tyx];
+                    if self.tys.size_of(ty) == 0 {
+                        continue;
+                    }
+                    let mut value = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
+                    _ = self.assert_ty(
+                        arg.pos(),
+                        self.tof(value),
+                        ty,
+                        true,
+                        fa!("argument {}", carg.name),
+                    );
+                    if ty.is_pointer() {
+                        value = self
+                            .ci
+                            .memories
+                            .binary_search_by_key(&(value, 0), |k| (k.region, k.offset))
+                            .map_or(value, |i| self.ci.memories[i].node);
+                        // mark the read as clobbed since function can store
+                        self.ci.nodes[value].offset = u32::MAX;
+                    }
+                    inps.push(value);
+                }
+                self.ci.ctrl = self.ci.nodes.new_node(sig.ret, Kind::Call { func }, inps);
+
+                Some(self.ci.ctrl)
+            }
+            Expr::Ctor { pos, ty, fields, .. } => {
+                let Some(sty) = ty.map(|ty| self.ty(ty)).or(ctx.ty) else {
+                    self.report(
+                        pos,
+                        "the type of struct cannot be inferred from context, \
+                        use an explicit type instead: <type>.{ ... }",
+                    );
+                    return Some(NEVER);
+                };
+
+                let ty::Kind::Struct(s) = sty.expand() else {
+                    let inferred = if ty.is_some() { "" } else { "inferred " };
+                    self.report(
+                        pos,
+                        fa!(
+                            "the {inferred}type of the constructor is `{}`, \
+                            but thats not a struct",
+                            self.ty_display(sty)
                         ),
                     );
                     return Some(NEVER);
                 };
-                Some(self.load_mem(val, 0, base))
+
+                todo!()
             }
-            Expr::UnOp { pos, op: op @ TokenKind::Sub, val } => {
-                let val = self.expr_ctx(val, ctx)?;
-                if !self.tof(val).is_integer() {
-                    self.report(
-                        pos,
-                        format_args!("cant negate '{}'", self.ty_display(self.tof(val))),
-                    );
-                }
-                Some(self.ci.nodes.new_node(self.tof(val), Kind::UnOp { op }, [VOID, val]))
-            }
-            Expr::If { cond, then, else_, .. } => {
-                let cond = self.expr_ctx(cond, Ctx::default().with_ty(ty::BOOL))?;
+            Expr::Block { stmts, .. } => {
+                let base = self.ci.vars.len();
 
-                let if_node = self.ci.nodes.new_node(ty::VOID, Kind::If, [self.ci.ctrl, cond]);
-
-                'b: {
-                    let branch = match self.tof(if_node).expand().inner() {
-                        ty::LEFT_UNREACHABLE => else_,
-                        ty::RIGHT_UNREACHABLE => Some(then),
-                        _ => break 'b,
-                    };
-
-                    self.ci.nodes.lock(self.ci.ctrl);
-                    self.ci.nodes.remove(if_node);
-                    self.ci.nodes.unlock(self.ci.ctrl);
-
-                    if let Some(branch) = branch {
-                        return self.expr(branch);
+                let mut ret = Some(VOID);
+                for stmt in stmts {
+                    ret = ret.and(self.expr(stmt));
+                    if let Some(id) = ret {
+                        _ = self.assert_ty(
+                            stmt.pos(),
+                            self.tof(id),
+                            ty::VOID.into(),
+                            true,
+                            "statement",
+                        );
                     } else {
-                        return Some(VOID);
+                        break;
                     }
                 }
 
-                let mut else_scope = self.ci.vars.clone();
-                for &el in &self.ci.vars {
-                    self.ci.nodes.lock(el.value);
+                self.ci.nodes.lock(self.ci.ctrl);
+                for var in self.ci.vars.drain(base..) {
+                    self.ci.nodes.unlock_remove(var.value);
                 }
+                self.ci.nodes.unlock(self.ci.ctrl);
 
-                self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Then, [if_node]);
-                let lcntrl = self.expr(then).map_or(Nid::MAX, |_| self.ci.ctrl);
-
-                let mut then_scope = std::mem::replace(&mut self.ci.vars, else_scope);
-                self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Else, [if_node]);
-                let rcntrl = if let Some(else_) = else_ {
-                    self.expr(else_).map_or(Nid::MAX, |_| self.ci.ctrl)
-                } else {
-                    self.ci.ctrl
-                };
-
-                if lcntrl == Nid::MAX && rcntrl == Nid::MAX {
-                    for then_var in then_scope {
-                        self.ci.nodes.unlock_remove(then_var.value);
-                    }
-                    return None;
-                } else if lcntrl == Nid::MAX {
-                    for then_var in then_scope {
-                        self.ci.nodes.unlock_remove(then_var.value);
-                    }
-                    return Some(VOID);
-                } else if rcntrl == Nid::MAX {
-                    for else_var in &self.ci.vars {
-                        self.ci.nodes.unlock_remove(else_var.value);
-                    }
-                    self.ci.vars = then_scope;
-                    self.ci.ctrl = lcntrl;
-                    return Some(VOID);
-                }
-
-                self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Region, [lcntrl, rcntrl]);
-
-                else_scope = std::mem::take(&mut self.ci.vars);
-
-                Self::merge_scopes(
-                    &mut self.ci.nodes,
-                    &mut self.ci.loops,
-                    self.ci.ctrl,
-                    &mut else_scope,
-                    &mut then_scope,
-                    true,
-                );
-
-                self.ci.vars = else_scope;
-
-                Some(VOID)
+                ret
             }
             Expr::Loop { body, .. } => {
                 self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Loop, [self.ci.ctrl; 2]);
@@ -1693,127 +1435,81 @@ impl Codegen {
             }
             Expr::Break { pos } => self.jump_to(pos, 1),
             Expr::Continue { pos } => self.jump_to(pos, 0),
-            Expr::Call { func: &Expr::Ident { pos, id, name, .. }, args, .. } => {
-                self.ci.call_count += 1;
-                let func = self.find_or_declare(pos, self.ci.file, Some(id), name);
-                let ty::Kind::Func(func) = func else {
-                    self.report(
-                        pos,
-                        format_args!(
-                            "compiler cant (yet) call '{}'",
-                            self.ty_display(func.compress())
-                        ),
-                    );
-                    return Some(NEVER);
+            Expr::If { cond, then, else_, .. } => {
+                let cond = self.expr_ctx(cond, Ctx::default().with_ty(ty::BOOL))?;
+
+                let if_node = self.ci.nodes.new_node(ty::VOID, Kind::If, [self.ci.ctrl, cond]);
+
+                'b: {
+                    let branch = match self.tof(if_node).expand().inner() {
+                        ty::LEFT_UNREACHABLE => else_,
+                        ty::RIGHT_UNREACHABLE => Some(then),
+                        _ => break 'b,
+                    };
+
+                    self.ci.nodes.lock(self.ci.ctrl);
+                    self.ci.nodes.remove(if_node);
+                    self.ci.nodes.unlock(self.ci.ctrl);
+
+                    if let Some(branch) = branch {
+                        return self.expr(branch);
+                    } else {
+                        return Some(VOID);
+                    }
+                }
+
+                let mut else_scope = self.ci.vars.clone();
+                for &el in &self.ci.vars {
+                    self.ci.nodes.lock(el.value);
+                }
+
+                self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Then, [if_node]);
+                let lcntrl = self.expr(then).map_or(Nid::MAX, |_| self.ci.ctrl);
+
+                let mut then_scope = std::mem::replace(&mut self.ci.vars, else_scope);
+                self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Else, [if_node]);
+                let rcntrl = if let Some(else_) = else_ {
+                    self.expr(else_).map_or(Nid::MAX, |_| self.ci.ctrl)
+                } else {
+                    self.ci.ctrl
                 };
 
-                self.make_func_reachable(func);
+                if lcntrl == Nid::MAX && rcntrl == Nid::MAX {
+                    for then_var in then_scope {
+                        self.ci.nodes.unlock_remove(then_var.value);
+                    }
+                    return None;
+                } else if lcntrl == Nid::MAX {
+                    for then_var in then_scope {
+                        self.ci.nodes.unlock_remove(then_var.value);
+                    }
+                    return Some(VOID);
+                } else if rcntrl == Nid::MAX {
+                    for else_var in &self.ci.vars {
+                        self.ci.nodes.unlock_remove(else_var.value);
+                    }
+                    self.ci.vars = then_scope;
+                    self.ci.ctrl = lcntrl;
+                    return Some(VOID);
+                }
 
-                let fuc = &self.tys.funcs[func as usize];
-                let sig = fuc.sig.expect("TODO: generic functions");
-                let ast = self.files[fuc.file as usize].clone();
-                let Expr::BinOp { right: &Expr::Closure { args: cargs, .. }, .. } =
-                    fuc.expr.get(&ast).unwrap()
-                else {
-                    unreachable!()
-                };
+                self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Region, [lcntrl, rcntrl]);
 
-                self.assert_report(
-                    args.len() == cargs.len(),
-                    pos,
-                    format_args!(
-                        "expected {} function argumenr{}, got {}",
-                        cargs.len(),
-                        if cargs.len() == 1 { "" } else { "s" },
-                        args.len()
-                    ),
+                else_scope = std::mem::take(&mut self.ci.vars);
+
+                Self::merge_scopes(
+                    &mut self.ci.nodes,
+                    &mut self.ci.loops,
+                    self.ci.ctrl,
+                    &mut else_scope,
+                    &mut then_scope,
+                    true,
                 );
 
-                let mut inps = Vc::from([self.ci.ctrl]);
-                for ((arg, carg), tyx) in args.iter().zip(cargs).zip(sig.args.range()) {
-                    let ty = self.tys.args[tyx];
-                    if self.tys.size_of(ty) == 0 {
-                        continue;
-                    }
-                    let mut value = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
-                    _ = self.assert_ty(
-                        arg.pos(),
-                        self.tof(value),
-                        ty,
-                        true,
-                        format_args!("argument {}", carg.name),
-                    );
-                    if ty.is_pointer() {
-                        value = self
-                            .ci
-                            .memories
-                            .binary_search_by_key(&(value, 0), |k| (k.region, k.offset))
-                            .map_or(value, |i| self.ci.memories[i].node);
-                        // mark the read as clobbed since function can store
-                        self.ci.nodes[value].offset = u32::MAX;
-                    }
-                    inps.push(value);
-                }
-                self.ci.ctrl = self.ci.nodes.new_node(sig.ret, Kind::Call { func }, inps);
+                self.ci.vars = else_scope;
 
-                Some(self.ci.ctrl)
+                Some(VOID)
             }
-            Expr::Return { pos, val } => {
-                let value = if let Some(val) = val {
-                    self.expr_ctx(val, Ctx { ty: self.ci.ret })?
-                } else {
-                    VOID
-                };
-
-                let mut inps = Vc::from([self.ci.ctrl, value]);
-                for m in self.ci.memories.iter() {
-                    inps.push(m.node);
-                }
-
-                let out = &mut String::new();
-                self.report_log_to(pos, "returning here", out);
-                self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Return, inps);
-
-                self.ci.nodes[NEVER].inputs.push(self.ci.ctrl);
-                self.ci.nodes[self.ci.ctrl].outputs.push(NEVER);
-
-                let expected = *self.ci.ret.get_or_insert(self.tof(value));
-                _ = self.assert_ty(pos, self.tof(value), expected, true, "return value");
-
-                None
-            }
-            Expr::Block { stmts, .. } => {
-                let base = self.ci.vars.len();
-
-                let mut ret = Some(VOID);
-                for stmt in stmts {
-                    ret = ret.and(self.expr(stmt));
-                    if let Some(id) = ret {
-                        _ = self.assert_ty(
-                            stmt.pos(),
-                            self.tof(id),
-                            ty::VOID.into(),
-                            true,
-                            "statement",
-                        );
-                    } else {
-                        break;
-                    }
-                }
-
-                self.ci.nodes.lock(self.ci.ctrl);
-                for var in self.ci.vars.drain(base..) {
-                    self.ci.nodes.unlock_remove(var.value);
-                }
-                self.ci.nodes.unlock(self.ci.ctrl);
-
-                ret
-            }
-            Expr::Number { value, .. } => Some(self.ci.nodes.new_node(
-                ctx.ty.filter(|ty| ty.is_integer() || ty.is_pointer()).unwrap_or(ty::INT.into()),
-                Kind::CInt { value },
-                [VOID],
-            )),
             ref e => {
                 self.report_unhandled_ast(e, "bruh");
                 Some(NEVER)
@@ -2218,19 +1914,13 @@ impl Codegen {
         saved_regs.len()
     }
 
-    // TODO: sometimes its better to do this in bulk
     fn ty(&mut self, expr: &Expr) -> ty::Id {
-        match *expr {
-            Expr::UnOp { op: TokenKind::Xor, val, .. } => {
-                let base = self.ty(val);
-                self.tys.make_ptr(base)
-            }
-            Expr::Ident { id, .. } if ident::is_null(id) => id.into(),
-            ref e => {
-                self.report_unhandled_ast(e, "type");
-                ty::NEVER.into()
-            }
+        if let Some(ty) = self.tys.ty(self.ci.file, expr, &self.files) {
+            return ty;
         }
+
+        self.report_unhandled_ast(expr, "type");
+        ty::NEVER.into()
     }
 
     fn find_or_declare(
@@ -2247,17 +1937,17 @@ impl Codegen {
             match name.ok_or(lit_name) {
                 Ok(name) => {
                     let name = self.cfile().ident_str(name);
-                    self.report(pos, format_args!("idk indentifier: {name}"))
+                    self.report(pos, fa!("idk indentifier: {name}"))
                 }
                 Err("main") => self.report(
                     pos,
-                    format_args!(
+                    fa!(
                         "missing main function in '{}', compiler can't \
                         emmit libraries since such concept is not defined",
                         f.path
                     ),
                 ),
-                Err(name) => self.report(pos, format_args!("idk indentifier: {name}")),
+                Err(name) => self.report(pos, fa!("idk indentifier: {name}")),
             }
             return ty::Kind::Builtin(ty::NEVER);
         };
@@ -2278,7 +1968,7 @@ impl Codegen {
         let prev_file = std::mem::replace(&mut self.ci.file, file);
         let sym = match expr {
             Expr::BinOp {
-                left: &Expr::Ident { .. },
+                left: Expr::Ident { .. },
                 op: TokenKind::Decl,
                 right: &Expr::Closure { pos, args, ret, .. },
             } => {
@@ -2317,13 +2007,10 @@ impl Codegen {
                 ty::Kind::Func(id)
             }
             Expr::BinOp {
-                left: &Expr::Ident { .. },
+                left: Expr::Ident { .. },
                 op: TokenKind::Decl,
-                right: Expr::Struct { fields, .. },
-            } => ty::Kind::Struct(self.build_struct(None, fields)),
-            Expr::BinOp { .. } => {
-                todo!()
-            }
+                right: right @ Expr::Struct { .. },
+            } => self.ty(right).expand(),
             e => unimplemented!("{e:#?}"),
         };
         self.ci.file = prev_file;
@@ -2352,7 +2039,7 @@ impl Codegen {
         } else {
             let ty = self.ty_display(ty);
             let expected = self.ty_display(expected);
-            self.report(pos, format_args!("expected {hint} to be of type {expected}, got {ty}"));
+            self.report(pos, fa!("expected {hint} to be of type {expected}, got {ty}"));
             ty::NEVER.into()
         }
     }
@@ -2382,12 +2069,10 @@ impl Codegen {
     fn report_unhandled_ast(&self, ast: &Expr, hint: &str) {
         self.report(
             ast.pos(),
-            format_args!(
-                "compiler does not (yet) know how to handle ({hint}):\n\
+            fa!("compiler does not (yet) know how to handle ({hint}):\n\
                 {ast:}\n\
                 info for weak people:\n\
-                {ast:#?}"
-            ),
+                {ast:#?}"),
         );
     }
 
@@ -3117,7 +2802,7 @@ mod tests {
         loops;
         fb_driver;
         pointers;
-        //structs;
+        structs;
         //different_types;
         //struct_operators;
         //directives;

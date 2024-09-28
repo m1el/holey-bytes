@@ -160,12 +160,15 @@ Ty2 := struct {
 	c: int,
 }
 
+useless := struct {}
+
 main := fn(): int {
+	// `packed` structs have no padding (all fields are alighred to 1)
 	if @sizeof(packed struct {a: u8, b: u16}) != 3 {
 		return 9001
 	}
 
-	finst := Ty2.{ty: Ty.{a: 4, b: 1}, c: 3}
+	finst := Ty2.{ty: .{a: 4, b: 1}, c: 3}
 	inst := odher_pass(finst)
 	if inst.c == 3 {
 		return pass(&inst.ty)

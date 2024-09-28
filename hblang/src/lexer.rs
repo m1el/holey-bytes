@@ -272,6 +272,7 @@ impl TokenKind {
             Self::Div => a.wrapping_div(b),
             Self::Shl => a.wrapping_shl(b as _),
             Self::Eq => (a == b) as i64,
+            Self::Ne => (a != b) as i64,
             Self::Band => a & b,
             s => todo!("{s}"),
         }

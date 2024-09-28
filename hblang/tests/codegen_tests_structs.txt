@@ -1,23 +1,28 @@
 main:
     ADDI64 r254, r254, -72d
     ST r31, r254, 48a, 24h
-    LI64 r32, 4d
-    ST r32, r254, 0a, 8h
-    LI64 r32, 1d
-    ST r32, r254, 8a, 8h
     LI64 r32, 3d
-    ST r32, r254, 16a, 8h
+    LI64 r33, 3d
+    JEQ r32, r33, :0
+    LI64 r1, 9001d
+    JMP :1
+ 0: LI64 r33, 4d
+    ST r33, r254, 0a, 8h
+    LI64 r33, 1d
+    ST r33, r254, 8a, 8h
+    LI64 r33, 3d
+    ST r33, r254, 16a, 8h
     ADDI64 r2, r254, 0d
     ADDI64 r1, r254, 24d
     JAL r31, r0, :odher_pass
-    LD r32, r254, 40a, 8h
-    LI64 r33, 3d
-    JNE r32, r33, :0
-    ADDI64 r33, r254, 24d
-    CP r2, r33
+    LD r33, r254, 40a, 8h
+    LI64 r32, 3d
+    JNE r33, r32, :2
+    ADDI64 r32, r254, 24d
+    CP r2, r32
     JAL r31, r0, :pass
     JMP :1
- 0: LI64 r1, 0d
+ 2: LI64 r1, 0d
  1: LD r31, r254, 48a, 24h
     ADDI64 r254, r254, 72d
     JALA r0, r31, 0a
@@ -43,6 +48,6 @@ pass:
     LD r31, r254, 0a, 40h
     ADDI64 r254, r254, 40d
     JALA r0, r31, 0a
-code size: 400
+code size: 440
 ret: 3
 status: Ok(())

@@ -85,11 +85,7 @@ fn gen_instrs(generated: &mut String) -> Result<(), Box<dyn std::error::Error>> 
     }
 
     '_name_list: {
-        writeln!(generated, "pub const NAMES: [&str; {}] = [", instructions().count())?;
-        for [_, name, _, _] in instructions() {
-            writeln!(generated, "    \"{}\",", name.to_lowercase())?;
-        }
-        writeln!(generated, "];")?;
+        writeln!(generated, "pub const COUNT: u8 = {};", instructions().count())?;
     }
 
     let instr = "Instr";

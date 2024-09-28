@@ -35,7 +35,7 @@ pub trait Memory {
     ///
     /// # Safety
     /// - Data read have to be valid
-    unsafe fn prog_read<T: Copy>(&mut self, addr: Address) -> T;
+    unsafe fn prog_read<T: Copy + 'static>(&mut self, addr: Address) -> T;
 }
 
 /// Unhandled load access trap

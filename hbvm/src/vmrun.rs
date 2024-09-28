@@ -382,7 +382,7 @@ where
 
     /// Decode instruction operands
     #[inline(always)]
-    unsafe fn decode<T: Copy>(&mut self) -> T {
+    unsafe fn decode<T: Copy + 'static>(&mut self) -> T {
         unsafe { self.memory.prog_read::<T>(self.pc + 1_u64) }
     }
 
@@ -446,7 +446,7 @@ where
 
     /// Perform binary operation over register and immediate
     #[inline(always)]
-    unsafe fn binary_op_imm<T: ValueVariant>(&mut self, op: impl Fn(T, T) -> T) {
+    unsafe fn binary_op_imm<T: ValueVariant + 'static>(&mut self, op: impl Fn(T, T) -> T) {
         #[derive(Clone, Copy)]
         #[repr(packed)]
         struct OpsRRImm<I>(OpsRR, I);

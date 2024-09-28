@@ -19,12 +19,13 @@
     extract_if,
     ptr_internals
 )]
-#![allow(stable_features, internal_features, clippy::format_collect)]
+#![allow(stable_features, internal_features)]
 
 use {
     self::{
         ident::Ident,
-        parser::{Expr, ExprRef, FileId},
+        lexer::TokenKind,
+        parser::{CommentOr, Expr, ExprRef, FileId},
         son::reg,
         ty::ArrayLen,
     },
@@ -32,6 +33,7 @@ use {
     parser::Ast,
     std::{
         collections::{hash_map, BTreeMap, VecDeque},
+        fmt::Display,
         io,
         ops::Range,
         path::{Path, PathBuf},
@@ -58,6 +60,7 @@ pub mod parser;
 pub mod son;
 
 mod lexer;
+mod vc;
 
 mod task {
     use super::Offset;
@@ -164,8 +167,9 @@ mod log {
 mod ty {
     use {
         crate::{
+            ident,
             lexer::TokenKind,
-            parser::{self, Expr},
+            parser::{self},
         },
         std::{num::NonZeroU32, ops::Range},
     };
@@ -427,34 +431,22 @@ mod ty {
                 TK::Ptr(ty) => {
                     write!(f, "^{}", self.rety(self.tys.ptrs[ty as usize].base))
                 }
-                _ if let Some((key, _)) = self
-                    .tys
-                    .syms
-                    .iter()
-                    .find(|(sym, &ty)| sym.file < self.files.len() as u32 && ty == self.ty)
-                    && let Some(name) = self.files[key.file as usize].exprs().iter().find_map(
-                        |expr| match expr {
-                            Expr::BinOp {
-                                left: &Expr::Ident { name, id, .. },
-                                op: TokenKind::Decl,
-                                ..
-                            } if id == key.ident => Some(name),
-                            _ => None,
-                        },
-                    ) =>
-                {
-                    write!(f, "{name}")
-                }
                 TK::Struct(idx) => {
                     let record = &self.tys.structs[idx as usize];
-                    write!(f, "[{idx}]{{")?;
-                    for (i, &super::Field { ref name, ty }) in record.fields.iter().enumerate() {
-                        if i != 0 {
-                            write!(f, ", ")?;
+                    if ident::is_null(record.name) {
+                        write!(f, "[{idx}]{{")?;
+                        for (i, &super::Field { ref name, ty }) in record.fields.iter().enumerate()
+                        {
+                            if i != 0 {
+                                write!(f, ", ")?;
+                            }
+                            write!(f, "{name}: {}", self.rety(ty))?;
                         }
-                        write!(f, "{name}: {}", self.rety(ty))?;
+                        write!(f, "}}")
+                    } else {
+                        let file = &self.files[record.file as usize];
+                        write!(f, "{}", file.ident_str(record.name))
                     }
-                    write!(f, "}}")
                 }
                 TK::Func(idx) => write!(f, "fn{idx}"),
                 TK::Global(idx) => write!(f, "global{idx}"),
@@ -585,6 +577,8 @@ struct Field {
 }
 
 struct Struct {
+    name: Ident,
+    file: FileId,
     explicit_alignment: Option<u32>,
     fields: Rc<[Field]>,
 }
@@ -639,6 +633,53 @@ struct Types {
 const HEADER_SIZE: usize = std::mem::size_of::<AbleOsExecutableHeader>();
 
 impl Types {
+    /// returns none if comptime eval is required
+    fn ty(&mut self, file: FileId, expr: &Expr, files: &[parser::Ast]) -> Option<ty::Id> {
+        Some(match *expr {
+            Expr::UnOp { op: TokenKind::Xor, val, .. } => {
+                let base = self.ty(file, val, files)?;
+                self.make_ptr(base)
+            }
+            Expr::Ident { id, .. } if ident::is_null(id) => id.into(),
+            Expr::Ident { id, .. } => {
+                let f = &files[file as usize];
+                let (Expr::BinOp { right, .. }, name) = f.find_decl(Ok(id))? else {
+                    unreachable!()
+                };
+                let ty = self.ty(file, right, files)?;
+                if let ty::Kind::Struct(s) = ty.expand() {
+                    self.structs[s as usize].name = name;
+                }
+                ty
+            }
+            Expr::Struct { pos, fields, packed, .. } => {
+                let sym = SymKey { file, ident: pos };
+                if let Some(&ty) = self.syms.get(&sym) {
+                    return Some(ty);
+                }
+
+                let fields = fields
+                    .iter()
+                    .filter_map(CommentOr::or)
+                    .map(|sf| {
+                        Some(Field { name: sf.name.into(), ty: self.ty(file, &sf.ty, files)? })
+                    })
+                    .collect::<Option<_>>()?;
+                self.structs.push(Struct {
+                    name: 0,
+                    file,
+                    fields,
+                    explicit_alignment: packed.then_some(1),
+                });
+
+                let ty = ty::Kind::Struct(self.structs.len() as u32 - 1).compress();
+                self.syms.insert(sym, ty);
+                ty
+            }
+            _ => return None,
+        })
+    }
+
     fn assemble(&mut self, to: &mut Vec<u8>) {
         to.extend([0u8; HEADER_SIZE]);
 
@@ -762,14 +803,10 @@ impl Types {
     }
 
     fn offset_of(&self, idx: ty::Struct, field: &str) -> Option<(Offset, ty::Id)> {
-        let record = &self.structs[idx as usize];
-        let until = record.fields.iter().position(|f| f.name.as_ref() == field)?;
-        let mut offset = 0;
-        for &Field { ty, .. } in &record.fields[..until] {
-            offset = Self::align_up(offset, record.explicit_alignment.unwrap_or(self.align_of(ty)));
-            offset += self.size_of(ty);
-        }
-        Some((offset, record.fields[until].ty))
+        OffsetIter::new(idx)
+            .into_iter(self)
+            .find(|(f, _)| f.name.as_ref() == field)
+            .map(|(f, off)| (off, f.ty))
     }
 
     fn make_ptr(&mut self, base: ty::Id) -> ty::Id {
@@ -812,10 +849,6 @@ impl Types {
             .inner()
     }
 
-    fn align_up(value: Size, align: Size) -> Size {
-        (value + align - 1) & !(align - 1)
-    }
-
     fn size_of(&self, ty: ty::Id) -> Size {
         match ty.expand() {
             ty::Kind::Ptr(_) => 8,
@@ -834,14 +867,9 @@ impl Types {
                 }
             }
             ty::Kind::Struct(stru) => {
-                let mut offset = 0u32;
-                let record = &self.structs[stru as usize];
-                for &Field { ty, .. } in record.fields.iter() {
-                    let align = record.explicit_alignment.unwrap_or(self.align_of(ty));
-                    offset = Self::align_up(offset, align);
-                    offset += self.size_of(ty);
-                }
-                offset
+                let mut oiter = OffsetIter::new(stru);
+                while oiter.next(self).is_some() {}
+                oiter.offset
             }
             ty => unimplemented!("size_of: {:?}", ty),
         }
@@ -856,7 +884,7 @@ impl Types {
                         .iter()
                         .map(|&Field { ty, .. }| self.align_of(ty))
                         .max()
-                        .unwrap()
+                        .unwrap_or(1)
                 })
             }
             ty::Kind::Slice(arr) => {
@@ -875,6 +903,43 @@ impl Types {
             ty::Kind::Ptr(p) => Some(self.ptrs[p as usize].base),
             _ => None,
         }
+    }
+}
+
+struct OffsetIter {
+    strct: ty::Struct,
+    offset: Offset,
+    index: usize,
+}
+
+fn align_up(value: Size, align: Size) -> Size {
+    (value + align - 1) & !(align - 1)
+}
+
+impl OffsetIter {
+    fn new(strct: ty::Struct) -> Self {
+        Self { strct, offset: 0, index: 0 }
+    }
+
+    fn next<'a>(&mut self, tys: &'a Types) -> Option<(&'a Field, Offset)> {
+        let stru = &tys.structs[self.strct as usize];
+        let field = stru.fields.get(self.index)?;
+        self.index += 1;
+        let align = stru.explicit_alignment.unwrap_or_else(|| tys.align_of(field.ty));
+
+        self.offset = align_up(self.offset, align);
+        let off = self.offset;
+        self.offset += tys.size_of(field.ty);
+        Some((field, off))
+    }
+
+    fn next_ty(&mut self, tys: &Types) -> Option<(ty::Id, Offset)> {
+        let (field, off) = self.next(tys)?;
+        Some((field.ty, off))
+    }
+
+    fn into_iter(mut self, tys: &Types) -> impl Iterator<Item = (&Field, Offset)> {
+        std::iter::from_fn(move || self.next(tys))
     }
 }
 
@@ -1277,7 +1342,7 @@ fn test_run_vm(out: &[u8], output: &mut String) {
 #[derive(Default)]
 pub struct Options {
     pub fmt: bool,
-    pub fmt_current: bool,
+    pub fmt_stdout: bool,
     pub dump_asm: bool,
     pub extra_threads: usize,
 }
@@ -1328,7 +1393,7 @@ pub fn run_compiler(
         for parsed in parsed {
             format_ast(parsed)?;
         }
-    } else if options.fmt_current {
+    } else if options.fmt_stdout {
         let ast = parsed.into_iter().next().unwrap();
         let source = std::fs::read_to_string(&*ast.path)?;
         format_to(&ast, &source, out)?;
@@ -1352,6 +1417,42 @@ pub fn run_compiler(
 #[derive(Default)]
 pub struct LoggedMem {
     pub mem: hbvm::mem::HostMemory,
+    op_buf: Vec<hbbytecode::Oper>,
+    disp_buf: String,
+    prev_instr: Option<hbbytecode::Instr>,
+}
+
+impl LoggedMem {
+    unsafe fn display_instr<T>(&mut self, instr: hbbytecode::Instr, addr: hbvm::mem::Address) {
+        let novm: *const hbvm::Vm<Self, 0> = std::ptr::null();
+        let offset = std::ptr::addr_of!((*novm).memory) as usize;
+        let regs = unsafe {
+            &*std::ptr::addr_of!(
+                (*(((self as *mut _ as *mut u8).sub(offset)) as *const hbvm::Vm<Self, 0>))
+                    .registers
+            )
+        };
+
+        let mut bytes = core::slice::from_raw_parts(
+            (addr.get() - 1) as *const u8,
+            std::mem::size_of::<T>() + 1,
+        );
+        use std::fmt::Write;
+        hbbytecode::parse_args(&mut bytes, instr, &mut self.op_buf).unwrap();
+        debug_assert!(bytes.is_empty());
+        self.disp_buf.clear();
+        write!(self.disp_buf, "{:<10}", format!("{instr:?}")).unwrap();
+        for (i, op) in self.op_buf.drain(..).enumerate() {
+            if i != 0 {
+                write!(self.disp_buf, ", ").unwrap();
+            }
+            write!(self.disp_buf, "{op:?}").unwrap();
+            if let hbbytecode::Oper::R(r) = op {
+                write!(self.disp_buf, "({})", regs[r as usize].0).unwrap()
+            }
+        }
+        log::trc!("read-typed: {:x}: {}", addr.get(), self.disp_buf);
+    }
 }
 
 impl hbvm::mem::Memory for LoggedMem {
@@ -1362,13 +1463,9 @@ impl hbvm::mem::Memory for LoggedMem {
         count: usize,
     ) -> Result<(), hbvm::mem::LoadError> {
         log::trc!(
-            "load: {:x} {:?}",
+            "load: {:x} {}",
             addr.get(),
-            core::slice::from_raw_parts(addr.get() as *const u8, count)
-                .iter()
-                .rev()
-                .map(|&b| format!("{b:02x}"))
-                .collect::<String>()
+            AsHex(core::slice::from_raw_parts(addr.get() as *const u8, count))
         );
         self.mem.load(addr, target, count)
     }
@@ -1379,36 +1476,35 @@ impl hbvm::mem::Memory for LoggedMem {
         source: *const u8,
         count: usize,
     ) -> Result<(), hbvm::mem::StoreError> {
-        log::trc!(
-            "store: {:x} {:?}",
-            addr.get(),
-            core::slice::from_raw_parts(source, count)
-                .iter()
-                .rev()
-                .map(|&b| format!("{b:02x}"))
-                .collect::<String>()
-        );
+        log::trc!("store: {:x} {}", addr.get(), AsHex(core::slice::from_raw_parts(source, count)));
         self.mem.store(addr, source, count)
     }
 
-    unsafe fn prog_read<T: Copy>(&mut self, addr: hbvm::mem::Address) -> T {
-        log::trc!(
-            "read-typed: {:x} {} {:?}",
-            addr.get(),
-            std::any::type_name::<T>(),
-            if core::mem::size_of::<T>() == 1
-                && let Some(nm) =
-                    instrs::NAMES.get(std::ptr::read(addr.get() as *const u8) as usize)
-            {
-                nm.to_string()
+    unsafe fn prog_read<T: Copy + 'static>(&mut self, addr: hbvm::mem::Address) -> T {
+        if log::LOG_LEVEL == log::Level::Trc {
+            if std::any::TypeId::of::<u8>() == std::any::TypeId::of::<T>() {
+                if let Some(instr) = self.prev_instr {
+                    self.display_instr::<()>(instr, addr);
+                }
+                self.prev_instr = hbbytecode::Instr::try_from(*(addr.get() as *const u8)).ok();
             } else {
-                core::slice::from_raw_parts(addr.get() as *const u8, core::mem::size_of::<T>())
-                    .iter()
-                    .map(|&b| format!("{:02x}", b))
-                    .collect::<String>()
+                let instr = self.prev_instr.take().unwrap();
+                self.display_instr::<T>(instr, addr);
             }
-        );
+        }
+
         self.mem.prog_read(addr)
+    }
+}
+
+struct AsHex<'a>(&'a [u8]);
+
+impl Display for AsHex<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for &b in self.0 {
+            write!(f, "{b:02x}")?;
+        }
+        Ok(())
     }
 }
 

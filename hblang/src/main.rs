@@ -14,7 +14,7 @@ fn main() -> std::io::Result<()> {
         args.iter().filter(|a| !a.starts_with('-')).nth(1).copied().unwrap_or("main.hb"),
         hblang::Options {
             fmt: args.contains(&"--fmt"),
-            fmt_current: args.contains(&"--fmt-stdout"),
+            fmt_stdout: args.contains(&"--fmt-stdout"),
             dump_asm: args.contains(&"--dump-asm"),
             extra_threads: args
                 .iter()
