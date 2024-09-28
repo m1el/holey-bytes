@@ -1,24 +1,20 @@
 continue_and_state_change:
-    ADDI64 r254, r254, -40d
-    ST r31, r254, 0a, 40h
-    LI64 r32, 3d
-    LI64 r33, 4d
-    LI64 r34, 2d
-    LI64 r35, 10d
- 6: JLTU r2, r35, :0
+    LI64 r7, 3d
+    LI64 r8, 4d
+    LI64 r9, 2d
+    LI64 r10, 10d
+ 6: JLTU r2, r10, :0
     CP r1, r2
     JMP :1
- 0: JNE r2, r34, :2
-    CP r2, r33
+ 0: JNE r2, r9, :2
+    CP r2, r8
     JMP :3
- 2: JNE r2, r32, :4
+ 2: JNE r2, r7, :4
     LI64 r1, 0d
  1: JMP :5
  4: ADDI64 r2, r2, 1d
  3: JMP :6
- 5: LD r31, r254, 0a, 40h
-    ADDI64 r254, r254, 40d
-    JALA r0, r31, 0a
+ 5: JALA r0, r31, 0a
 main:
     ADDI64 r254, r254, -80d
     ST r31, r254, 0a, 80h
@@ -70,37 +66,29 @@ main:
     ADDI64 r254, r254, 80d
     JALA r0, r31, 0a
 multiple_breaks:
-    ADDI64 r254, r254, -24d
-    ST r31, r254, 0a, 24h
-    LI64 r32, 3d
-    LI64 r33, 10d
- 4: JLTU r2, r33, :0
+    LI64 r6, 3d
+    LI64 r5, 10d
+ 4: JLTU r2, r5, :0
     CP r1, r2
     JMP :1
  0: ADDI64 r1, r2, 1d
-    JNE r1, r32, :2
+    JNE r1, r6, :2
  1: JMP :3
  2: CP r2, r1
     JMP :4
- 3: LD r31, r254, 0a, 24h
-    ADDI64 r254, r254, 24d
-    JALA r0, r31, 0a
+ 3: JALA r0, r31, 0a
 state_change_in_break:
-    ADDI64 r254, r254, -24d
-    ST r31, r254, 0a, 24h
-    LI64 r32, 3d
-    LI64 r33, 10d
- 4: JLTU r2, r33, :0
+    LI64 r5, 3d
+    LI64 r6, 10d
+ 4: JLTU r2, r6, :0
     CP r1, r2
     JMP :1
- 0: JNE r2, r32, :2
+ 0: JNE r2, r5, :2
     LI64 r1, 0d
  1: JMP :3
  2: ADDI64 r2, r2, 1d
     JMP :4
- 3: LD r31, r254, 0a, 24h
-    ADDI64 r254, r254, 24d
-    JALA r0, r31, 0a
-code size: 713
+ 3: JALA r0, r31, 0a
+code size: 569
 ret: 0
 status: Ok(())

@@ -1994,9 +1994,29 @@ impl Codegen {
                 ret_rel.apply_jump(&mut self.ci.code, end as _, 0);
             }
 
+            let mut stripped_prelude_size = 0;
             '_close_function: {
-                let pushed = (saved as i64 + 1) * 8;
+                let pushed =
+                    (saved as i64 + (std::mem::take(&mut self.ci.call_count) != 0) as i64) * 8;
                 let stack = std::mem::take(&mut self.ci.stack_size) as i64;
+
+                match (pushed, stack) {
+                    (0, 0) => {
+                        stripped_prelude_size =
+                            instrs::addi64(0, 0, 0).0 + instrs::st(0, 0, 0, 0).0;
+                        self.ci.code.drain(0..stripped_prelude_size);
+                        break '_close_function;
+                    }
+                    (0, stack) => {
+                        write_reloc(&mut self.ci.code, 3, -stack, 8);
+                        stripped_prelude_size = instrs::addi64(0, 0, 0).0;
+                        let end = stripped_prelude_size + instrs::st(0, 0, 0, 0).0;
+                        self.ci.code.drain(stripped_prelude_size..end);
+                        self.ci.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, stack as _));
+                        break '_close_function;
+                    }
+                    _ => {}
+                }
 
                 write_reloc(&mut self.ci.code, 3, -(pushed + stack), 8);
                 write_reloc(&mut self.ci.code, 3 + 8 + 3, stack, 8);
@@ -2004,8 +2024,9 @@ impl Codegen {
 
                 self.ci.emit(instrs::ld(reg::RET_ADDR, reg::STACK_PTR, stack as _, pushed as _));
                 self.ci.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, (pushed + stack) as _));
-                self.ci.emit(instrs::jala(reg::ZERO, reg::RET_ADDR, 0));
             }
+            self.ci.relocs.iter_mut().for_each(|r| r.reloc.offset -= stripped_prelude_size as u32);
+            self.ci.emit(instrs::jala(reg::ZERO, reg::RET_ADDR, 0));
         }
 
         self.tys.funcs[id as usize].code.append(&mut self.ci.code);

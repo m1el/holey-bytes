@@ -42,20 +42,12 @@ main:
     ADDI64 r254, r254, 64d
     JALA r0, r31, 0a
 set_pixel:
-    ADDI64 r254, r254, -16d
-    ST r31, r254, 0a, 16h
-    MUL64 r32, r4, r3
-    ADD64 r1, r32, r2
-    LD r31, r254, 0a, 16h
-    ADDI64 r254, r254, 16d
+    MUL64 r8, r4, r3
+    ADD64 r1, r8, r2
     JALA r0, r31, 0a
 x86_fb_ptr:
-    ADDI64 r254, r254, -8d
-    ST r31, r254, 0a, 8h
     LI64 r1, 100d
-    LD r31, r254, 0a, 8h
-    ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
-code size: 426
+code size: 330
 ret: 3000
 status: Ok(())

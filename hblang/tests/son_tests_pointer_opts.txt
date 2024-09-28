@@ -1,10 +1,6 @@
 clobber:
-    ADDI64 r254, r254, -16d
-    ST r31, r254, 0a, 16h
-    LI64 r32, 4d
-    ST r32, r2, 0a, 8h
-    LD r31, r254, 0a, 16h
-    ADDI64 r254, r254, 16d
+    LI64 r3, 4d
+    ST r3, r2, 0a, 8h
     JALA r0, r31, 0a
 main:
     ADDI64 r254, r254, -32d
@@ -18,6 +14,6 @@ main:
     LD r31, r254, 8a, 24h
     ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
-code size: 214
+code size: 166
 ret: 0
 status: Ok(())

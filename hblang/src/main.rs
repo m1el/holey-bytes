@@ -11,10 +11,10 @@ fn main() -> std::io::Result<()> {
     }
 
     hblang::run_compiler(
-        args.get(1).copied().unwrap_or("main.hb"),
+        args.iter().filter(|a| !a.starts_with('-')).nth(1).copied().unwrap_or("main.hb"),
         hblang::Options {
             fmt: args.contains(&"--fmt"),
-            fmt_current: args.contains(&"--fmt-current"),
+            fmt_current: args.contains(&"--fmt-stdout"),
             dump_asm: args.contains(&"--dump-asm"),
             extra_threads: args
                 .iter()
