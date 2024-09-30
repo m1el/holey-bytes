@@ -3,7 +3,6 @@ use {
         ident::Ident,
         instrs,
         lexer::{self, TokenKind},
-        log,
         parser::{
             self,
             idfl::{self},
@@ -568,14 +567,14 @@ impl Nodes {
         let mut out = String::new();
         self.visited.clear(self.values.len());
         self.basic_blocks_low(&mut out, VOID).unwrap();
-        log::inf!("{out}");
+        log::info!("{out}");
     }
 
     #[allow(dead_code)]
     fn graphviz(&self) {
         let out = &mut String::new();
         _ = self.graphviz_low(out);
-        log::inf!("{out}");
+        log::info!("{out}");
     }
 
     fn is_cfg(&self, o: Nid) -> bool {
@@ -2016,7 +2015,7 @@ impl Codegen {
         name: Option<Ident>,
         lit_name: &str,
     ) -> ty::Kind {
-        log::trc!("find_or_declare: {lit_name} {file}");
+        log::trace!("find_or_declare: {lit_name} {file}");
 
         let f = self.files[file as usize].clone();
         let Some((expr, ident)) = f.find_decl(name.ok_or(lit_name)) else {

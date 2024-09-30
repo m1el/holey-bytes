@@ -108,7 +108,7 @@ impl<'a, 'b> Parser<'a, 'b> {
 
         if !errors.is_empty() {
             // TODO: we need error recovery
-            crate::log::eprintln!("{errors}");
+            log::error!("{errors}");
             unreachable!();
         }
 
@@ -576,7 +576,7 @@ impl<'a, 'b> Parser<'a, 'b> {
     fn report(&self, pos: Pos, msg: impl fmt::Display) -> ! {
         let mut str = String::new();
         report_to(self.lexer.source(), self.path, pos, msg, &mut str);
-        crate::log::eprintln!("{str}");
+        log::error!("{str}");
         unreachable!();
     }
 

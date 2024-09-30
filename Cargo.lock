@@ -126,6 +126,7 @@ dependencies = [
  "hashbrown",
  "hbbytecode",
  "hbvm",
+ "log",
  "regalloc2",
 ]
 

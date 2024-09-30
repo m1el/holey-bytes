@@ -116,74 +116,6 @@ mod ident {
     }
 }
 
-mod log {
-    #![allow(unused_macros)]
-
-    #[derive(PartialOrd, PartialEq, Ord, Eq, Debug)]
-    pub enum Level {
-        Err,
-        Wrn,
-        Inf,
-        Dbg,
-        Trc,
-    }
-
-    pub const LOG_LEVEL: Level = match option_env!("LOG_LEVEL") {
-        Some(val) => match val.as_bytes()[0] {
-            b'e' => Level::Err,
-            b'w' => Level::Wrn,
-            b'i' => Level::Inf,
-            b'd' => Level::Dbg,
-            b't' => Level::Trc,
-            _ => panic!("Invalid log level."),
-        },
-        None => {
-            if cfg!(debug_assertions) {
-                Level::Dbg
-            } else {
-                Level::Err
-            }
-        }
-    };
-
-    macro_rules! eprintln {
-        ($($tt:tt)*) => {
-            #[cfg(test)]
-            {
-                //std::eprintln!($($tt)*)
-                format_args!($($tt)*)
-            }
-            #[cfg(not(test))]
-            {
-                format_args!($($tt)*)
-            }
-        };
-    }
-
-    macro_rules! log {
-        ($level:expr, $fmt:literal $($expr:tt)*) => {
-            if $level <= $crate::log::LOG_LEVEL {
-                $crate::log::eprintln!("{:?}: {}", $level, format_args!($fmt $($expr)*));
-            }
-        };
-
-        ($level:expr, $($arg:expr),+) => {
-            if $level <= $crate::log::LOG_LEVEL {
-                $(eprintln!("[{}:{}:{}][{:?}]: {} = {:?}", line!(), column!(), file!(), $level, stringify!($arg), $arg);)*
-            }
-        };
-    }
-
-    macro_rules! err { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Err, $($arg)*) }; }
-    macro_rules! wrn { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Wrn, $($arg)*) }; }
-    macro_rules! inf { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Inf, $($arg)*) }; }
-    macro_rules! dbg { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Dbg, $($arg)*) }; }
-    macro_rules! trc { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Trc, $($arg)*) }; }
-
-    #[allow(unused_imports)]
-    pub(crate) use {dbg, eprintln, err, inf, log, trc, wrn};
-}
-
 mod ty {
     use {
         crate::{
@@ -1318,7 +1250,7 @@ impl LoggedMem {
                 write!(self.disp_buf, "({})", regs[r as usize].0).unwrap()
             }
         }
-        log::trc!("read-typed: {:x}: {}", addr.get(), self.disp_buf);
+        log::trace!("read-typed: {:x}: {}", addr.get(), self.disp_buf);
     }
 }
 
@@ -1329,7 +1261,7 @@ impl hbvm::mem::Memory for LoggedMem {
         target: *mut u8,
         count: usize,
     ) -> Result<(), hbvm::mem::LoadError> {
-        log::trc!(
+        log::trace!(
             "load: {:x} {}",
             addr.get(),
             AsHex(core::slice::from_raw_parts(addr.get() as *const u8, count))
@@ -1343,12 +1275,16 @@ impl hbvm::mem::Memory for LoggedMem {
         source: *const u8,
         count: usize,
     ) -> Result<(), hbvm::mem::StoreError> {
-        log::trc!("store: {:x} {}", addr.get(), AsHex(core::slice::from_raw_parts(source, count)));
+        log::trace!(
+            "store: {:x} {}",
+            addr.get(),
+            AsHex(core::slice::from_raw_parts(source, count))
+        );
         self.mem.store(addr, source, count)
     }
 
     unsafe fn prog_read<T: Copy + 'static>(&mut self, addr: hbvm::mem::Address) -> T {
-        if log::LOG_LEVEL == log::Level::Trc {
+        if log::log_enabled!(log::Level::Trace) {
             if core::any::TypeId::of::<u8>() == core::any::TypeId::of::<T>() {
                 if let Some(instr) = self.prev_instr {
                     self.display_instr::<()>(instr, addr);

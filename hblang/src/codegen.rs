@@ -4,7 +4,6 @@ use {
         ident::{self, Ident},
         instrs::{self, *},
         lexer::TokenKind,
-        log,
         parser::{
             self, find_symbol, idfl, CommentOr, CtorField, Expr, ExprRef, FileId, Pos, StructField,
         },
@@ -1305,7 +1304,7 @@ impl Codegen {
                 self.assign_pattern(left, value)
             }
             E::Call { func: fast, args, .. } => {
-                log::trc!("call {}", self.ast_display(fast));
+                log::trace!("call {}", self.ast_display(fast));
                 let func_ty = self.ty(fast);
                 let ty::Kind::Func(mut func) = func_ty.expand() else {
                     self.report(fast.pos(), "can't call this, maybe in the future");
@@ -2408,7 +2407,7 @@ impl Codegen {
         name: Result<Ident, &str>,
         lit_name: &str,
     ) -> ty::Kind {
-        log::trc!("find_or_declare: {lit_name} {file}");
+        log::trace!("find_or_declare: {lit_name} {file}");
         let f = self.files[file as usize].clone();
         let Some((expr, ident)) = f.find_decl(name) else {
             match name {
@@ -2539,7 +2538,7 @@ impl Codegen {
         ci: ItemCtx,
         compile: impl FnOnce(&mut Self, &mut ItemCtx) -> Result<T, E>,
     ) -> Result<T, E> {
-        log::trc!("eval");
+        log::trace!("eval");
 
         let mut prev_ci = core::mem::replace(&mut self.ci, ci);
         self.ci.task_base = self.tasks.len();
@@ -2584,7 +2583,7 @@ impl Codegen {
                 }) {
                     panic!("{e} {}", vc);
                 } else {
-                    log::trc!("{}", vc);
+                    log::trace!("{}", vc);
                 }
             }
 
@@ -2596,7 +2595,7 @@ impl Codegen {
 
         self.pool.cis.push(core::mem::replace(&mut self.ci, prev_ci));
 
-        log::trc!("eval-end");
+        log::trace!("eval-end");
 
         ret
     }
@@ -2650,7 +2649,7 @@ impl Codegen {
     fn report_log(&self, pos: Pos, msg: impl core::fmt::Display) {
         let mut out = String::new();
         self.cfile().report_to(pos, msg, &mut out);
-        crate::log::eprintln!("{out}");
+        log::error!("{out}");
     }
 
     #[track_caller]

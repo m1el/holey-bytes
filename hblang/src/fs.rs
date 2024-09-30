@@ -8,6 +8,7 @@ use {
     hashbrown::hash_map,
     std::{
         collections::VecDeque,
+        eprintln,
         ffi::OsStr,
         io,
         path::{Path, PathBuf},
@@ -15,6 +16,20 @@ use {
         sync::Mutex,
     },
 };
+
+pub struct Logger;
+
+impl log::Log for Logger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        log::max_level() >= metadata.level()
+    }
+
+    fn log(&self, record: &log::Record) {
+        eprintln!("{}", record.args())
+    }
+
+    fn flush(&self) {}
+}
 
 #[derive(Default)]
 pub struct Options {

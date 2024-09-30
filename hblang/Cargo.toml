@@ -11,6 +11,7 @@ path = "src/main.rs"
 hashbrown = { version = "0.14.5", default-features = false }
 hbbytecode = { version = "0.1.0", path = "../hbbytecode" }
 hbvm = { path = "../hbvm", features = ["nightly"] }
+log = { version = "0.4.22", features = ["release_max_level_error"] }
 regalloc2 = { git = "https://github.com/jakubDoka/regalloc2", branch = "reuse-allocations", features = [] }
 
 [dev-dependencies]

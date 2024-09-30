@@ -2,6 +2,8 @@
 fn main() -> std::io::Result<()> {
     use std::{io::Write, num::NonZeroUsize};
 
+    log::set_logger(&hblang::Logger).unwrap();
+
     let args = std::env::args().collect::<Vec<_>>();
     let args = args.iter().map(String::as_str).collect::<Vec<_>>();
 
