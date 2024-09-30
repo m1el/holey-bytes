@@ -1314,7 +1314,6 @@ pub fn report_to(
 
     _ = writeln!(out, "{}", line.replace("\t", "    "));
     _ = writeln!(out, "{}^", " ".repeat(col - 1));
-    todo!()
 }
 
 #[derive(PartialEq, Eq, Hash)]

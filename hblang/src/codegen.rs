@@ -1242,6 +1242,7 @@ impl Codegen {
 
                 self.ci.emit(neg(dst.get(), oper.get()));
                 self.ci.free_loc(drop_loc);
+                self.ci.regs.free(oper);
 
                 Some(Value::new(value.ty, dst))
             }

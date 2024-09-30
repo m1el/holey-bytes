@@ -20,8 +20,8 @@ use {
 pub struct Logger;
 
 impl log::Log for Logger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        log::max_level() >= metadata.level()
+    fn enabled(&self, _: &log::Metadata) -> bool {
+        true
     }
 
     fn log(&self, record: &log::Record) {
