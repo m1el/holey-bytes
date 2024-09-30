@@ -2472,10 +2472,14 @@ impl Codegen {
                 ty::Kind::Func(id)
             }
             Expr::BinOp {
-                left: &Expr::Ident { .. },
+                left: &Expr::Ident { id, .. },
                 op: TokenKind::Decl,
                 right: stru @ Expr::Struct { .. },
-            } => self.ty(stru).expand(),
+            } => {
+                let str = self.ty(stru).expand().inner();
+                self.tys.structs[str as usize].name = id;
+                ty::Kind::Struct(str)
+            }
             Expr::BinOp { left, op: TokenKind::Decl, right } => {
                 let gid = self.tys.globals.len() as ty::Global;
                 self.tys.globals.push(Global { file, name: ident, ..Default::default() });
