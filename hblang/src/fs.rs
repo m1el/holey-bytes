@@ -25,7 +25,9 @@ impl log::Log for Logger {
     }
 
     fn log(&self, record: &log::Record) {
-        eprintln!("{}", record.args())
+        if self.enabled(record.metadata()) {
+            eprintln!("{}", record.args())
+        }
     }
 
     fn flush(&self) {}
