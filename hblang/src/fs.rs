@@ -4,7 +4,7 @@ use {
         parser::{self, Ast},
     },
     alloc::{string::String, vec::Vec},
-    core::fmt::Write,
+    core::{fmt::Write, num::NonZeroUsize},
     hashbrown::hash_map,
     std::{
         collections::VecDeque,
@@ -37,6 +37,33 @@ pub struct Options {
     pub fmt_stdout: bool,
     pub dump_asm: bool,
     pub extra_threads: usize,
+}
+
+impl Options {
+    pub fn from_args(args: &[&str]) -> std::io::Result<Self> {
+        if args.contains(&"--help") || args.contains(&"-h") {
+            log::error!("Usage: hbc [OPTIONS...] <FILE>");
+            log::error!(include_str!("../command-help.txt"));
+            return Err(std::io::ErrorKind::Other.into());
+        }
+
+        Ok(Options {
+            fmt: args.contains(&"--fmt"),
+            fmt_stdout: args.contains(&"--fmt-stdout"),
+            dump_asm: args.contains(&"--dump-asm"),
+            extra_threads: args
+                .iter()
+                .position(|&a| a == "--threads")
+                .map(|i| {
+                    args[i + 1].parse::<NonZeroUsize>().map_err(|e| {
+                        std::io::Error::other(format!("--threads expects non zero integer: {e}"))
+                    })
+                })
+                .transpose()?
+                .map_or(1, NonZeroUsize::get)
+                - 1,
+        })
+    }
 }
 
 pub fn format_to(ast: &parser::Ast, source: &str, out: &mut String) -> core::fmt::Result {
