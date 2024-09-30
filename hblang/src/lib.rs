@@ -392,13 +392,18 @@ mod ty {
                     let record = &self.tys.structs[idx as usize];
                     if ident::is_null(record.name) {
                         write!(f, "[{idx}]{{")?;
-                        for (i, &super::Field { ref name, ty }) in
+                        for (i, &super::Field { name, ty }) in
                             self.tys.struct_fields(idx).iter().enumerate()
                         {
                             if i != 0 {
                                 write!(f, ", ")?;
                             }
-                            write!(f, "{name}: {}", self.rety(ty))?;
+                            write!(
+                                f,
+                                "{}: {}",
+                                self.tys.field_names.ident_str(name),
+                                self.rety(ty)
+                            )?;
                         }
                         write!(f, "}}")
                     } else {
