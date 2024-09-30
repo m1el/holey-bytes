@@ -21,7 +21,7 @@ use {
         convert::identity,
         fmt::{self, Debug, Display, Write},
         format_args as fa,
-        hash::{Hash as _, Hasher},
+        hash::{BuildHasher, Hasher},
         mem, ops,
     },
     hashbrown::hash_map,
@@ -142,9 +142,7 @@ impl Nodes {
         hash_map::RawEntryMut<'a, LookupEntry, (), core::hash::BuildHasherDefault<IdentityHasher>>,
         u64,
     ) {
-        let mut hasher = crate::FnvHasher::default();
-        node.key().hash(&mut hasher);
-        let hash = hasher.finish();
+        let hash = crate::FnvBuildHasher::default().hash_one(node.key());
         let entry = lookup
             .raw_entry_mut()
             .from_hash(hash, |n| values[n.nid as usize].as_ref().unwrap().key() == node.key());
