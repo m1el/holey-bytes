@@ -735,6 +735,7 @@ impl Codegen {
 
     fn build_struct(
         &mut self,
+        file: FileId,
         explicit_alignment: Option<u8>,
         fields: &[CommentOr<StructField>],
     ) -> ty::Struct {
@@ -746,6 +747,7 @@ impl Codegen {
         self.tys.structs.push(Struct {
             field_start: self.tys.fields.len() as _,
             explicit_alignment,
+            file,
             ..Default::default()
         });
         self.tys.fields.extend(self.tys.fields_tmp.drain(prev_tmp..));
@@ -757,11 +759,9 @@ impl Codegen {
         use {Expr as E, TokenKind as T};
         let value = match *expr {
             E::Mod { id, .. } => Some(Value::ty(ty::Kind::Module(id).compress())),
-            E::Struct { fields, captured, packed, .. } => {
+            E::Struct { captured, .. } => {
                 if captured.is_empty() {
-                    Some(Value::ty(
-                        ty::Kind::Struct(self.build_struct(packed.then_some(1), fields)).compress(),
-                    ))
+                    Some(Value::ty(self.ty(expr)))
                 } else {
                     let values = captured
                         .iter()
@@ -2380,7 +2380,8 @@ impl Codegen {
                 }
 
                 let stru =
-                    ty::Kind::Struct(self.build_struct(packed.then_some(1), fields)).compress();
+                    ty::Kind::Struct(self.build_struct(self.ci.file, packed.then_some(1), fields))
+                        .compress();
                 self.ci.vars.truncate(prev_len);
                 self.ct.vm.write_reg(1, stru.repr() as u64);
                 debug_assert_ne!(stru.expand().inner(), 1);
@@ -2473,8 +2474,8 @@ impl Codegen {
             Expr::BinOp {
                 left: &Expr::Ident { .. },
                 op: TokenKind::Decl,
-                right: Expr::Struct { fields, packed, .. },
-            } => ty::Kind::Struct(self.build_struct(packed.then_some(1), fields)),
+                right: stru @ Expr::Struct { .. },
+            } => self.ty(stru).expand(),
             Expr::BinOp { left, op: TokenKind::Decl, right } => {
                 let gid = self.tys.globals.len() as ty::Global;
                 self.tys.globals.push(Global { file, name: ident, ..Default::default() });
