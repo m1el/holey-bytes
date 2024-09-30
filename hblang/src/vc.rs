@@ -1,8 +1,11 @@
-use std::{
-    fmt::Debug,
-    mem::MaybeUninit,
-    ops::{Deref, DerefMut, Not},
-    ptr::Unique,
+use {
+    alloc::vec::Vec,
+    core::{
+        fmt::Debug,
+        mem::MaybeUninit,
+        ops::{Deref, DerefMut, Not},
+        ptr::Unique,
+    },
 };
 
 type Nid = u16;
@@ -22,7 +25,7 @@ impl Default for Vc {
 }
 
 impl Debug for Vc {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         self.as_slice().fmt(f)
     }
 }
@@ -32,15 +35,15 @@ impl Vc {
         unsafe { self.inline.cap <= INLINE_ELEMS as Nid }
     }
 
-    fn layout(&self) -> Option<std::alloc::Layout> {
+    fn layout(&self) -> Option<core::alloc::Layout> {
         unsafe {
-            self.is_inline()
-                .not()
-                .then(|| std::alloc::Layout::array::<Nid>(self.alloced.cap as _).unwrap_unchecked())
+            self.is_inline().not().then(|| {
+                core::alloc::Layout::array::<Nid>(self.alloced.cap as _).unwrap_unchecked()
+            })
         }
     }
 
-    fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         unsafe {
             if self.is_inline() {
                 self.inline.cap as _
@@ -79,11 +82,11 @@ impl Vc {
     }
 
     pub fn as_slice(&self) -> &[Nid] {
-        unsafe { std::slice::from_raw_parts(self.as_ptr(), self.len()) }
+        unsafe { core::slice::from_raw_parts(self.as_ptr(), self.len()) }
     }
 
     fn as_slice_mut(&mut self) -> &mut [Nid] {
-        unsafe { std::slice::from_raw_parts_mut(self.as_mut_ptr(), self.len()) }
+        unsafe { core::slice::from_raw_parts_mut(self.as_mut_ptr(), self.len()) }
     }
 
     pub fn push(&mut self, value: Nid) {
@@ -93,10 +96,10 @@ impl Vc {
             unsafe {
                 self.alloced.cap *= 2;
                 self.alloced.base = Unique::new_unchecked(
-                    std::alloc::realloc(
+                    alloc::alloc::realloc(
                         self.alloced.base.as_ptr().cast(),
                         layout,
-                        self.alloced.cap as usize * std::mem::size_of::<Nid>(),
+                        self.alloced.cap as usize * core::mem::size_of::<Nid>(),
                     )
                     .cast(),
                 );
@@ -105,7 +108,7 @@ impl Vc {
             unsafe {
                 let mut allcd =
                     Self::alloc((self.inline.cap + 1).next_power_of_two() as _, self.len());
-                std::ptr::copy_nonoverlapping(self.as_ptr(), allcd.as_mut_ptr(), self.len());
+                core::ptr::copy_nonoverlapping(self.as_ptr(), allcd.as_mut_ptr(), self.len());
                 *self = allcd;
             }
         }
@@ -118,8 +121,8 @@ impl Vc {
 
     unsafe fn alloc(cap: usize, len: usize) -> Self {
         debug_assert!(cap > INLINE_ELEMS);
-        let layout = unsafe { std::alloc::Layout::array::<Nid>(cap).unwrap_unchecked() };
-        let alloc = unsafe { std::alloc::alloc(layout) };
+        let layout = unsafe { core::alloc::Layout::array::<Nid>(cap).unwrap_unchecked() };
+        let alloc = unsafe { alloc::alloc::alloc(layout) };
         unsafe {
             Vc {
                 alloced: AllocedVc {
@@ -147,7 +150,7 @@ impl Drop for Vc {
     fn drop(&mut self) {
         if let Some(layout) = self.layout() {
             unsafe {
-                std::alloc::dealloc(self.alloced.base.as_ptr().cast(), layout);
+                alloc::alloc::dealloc(self.alloced.base.as_ptr().cast(), layout);
             }
         }
     }
@@ -182,7 +185,7 @@ impl Iterator for VcIntoIter {
             return None;
         }
 
-        let ret = unsafe { std::ptr::read(self.vc.as_slice().get_unchecked(self.start)) };
+        let ret = unsafe { core::ptr::read(self.vc.as_slice().get_unchecked(self.start)) };
         self.start += 1;
         Some(ret)
     }
@@ -200,7 +203,7 @@ impl DoubleEndedIterator for VcIntoIter {
         }
 
         self.end -= 1;
-        Some(unsafe { std::ptr::read(self.vc.as_slice().get_unchecked(self.end)) })
+        Some(unsafe { core::ptr::read(self.vc.as_slice().get_unchecked(self.end)) })
     }
 }
 
@@ -217,14 +220,14 @@ impl<'a> From<&'a [Nid]> for Vc {
         if value.len() <= INLINE_ELEMS {
             let mut dflt = Self::default();
             unsafe {
-                std::ptr::copy_nonoverlapping(value.as_ptr(), dflt.as_mut_ptr(), value.len())
+                core::ptr::copy_nonoverlapping(value.as_ptr(), dflt.as_mut_ptr(), value.len())
             };
             dflt.inline.cap = value.len() as _;
             dflt
         } else {
             let mut allcd = unsafe { Self::alloc(value.len(), value.len()) };
             unsafe {
-                std::ptr::copy_nonoverlapping(value.as_ptr(), allcd.as_mut_ptr(), value.len())
+                core::ptr::copy_nonoverlapping(value.as_ptr(), allcd.as_mut_ptr(), value.len())
             };
             allcd
         }
@@ -266,7 +269,7 @@ pub struct BitSet {
 }
 
 impl BitSet {
-    const ELEM_SIZE: usize = std::mem::size_of::<usize>() * 8;
+    const ELEM_SIZE: usize = core::mem::size_of::<usize>() * 8;
 
     pub fn clear(&mut self, bit_size: usize) {
         let new_len = (bit_size + Self::ELEM_SIZE - 1) / Self::ELEM_SIZE;

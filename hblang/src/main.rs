@@ -1,6 +1,7 @@
-use std::num::NonZeroUsize;
-
+#[cfg(feature = "std")]
 fn main() -> std::io::Result<()> {
+    use std::{io::Write, num::NonZeroUsize};
+
     let args = std::env::args().collect::<Vec<_>>();
     let args = args.iter().map(String::as_str).collect::<Vec<_>>();
 
@@ -10,6 +11,7 @@ fn main() -> std::io::Result<()> {
         return Err(std::io::ErrorKind::Other.into());
     }
 
+    let mut out = Vec::new();
     hblang::run_compiler(
         args.iter().filter(|a| !a.starts_with('-')).nth(1).copied().unwrap_or("main.hb"),
         hblang::Options {
@@ -23,6 +25,7 @@ fn main() -> std::io::Result<()> {
                 .map_or(1, NonZeroUsize::get)
                 - 1,
         },
-        &mut std::io::stdout(),
-    )
+        &mut out,
+    )?;
+    std::io::stdout().write_all(&out)
 }

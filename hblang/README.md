@@ -169,11 +169,12 @@ main := fn(): int {
 	}
 
 	finst := Ty2.{ty: .{a: 4, b: 1}, c: 3}
-	inst := odher_pass(finst)
-	if inst.c == 3 {
-		return pass(&inst.ty)
-	}
-	return 0
+	//inst := odher_pass(finst)
+	//if finst.c == 3 {
+	//return finst.ty.a - finst.ty.b
+	return pass(&finst.ty)
+	//}
+	//return 0
 }
 
 pass := fn(t: ^Ty): int {

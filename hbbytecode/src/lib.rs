@@ -1,7 +1,7 @@
 #![no_std]
 
-#[cfg(feature = "std")]
-extern crate std;
+#[cfg(feature = "disasm")]
+extern crate alloc;
 
 pub use crate::instrs::*;
 use core::convert::TryFrom;
@@ -83,31 +83,72 @@ pub enum DisasmItem {
 }
 
 #[cfg(feature = "disasm")]
-pub fn disasm(
+#[derive(Debug)]
+pub enum DisasmError<'a> {
+    InvalidInstruction(u8),
+    InstructionOutOfBounds(&'a str),
+    FmtFailed(core::fmt::Error),
+    HasOutOfBoundsJumps,
+    HasDirectInstructionCycles,
+}
+
+#[cfg(feature = "disasm")]
+impl From<core::fmt::Error> for DisasmError<'_> {
+    fn from(value: core::fmt::Error) -> Self {
+        Self::FmtFailed(value)
+    }
+}
+
+#[cfg(feature = "disasm")]
+impl core::fmt::Display for DisasmError<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match *self {
+            DisasmError::InvalidInstruction(b) => write!(f, "invalid instruction opcode: {b}"),
+            DisasmError::InstructionOutOfBounds(name) => {
+                write!(f, "instruction would go out of bounds of {name} symbol")
+            }
+            DisasmError::FmtFailed(error) => write!(f, "fmt failed: {error}"),
+            DisasmError::HasOutOfBoundsJumps => write!(
+                f,
+                "the code contained jumps that dont got neither to a \
+                valid symbol or local insturction"
+            ),
+            DisasmError::HasDirectInstructionCycles => {
+                writeln!(f, "found instruction that jumps to itself")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "disasm")]
+impl core::error::Error for DisasmError<'_> {}
+
+#[cfg(feature = "disasm")]
+pub fn disasm<'a>(
     binary: &mut &[u8],
-    functions: &std::collections::BTreeMap<u32, (&str, u32, DisasmItem)>,
-    out: &mut impl std::io::Write,
+    functions: &alloc::collections::BTreeMap<u32, (&'a str, u32, DisasmItem)>,
+    out: &mut alloc::string::String,
     mut eca_handler: impl FnMut(&mut &[u8]),
-) -> std::io::Result<()> {
+) -> Result<(), DisasmError<'a>> {
     use {
         self::instrs::Instr,
-        std::{
-            collections::{hash_map::Entry, HashMap},
-            convert::TryInto,
+        alloc::{
+            collections::btree_map::{BTreeMap, Entry},
             vec::Vec,
         },
+        core::{convert::TryInto, fmt::Write},
     };
 
-    fn instr_from_byte(b: u8) -> std::io::Result<Instr> {
-        b.try_into().map_err(|_| std::io::ErrorKind::InvalidData.into())
+    fn instr_from_byte(b: u8) -> Result<Instr, DisasmError<'static>> {
+        b.try_into().map_err(DisasmError::InvalidInstruction)
     }
 
-    let mut labels = HashMap::<u32, u32>::default();
+    let mut labels = BTreeMap::<u32, u32>::default();
     let mut buf = Vec::<instrs::Oper>::new();
     let mut has_cycle = false;
     let mut has_oob = false;
 
-    '_offset_pass: for (&off, &(_name, len, kind)) in functions.iter() {
+    '_offset_pass: for (&off, &(name, len, kind)) in functions.iter() {
         if matches!(kind, DisasmItem::Global) {
             continue;
         }
@@ -123,7 +164,8 @@ pub fn disasm(
                 break;
             }
             let Ok(inst) = instr_from_byte(byte) else { break };
-            instrs::parse_args(binary, inst, &mut buf).ok_or(std::io::ErrorKind::OutOfMemory)?;
+            instrs::parse_args(binary, inst, &mut buf)
+                .ok_or(DisasmError::InstructionOutOfBounds(name))?;
 
             for op in buf.drain(..) {
                 let rel = match op {
@@ -242,11 +284,11 @@ pub fn disasm(
     }
 
     if has_oob {
-        return Err(std::io::ErrorKind::InvalidInput.into());
+        return Err(DisasmError::HasOutOfBoundsJumps);
     }
 
     if has_cycle {
-        return Err(std::io::ErrorKind::TimedOut.into());
+        return Err(DisasmError::HasDirectInstructionCycles);
     }
 
     Ok(())

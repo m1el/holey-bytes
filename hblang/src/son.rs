@@ -12,19 +12,20 @@ use {
         task,
         ty::{self},
         vc::{BitSet, Vc},
-        Func, HashMap, Offset, Reloc, Sig, Size, SymKey, TypedReloc, Types,
+        Func, HashMap, IdentityHasher, Offset, OffsetIter, Reloc, Sig, SymKey, TypedReloc, Types,
     },
-    core::{fmt, format_args as fa},
-    regalloc2::VReg,
-    std::{
+    alloc::{borrow::ToOwned, string::String, vec::Vec},
+    core::{
         assert_matches::debug_assert_matches,
         cell::RefCell,
-        collections::hash_map,
         convert::identity,
-        fmt::{Debug, Display, Write},
+        fmt::{self, Debug, Display, Write},
+        format_args as fa,
         hash::{Hash as _, Hasher},
         mem, ops,
     },
+    hashbrown::hash_map,
+    regalloc2::VReg,
 };
 
 const VOID: Nid = 0;
@@ -48,34 +49,13 @@ struct LookupEntry {
     hash: u64,
 }
 
-#[derive(Default)]
-struct IdentityHash(u64);
-
-impl std::hash::Hasher for IdentityHash {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, _: &[u8]) {
-        unimplemented!()
-    }
-
-    fn write_u64(&mut self, i: u64) {
-        self.0 = i;
-    }
-}
-
-impl std::hash::Hash for LookupEntry {
+impl core::hash::Hash for LookupEntry {
     fn hash<H: Hasher>(&self, state: &mut H) {
         state.write_u64(self.hash);
     }
 }
 
-type Lookup = std::collections::hash_map::HashMap<
-    LookupEntry,
-    (),
-    std::hash::BuildHasherDefault<IdentityHash>,
->;
+type Lookup = hashbrown::HashMap<LookupEntry, (), core::hash::BuildHasherDefault<IdentityHasher>>;
 
 struct Nodes {
     values: Vec<Result<Node, Nid>>,
@@ -96,6 +76,16 @@ impl Default for Nodes {
 }
 
 impl Nodes {
+    fn trace_mem(&self, mut op: Nid) -> Nid {
+        loop {
+            op = match self[op].kind {
+                Kind::Stre { .. } => self[op].inputs[2],
+                Kind::Ptr { .. } | Kind::Load { .. } => self[op].inputs[1],
+                _ => break op,
+            };
+        }
+    }
+
     fn remove_low(&mut self, id: Nid) -> Node {
         let value = mem::replace(&mut self.values[id as usize], Err(self.free)).unwrap();
         self.free = id;
@@ -119,7 +109,7 @@ impl Nodes {
             let (raw_entry, hash) = Self::find_node(&mut self.lookup, &self.values, &node);
 
             let entry = match raw_entry {
-                hash_map::RawEntryMut::Occupied(mut o) => return o.get_key_value().0.nid,
+                hash_map::RawEntryMut::Occupied(o) => return o.get_key_value().0.nid,
                 hash_map::RawEntryMut::Vacant(v) => v,
             };
 
@@ -149,7 +139,7 @@ impl Nodes {
         values: &[Result<Node, Nid>],
         node: &Node,
     ) -> (
-        hash_map::RawEntryMut<'a, LookupEntry, (), std::hash::BuildHasherDefault<IdentityHash>>,
+        hash_map::RawEntryMut<'a, LookupEntry, (), core::hash::BuildHasherDefault<IdentityHasher>>,
         u64,
     ) {
         let mut hasher = crate::FnvHasher::default();
@@ -258,7 +248,7 @@ impl Nodes {
                 // this is more general the pushing constants to left to help deduplicate expressions more
                 let mut changed = false;
                 if op.is_comutative() && self[lhs].key() < self[rhs].key() {
-                    std::mem::swap(&mut lhs, &mut rhs);
+                    core::mem::swap(&mut lhs, &mut rhs);
                     changed = true;
                 }
 
@@ -341,21 +331,22 @@ impl Nodes {
                     return Some(self[target].inputs[1]);
                 }
             }
-            K::Stre => {
+            K::Stre { offset } => {
                 let parent = self[target].inputs[2];
-                if self[parent].kind == K::Stre && self[parent].outputs.len() == 1 {
+
+                if self[parent].kind == (K::Stre { offset }) && self[parent].outputs.len() == 1 {
                     return Some(self.modify_input(parent, 1, self[target].inputs[1]));
                 }
             }
-            K::Load => {
+            K::Load { offset } => {
                 let parent = self[target].inputs[1];
 
-                if self[parent].kind == K::Stre && self[parent].offset != u32::MAX {
+                if self[parent].kind == (K::Stre { offset }) && self[parent].offset != u32::MAX {
                     debug_assert_eq!(self[target].ty, self[parent].ty, "TODO");
                     return Some(self[parent].inputs[1]);
                 }
 
-                if self[parent].kind == K::Load && self[parent].offset != u32::MAX {
+                if self[parent].kind == (K::Load { offset }) && self[parent].offset != u32::MAX {
                     return Some(parent);
                 }
             }
@@ -396,7 +387,7 @@ impl Nodes {
             self.values[target as usize].as_ref().unwrap(),
         );
         match entry {
-            hash_map::RawEntryMut::Occupied(mut other) => {
+            hash_map::RawEntryMut::Occupied(other) => {
                 let rpl = other.get_key_value().0.nid;
                 self[target].inputs[inp_index] = prev;
                 self.replace(target, rpl);
@@ -424,8 +415,8 @@ impl Nodes {
         self.values.iter().enumerate().filter_map(|(i, s)| Some((i as _, s.as_ref().ok()?)))
     }
 
-    fn graphviz_low(&self, out: &mut String) -> std::fmt::Result {
-        use std::fmt::Write;
+    fn graphviz_low(&self, out: &mut String) -> core::fmt::Result {
+        use core::fmt::Write;
 
         for (i, node) in self.iter() {
             let color = if self.is_cfg(i) { "yellow" } else { "white" };
@@ -445,7 +436,7 @@ impl Nodes {
     }
 
     #[allow(clippy::format_in_format_args)]
-    fn basic_blocks_instr(&mut self, out: &mut String, node: Nid) -> std::fmt::Result {
+    fn basic_blocks_instr(&mut self, out: &mut String, node: Nid) -> core::fmt::Result {
         if self[node].kind != Kind::Loop && self[node].kind != Kind::Region {
             write!(out, "  {node:>2}-c{:>2}: ", self[node].ralloc_backref)?;
         }
@@ -468,8 +459,8 @@ impl Nodes {
             Kind::Then => write!(out, "ctrl: {:<5}", "then"),
             Kind::Else => write!(out, "ctrl: {:<5}", "else"),
             Kind::Stck => write!(out, "stck:      "),
-            Kind::Load => write!(out, "load"),
-            Kind::Stre => write!(out, "stre"),
+            Kind::Load { offset } => write!(out, "load: {offset:<5}"),
+            Kind::Stre { offset } => write!(out, "stre: {offset:<5}"),
             _ => unreachable!(),
         }?;
 
@@ -485,7 +476,7 @@ impl Nodes {
         Ok(())
     }
 
-    fn basic_blocks_low(&mut self, out: &mut String, mut node: Nid) -> std::fmt::Result {
+    fn basic_blocks_low(&mut self, out: &mut String, mut node: Nid) -> core::fmt::Result {
         let iter = |nodes: &Nodes, node| nodes[node].outputs.clone().into_iter().rev();
         while self.visited.set(node) {
             match self[node].kind {
@@ -558,7 +549,7 @@ impl Nodes {
                     let mut print_ret = true;
                     for o in iter(self, node) {
                         if self[o].inputs[0] == node
-                            && (self[node].outputs[0] != o || std::mem::take(&mut print_ret))
+                            && (self[node].outputs[0] != o || core::mem::take(&mut print_ret))
                         {
                             self.basic_blocks_instr(out, o)?;
                         }
@@ -761,10 +752,15 @@ impl ops::IndexMut<Nid> for Nodes {
 pub enum Kind {
     #[default]
     Start,
+    // [ctrl]
+    Entry,
+    Mem,
     // [terms...]
     End,
     // [ctrl, cond]
     If,
+    Then,
+    Else,
     // [lhs, rhs]
     Region,
     // [entry, back]
@@ -780,11 +776,6 @@ pub enum Kind {
     Arg {
         index: u32,
     },
-    // [ctrl]
-    Entry,
-    Mem,
-    Then,
-    Else,
     // [ctrl, oper]
     UnOp {
         op: lexer::TokenKind,
@@ -799,11 +790,18 @@ pub enum Kind {
     },
     // [ctrl]
     Stck,
-
     // [ctrl, memory]
-    Load,
+    Ptr {
+        offset: Offset,
+    },
     // [ctrl, memory]
-    Stre,
+    Load {
+        offset: Offset,
+    },
+    // [ctrl, value, memory]
+    Stre {
+        offset: Offset,
+    },
 }
 
 impl Kind {
@@ -834,7 +832,7 @@ impl Kind {
 }
 
 impl fmt::Display for Kind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Kind::CInt { value } => write!(f, "#{value}"),
             Kind::Entry => write!(f, "ctrl[entry]"),
@@ -915,7 +913,6 @@ struct ItemCtx {
     call_count: u16,
     filled: Vec<Nid>,
 
-    stack_size: Size,
     loops: Vec<Loop>,
     vars: Vec<Variable>,
     memories: Vec<MemKey>,
@@ -1002,16 +999,10 @@ impl Codegen {
         mut region: Nid,
         offset: Offset,
         kind: Kind,
-        ty: ty::Id,
+        mut ty: ty::Id,
         mut inps: Vc,
     ) -> Nid {
-        loop {
-            match self.ci.nodes[region].kind {
-                Kind::Arg { .. } | Kind::Stck => break,
-                Kind::Stre => region = self.ci.nodes[region].inputs[2],
-                k => unreachable!("{k:?}"),
-            }
-        }
+        region = self.ci.nodes.trace_mem(region);
 
         let size = self.tys.size_of(ty);
         let insert_start = self
@@ -1036,15 +1027,19 @@ impl Codegen {
             inps.push(region);
         }
 
+        if matches!(kind, Kind::Ptr { .. }) {
+            ty = self.tys.make_ptr(ty);
+        }
+
         let (new_op, peeped) = self.ci.nodes.new_node_low(ty, kind, inps);
-        if !peeped {
+        if !peeped && !matches!(kind, Kind::Ptr { .. }) {
             for mk in &self.ci.memories[insert_start..insert_end] {
                 self.ci.nodes.unlock(mk.node);
             }
 
             self.ci.memories.splice(
                 insert_start..insert_end,
-                std::iter::once(MemKey { node: new_op, region, offset }),
+                core::iter::once(MemKey { node: new_op, region, offset }),
             );
             self.ci.nodes.lock(new_op);
         }
@@ -1052,11 +1047,15 @@ impl Codegen {
     }
 
     fn store_mem(&mut self, region: Nid, offset: Offset, value: Nid) -> Nid {
-        self.mem_op(region, offset, Kind::Stre, self.tof(value), [VOID, value].into())
+        self.mem_op(region, offset, Kind::Stre { offset }, self.tof(value), [VOID, value].into())
     }
 
     fn load_mem(&mut self, region: Nid, offset: Offset, ty: ty::Id) -> Nid {
-        self.mem_op(region, offset, Kind::Load, ty, [VOID].into())
+        self.mem_op(region, offset, Kind::Load { offset }, ty, [VOID].into())
+    }
+
+    fn ptr_mem(&mut self, region: Nid, offset: Offset, ty: ty::Id) -> Nid {
+        self.mem_op(region, offset, Kind::Ptr { offset }, ty, [VOID].into())
     }
 
     pub fn generate(&mut self) {
@@ -1078,8 +1077,8 @@ impl Codegen {
     }
 
     fn expr_ctx(&mut self, expr: &Expr, ctx: Ctx) -> Option<Nid> {
-        let msg = "i know nothing about this name gal which is vired \
-                            because we parsed succesfully";
+        let msg = "i know nothing about this name, gal, which is vired \
+                  because we parsed succesfully";
         // ordered by complexity of the expression
         match *expr {
             Expr::Comment { .. } => Some(VOID),
@@ -1098,7 +1097,7 @@ impl Codegen {
                 Some(self.ci.vars[index].value)
             }
             Expr::Number { value, .. } => Some(self.ci.nodes.new_node(
-                ctx.ty.filter(|ty| ty.is_integer() || ty.is_pointer()).unwrap_or(ty::INT.into()),
+                ctx.ty.filter(|ty| ty.is_integer() || ty.is_pointer()).unwrap_or(ty::Id::INT),
                 Kind::CInt { value },
                 [VOID],
             )),
@@ -1126,21 +1125,55 @@ impl Codegen {
 
                 None
             }
+            Expr::Field { target, name, pos } => {
+                let vtarget = self.expr(target)?;
+                let tty = self.tof(vtarget);
+
+                let ty::Kind::Struct(s) = self.tys.base_of(tty).unwrap_or(tty).expand() else {
+                    self.report(
+                        pos,
+                        fa!(
+                            "the '{}' is not a struct, or pointer to one, \
+                            but accessing fields is only possible on structs",
+                            self.ty_display(tty)
+                        ),
+                    );
+                    return Some(NEVER);
+                };
+
+                let Some((ty, offset)) = OffsetIter::offset_of(&self.tys, s, name) else {
+                    let field_list = self
+                        .tys
+                        .struct_fields(s)
+                        .iter()
+                        .map(|f| self.tys.field_names.ident_str(f.name))
+                        .intersperse("', '")
+                        .collect::<String>();
+                    self.report(
+                        pos,
+                        fa!(
+                            "the '{}' does not have this field, \
+                            but it does have '{field_list}'",
+                            self.ty_display(tty)
+                        ),
+                    );
+                    return Some(NEVER);
+                };
+
+                Some(self.load_mem(vtarget, ty, offset))
+            }
             Expr::UnOp { op: TokenKind::Band, val, .. } => {
                 let ctx = Ctx { ty: ctx.ty.and_then(|ty| self.tys.base_of(ty)) };
 
                 let mut val = self.expr_ctx(val, ctx)?;
                 let ty = self.tof(val);
                 if !matches!(self.ci.nodes[val].kind, Kind::Stck) {
-                    let ptr = self.tys.make_ptr(ty);
-                    let stck = self.ci.nodes.new_node_nop(ptr, Kind::Stck, [VOID, MEM]);
-                    self.ci.nodes[stck].offset = self.ci.stack_size;
-                    self.ci.stack_size += self.tys.size_of(ty);
+                    let stck = self.ci.nodes.new_node_nop(ty, Kind::Stck, [VOID, MEM]);
                     self.store_mem(stck, 0, val);
                     val = stck;
                 }
 
-                Some(val)
+                Some(self.ptr_mem(val, 0, ty))
             }
             Expr::UnOp { op: TokenKind::Mul, val, pos } => {
                 let ctx = Ctx { ty: ctx.ty.map(|ty| self.tys.make_ptr(ty)) };
@@ -1176,7 +1209,7 @@ impl Codegen {
                     return Some(NEVER);
                 };
 
-                let prev = std::mem::replace(&mut var.value, value);
+                let prev = core::mem::replace(&mut var.value, value);
                 self.ci.nodes.unlock_remove(prev);
                 Some(VOID)
             }
@@ -1192,7 +1225,7 @@ impl Codegen {
                         pos,
                         fa!("the '{}' can not be dereferneced", self.ty_display(self.tof(val))),
                     );
-                    ty::NEVER.into()
+                    ty::Id::NEVER
                 });
                 let value = self.expr_ctx(right, Ctx::default().with_ty(base))?;
                 _ = self.assert_ty(right.pos(), self.tof(value), base, true, "stored value");
@@ -1271,6 +1304,7 @@ impl Codegen {
                         fa!("argument {}", carg.name),
                     );
                     if ty.is_pointer() {
+                        value = self.ci.nodes.trace_mem(value);
                         value = self
                             .ci
                             .memories
@@ -1308,7 +1342,49 @@ impl Codegen {
                     return Some(NEVER);
                 };
 
-                todo!()
+                // TODO: dont allocate
+                let mut offs = OffsetIter::new(s, &self.tys)
+                    .into_iter(&self.tys)
+                    .map(|(f, o)| (f.ty, o))
+                    .collect::<Vec<_>>();
+                let mem = self.ci.nodes.new_node(sty, Kind::Stck, [VOID, MEM]);
+                for field in fields {
+                    let Some(index) = self.tys.find_struct_field(s, field.name) else {
+                        self.report(
+                            field.pos,
+                            fa!("struct '{}' does not have this field", self.ty_display(sty)),
+                        );
+                        continue;
+                    };
+
+                    let (ty, offset) =
+                        core::mem::replace(&mut offs[index], (ty::Id::UNDECLARED, field.pos));
+
+                    if ty == ty::Id::UNDECLARED {
+                        self.report(field.pos, "the struct field is already initialized");
+                        self.report(offset, "previous initialization is here");
+                        continue;
+                    }
+
+                    let value = self.expr_ctx(&field.value, Ctx::default().with_ty(ty))?;
+                    self.store_mem(mem, offset, value);
+                }
+
+                let field_list = self
+                    .tys
+                    .struct_fields(s)
+                    .iter()
+                    .zip(offs)
+                    .filter(|&(_, (ty, _))| ty != ty::Id::UNDECLARED)
+                    .map(|(f, _)| self.tys.field_names.ident_str(f.name))
+                    .intersperse(", ")
+                    .collect::<String>();
+
+                if !field_list.is_empty() {
+                    self.report(pos, fa!("the struct initializer is missing {field_list}"));
+                }
+
+                Some(mem)
             }
             Expr::Block { stmts, .. } => {
                 let base = self.ci.vars.len();
@@ -1320,7 +1396,7 @@ impl Codegen {
                         _ = self.assert_ty(
                             stmt.pos(),
                             self.tof(id),
-                            ty::VOID.into(),
+                            ty::Id::VOID,
                             true,
                             "statement",
                         );
@@ -1342,7 +1418,7 @@ impl Codegen {
                 self.ci.loops.push(Loop {
                     node: self.ci.ctrl,
                     ctrl: [Nid::MAX; 2],
-                    ctrl_scope: std::array::from_fn(|_| vec![]),
+                    ctrl_scope: core::array::from_fn(|_| vec![]),
                     scope: self.ci.vars.clone(),
                 });
 
@@ -1386,7 +1462,7 @@ impl Codegen {
 
                 self.ci.nodes.lock(self.ci.ctrl);
 
-                std::mem::swap(&mut self.ci.vars, &mut bres);
+                core::mem::swap(&mut self.ci.vars, &mut bres);
 
                 for ((dest_var, mut scope_var), loop_var) in
                     self.ci.vars.iter_mut().zip(scope).zip(bres)
@@ -1466,7 +1542,7 @@ impl Codegen {
                 self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Then, [if_node]);
                 let lcntrl = self.expr(then).map_or(Nid::MAX, |_| self.ci.ctrl);
 
-                let mut then_scope = std::mem::replace(&mut self.ci.vars, else_scope);
+                let mut then_scope = core::mem::replace(&mut self.ci.vars, else_scope);
                 self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Else, [if_node]);
                 let rcntrl = if let Some(else_) = else_ {
                     self.expr(else_).map_or(Nid::MAX, |_| self.ci.ctrl)
@@ -1495,7 +1571,7 @@ impl Codegen {
 
                 self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Region, [lcntrl, rcntrl]);
 
-                else_scope = std::mem::take(&mut self.ci.vars);
+                else_scope = core::mem::take(&mut self.ci.vars);
 
                 Self::merge_scopes(
                     &mut self.ci.nodes,
@@ -1531,7 +1607,7 @@ impl Codegen {
             }
         } else {
             let reg = self.ci.nodes.new_node(ty::VOID, Kind::Region, [self.ci.ctrl, loob.ctrl[id]]);
-            let mut scope = std::mem::take(&mut loob.ctrl_scope[id]);
+            let mut scope = core::mem::take(&mut loob.ctrl_scope[id]);
 
             Self::merge_scopes(
                 &mut self.ci.nodes,
@@ -1608,16 +1684,18 @@ impl Codegen {
             ret: Some(sig.ret),
             ..self.pool.cis.pop().unwrap_or_default()
         };
-        let prev_ci = std::mem::replace(&mut self.ci, repl);
+        let prev_ci = core::mem::replace(&mut self.ci, repl);
 
         let start = self.ci.nodes.new_node(ty::VOID, Kind::Start, []);
         debug_assert_eq!(start, VOID);
         let end = self.ci.nodes.new_node(ty::NEVER, Kind::End, []);
         debug_assert_eq!(end, NEVER);
+        self.ci.nodes.lock(end);
         self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Entry, [VOID]);
         debug_assert_eq!(self.ci.ctrl, ENTRY);
         let mem = self.ci.nodes.new_node(ty::VOID, Kind::Mem, [VOID]);
         debug_assert_eq!(mem, MEM);
+        self.ci.nodes.lock(mem);
 
         let Expr::BinOp {
             left: Expr::Ident { .. },
@@ -1625,7 +1703,7 @@ impl Codegen {
             right: &Expr::Closure { body, args, .. },
         } = expr
         else {
-            unreachable!("{expr}")
+            unreachable!("{}", self.ast_display(expr))
         };
 
         let mut sig_args = sig.args.range();
@@ -1644,14 +1722,32 @@ impl Codegen {
             self.report(body.pos(), "expected all paths in the fucntion to return");
         }
 
+        self.ci.nodes.unlock(end);
+
         for mem in self.ci.memories.drain(..) {
+            if self.ci.nodes[mem.region].kind == Kind::Stck
+                && self.ci.nodes[mem.node]
+                    .outputs
+                    .iter()
+                    .all(|&n| self.ci.nodes[n].kind == Kind::Return)
+            {
+                let outs = core::mem::take(&mut self.ci.nodes[mem.node].outputs);
+                for out in outs {
+                    let index =
+                        self.ci.nodes[out].inputs.iter().rposition(|&o| o == mem.node).unwrap();
+                    self.ci.nodes[out].inputs.swap_remove(index);
+                }
+            }
             self.ci.nodes.unlock_remove(mem.node);
         }
+        self.ci.nodes.unlock(mem);
+
         for var in self.ci.vars.drain(..) {
             self.ci.nodes.unlock(var.value);
         }
 
         if self.errors.borrow().is_empty() {
+            self.ci.nodes.graphviz();
             self.gcm();
 
             #[cfg(debug_assertions)]
@@ -1665,7 +1761,20 @@ impl Codegen {
             }
 
             //self.ci.nodes.basic_blocks();
-            //self.ci.nodes.graphviz();
+            self.ci.nodes.graphviz();
+
+            let mut stack_size = 0;
+            '_compute_stack: {
+                let mems = core::mem::take(&mut self.ci.nodes[MEM].outputs);
+                for &stck in mems.iter() {
+                    stack_size += self.tys.size_of(self.ci.nodes[stck].ty);
+                    self.ci.nodes[stck].offset = stack_size;
+                }
+                for &stck in mems.iter() {
+                    self.ci.nodes[stck].offset = stack_size - self.ci.nodes[stck].offset;
+                }
+                self.ci.nodes[mem].outputs = mems;
+            }
 
             self.ci.vars = orig_vars;
             self.ci.nodes.visited.clear(self.ci.nodes.values.len());
@@ -1693,8 +1802,8 @@ impl Codegen {
             let mut stripped_prelude_size = 0;
             '_close_function: {
                 let pushed =
-                    (saved as i64 + (std::mem::take(&mut self.ci.call_count) != 0) as i64) * 8;
-                let stack = std::mem::take(&mut self.ci.stack_size) as i64;
+                    (saved as i64 + (core::mem::take(&mut self.ci.call_count) != 0) as i64) * 8;
+                let stack = stack_size as i64;
 
                 match (pushed, stack) {
                     (0, 0) => {
@@ -1729,15 +1838,15 @@ impl Codegen {
         self.tys.funcs[id as usize].relocs.append(&mut self.ci.relocs);
         self.ci.nodes.clear();
         self.ci.filled.clear();
-        self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
+        self.pool.cis.push(core::mem::replace(&mut self.ci, prev_ci));
     }
 
     fn emit_body(&mut self, sig: Sig) -> usize {
-        let mut nodes = std::mem::take(&mut self.ci.nodes);
+        let mut nodes = core::mem::take(&mut self.ci.nodes);
 
         let func = Function::new(&mut nodes, &self.tys, sig);
         if self.ci.call_count != 0 {
-            std::mem::swap(
+            core::mem::swap(
                 &mut self.ralloc.env.preferred_regs_by_class,
                 &mut self.ralloc.env.non_preferred_regs_by_class,
             );
@@ -1752,7 +1861,7 @@ impl Codegen {
             .unwrap_or_else(|err| panic!("{err}"));
 
         if self.ci.call_count != 0 {
-            std::mem::swap(
+            core::mem::swap(
                 &mut self.ralloc.env.preferred_regs_by_class,
                 &mut self.ralloc.env.non_preferred_regs_by_class,
             );
@@ -1850,58 +1959,37 @@ impl Codegen {
                         self.ci.emit(instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
                     }
                     Kind::Stck => {
-                        let size = self.tys.size_of(self.tys.base_of(node.ty).unwrap());
                         let base = reg::STACK_PTR;
-                        let offset = self.ci.stack_size - func.nodes[nid].offset - size;
+                        let offset = func.nodes[nid].offset;
                         self.ci.emit(instrs::addi64(atr(allocs[0]), base, offset as _));
                     }
-                    Kind::Load => {
-                        let mut region = node.inputs[1];
-                        let offset = 0;
+                    Kind::Ptr { offset } => {
+                        let region = func.nodes.trace_mem(node.inputs[1]);
+                        let base = reg::STACK_PTR;
+                        let offset = func.nodes[region].offset + offset;
+                        self.ci.emit(instrs::addi64(atr(allocs[0]), base, offset as _));
+                    }
+                    Kind::Load { offset } => {
+                        let region = func.nodes.trace_mem(node.inputs[1]);
                         let size = self.tys.size_of(node.ty);
                         debug_assert_eq!(size, 8, "TODO");
-                        let (base, offset) = loop {
-                            match func.nodes[region].kind {
-                                Kind::Stck => {
-                                    break (
-                                        reg::STACK_PTR,
-                                        self.ci.stack_size - func.nodes[region].offset + offset
-                                            - size,
-                                    )
-                                }
-                                Kind::Stre => region = func.nodes[region].inputs[2],
-                                Kind::Load => region = func.nodes[region].inputs[1],
-                                k => unreachable!("{k:?}"),
-                            };
+                        let (base, offset) = match func.nodes[region].kind {
+                            Kind::Stck => (reg::STACK_PTR, func.nodes[region].offset + offset),
+                            k => unreachable!("{k:?}"),
                         };
-
                         let &[dst] = allocs else { unreachable!() };
                         self.ci.emit(instrs::ld(atr(dst), base, offset as _, size as _));
                     }
-                    Kind::Stre => {
-                        let mut region = node.inputs[2];
-                        let offset = 0;
+                    Kind::Stre { offset } => {
+                        let region = func.nodes.trace_mem(node.inputs[2]);
                         let size = self.tys.size_of(node.ty);
                         debug_assert_eq!(size, 8, "TODO");
-                        let (base, offset, src) = loop {
-                            match func.nodes[region].kind {
-                                Kind::Stck => {
-                                    break (
-                                        reg::STACK_PTR,
-                                        self.ci.stack_size - func.nodes[region].offset + offset
-                                            - size,
-                                        allocs[0],
-                                    );
-                                }
-                                Kind::Arg { .. } => {
-                                    break (atr(allocs[0]), 0, allocs[1]);
-                                }
-                                Kind::Stre => region = func.nodes[region].inputs[2],
-                                Kind::Load => region = func.nodes[region].inputs[1],
-                                k => unreachable!("{k:?}"),
-                            };
+                        let nd = &func.nodes[region];
+                        let (base, offset, src) = match nd.kind {
+                            Kind::Stck => (reg::STACK_PTR, nd.offset + offset, allocs[0]),
+                            Kind::Arg { .. } => (atr(allocs[0]), offset, allocs[1]),
+                            k => unreachable!("{k:?}"),
                         };
-
                         self.ci.emit(instrs::st(atr(src), base, offset as _, size as _));
                     }
                     _ => unreachable!(),
@@ -1920,7 +2008,7 @@ impl Codegen {
         }
 
         self.report_unhandled_ast(expr, "type");
-        ty::NEVER.into()
+        ty::Id::NEVER
     }
 
     fn find_or_declare(
@@ -1965,7 +2053,7 @@ impl Codegen {
             return existing.expand();
         }
 
-        let prev_file = std::mem::replace(&mut self.ci.file, file);
+        let prev_file = core::mem::replace(&mut self.ci.file, file);
         let sym = match expr {
             Expr::BinOp {
                 left: Expr::Ident { .. },
@@ -2022,6 +2110,12 @@ impl Codegen {
         ty::Display::new(&self.tys, &self.files, ty)
     }
 
+    fn ast_display(&self, ast: &Expr) -> String {
+        let mut s = String::new();
+        parser::Formatter::new(&self.cfile().file).fmt(ast, &mut s).unwrap();
+        s
+    }
+
     #[must_use]
     #[track_caller]
     fn assert_ty(
@@ -2040,28 +2134,33 @@ impl Codegen {
             let ty = self.ty_display(ty);
             let expected = self.ty_display(expected);
             self.report(pos, fa!("expected {hint} to be of type {expected}, got {ty}"));
-            ty::NEVER.into()
+            ty::Id::NEVER
         }
     }
 
-    fn report_log(&self, pos: Pos, msg: impl std::fmt::Display) {
+    fn report_log(&self, pos: Pos, msg: impl core::fmt::Display) {
         let mut buf = self.errors.borrow_mut();
         self.report_log_to(pos, msg, &mut *buf);
     }
 
-    fn report_log_to(&self, pos: Pos, msg: impl std::fmt::Display, out: &mut impl std::fmt::Write) {
+    fn report_log_to(
+        &self,
+        pos: Pos,
+        msg: impl core::fmt::Display,
+        out: &mut impl core::fmt::Write,
+    ) {
         self.cfile().report_to(pos, msg, out);
     }
 
     #[track_caller]
-    fn assert_report(&self, cond: bool, pos: Pos, msg: impl std::fmt::Display) {
+    fn assert_report(&self, cond: bool, pos: Pos, msg: impl core::fmt::Display) {
         if !cond {
             self.report(pos, msg);
         }
     }
 
     #[track_caller]
-    fn report(&self, pos: Pos, msg: impl std::fmt::Display) {
+    fn report(&self, pos: Pos, msg: impl core::fmt::Display) {
         self.report_log(pos, msg);
     }
 
@@ -2069,10 +2168,13 @@ impl Codegen {
     fn report_unhandled_ast(&self, ast: &Expr, hint: &str) {
         self.report(
             ast.pos(),
-            fa!("compiler does not (yet) know how to handle ({hint}):\n\
-                {ast:}\n\
+            fa!(
+                "compiler does not (yet) know how to handle ({hint}):\n\
+                {:}\n\
                 info for weak people:\n\
-                {ast:#?}"),
+                {ast:#?}",
+                self.ast_display(ast)
+            ),
         );
     }
 
@@ -2095,8 +2197,7 @@ impl Codegen {
 
     fn fatal_report(&self, pos: Pos, msg: impl Display) -> ! {
         self.report(pos, msg);
-        eprintln!("{}", self.errors.borrow());
-        std::process::exit(1);
+        panic!("{}", self.errors.borrow());
     }
 
     fn gcm(&mut self) {
@@ -2109,10 +2210,10 @@ impl Codegen {
 
     fn get_load_type(&self, val: Nid) -> Option<ty::Id> {
         Some(match self.ci.nodes[val].kind {
-            Kind::Stre | Kind::Load => self.ci.nodes[val].ty,
-            Kind::Stck | Kind::Arg { .. } => {
-                self.tys.base_of(self.ci.nodes[val].ty).expect("stack has pointer type, laways")
+            Kind::Stre { .. } | Kind::Load { .. } | Kind::Stck | Kind::Arg { .. } => {
+                self.ci.nodes[val].ty
             }
+            Kind::Ptr { .. } => self.tys.base_of(self.ci.nodes[val].ty).unwrap(),
             _ => return None,
         })
     }
@@ -2145,7 +2246,7 @@ struct Function<'a> {
 }
 
 impl Debug for Function<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         for (i, block) in self.blocks.iter().enumerate() {
             writeln!(f, "sb{i}{:?}-{:?}:", block.params, block.preds)?;
 
@@ -2261,7 +2362,7 @@ impl<'a> Function<'a> {
                     && let Some((_, swapped)) = op.cond_op(node.ty.is_signed())
                 {
                     if swapped {
-                        std::mem::swap(&mut then, &mut else_);
+                        core::mem::swap(&mut then, &mut else_);
                     }
                     let &[_, lhs, rhs] = self.nodes[cond].inputs.as_slice() else { unreachable!() };
                     let ops = vec![self.urg(lhs), self.urg(rhs)];
@@ -2389,8 +2490,8 @@ impl<'a> Function<'a> {
                     let ty = self.tys.args[ti];
                     loop {
                         match self.nodes[i].kind {
-                            Kind::Stre => i = self.nodes[i].inputs[2],
-                            Kind::Load => i = self.nodes[i].inputs[1],
+                            Kind::Stre { .. } => i = self.nodes[i].inputs[2],
+                            Kind::Load { .. } => i = self.nodes[i].inputs[1],
                             _ => break,
                         }
                     }
@@ -2419,31 +2520,29 @@ impl<'a> Function<'a> {
                 let ops = vec![self.drg(nid)];
                 self.add_instr(nid, ops);
             }
-            Kind::Load => {
-                let mut region = node.inputs[1];
-                let ops = loop {
-                    match self.nodes[region].kind {
-                        Kind::Stck => break vec![self.drg(nid)],
-                        Kind::Stre => region = self.nodes[region].inputs[2],
-                        Kind::Load => region = self.nodes[region].inputs[1],
-                        k => unreachable!("{k:?}"),
-                    };
+            Kind::Ptr { .. } => {
+                let region = self.nodes.trace_mem(node.inputs[1]);
+                let ops = match self.nodes[region].kind {
+                    Kind::Stck => vec![self.drg(nid)],
+                    k => unreachable!("{k:?}"),
                 };
-
                 self.add_instr(nid, ops);
             }
-            Kind::Stre => {
-                let mut region = node.inputs[2];
-                let ops = loop {
-                    match self.nodes[region].kind {
-                        Kind::Stck => break vec![self.urg(node.inputs[1])],
-                        Kind::Arg { .. } => break vec![self.urg(region), self.urg(node.inputs[1])],
-                        Kind::Stre => region = self.nodes[region].inputs[2],
-                        Kind::Load => region = self.nodes[region].inputs[1],
-                        k => unreachable!("{k:?}"),
-                    };
+            Kind::Load { .. } => {
+                let region = self.nodes.trace_mem(node.inputs[1]);
+                let ops = match self.nodes[region].kind {
+                    Kind::Stck => vec![self.drg(nid)],
+                    k => unreachable!("{k:?}"),
                 };
-
+                self.add_instr(nid, ops);
+            }
+            Kind::Stre { .. } => {
+                let region = self.nodes.trace_mem(node.inputs[2]);
+                let ops = match self.nodes[region].kind {
+                    Kind::Stck => vec![self.urg(node.inputs[1])],
+                    Kind::Arg { .. } => vec![self.urg(region), self.urg(node.inputs[1])],
+                    k => unreachable!("{k:?}"),
+                };
                 self.add_instr(nid, ops);
             }
         }
@@ -2759,7 +2858,10 @@ fn common_dom(mut a: Nid, mut b: Nid, nodes: &mut Nodes) -> Nid {
 
 #[cfg(test)]
 mod tests {
-    use std::fmt::Write;
+    use {
+        alloc::{string::String, vec::Vec},
+        core::fmt::Write,
+    };
 
     fn generate(ident: &'static str, input: &'static str, output: &mut String) {
         _ = env_logger::builder().is_test(true).try_init();
@@ -2780,9 +2882,7 @@ mod tests {
         let mut out = Vec::new();
         codegen.tys.assemble(&mut out);
 
-        let mut buf = Vec::<u8>::new();
-        let err = codegen.tys.disasm(&out, &codegen.files, &mut buf, |_| {});
-        output.push_str(String::from_utf8(buf).unwrap().as_str());
+        let err = codegen.tys.disasm(&out, &codegen.files, output, |_| {});
         if let Err(e) = err {
             writeln!(output, "!!! asm is invalid: {e}").unwrap();
             return;

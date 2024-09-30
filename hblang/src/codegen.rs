@@ -11,8 +11,8 @@ use {
         ty, Field, Func, Global, LoggedMem, OffsetIter, ParamAlloc, Reloc, Sig, Struct, SymKey,
         TypedReloc, Types,
     },
-    core::panic,
-    std::fmt::Display,
+    alloc::{borrow::ToOwned, boxed::Box, string::String, vec::Vec},
+    core::{fmt::Display, panic},
 };
 
 type Offset = u32;
@@ -21,7 +21,8 @@ type ArrayLen = u32;
 
 fn load_value(ptr: *const u8, size: u32) -> u64 {
     let mut dst = [0u8; 8];
-    dst[..size as usize].copy_from_slice(unsafe { std::slice::from_raw_parts(ptr, size as usize) });
+    dst[..size as usize]
+        .copy_from_slice(unsafe { core::slice::from_raw_parts(ptr, size as usize) });
     u64::from_ne_bytes(dst)
 }
 
@@ -36,7 +37,8 @@ fn ensure_loaded(value: CtValue, derefed: bool, size: u32) -> u64 {
 mod stack {
     use {
         super::{Offset, Size},
-        std::num::NonZeroU32,
+        alloc::vec::Vec,
+        core::num::NonZeroU32,
     };
 
     impl crate::Reloc {
@@ -79,7 +81,17 @@ mod stack {
 
     impl Drop for Id {
         fn drop(&mut self) {
-            if !std::thread::panicking() && !self.is_ref() {
+            let is_panicking = {
+                #[cfg(feature = "std")]
+                {
+                    std::thread::panicking()
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    false
+                }
+            };
+            if !is_panicking && !self.is_ref() {
                 unreachable!("stack id leaked: {:?}", self.0);
             }
         }
@@ -110,7 +122,7 @@ mod stack {
         }
 
         pub fn free(&mut self, id: Id) {
-            std::mem::forget(id);
+            core::mem::forget(id);
             //if id.is_ref() {}
             //let meta = &mut self.meta[id.index()];
             //meta.rc -= 1;
@@ -151,6 +163,8 @@ mod stack {
 }
 
 mod reg {
+    use alloc::vec::Vec;
+
     pub const STACK_PTR: Reg = 254;
     pub const ZERO: Reg = 0;
     pub const RET: Reg = 1;
@@ -158,9 +172,9 @@ mod reg {
 
     type Reg = u8;
 
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "std")]
     type Bt = std::backtrace::Backtrace;
-    #[cfg(not(debug_assertions))]
+    #[cfg(not(feature = "std"))]
     type Bt = ();
 
     #[derive(Default, Debug)]
@@ -196,12 +210,20 @@ mod reg {
         }
     }
 
-    #[cfg(debug_assertions)]
+    #[cfg(feature = "std")]
     impl Drop for Id {
         fn drop(&mut self) {
-            if !std::thread::panicking()
-                && let Some(bt) = self.1.take()
-            {
+            let is_panicking = {
+                #[cfg(feature = "std")]
+                {
+                    std::thread::panicking()
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    false
+                }
+            };
+            if !is_panicking && let Some(bt) = self.1.take() {
                 unreachable!("reg id leaked: {:?} {bt}", self.0);
             }
         }
@@ -225,9 +247,9 @@ mod reg {
             self.max_used = self.max_used.max(reg);
             Id(
                 reg,
-                #[cfg(debug_assertions)]
+                #[cfg(feature = "std")]
                 Some(std::backtrace::Backtrace::capture()),
-                #[cfg(not(debug_assertions))]
+                #[cfg(not(feature = "std"))]
                 Some(()),
             )
         }
@@ -235,7 +257,7 @@ mod reg {
         pub fn free(&mut self, reg: Id) {
             if reg.1.is_some() {
                 self.free.push(reg.0);
-                std::mem::forget(reg);
+                core::mem::forget(reg);
             }
         }
 
@@ -256,15 +278,15 @@ impl Value {
     }
 
     fn void() -> Self {
-        Self { ty: ty::VOID.into(), loc: Loc::ct(0) }
+        Self { ty: ty::Id::VOID, loc: Loc::ct(0) }
     }
 
     fn imm(value: u64) -> Self {
-        Self { ty: ty::UINT.into(), loc: Loc::ct(value) }
+        Self { ty: ty::Id::UINT, loc: Loc::ct(value) }
     }
 
     fn ty(ty: ty::Id) -> Self {
-        Self { ty: ty::TYPE.into(), loc: Loc::ct(ty.repr() as u64) }
+        Self { ty: ty::Id::TYPE, loc: Loc::ct(ty.repr() as u64) }
     }
 }
 
@@ -365,7 +387,7 @@ impl Loc {
             return None;
         }
 
-        Some(std::mem::replace(self, self.as_ref()))
+        Some(core::mem::replace(self, self.as_ref()))
     }
 
     fn is_ref(&self) -> bool {
@@ -376,7 +398,7 @@ impl Loc {
         match *self {
             Self::Ct { derefed: false, value } => Some(ty::Id::from(value.0)),
             Self::Ct { derefed: true, value } => {
-                Some(unsafe { std::ptr::read(value.0 as *const u8 as _) })
+                Some(unsafe { core::ptr::read(value.0 as *const u8 as _) })
             }
             Self::Rt { .. } => None,
         }
@@ -655,7 +677,7 @@ mod trap {
             impl $name {
                 $vis fn size(&self) -> usize {
                     1 + match self {
-                        $(Self::$variant(_) => std::mem::size_of::<$variant>(),)*
+                        $(Self::$variant(_) => core::mem::size_of::<$variant>(),)*
                     }
                 }
             }
@@ -684,7 +706,7 @@ mod trap {
 
     impl Trap {
         pub fn as_slice(&self) -> &[u8] {
-            unsafe { std::slice::from_raw_parts(self as *const _ as _, self.size()) }
+            unsafe { core::slice::from_raw_parts(self as *const _ as _, self.size()) }
         }
     }
 }
@@ -714,15 +736,21 @@ impl Codegen {
 
     fn build_struct(
         &mut self,
-        explicit_alignment: Option<u32>,
+        explicit_alignment: Option<u8>,
         fields: &[CommentOr<StructField>],
     ) -> ty::Struct {
-        let fields = fields
-            .iter()
-            .filter_map(CommentOr::or)
-            .map(|sf| Field { name: sf.name.into(), ty: self.ty(&sf.ty) })
-            .collect();
-        self.tys.structs.push(Struct { name: 0, file: 0, fields, explicit_alignment });
+        let prev_tmp = self.tys.fields_tmp.len();
+        for sf in fields.iter().filter_map(CommentOr::or) {
+            let f = Field { name: self.tys.field_names.intern(sf.name), ty: self.ty(&sf.ty) };
+            self.tys.fields_tmp.push(f);
+        }
+        self.tys.structs.push(Struct {
+            field_start: self.tys.fields.len() as _,
+            explicit_alignment,
+            ..Default::default()
+        });
+        self.tys.fields.extend(self.tys.fields_tmp.drain(prev_tmp..));
+
         self.tys.structs.len() as u32 - 1
     }
 
@@ -785,7 +813,7 @@ impl Codegen {
                     base_val.loc = self.make_loc_owned(base_val.loc, base_val.ty);
                 }
                 let index_val = self.expr(index)?;
-                _ = self.assert_ty(index.pos(), index_val.ty, ty::INT.into(), "subsctipt");
+                _ = self.assert_ty(index.pos(), index_val.ty, ty::Id::INT, "subsctipt");
 
                 if let ty::Kind::Ptr(ty) = base_val.ty.expand() {
                     base_val.ty = self.tys.ptrs[ty as usize].base;
@@ -860,12 +888,12 @@ impl Codegen {
                 let ret_reloc_base = self.ci.ret_relocs.len();
 
                 let loc = self.alloc_ret(sig.ret, ctx, true);
-                let prev_ret_reg = std::mem::replace(&mut self.ci.inline_ret_loc, loc);
+                let prev_ret_reg = core::mem::replace(&mut self.ci.inline_ret_loc, loc);
                 let fuc = &self.tys.funcs[func as usize];
-                let prev_file = std::mem::replace(&mut self.ci.file, fuc.file);
-                let prev_ret = std::mem::replace(&mut self.ci.ret, Some(sig.ret));
+                let prev_file = core::mem::replace(&mut self.ci.file, fuc.file);
+                let prev_ret = core::mem::replace(&mut self.ci.ret, Some(sig.ret));
                 self.expr(body);
-                let loc = std::mem::replace(&mut self.ci.inline_ret_loc, prev_ret_reg);
+                let loc = core::mem::replace(&mut self.ci.inline_ret_loc, prev_ret_reg);
                 self.ci.file = prev_file;
                 self.ci.ret = prev_ret;
 
@@ -987,9 +1015,7 @@ impl Codegen {
                 ctx.ty = Some(ty);
                 return self.expr_ctx(val, ctx);
             }
-            E::Bool { value, .. } => {
-                Some(Value { ty: ty::BOOL.into(), loc: Loc::ct(value as u64) })
-            }
+            E::Bool { value, .. } => Some(Value { ty: ty::Id::BOOL, loc: Loc::ct(value as u64) }),
             E::Idk { pos } => {
                 let Some(ty) = ctx.ty else {
                     self.report(
@@ -1025,13 +1051,13 @@ impl Codegen {
                     self.report(pos, "string literal must end with null byte (for now)");
                 }
 
-                let report = |bytes: &std::str::Bytes, message| {
+                let report = |bytes: &core::str::Bytes, message| {
                     self.report(pos + (literal.len() - bytes.len()) as u32 - 1, message)
                 };
 
                 let mut str = Vec::<u8>::with_capacity(literal.len());
 
-                let decode_braces = |str: &mut Vec<u8>, bytes: &mut std::str::Bytes| {
+                let decode_braces = |str: &mut Vec<u8>, bytes: &mut core::str::Bytes| {
                     while let Some(b) = bytes.next()
                         && b != b'}'
                     {
@@ -1095,7 +1121,7 @@ impl Codegen {
                     );
                 };
                 for &CtorField { pos, name, ref value, .. } in fields {
-                    let Some((offset, ty)) = self.tys.offset_of(stru, name) else {
+                    let Some((offset, ty)) = OffsetIter::offset_of(&self.tys, stru, name) else {
                         self.report(pos, format_args!("field not found: {name:?}"));
                     };
                     let loc = loc.as_ref().offset(offset);
@@ -1115,7 +1141,7 @@ impl Codegen {
 
                 match ty.expand() {
                     ty::Kind::Struct(stru) => {
-                        let mut oiter = OffsetIter::new(stru);
+                        let mut oiter = OffsetIter::new(stru, &self.tys);
                         for field in fields {
                             let (ty, offset) = oiter.next_ty(&self.tys).unwrap();
                             let loc = loc.as_ref().offset(offset);
@@ -1151,7 +1177,7 @@ impl Codegen {
                     return Some(Value { ty, loc });
                 }
             }
-            E::Field { target, name: field } => {
+            E::Field { target, name: field, pos } => {
                 let checkpoint = self.ci.snap();
                 let mut tal = self.expr(target)?;
 
@@ -1162,8 +1188,9 @@ impl Codegen {
 
                 match tal.ty.expand() {
                     ty::Kind::Struct(idx) => {
-                        let Some((offset, ty)) = self.tys.offset_of(idx, field) else {
-                            self.report(target.pos(), format_args!("field not found: {field:?}"));
+                        let Some((offset, ty)) = OffsetIter::offset_of(&self.tys, idx, field)
+                        else {
+                            self.report(pos, format_args!("field not found: {field:?}"));
                         };
                         Some(Value { ty, loc: tal.loc.offset(offset) })
                     }
@@ -1237,7 +1264,7 @@ impl Codegen {
                 };
 
                 *drfd = false;
-                let offset = std::mem::take(offset) as _;
+                let offset = core::mem::take(offset) as _;
                 if reg.is_ref() {
                     let new_reg = self.ci.regs.allocate();
                     self.stack_offset(new_reg.get(), reg.get(), stack.as_ref(), offset);
@@ -1247,7 +1274,7 @@ impl Codegen {
                 }
 
                 // FIXME: we might be able to track this but it will be pain
-                std::mem::forget(stack.take());
+                core::mem::forget(stack.take());
 
                 Some(Value { ty: self.tys.make_ptr(val.ty), loc: val.loc })
             }
@@ -1278,7 +1305,7 @@ impl Codegen {
                 self.assign_pattern(left, value)
             }
             E::Call { func: fast, args, .. } => {
-                log::trc!("call {fast}");
+                log::trc!("call {}", self.ast_display(fast));
                 let func_ty = self.ty(fast);
                 let ty::Kind::Func(mut func) = func_ty.expand() else {
                     self.report(fast.pos(), "can't call this, maybe in the future");
@@ -1403,7 +1430,7 @@ impl Codegen {
             }
             E::Number { value, pos, .. } => Some(Value {
                 ty: {
-                    let ty = ctx.ty.map(ty::Id::strip_pointer).unwrap_or(ty::INT.into());
+                    let ty = ctx.ty.map(ty::Id::strip_pointer).unwrap_or(ty::Id::INT);
                     if !ty.is_integer() && !ty.is_pointer() {
                         self.report(
                             pos,
@@ -1438,7 +1465,7 @@ impl Codegen {
                     self.ci.regs.free(left_reg);
                     self.ci.regs.free(right_reg);
                     if swapped {
-                        std::mem::swap(&mut then, &mut else_);
+                        core::mem::swap(&mut then, &mut else_);
                     }
                 } else {
                     let cond = self.expr_ctx(cond, Ctx::default().with_ty(ty::BOOL))?;
@@ -1497,7 +1524,7 @@ impl Codegen {
                     debug_assert!(off > 0);
                 }
 
-                let mut vars = std::mem::take(&mut self.ci.vars);
+                let mut vars = core::mem::take(&mut self.ci.vars);
                 for var in vars.drain(loopa.var_count as usize..) {
                     self.ci.free_loc(var.value.loc);
                 }
@@ -1535,7 +1562,7 @@ impl Codegen {
                 let jump = self.ci.code.len() as i64 - jump_offset as i64;
                 write_reloc(&mut self.ci.code, jump_offset, jump, 2);
 
-                Some(Value { ty: ty::BOOL.into(), loc: Loc::reg(lhs) })
+                Some(Value { ty: ty::Id::BOOL, loc: Loc::reg(lhs) })
             }
             E::BinOp { left, op, right } if op != T::Decl => 'ops: {
                 let left = self.expr_ctx(left, Ctx {
@@ -1587,7 +1614,7 @@ impl Codegen {
                     if derefed {
                         let mut dst = [0u8; 8];
                         dst[..size as usize].copy_from_slice(unsafe {
-                            std::slice::from_raw_parts(imm as _, rsize as usize)
+                            core::slice::from_raw_parts(imm as _, rsize as usize)
                         });
                         imm = u64::from_ne_bytes(dst);
                     }
@@ -1673,7 +1700,12 @@ impl Codegen {
         }?;
 
         if let Some(ty) = ctx.ty {
-            _ = self.assert_ty(expr.pos(), value.ty, ty, format_args!("'{expr}'"));
+            _ = self.assert_ty(
+                expr.pos(),
+                value.ty,
+                ty,
+                format_args!("'{}'", self.ast_display(expr)),
+            );
         }
 
         Some(match ctx.loc {
@@ -1713,7 +1745,7 @@ impl Codegen {
                 } else {
                     debug_assert_eq!(
                         ty,
-                        ty::TYPE.into(),
+                        ty::Id::TYPE,
                         "TODO: we dont support anything except type generics"
                     );
                     let arg = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
@@ -1773,10 +1805,10 @@ impl Codegen {
             ..Default::default()
         };
         ci.regs.init();
-        std::mem::swap(&mut self.ci, &mut ci);
+        core::mem::swap(&mut self.ci, &mut ci);
         let value = self.expr(expr).unwrap();
         self.ci.free_loc(value.loc);
-        std::mem::swap(&mut self.ci, &mut ci);
+        core::mem::swap(&mut self.ci, &mut ci);
         value.ty
     }
 
@@ -1861,7 +1893,7 @@ impl Codegen {
                 };
 
                 for &CtorField { pos, name, ref value } in fields {
-                    let Some((offset, ty)) = self.tys.offset_of(idx, name) else {
+                    let Some((offset, ty)) = OffsetIter::offset_of(&self.tys, idx, name) else {
                         self.report(pos, format_args!("field not found: {name:?}"));
                     };
                     let loc = self.ci.dup_loc(&right.loc).offset(offset);
@@ -1889,7 +1921,7 @@ impl Codegen {
 
         match ty.expand() {
             ty::Kind::Struct(stru) => {
-                let field_count = self.tys.structs[stru as usize].fields.len();
+                let field_count = self.tys.struct_field_range(stru).len();
                 if field_count != field_len {
                     self.report(
                         pos,
@@ -1936,7 +1968,7 @@ impl Codegen {
                 .or_else(|| right.take_owned())
                 .unwrap_or_else(|| Loc::stack(self.ci.stack.allocate(self.tys.size_of(ty))));
 
-            let mut oiter = OffsetIter::new(stuct);
+            let mut oiter = OffsetIter::new(stuct, &self.tys);
             while let Some((ty, offset)) = oiter.next_ty(&self.tys) {
                 let ctx = Ctx::from(Value { ty, loc: loc.as_ref().offset(offset) });
                 let left = left.as_ref().offset(offset);
@@ -2041,7 +2073,7 @@ impl Codegen {
             ret: Some(sig.ret),
             ..self.pool.cis.pop().unwrap_or_default()
         };
-        let prev_ci = std::mem::replace(&mut self.ci, repl);
+        let prev_ci = core::mem::replace(&mut self.ci, repl);
         self.ci.regs.init();
 
         let Expr::BinOp {
@@ -2050,7 +2082,7 @@ impl Codegen {
             right: &Expr::Closure { body, args, .. },
         } = expr
         else {
-            unreachable!("{expr}")
+            unreachable!("{}", self.ast_display(expr))
         };
 
         self.ci.emit_prelude();
@@ -2085,10 +2117,10 @@ impl Codegen {
 
         self.ci.finalize();
         self.ci.emit(jala(ZERO, RET_ADDR, 0));
-        self.ci.regs.free(std::mem::take(&mut self.ci.ret_reg));
+        self.ci.regs.free(core::mem::take(&mut self.ci.ret_reg));
         self.tys.funcs[id as usize].code.append(&mut self.ci.code);
         self.tys.funcs[id as usize].relocs.append(&mut self.ci.relocs);
-        self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
+        self.pool.cis.push(core::mem::replace(&mut self.ci, prev_ci));
         self.ct.vm.write_reg(reg::STACK_PTR, ct_stack_base);
     }
 
@@ -2335,12 +2367,12 @@ impl Codegen {
 
                 let mut values = self.ct.vm.read_reg(2).0 as *const u8;
                 for &id in captured {
-                    let ty: ty::Id = unsafe { std::ptr::read_unaligned(values.cast()) };
+                    let ty: ty::Id = unsafe { core::ptr::read_unaligned(values.cast()) };
                     unsafe { values = values.add(4) };
                     let size = self.tys.size_of(ty) as usize;
                     let mut imm = [0u8; 8];
                     assert!(size <= imm.len(), "TODO");
-                    unsafe { std::ptr::copy_nonoverlapping(values, imm.as_mut_ptr(), size) };
+                    unsafe { core::ptr::copy_nonoverlapping(values, imm.as_mut_ptr(), size) };
                     self.ci.vars.push(Variable {
                         id,
                         value: Value::new(ty, Loc::ct(u64::from_ne_bytes(imm))),
@@ -2381,7 +2413,7 @@ impl Codegen {
         let Some((expr, ident)) = f.find_decl(name) else {
             match name {
                 Ok(_) => self.report(pos, format_args!("undefined indentifier: {lit_name}")),
-                Err("main") => self.report(pos, format_args!("missing main function: {f}")),
+                Err("main") => self.report(pos, format_args!("missing main function")),
                 Err(name) => self.report(pos, format_args!("undefined indentifier: {name}")),
             }
         };
@@ -2399,7 +2431,7 @@ impl Codegen {
             return existing.expand();
         }
 
-        let prev_file = std::mem::replace(&mut self.ci.file, file);
+        let prev_file = core::mem::replace(&mut self.ci.file, file);
         let sym = match expr {
             Expr::BinOp {
                 left: &Expr::Ident { .. },
@@ -2509,17 +2541,17 @@ impl Codegen {
     ) -> Result<T, E> {
         log::trc!("eval");
 
-        let mut prev_ci = std::mem::replace(&mut self.ci, ci);
+        let mut prev_ci = core::mem::replace(&mut self.ci, ci);
         self.ci.task_base = self.tasks.len();
         self.ci.regs.init();
 
         let ret = compile(self, &mut prev_ci);
-        let mut rr = std::mem::take(&mut self.ci.ret_reg);
+        let mut rr = core::mem::take(&mut self.ci.ret_reg);
         let is_on_stack = !rr.is_ref();
         if !rr.is_ref() {
             self.ci.emit(instrs::cp(1, rr.get()));
             let rref = rr.as_ref();
-            self.ci.regs.free(std::mem::replace(&mut rr, rref));
+            self.ci.regs.free(core::mem::replace(&mut rr, rref));
         }
 
         if ret.is_ok() {
@@ -2539,20 +2571,20 @@ impl Codegen {
 
             self.tys.dump_reachable(last_fn as _, &mut self.ct.code);
             let entry = &mut self.ct.code[self.tys.funcs[last_fn].offset as usize] as *mut _ as _;
-            let prev_pc = std::mem::replace(&mut self.ct.vm.pc, hbvm::mem::Address::new(entry))
+            let prev_pc = core::mem::replace(&mut self.ct.vm.pc, hbvm::mem::Address::new(entry))
                 - self.ct.code.as_ptr() as usize;
 
             #[cfg(debug_assertions)]
             {
-                let mut vc = Vec::<u8>::new();
+                let mut vc = String::new();
                 if let Err(e) = self.tys.disasm(&self.ct.code, &self.files, &mut vc, |bts| {
                     if let Some(trap) = Self::read_trap(bts.as_ptr() as _) {
                         bts.take(..trap.size() + 1).unwrap();
                     }
                 }) {
-                    panic!("{e} {}", String::from_utf8(vc).unwrap());
+                    panic!("{e} {}", vc);
                 } else {
-                    log::trc!("{}", String::from_utf8(vc).unwrap());
+                    log::trc!("{}", vc);
                 }
             }
 
@@ -2562,14 +2594,14 @@ impl Codegen {
             self.tys.funcs.pop().unwrap();
         }
 
-        self.pool.cis.push(std::mem::replace(&mut self.ci, prev_ci));
+        self.pool.cis.push(core::mem::replace(&mut self.ci, prev_ci));
 
         log::trc!("eval-end");
 
         ret
     }
 
-    pub fn disasm(&mut self, output: &mut impl std::io::Write) -> std::io::Result<()> {
+    pub fn disasm(&mut self, output: &mut String) -> Result<(), DisasmError> {
         let mut bin = Vec::new();
         self.assemble(&mut bin);
         self.tys.disasm(&bin, &self.files, output, |_| {})
@@ -2588,6 +2620,12 @@ impl Codegen {
 
     fn ty_display(&self, ty: ty::Id) -> ty::Display {
         ty::Display::new(&self.tys, &self.files, ty)
+    }
+
+    fn ast_display(&self, ast: &Expr) -> String {
+        let mut s = String::new();
+        parser::Formatter::new(&self.cfile().file).fmt(ast, &mut s).unwrap();
+        s
     }
 
     #[must_use]
@@ -2609,14 +2647,14 @@ impl Codegen {
         }
     }
 
-    fn report_log(&self, pos: Pos, msg: impl std::fmt::Display) {
+    fn report_log(&self, pos: Pos, msg: impl core::fmt::Display) {
         let mut out = String::new();
         self.cfile().report_to(pos, msg, &mut out);
-        eprintln!("{out}");
+        crate::log::eprintln!("{out}");
     }
 
     #[track_caller]
-    fn report(&self, pos: Pos, msg: impl std::fmt::Display) -> ! {
+    fn report(&self, pos: Pos, msg: impl core::fmt::Display) -> ! {
         self.report_log(pos, msg);
         unreachable!();
     }
@@ -2627,9 +2665,10 @@ impl Codegen {
             ast.pos(),
             format_args!(
                 "compiler does not (yet) know how to handle ({hint}):\n\
-                {ast:}\n\
+                {:}\n\
                 info for weak people:\n\
-                {ast:#?}"
+                {ast:#?}",
+                self.ast_display(ast)
             ),
         )
     }
@@ -2671,6 +2710,8 @@ impl Codegen {
 
 #[cfg(test)]
 mod tests {
+    use alloc::{string::String, vec::Vec};
+
     fn generate(ident: &'static str, input: &'static str, output: &mut String) {
         let mut codegen =
             super::Codegen { files: crate::test_parse_files(ident, input), ..Default::default() };
@@ -2679,9 +2720,7 @@ mod tests {
         let mut out = Vec::new();
         codegen.assemble(&mut out);
 
-        let mut buf = Vec::<u8>::new();
-        let err = codegen.tys.disasm(&out, &codegen.files, &mut buf, |_| {});
-        output.push_str(String::from_utf8(buf).unwrap().as_str());
+        let err = codegen.tys.disasm(&out, &codegen.files, output, |_| {});
         if err.is_err() {
             return;
         }

@@ -19,7 +19,7 @@ pub struct Token {
 }
 
 impl Token {
-    pub fn range(&self) -> std::ops::Range<usize> {
+    pub fn range(&self) -> core::ops::Range<usize> {
         self.start as usize..self.end as usize
     }
 }
@@ -44,8 +44,8 @@ macro_rules! gen_token_kind {
             )*
         }
     ) => {
-        impl std::fmt::Display for $name {
-            fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        impl core::fmt::Display for $name {
+            fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
                 f.write_str(self.name())
             }
         }
@@ -59,7 +59,7 @@ macro_rules! gen_token_kind {
                     $( Self::$punkt   => stringify!($punkt_lit),   )*
                     $($( Self::$op    => $op_lit,
                       $(Self::$assign => concat!($op_lit, "="),)?)*)*
-                    _ => unsafe { std::str::from_utf8_unchecked(std::slice::from_ref(&sf)) },
+                    _ => unsafe { core::str::from_utf8_unchecked(core::slice::from_ref(&sf)) },
                 }
             }
 
@@ -256,7 +256,7 @@ impl TokenKind {
         if ascii_mask(b"|+-*/%^&79") & (1u128 << id) == 0 {
             return None;
         }
-        Some(unsafe { std::mem::transmute::<u8, Self>(id) })
+        Some(unsafe { core::mem::transmute::<u8, Self>(id) })
     }
 
     pub fn is_comutative(self) -> bool {
@@ -375,15 +375,15 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn source(&self) -> &'a str {
-        unsafe { std::str::from_utf8_unchecked(self.bytes) }
+        unsafe { core::str::from_utf8_unchecked(self.bytes) }
     }
 
-    pub fn slice(&self, tok: std::ops::Range<usize>) -> &'a str {
-        unsafe { std::str::from_utf8_unchecked(&self.bytes[tok]) }
+    pub fn slice(&self, tok: core::ops::Range<usize>) -> &'a str {
+        unsafe { core::str::from_utf8_unchecked(&self.bytes[tok]) }
     }
 
     fn peek(&self) -> Option<u8> {
-        if std::intrinsics::unlikely(self.pos >= self.bytes.len() as u32) {
+        if core::intrinsics::unlikely(self.pos >= self.bytes.len() as u32) {
             None
         } else {
             Some(unsafe { *self.bytes.get_unchecked(self.pos as usize) })
@@ -423,7 +423,7 @@ impl<'a> Lexer<'a> {
                 }
             };
 
-            let identity = |s: u8| unsafe { std::mem::transmute::<u8, T>(s) };
+            let identity = |s: u8| unsafe { core::mem::transmute::<u8, T>(s) };
 
             let kind = match c {
                 ..=b' ' => continue,

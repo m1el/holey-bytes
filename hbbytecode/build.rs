@@ -119,7 +119,7 @@ fn gen_instrs(generated: &mut String) -> Result<(), Box<dyn std::error::Error>> 
             "/// This assumes the instruction byte is still at the beginning of the buffer"
         )?;
         writeln!(generated, "#[cfg(feature = \"disasm\")]")?;
-        writeln!(generated, "pub fn parse_args(bytes: &mut &[u8], kind: {instr}, buf: &mut std::vec::Vec<{oper}>) -> Option<()> {{")?;
+        writeln!(generated, "pub fn parse_args(bytes: &mut &[u8], kind: {instr}, buf: &mut alloc::vec::Vec<{oper}>) -> Option<()> {{")?;
         writeln!(generated, "    match kind {{")?;
         let mut instrs = instructions().collect::<Vec<_>>();
         instrs.sort_unstable_by_key(|&[.., ty, _]| ty);

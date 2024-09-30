@@ -17,10 +17,15 @@
     slice_take,
     map_try_insert,
     extract_if,
-    ptr_internals
+    ptr_internals,
+    iter_intersperse
 )]
+#![warn(clippy::dbg_macro)]
 #![allow(stable_features, internal_features)]
+#![no_std]
 
+#[cfg(feature = "std")]
+pub use fs::*;
 use {
     self::{
         ident::Ident,
@@ -29,18 +34,17 @@ use {
         son::reg,
         ty::ArrayLen,
     },
+    alloc::{collections::BTreeMap, string::String, vec::Vec},
+    core::{cell::Cell, fmt::Display, hash::BuildHasher, ops::Range},
+    hashbrown::hash_map,
     hbbytecode as instrs,
-    parser::Ast,
-    std::{
-        collections::{hash_map, BTreeMap, VecDeque},
-        fmt::Display,
-        io,
-        ops::Range,
-        path::{Path, PathBuf},
-        rc::Rc,
-        sync::Mutex,
-    },
 };
+
+#[macro_use]
+extern crate alloc;
+
+#[cfg(any(feature = "std", test))]
+extern crate std;
 
 #[cfg(test)]
 const README: &str = include_str!("../README.md");
@@ -50,12 +54,14 @@ macro_rules! run_tests {
     ($runner:path: $($name:ident;)*) => {$(
         #[test]
         fn $name() {
-            $crate::run_test(std::any::type_name_of_val(&$name), stringify!($name), $crate::README, $runner);
+            $crate::run_test(core::any::type_name_of_val(&$name), stringify!($name), $crate::README, $runner);
         }
     )*};
 }
 
 pub mod codegen;
+#[cfg(any(feature = "std", test))]
+pub mod fs;
 pub mod parser;
 pub mod son;
 
@@ -104,7 +110,7 @@ mod ident {
         ((pos + 1) << LEN_BITS) | len
     }
 
-    pub fn range(ident: u32) -> std::ops::Range<usize> {
+    pub fn range(ident: u32) -> core::ops::Range<usize> {
         let (len, pos) = (len(ident) as usize, pos(ident) as usize);
         pos..pos + len
     }
@@ -140,10 +146,24 @@ mod log {
         }
     };
 
+    macro_rules! eprintln {
+        ($($tt:tt)*) => {
+            #[cfg(test)]
+            {
+                //std::eprintln!($($tt)*)
+                format_args!($($tt)*)
+            }
+            #[cfg(not(test))]
+            {
+                format_args!($($tt)*)
+            }
+        };
+    }
+
     macro_rules! log {
         ($level:expr, $fmt:literal $($expr:tt)*) => {
             if $level <= $crate::log::LOG_LEVEL {
-                eprintln!("{:?}: {}", $level, format_args!($fmt $($expr)*));
+                $crate::log::eprintln!("{:?}: {}", $level, format_args!($fmt $($expr)*));
             }
         };
 
@@ -161,7 +181,7 @@ mod log {
     macro_rules! trc { ($($arg:tt)*) => { $crate::log::log!($crate::log::Level::Trc, $($arg)*) }; }
 
     #[allow(unused_imports)]
-    pub(crate) use {dbg, err, inf, log, trc, wrn};
+    pub(crate) use {dbg, eprintln, err, inf, log, trc, wrn};
 }
 
 mod ty {
@@ -171,7 +191,7 @@ mod ty {
             lexer::TokenKind,
             parser::{self},
         },
-        std::{num::NonZeroU32, ops::Range},
+        core::{num::NonZeroU32, ops::Range},
     };
 
     pub type ArrayLen = u32;
@@ -317,6 +337,11 @@ mod ty {
                     *(stringify!($name).as_ptr() as *const [u8; stringify!($name).len()]) });)*
             }
 
+            #[allow(dead_code)]
+            impl Id {
+                $(pub const $name: Self = Kind::Builtin($name).compress();)*
+            }
+
             pub fn from_str(name: &str) -> Option<Builtin> {
                 match name.as_bytes() {
                     $(__lc_names::$name => Some($name),)*
@@ -326,7 +351,7 @@ mod ty {
 
             pub fn to_str(ty: Builtin) -> &'static str {
                 match ty {
-                    $($name => unsafe { std::str::from_utf8_unchecked(__lc_names::$name) },)*
+                    $($name => unsafe { core::str::from_utf8_unchecked(__lc_names::$name) },)*
                     v => unreachable!("invalid type: {}", v),
                 }
             }
@@ -360,7 +385,7 @@ mod ty {
 
             impl $name {
                 const FLAG_BITS: u32 = (${count($variant)} as u32).next_power_of_two().ilog2();
-                const FLAG_OFFSET: u32 = std::mem::size_of::<Id>() as u32 * 8 - Self::FLAG_BITS;
+                const FLAG_OFFSET: u32 = core::mem::size_of::<Id>() as u32 * 8 - Self::FLAG_BITS;
                 const INDEX_MASK: u32 = (1 << (32 - Self::FLAG_BITS)) - 1;
 
                 $vis fn from_ty(ty: Id) -> Self {
@@ -422,8 +447,8 @@ mod ty {
         }
     }
 
-    impl<'a> std::fmt::Display for Display<'a> {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    impl<'a> core::fmt::Display for Display<'a> {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             use Kind as TK;
             match TK::from_ty(self.ty) {
                 TK::Module(idx) => write!(f, "module{}", idx),
@@ -435,7 +460,8 @@ mod ty {
                     let record = &self.tys.structs[idx as usize];
                     if ident::is_null(record.name) {
                         write!(f, "[{idx}]{{")?;
-                        for (i, &super::Field { ref name, ty }) in record.fields.iter().enumerate()
+                        for (i, &super::Field { ref name, ty }) in
+                            self.tys.struct_fields(idx).iter().enumerate()
                         {
                             if i != 0 {
                                 write!(f, ", ")?;
@@ -572,15 +598,18 @@ impl Reloc {
 }
 
 struct Field {
-    name: Rc<str>,
+    name: Ident,
     ty: ty::Id,
 }
 
+#[derive(Default)]
 struct Struct {
     name: Ident,
     file: FileId,
-    explicit_alignment: Option<u32>,
-    fields: Rc<[Field]>,
+    size: Cell<Size>,
+    align: Cell<u8>,
+    explicit_alignment: Option<u8>,
+    field_start: u32,
 }
 
 struct Ptr {
@@ -618,6 +647,77 @@ struct AbleOsExecutableHeader {
     metadata_length: u64,
 }
 
+struct IdentEntry {
+    hash: u32,
+    ident: Ident,
+}
+
+impl core::hash::Hash for IdentEntry {
+    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+        state.write_u64((self.hash as u64) << 32);
+    }
+}
+
+#[derive(Default)]
+struct IdentityHasher(u64);
+
+impl core::hash::Hasher for IdentityHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, _: &[u8]) {
+        unimplemented!()
+    }
+
+    fn write_u64(&mut self, i: u64) {
+        self.0 = i;
+    }
+}
+
+#[derive(Default)]
+struct IdentInterner {
+    lookup: hashbrown::HashMap<IdentEntry, (), core::hash::BuildHasherDefault<IdentityHasher>>,
+    strings: String,
+}
+
+impl IdentInterner {
+    fn intern(&mut self, ident: &str) -> Ident {
+        let hash = FnvBuildHasher::default().hash_one(ident) & 0xFFFFFFFF00000000;
+        match self.lookup.raw_entry_mut().from_hash(
+            hash,
+            |k| unsafe { self.strings.get_unchecked(ident::range(k.ident)) } == ident,
+        ) {
+            hash_map::RawEntryMut::Occupied(o) => o.get_key_value().0.ident,
+            hash_map::RawEntryMut::Vacant(v) => {
+                let id = ident::new(self.strings.len() as _, ident.len() as _);
+                self.strings.push_str(ident);
+                v.insert_hashed_nocheck(
+                    hash,
+                    IdentEntry { hash: (hash >> 32) as _, ident: id },
+                    (),
+                );
+                id
+            }
+        }
+    }
+
+    fn ident_str(&self, ident: Ident) -> &str {
+        &self.strings[ident::range(ident)]
+    }
+
+    fn project(&self, ident: &str) -> Option<Ident> {
+        let hash = FnvBuildHasher::default().hash_one(ident) & 0xFFFFFFFF00000000;
+        self.lookup
+            .raw_entry()
+            .from_hash(
+                hash,
+                |k| unsafe { self.strings.get_unchecked(ident::range(k.ident)) } == ident,
+            )
+            .map(|(k, _)| k.ident)
+    }
+}
+
 #[derive(Default)]
 struct Types {
     syms: HashMap<SymKey, ty::Id>,
@@ -626,13 +726,29 @@ struct Types {
     args: Vec<ty::Id>,
     globals: Vec<Global>,
     structs: Vec<Struct>,
+    fields: Vec<Field>,
+    fields_tmp: Vec<Field>,
+    field_names: IdentInterner,
     ptrs: Vec<Ptr>,
     arrays: Vec<Array>,
 }
 
-const HEADER_SIZE: usize = std::mem::size_of::<AbleOsExecutableHeader>();
+const HEADER_SIZE: usize = core::mem::size_of::<AbleOsExecutableHeader>();
 
 impl Types {
+    fn struct_field_range(&self, strct: ty::Struct) -> Range<usize> {
+        let start = self.structs[strct as usize].field_start as usize;
+        let end = self
+            .structs
+            .get(strct as usize + 1)
+            .map_or(self.fields.len(), |s| s.field_start as usize);
+        start..end
+    }
+
+    fn struct_fields(&self, strct: ty::Struct) -> &[Field] {
+        &self.fields[self.struct_field_range(strct)]
+    }
+
     /// returns none if comptime eval is required
     fn ty(&mut self, file: FileId, expr: &Expr, files: &[parser::Ast]) -> Option<ty::Id> {
         Some(match *expr {
@@ -658,19 +774,22 @@ impl Types {
                     return Some(ty);
                 }
 
-                let fields = fields
-                    .iter()
-                    .filter_map(CommentOr::or)
-                    .map(|sf| {
-                        Some(Field { name: sf.name.into(), ty: self.ty(file, &sf.ty, files)? })
-                    })
-                    .collect::<Option<_>>()?;
+                let prev_tmp = self.fields_tmp.len();
+                for field in fields.iter().filter_map(CommentOr::or) {
+                    let Some(ty) = self.ty(file, &field.ty, files) else {
+                        self.fields_tmp.truncate(prev_tmp);
+                        return None;
+                    };
+                    self.fields_tmp.push(Field { name: self.field_names.intern(field.name), ty });
+                }
+
                 self.structs.push(Struct {
-                    name: 0,
                     file,
-                    fields,
+                    field_start: self.fields.len() as _,
                     explicit_alignment: packed.then_some(1),
+                    ..Default::default()
                 });
+                self.fields.extend(self.fields_tmp.drain(prev_tmp..));
 
                 let ty = ty::Kind::Struct(self.structs.len() as u32 - 1).compress();
                 self.syms.insert(sym, ty);
@@ -759,13 +878,13 @@ impl Types {
         }
     }
 
-    pub fn disasm(
-        &self,
+    pub fn disasm<'a>(
+        &'a self,
         mut sluce: &[u8],
-        files: &[parser::Ast],
-        output: &mut impl std::io::Write,
+        files: &'a [parser::Ast],
+        output: &mut String,
         eca_handler: impl FnMut(&mut &[u8]),
-    ) -> std::io::Result<()> {
+    ) -> Result<(), hbbytecode::DisasmError<'a>> {
         use instrs::DisasmItem;
         let functions = self
             .funcs
@@ -787,7 +906,7 @@ impl Types {
             })
             .chain(self.globals.iter().filter(|g| task::is_done(g.offset)).map(|g| {
                 let name = if g.file == u32::MAX {
-                    std::str::from_utf8(&g.data).unwrap()
+                    core::str::from_utf8(&g.data).unwrap()
                 } else {
                     let file = &files[g.file as usize];
                     file.ident_str(g.name)
@@ -800,13 +919,6 @@ impl Types {
 
     fn parama(&self, ret: impl Into<ty::Id>) -> ParamAlloc {
         ParamAlloc(2 + (9..=16).contains(&self.size_of(ret.into())) as u8..12)
-    }
-
-    fn offset_of(&self, idx: ty::Struct, field: &str) -> Option<(Offset, ty::Id)> {
-        OffsetIter::new(idx)
-            .into_iter(self)
-            .find(|(f, _)| f.name.as_ref() == field)
-            .map(|(f, off)| (off, f.ty))
     }
 
     fn make_ptr(&mut self, base: ty::Id) -> ty::Id {
@@ -867,8 +979,13 @@ impl Types {
                 }
             }
             ty::Kind::Struct(stru) => {
-                let mut oiter = OffsetIter::new(stru);
+                if self.structs[stru as usize].size.get() != 0 {
+                    return self.structs[stru as usize].size.get();
+                }
+
+                let mut oiter = OffsetIter::new(stru, self);
                 while oiter.next(self).is_some() {}
+                self.structs[stru as usize].size.set(oiter.offset);
                 oiter.offset
             }
             ty => unimplemented!("size_of: {:?}", ty),
@@ -878,14 +995,21 @@ impl Types {
     fn align_of(&self, ty: ty::Id) -> Size {
         match ty.expand() {
             ty::Kind::Struct(stru) => {
-                self.structs[stru as usize].explicit_alignment.unwrap_or_else(|| {
-                    self.structs[stru as usize]
-                        .fields
-                        .iter()
-                        .map(|&Field { ty, .. }| self.align_of(ty))
-                        .max()
-                        .unwrap_or(1)
-                })
+                if self.structs[stru as usize].align.get() != 0 {
+                    return self.structs[stru as usize].align.get() as _;
+                }
+                let align = self.structs[stru as usize].explicit_alignment.map_or_else(
+                    || {
+                        self.struct_fields(stru)
+                            .iter()
+                            .map(|&Field { ty, .. }| self.align_of(ty))
+                            .max()
+                            .unwrap_or(1)
+                    },
+                    |a| a as _,
+                );
+                self.structs[stru as usize].align.set(align.try_into().unwrap());
+                align
             }
             ty::Kind::Slice(arr) => {
                 let arr = &self.arrays[arr as usize];
@@ -904,30 +1028,39 @@ impl Types {
             _ => None,
         }
     }
+
+    fn find_struct_field(&self, s: ty::Struct, name: &str) -> Option<usize> {
+        let name = self.field_names.project(name)?;
+        self.struct_fields(s).iter().position(|f| f.name == name)
+    }
 }
 
 struct OffsetIter {
     strct: ty::Struct,
     offset: Offset,
-    index: usize,
-}
-
-fn align_up(value: Size, align: Size) -> Size {
-    (value + align - 1) & !(align - 1)
+    fields: Range<usize>,
 }
 
 impl OffsetIter {
-    fn new(strct: ty::Struct) -> Self {
-        Self { strct, offset: 0, index: 0 }
+    fn new(strct: ty::Struct, tys: &Types) -> Self {
+        Self { strct, offset: 0, fields: tys.struct_field_range(strct) }
+    }
+
+    fn offset_of(tys: &Types, idx: ty::Struct, field: &str) -> Option<(Offset, ty::Id)> {
+        let field_id = tys.field_names.project(field)?;
+        OffsetIter::new(idx, tys)
+            .into_iter(tys)
+            .find(|(f, _)| f.name == field_id)
+            .map(|(f, off)| (off, f.ty))
     }
 
     fn next<'a>(&mut self, tys: &'a Types) -> Option<(&'a Field, Offset)> {
         let stru = &tys.structs[self.strct as usize];
-        let field = stru.fields.get(self.index)?;
-        self.index += 1;
-        let align = stru.explicit_alignment.unwrap_or_else(|| tys.align_of(field.ty));
+        let field = &tys.fields[self.fields.next()?];
 
-        self.offset = align_up(self.offset, align);
+        let align = stru.explicit_alignment.map_or_else(|| tys.align_of(field.ty), |a| a as u32);
+        self.offset = (self.offset + align - 1) & !(align - 1);
+
         let off = self.offset;
         self.offset += tys.size_of(field.ty);
         Some((field, off))
@@ -939,210 +1072,17 @@ impl OffsetIter {
     }
 
     fn into_iter(mut self, tys: &Types) -> impl Iterator<Item = (&Field, Offset)> {
-        std::iter::from_fn(move || self.next(tys))
+        core::iter::from_fn(move || self.next(tys))
     }
 }
 
-struct TaskQueue<T> {
-    inner: Mutex<TaskQueueInner<T>>,
-}
-
-impl<T> TaskQueue<T> {
-    fn new(max_waiters: usize) -> Self {
-        Self { inner: Mutex::new(TaskQueueInner::new(max_waiters)) }
-    }
-
-    pub fn push(&self, message: T) {
-        self.extend([message]);
-    }
-
-    pub fn extend(&self, messages: impl IntoIterator<Item = T>) {
-        self.inner.lock().unwrap().push(messages);
-    }
-
-    pub fn pop(&self) -> Option<T> {
-        TaskQueueInner::pop(&self.inner)
-    }
-}
-
-enum TaskSlot<T> {
-    Waiting,
-    Delivered(T),
-    Closed,
-}
-
-struct TaskQueueInner<T> {
-    max_waiters: usize,
-    messages: VecDeque<T>,
-    parked: VecDeque<(*mut TaskSlot<T>, std::thread::Thread)>,
-}
-
-unsafe impl<T: Send> Send for TaskQueueInner<T> {}
-unsafe impl<T: Send + Sync> Sync for TaskQueueInner<T> {}
-
-impl<T> TaskQueueInner<T> {
-    fn new(max_waiters: usize) -> Self {
-        Self { max_waiters, messages: Default::default(), parked: Default::default() }
-    }
-
-    fn push(&mut self, messages: impl IntoIterator<Item = T>) {
-        for msg in messages {
-            if let Some((dest, thread)) = self.parked.pop_front() {
-                unsafe { *dest = TaskSlot::Delivered(msg) };
-                thread.unpark();
-            } else {
-                self.messages.push_back(msg);
-            }
-        }
-    }
-
-    fn pop(s: &Mutex<Self>) -> Option<T> {
-        let mut res = TaskSlot::Waiting;
-        {
-            let mut s = s.lock().unwrap();
-            if let Some(msg) = s.messages.pop_front() {
-                return Some(msg);
-            }
-
-            if s.max_waiters == s.parked.len() + 1 {
-                for (dest, thread) in s.parked.drain(..) {
-                    unsafe { *dest = TaskSlot::Closed };
-                    thread.unpark();
-                }
-                return None;
-            }
-
-            s.parked.push_back((&mut res, std::thread::current()));
-        }
-
-        loop {
-            std::thread::park();
-
-            let _s = s.lock().unwrap();
-            match std::mem::replace(&mut res, TaskSlot::Waiting) {
-                TaskSlot::Delivered(msg) => return Some(msg),
-                TaskSlot::Closed => return None,
-                TaskSlot::Waiting => {}
-            }
-        }
-    }
-}
-
-pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
-    fn resolve(path: &str, from: &str) -> Result<PathBuf, CantLoadFile> {
-        let path = match Path::new(from).parent() {
-            Some(parent) => PathBuf::from_iter([parent, Path::new(path)]),
-            None => PathBuf::from(path),
-        };
-
-        path.canonicalize().map_err(|source| CantLoadFile { path, source })
-    }
-
-    #[derive(Debug)]
-    struct CantLoadFile {
-        path: PathBuf,
-        source: io::Error,
-    }
-
-    impl std::fmt::Display for CantLoadFile {
-        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            write!(f, "can't load file: {}", parser::display_rel_path(&self.path),)
-        }
-    }
-
-    impl std::error::Error for CantLoadFile {
-        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-            Some(&self.source)
-        }
-    }
-
-    impl From<CantLoadFile> for io::Error {
-        fn from(e: CantLoadFile) -> Self {
-            io::Error::new(io::ErrorKind::InvalidData, e)
-        }
-    }
-
-    type Task = (u32, PathBuf);
-
-    let seen = Mutex::new(HashMap::<PathBuf, u32>::default());
-    let tasks = TaskQueue::<Task>::new(extra_threads + 1);
-    let ast = Mutex::new(Vec::<io::Result<Ast>>::new());
-
-    let loader = |path: &str, from: &str| {
-        if path.starts_with("rel:") {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "`rel:` prefix was removed and is now equivalent to no prefix (remove it)"
-                    .to_string(),
-            ));
-        }
-
-        let physiscal_path = resolve(path, from)?;
-
-        let id = {
-            let mut seen = seen.lock().unwrap();
-            let len = seen.len();
-            match seen.entry(physiscal_path.clone()) {
-                hash_map::Entry::Occupied(entry) => {
-                    return Ok(*entry.get());
-                }
-                hash_map::Entry::Vacant(entry) => {
-                    entry.insert(len as _);
-                    len as u32
-                }
-            }
-        };
-
-        if !physiscal_path.exists() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("can't find file: {}", parser::display_rel_path(&physiscal_path)),
-            ));
-        }
-
-        tasks.push((id, physiscal_path));
-        Ok(id)
-    };
-
-    let execute_task = |(_, path): Task| {
-        let path = path.to_str().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("path contains invalid characters: {}", parser::display_rel_path(&path)),
-            )
-        })?;
-        Ok(Ast::new(path, std::fs::read_to_string(path)?, &loader))
-    };
-
-    let thread = || {
-        while let Some(task @ (indx, ..)) = tasks.pop() {
-            let res = execute_task(task);
-            let mut ast = ast.lock().unwrap();
-            let len = ast.len().max(indx as usize + 1);
-            ast.resize_with(len, || Err(io::ErrorKind::InvalidData.into()));
-            ast[indx as usize] = res;
-        }
-    };
-
-    let path = Path::new(root).canonicalize()?;
-    seen.lock().unwrap().insert(path.clone(), 0);
-    tasks.push((0, path));
-
-    if extra_threads == 0 {
-        thread();
-    } else {
-        std::thread::scope(|s| (0..extra_threads + 1).for_each(|_| _ = s.spawn(thread)));
-    }
-
-    ast.into_inner().unwrap().into_iter().collect::<io::Result<Vec<_>>>()
-}
-
-type HashMap<K, V> = std::collections::HashMap<K, V, std::hash::BuildHasherDefault<FnvHasher>>;
-type _HashSet<K> = std::collections::HashSet<K, std::hash::BuildHasherDefault<FnvHasher>>;
+type HashMap<K, V> = hashbrown::HashMap<K, V, FnvBuildHasher>;
+type _HashSet<K> = hashbrown::HashSet<K, FnvBuildHasher>;
+type FnvBuildHasher = core::hash::BuildHasherDefault<FnvHasher>;
 
 struct FnvHasher(u64);
 
-impl std::hash::Hasher for FnvHasher {
+impl core::hash::Hasher for FnvHasher {
     fn finish(&self) -> u64 {
         self.0
     }
@@ -1170,7 +1110,7 @@ pub fn run_test(
     input: &'static str,
     test: fn(&'static str, &'static str, &mut String),
 ) {
-    use std::{io::Write, path::PathBuf};
+    use std::{io::Write, path::PathBuf, string::ToString};
 
     let filter = std::env::var("PT_FILTER").unwrap_or_default();
     if !filter.is_empty() && !name.contains(&filter) {
@@ -1183,7 +1123,7 @@ pub fn run_test(
         impl Drop for DumpOut<'_> {
             fn drop(&mut self) {
                 if std::thread::panicking() {
-                    println!("{}", self.0);
+                    std::println!("{}", self.0);
                 }
             }
         }
@@ -1234,6 +1174,8 @@ pub fn run_test(
 
 #[cfg(test)]
 fn test_parse_files(ident: &'static str, input: &'static str) -> Vec<parser::Ast> {
+    use std::{borrow::ToOwned, string::ToString};
+
     fn find_block(mut input: &'static str, test_name: &'static str) -> &'static str {
         const CASE_PREFIX: &str = "#### ";
         const CASE_SUFFIX: &str = "\n```hb";
@@ -1277,7 +1219,7 @@ fn test_parse_files(ident: &'static str, input: &'static str) -> Vec<parser::Ast
             .iter()
             .position(|&(name, _)| name == path)
             .map(|i| i as parser::FileId)
-            .ok_or(io::Error::from(io::ErrorKind::NotFound))
+            .ok_or("Not Found".to_string())
     };
 
     module_map
@@ -1288,7 +1230,7 @@ fn test_parse_files(ident: &'static str, input: &'static str) -> Vec<parser::Ast
 
 #[cfg(test)]
 fn test_run_vm(out: &[u8], output: &mut String) {
-    use std::fmt::Write;
+    use core::fmt::Write;
 
     let mut stack = [0_u64; 1024 * 20];
 
@@ -1308,8 +1250,8 @@ fn test_run_vm(out: &[u8], output: &mut String) {
                 1 => writeln!(output, "ev: Ecall").unwrap(), // compatibility with a test
                 69 => {
                     let [size, align] = [vm.read_reg(3).0 as usize, vm.read_reg(4).0 as usize];
-                    let layout = std::alloc::Layout::from_size_align(size, align).unwrap();
-                    let ptr = unsafe { std::alloc::alloc(layout) };
+                    let layout = core::alloc::Layout::from_size_align(size, align).unwrap();
+                    let ptr = unsafe { alloc::alloc::alloc(layout) };
                     vm.write_reg(1, ptr as u64);
                 }
                 96 => {
@@ -1319,8 +1261,8 @@ fn test_run_vm(out: &[u8], output: &mut String) {
                         vm.read_reg(5).0 as usize,
                     ];
 
-                    let layout = std::alloc::Layout::from_size_align(size, align).unwrap();
-                    unsafe { std::alloc::dealloc(ptr as *mut u8, layout) };
+                    let layout = core::alloc::Layout::from_size_align(size, align).unwrap();
+                    unsafe { alloc::alloc::dealloc(ptr as *mut u8, layout) };
                 }
                 3 => vm.write_reg(1, 42),
                 unknown => unreachable!("unknown ecall: {unknown:?}"),
@@ -1340,81 +1282,6 @@ fn test_run_vm(out: &[u8], output: &mut String) {
 }
 
 #[derive(Default)]
-pub struct Options {
-    pub fmt: bool,
-    pub fmt_stdout: bool,
-    pub dump_asm: bool,
-    pub extra_threads: usize,
-}
-
-fn format_to(
-    ast: &parser::Ast,
-    source: &str,
-    out: &mut impl std::io::Write,
-) -> std::io::Result<()> {
-    parser::with_fmt_source(source, || {
-        for (i, expr) in ast.exprs().iter().enumerate() {
-            write!(out, "{expr}")?;
-            if let Some(expr) = ast.exprs().get(i + 1)
-                && let Some(rest) = source.get(expr.pos() as usize..)
-            {
-                if parser::insert_needed_semicolon(rest) {
-                    write!(out, ";")?;
-                }
-                if parser::preserve_newlines(&source[..expr.pos() as usize]) > 1 {
-                    writeln!(out)?;
-                }
-            }
-
-            if i + 1 != ast.exprs().len() {
-                writeln!(out)?;
-            }
-        }
-        std::io::Result::Ok(())
-    })
-}
-
-pub fn run_compiler(
-    root_file: &str,
-    options: Options,
-    out: &mut impl std::io::Write,
-) -> io::Result<()> {
-    let parsed = parse_from_fs(options.extra_threads, root_file)?;
-
-    fn format_ast(ast: parser::Ast) -> std::io::Result<()> {
-        let mut output = Vec::new();
-        let source = std::fs::read_to_string(&*ast.path)?;
-        format_to(&ast, &source, &mut output)?;
-        std::fs::write(&*ast.path, output)?;
-        Ok(())
-    }
-
-    if options.fmt {
-        for parsed in parsed {
-            format_ast(parsed)?;
-        }
-    } else if options.fmt_stdout {
-        let ast = parsed.into_iter().next().unwrap();
-        let source = std::fs::read_to_string(&*ast.path)?;
-        format_to(&ast, &source, out)?;
-    } else {
-        let mut codegen = codegen::Codegen::default();
-        codegen.files = parsed;
-
-        codegen.generate();
-        if options.dump_asm {
-            codegen.disasm(out)?;
-        } else {
-            let mut buf = Vec::new();
-            codegen.assemble(&mut buf);
-            out.write_all(&buf)?;
-        }
-    }
-
-    Ok(())
-}
-
-#[derive(Default)]
 pub struct LoggedMem {
     pub mem: hbvm::mem::HostMemory,
     op_buf: Vec<hbbytecode::Oper>,
@@ -1424,10 +1291,10 @@ pub struct LoggedMem {
 
 impl LoggedMem {
     unsafe fn display_instr<T>(&mut self, instr: hbbytecode::Instr, addr: hbvm::mem::Address) {
-        let novm: *const hbvm::Vm<Self, 0> = std::ptr::null();
-        let offset = std::ptr::addr_of!((*novm).memory) as usize;
+        let novm: *const hbvm::Vm<Self, 0> = core::ptr::null();
+        let offset = core::ptr::addr_of!((*novm).memory) as usize;
         let regs = unsafe {
-            &*std::ptr::addr_of!(
+            &*core::ptr::addr_of!(
                 (*(((self as *mut _ as *mut u8).sub(offset)) as *const hbvm::Vm<Self, 0>))
                     .registers
             )
@@ -1435,9 +1302,9 @@ impl LoggedMem {
 
         let mut bytes = core::slice::from_raw_parts(
             (addr.get() - 1) as *const u8,
-            std::mem::size_of::<T>() + 1,
+            core::mem::size_of::<T>() + 1,
         );
-        use std::fmt::Write;
+        use core::fmt::Write;
         hbbytecode::parse_args(&mut bytes, instr, &mut self.op_buf).unwrap();
         debug_assert!(bytes.is_empty());
         self.disp_buf.clear();
@@ -1482,7 +1349,7 @@ impl hbvm::mem::Memory for LoggedMem {
 
     unsafe fn prog_read<T: Copy + 'static>(&mut self, addr: hbvm::mem::Address) -> T {
         if log::LOG_LEVEL == log::Level::Trc {
-            if std::any::TypeId::of::<u8>() == std::any::TypeId::of::<T>() {
+            if core::any::TypeId::of::<u8>() == core::any::TypeId::of::<T>() {
                 if let Some(instr) = self.prev_instr {
                     self.display_instr::<()>(instr, addr);
                 }
@@ -1500,37 +1367,10 @@ impl hbvm::mem::Memory for LoggedMem {
 struct AsHex<'a>(&'a [u8]);
 
 impl Display for AsHex<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         for &b in self.0 {
             write!(f, "{b:02x}")?;
         }
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod test {
-    use std::sync::Arc;
-
-    #[test]
-    fn task_queue_sanity() {
-        let queue = Arc::new(super::TaskQueue::new(1000));
-
-        let threads = (0..10)
-            .map(|_| {
-                let queue = queue.clone();
-                std::thread::spawn(move || {
-                    for _ in 0..100 {
-                        queue.extend([queue.pop().unwrap()]);
-                    }
-                })
-            })
-            .collect::<Vec<_>>();
-
-        queue.extend(0..5);
-
-        for t in threads {
-            t.join().unwrap();
-        }
     }
 }
