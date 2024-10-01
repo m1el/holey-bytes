@@ -736,9 +736,17 @@ impl Codegen {
     fn build_struct(
         &mut self,
         file: FileId,
+        pos: Option<Pos>,
         explicit_alignment: Option<u8>,
         fields: &[CommentOr<StructField>],
     ) -> ty::Struct {
+        let sym = pos.map(|pos| SymKey::Struct(file, pos));
+        if let Some(ref sym) = sym
+            && let Some(&ty) = self.tys.syms.get(sym)
+        {
+            return ty.expand().inner();
+        }
+
         let prev_tmp = self.tys.fields_tmp.len();
         for sf in fields.iter().filter_map(CommentOr::or) {
             let f = Field { name: self.tys.field_names.intern(sf.name), ty: self.ty(&sf.ty) };
@@ -752,6 +760,12 @@ impl Codegen {
         });
         self.tys.fields.extend(self.tys.fields_tmp.drain(prev_tmp..));
 
+        if let Some(sym) = sym {
+            self.tys
+                .syms
+                .insert(sym, ty::Kind::Struct(self.tys.structs.len() as u32 - 1).compress());
+        }
+
         self.tys.structs.len() as u32 - 1
     }
 
@@ -759,11 +773,12 @@ impl Codegen {
         use {Expr as E, TokenKind as T};
         let value = match *expr {
             E::Mod { id, .. } => Some(Value::ty(ty::Kind::Module(id).compress())),
-            E::Struct { captured, packed, fields, .. } => {
+            E::Struct { captured, packed, fields, pos, .. } => {
                 if captured.is_empty() {
                     Some(Value::ty(
                         ty::Kind::Struct(self.build_struct(
                             self.ci.file,
+                            Some(pos),
                             packed.then_some(1),
                             fields,
                         ))
@@ -902,7 +917,7 @@ impl Codegen {
                 self.ci.file = prev_file;
                 self.ci.ret = prev_ret;
 
-                let mut vars = std::mem::take(&mut self.ci.vars);
+                let mut vars = core::mem::take(&mut self.ci.vars);
                 for var in vars.drain(scope..) {
                     self.ci.free_loc(var.value.loc);
                 }
@@ -1204,7 +1219,7 @@ impl Codegen {
                     ty::Kind::Builtin(ty::TYPE) => {
                         self.ci.free_loc(tal.loc);
                         self.ci.revert(checkpoint);
-                        match ty::Kind::from_ty(self.ty(target)) {
+                        match self.ty(target).expand() {
                             ty::Kind::Module(idx) => {
                                 match self.find_or_declare(target.pos(), idx, Err(field), "") {
                                     ty::Kind::Global(idx) => self.handle_global(idx),
@@ -1393,17 +1408,12 @@ impl Codegen {
                 let loc = var.value.loc.as_ref();
                 Some(Value { ty: self.ci.vars[var_index].value.ty, loc })
             }
-            E::Ident { id, name, .. } => match self
-                .tys
-                .syms
-                .get(&SymKey { ident: id, file: self.ci.file })
-                .copied()
-                .map(ty::Kind::from_ty)
-                .unwrap_or_else(|| self.find_or_declare(ident::pos(id), self.ci.file, Ok(id), name))
-            {
-                ty::Kind::Global(id) => self.handle_global(id),
-                tk => Some(Value::ty(tk.compress())),
-            },
+            E::Ident { id, name, .. } => {
+                match self.find_or_declare(ident::pos(id), self.ci.file, Ok(id), name) {
+                    ty::Kind::Global(id) => self.handle_global(id),
+                    tk => Some(Value::ty(tk.compress())),
+                }
+            }
             E::Return { pos, val, .. } => {
                 let size = self.ci.ret.map_or(17, |ty| self.tys.size_of(ty));
                 let loc = match size {
@@ -1767,7 +1777,7 @@ impl Codegen {
             let args = self.pack_args(pos, arg_base);
             let ret = self.ty(ret);
 
-            let sym = SymKey { file: !args.repr(), ident: ty::Kind::Func(*func).compress().repr() };
+            let sym = SymKey::FuncInst(*func, args);
             let ct = || {
                 let func_id = self.tys.funcs.len();
                 let fuc = &self.tys.funcs[*func as usize];
@@ -2125,7 +2135,7 @@ impl Codegen {
             self.report(body.pos(), "expected all paths in the fucntion to return");
         }
 
-        let mut vars = std::mem::take(&mut self.ci.vars);
+        let mut vars = core::mem::take(&mut self.ci.vars);
         for var in vars.drain(..) {
             self.ci.free_loc(var.value.loc);
         }
@@ -2350,9 +2360,18 @@ impl Codegen {
     }
 
     fn ty(&mut self, expr: &Expr) -> ty::Id {
-        self.tys
-            .ty(self.ci.file, expr, &self.files)
-            .unwrap_or_else(|| ty::Id::from(self.eval_const(expr, ty::TYPE)))
+        let ty = self.tys.ty(self.ci.file, expr, &self.files);
+        let evaled_ty = ty::Id::from(self.eval_const(expr, ty::TYPE));
+        if let Some(ty) = ty {
+            debug_assert_eq!(
+                ty,
+                evaled_ty,
+                "{} {}",
+                self.ty_display(ty),
+                self.ty_display(evaled_ty)
+            );
+        }
+        evaled_ty
     }
 
     fn read_trap(addr: u64) -> Option<&'static trap::Trap> {
@@ -2395,15 +2414,19 @@ impl Codegen {
                     });
                 }
 
-                let stru =
-                    ty::Kind::Struct(self.build_struct(self.ci.file, packed.then_some(1), fields))
-                        .compress();
+                let stru = ty::Kind::Struct(self.build_struct(
+                    self.ci.file,
+                    packed.then_some(1),
+                    None,
+                    fields,
+                ))
+                .compress();
                 self.ci.vars.truncate(prev_len);
                 self.ct.vm.write_reg(1, stru.repr() as u64);
                 debug_assert_ne!(stru.expand().inner(), 1);
             }
             trap::Trap::MomizedCall(trap::MomizedCall { func }) => {
-                let sym = SymKey { file: u32::MAX, ident: ty::Kind::Func(func).compress().repr() };
+                let sym = SymKey::MomizedCall(func);
                 if let Some(&ty) = self.tys.syms.get(&sym) {
                     self.ct.vm.write_reg(1, ty.repr());
                 } else {
@@ -2426,6 +2449,10 @@ impl Codegen {
         lit_name: &str,
     ) -> ty::Kind {
         log::trace!("find_or_declare: {lit_name} {file}");
+        if let Some(ty) = self.tys.find_type(file, name, &self.files) {
+            return ty.expand();
+        }
+
         let f = self.files[file as usize].clone();
         let Some((expr, ident)) = f.find_decl(name) else {
             match name {
@@ -2435,7 +2462,8 @@ impl Codegen {
             }
         };
 
-        if let Some(existing) = self.tys.syms.get(&SymKey { file, ident }) {
+        let key = SymKey::Decl(file, ident);
+        if let Some(existing) = self.tys.syms.get(&key) {
             if let ty::Kind::Func(id) = existing.expand()
                 && let func = &mut self.tys.funcs[id as usize]
                 && let Err(idx) = task::unpack(func.offset)
@@ -2517,7 +2545,7 @@ impl Codegen {
             e => unimplemented!("{e:#?}"),
         };
         self.ci.file = prev_file;
-        self.tys.syms.insert(SymKey { ident, file }, sym.compress());
+        self.tys.syms.insert(key, sym.compress());
         sym
     }
 
@@ -2552,7 +2580,7 @@ impl Codegen {
 
         self.ci.free_loc(ret.loc);
 
-        Global { ty: ret.ty, file, name, data, ..Default::default() }
+        Global { ty: ret.ty, file, name, data, ast: ExprRef::new(expr), ..Default::default() }
     }
 
     fn ct_eval<T, E>(
@@ -2579,8 +2607,8 @@ impl Codegen {
             let last_fn = self.tys.funcs.len();
             self.tys.funcs.push(Default::default());
 
-            self.tys.funcs[last_fn].code = std::mem::take(&mut self.ci.code);
-            self.tys.funcs[last_fn].relocs = std::mem::take(&mut self.ci.relocs);
+            self.tys.funcs[last_fn].code = core::mem::take(&mut self.ci.code);
+            self.tys.funcs[last_fn].relocs = core::mem::take(&mut self.ci.relocs);
 
             if is_on_stack {
                 let size =

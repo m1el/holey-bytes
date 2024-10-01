@@ -25,6 +25,7 @@ use {
     },
     hashbrown::hash_map,
     regalloc2::VReg,
+    std::process::id,
 };
 
 const VOID: Nid = 0;
@@ -2016,6 +2017,9 @@ impl Codegen {
         lit_name: &str,
     ) -> ty::Kind {
         log::trace!("find_or_declare: {lit_name} {file}");
+        if let Some(ty) = self.tys.find_type(file, name.ok_or(lit_name), &self.files) {
+            return ty.expand();
+        }
 
         let f = self.files[file as usize].clone();
         let Some((expr, ident)) = f.find_decl(name.ok_or(lit_name)) else {
@@ -2037,7 +2041,8 @@ impl Codegen {
             return ty::Kind::Builtin(ty::NEVER);
         };
 
-        if let Some(existing) = self.tys.syms.get(&SymKey { file, ident }) {
+        let key = SymKey::Decl(file, ident);
+        if let Some(existing) = self.tys.syms.get(&key) {
             if let ty::Kind::Func(id) = existing.expand()
                 && let func = &mut self.tys.funcs[id as usize]
                 && let Err(idx) = task::unpack(func.offset)
@@ -2099,7 +2104,7 @@ impl Codegen {
             e => unimplemented!("{e:#?}"),
         };
         self.ci.file = prev_file;
-        self.tys.syms.insert(SymKey { ident, file }, sym.compress());
+        self.tys.syms.insert(key, sym.compress());
         sym
     }
 

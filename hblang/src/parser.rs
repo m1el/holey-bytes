@@ -7,12 +7,12 @@ use {
     core::{
         cell::UnsafeCell,
         fmt::{self},
+        intrinsics::unlikely,
         marker::PhantomData,
         ops::Deref,
         ptr::NonNull,
         sync::atomic::AtomicUsize,
     },
-    std::intrinsics::unlikely,
 };
 
 pub type Pos = u32;
@@ -54,6 +54,7 @@ pub struct Symbol {
 struct ScopeIdent {
     ident: Ident,
     declared: bool,
+    ordered: bool,
     flags: IdentFlags,
 }
 
@@ -195,7 +196,9 @@ impl<'a, 'b> Parser<'a, 'b> {
 
     fn declare_rec(&mut self, expr: &Expr, top_level: bool) {
         match *expr {
-            Expr::Ident { pos, id, is_first, .. } => self.declare(pos, id, is_first || top_level),
+            Expr::Ident { pos, id, is_first, .. } => {
+                self.declare(pos, id, !top_level, is_first || top_level)
+            }
             Expr::Ctor { fields, .. } => {
                 for CtorField { value, .. } in fields {
                     self.declare_rec(value, top_level)
@@ -205,7 +208,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
     }
 
-    fn declare(&mut self, pos: Pos, id: Ident, valid_order: bool) {
+    fn declare(&mut self, pos: Pos, id: Ident, ordered: bool, valid_order: bool) {
         if !valid_order {
             self.report(
                 pos,
@@ -223,6 +226,8 @@ impl<'a, 'b> Parser<'a, 'b> {
                 format_args!("redeclaration of identifier: {}", self.lexer.slice(ident::range(id))),
             )
         }
+
+        self.idents[index].ordered = ordered;
     }
 
     fn resolve_ident(&mut self, token: Token) -> (Ident, bool) {
@@ -242,13 +247,18 @@ impl<'a, 'b> Parser<'a, 'b> {
             Some((i, elem)) => (i, elem, false),
             None => {
                 let id = ident::new(token.start, name.len() as _);
-                self.idents.push(ScopeIdent { ident: id, declared: false, flags: 0 });
+                self.idents.push(ScopeIdent {
+                    ident: id,
+                    declared: false,
+                    ordered: false,
+                    flags: 0,
+                });
                 (self.idents.len() - 1, self.idents.last_mut().unwrap(), true)
             }
         };
 
         id.flags |= idfl::COMPTIME * is_ct as u32;
-        if id.declared && self.ns_bound > i {
+        if id.declared && id.ordered && self.ns_bound > i {
             id.flags |= idfl::COMPTIME;
             self.captured.push(id.ident);
         }
@@ -374,7 +384,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                     self.collect_list(T::Comma, T::RParen, |s| {
                         let name = s.advance_ident();
                         let (id, _) = s.resolve_ident(name);
-                        s.declare(name.start, id, true);
+                        s.declare(name.start, id, true, true);
                         s.expect_advance(T::Colon);
                         Arg {
                             pos: name.start,
@@ -839,17 +849,14 @@ impl<'a> Expr<'a> {
         }
     }
 
-    pub fn find_pattern_path<F: FnOnce(&Expr)>(
+    pub fn find_pattern_path<T, F: FnOnce(&Expr) -> T>(
         &self,
         ident: Ident,
         target: &Expr,
         mut with_final: F,
-    ) -> Result<(), F> {
+    ) -> Result<T, F> {
         match *self {
-            Self::Ident { id, .. } if id == ident => {
-                with_final(target);
-                Ok(())
-            }
+            Self::Ident { id, .. } if id == ident => Ok(with_final(target)),
             Self::Ctor { fields, .. } => {
                 for &CtorField { name, value, pos } in fields {
                     match value.find_pattern_path(
@@ -857,7 +864,7 @@ impl<'a> Expr<'a> {
                         &Expr::Field { pos, target, name },
                         with_final,
                     ) {
-                        Ok(()) => return Ok(()),
+                        Ok(value) => return Ok(value),
                         Err(e) => with_final = e,
                     }
                 }
@@ -1457,7 +1464,7 @@ impl StackAlloc {
 
     unsafe fn push<T: Copy>(&mut self, _view: &mut StackAllocView<T>, value: T) {
         if unlikely(self.len + core::mem::size_of::<T>() > self.cap) {
-            let next_cap = self.cap.max(16 * 32).max(std::mem::size_of::<T>()) * 2;
+            let next_cap = self.cap.max(16 * 32).max(core::mem::size_of::<T>()) * 2;
             if self.cap == 0 {
                 let layout =
                     core::alloc::Layout::from_size_align_unchecked(next_cap, Self::MAX_ALIGN);
@@ -1471,15 +1478,7 @@ impl StackAlloc {
         }
 
         let dst = self.data.add(self.len) as *mut T;
-        debug_assert!(
-            dst.is_aligned(),
-            "{:?} {:?} {} {} {}",
-            dst,
-            std::mem::size_of::<T>(),
-            std::mem::align_of::<T>(),
-            self.len,
-            self.cap
-        );
+        debug_assert!(dst.is_aligned(),);
         self.len += core::mem::size_of::<T>();
         core::ptr::write(dst, value);
     }

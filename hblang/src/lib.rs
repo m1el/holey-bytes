@@ -31,12 +31,12 @@ use {
     self::{
         ident::Ident,
         lexer::TokenKind,
-        parser::{CommentOr, Expr, ExprRef, FileId},
+        parser::{CommentOr, Expr, ExprRef, FileId, Pos},
         son::reg,
         ty::ArrayLen,
     },
     alloc::{collections::BTreeMap, string::String, vec::Vec},
-    core::{cell::Cell, fmt::Display, hash::BuildHasher, ops::Range},
+    core::{cell::Cell, fmt::Display, hash::BuildHasher, ops::Range, usize},
     hashbrown::hash_map,
     hbbytecode as instrs,
 };
@@ -124,7 +124,7 @@ mod ty {
             lexer::TokenKind,
             parser::{self},
         },
-        core::{num::NonZeroU32, ops::Range},
+        core::{num::NonZeroU32, ops::Range, usize},
     };
 
     pub type ArrayLen = u32;
@@ -137,7 +137,7 @@ mod ty {
     pub type Module = u32;
     pub type Slice = u32;
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
     pub struct Tuple(pub u32);
 
     impl Tuple {
@@ -384,7 +384,7 @@ mod ty {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             use Kind as TK;
             match TK::from_ty(self.ty) {
-                TK::Module(idx) => write!(f, "module{}", idx),
+                TK::Module(idx) => write!(f, "@use({:?})[{}]", self.files[idx as usize].path, idx),
                 TK::Builtin(ty) => write!(f, "{}", to_str(ty)),
                 TK::Ptr(ty) => {
                     write!(f, "^{}", self.rety(self.tys.ptrs[ty as usize].base))
@@ -443,15 +443,14 @@ fn emit(out: &mut Vec<u8>, (len, instr): EncodedInstr) {
 }
 
 #[derive(PartialEq, Eq, Hash, Debug)]
-struct SymKey {
-    file: u32,
-    ident: u32,
-}
-
-impl SymKey {
-    pub fn pointer_to(ty: ty::Id) -> Self {
-        Self { file: u32::MAX, ident: ty.repr() }
-    }
+enum SymKey {
+    Pointer(ty::Id),
+    Struct(FileId, Pos),
+    FuncInst(ty::Func, ty::Tuple),
+    MomizedCall(ty::Func),
+    Decl(FileId, Ident),
+    Slice(ty::Id),
+    Array(ty::Id, ArrayLen),
 }
 
 #[derive(Clone, Copy)]
@@ -492,6 +491,7 @@ struct Global {
     file: FileId,
     name: Ident,
     ty: ty::Id,
+    ast: ExprRef,
     offset: Offset,
     data: Vec<u8>,
 }
@@ -502,6 +502,7 @@ impl Default for Global {
             ty: Default::default(),
             offset: u32::MAX,
             data: Default::default(),
+            ast: ExprRef::default(),
             file: u32::MAX,
             name: u32::MAX,
         }
@@ -690,35 +691,68 @@ impl Types {
         &self.fields[self.struct_field_range(strct)]
     }
 
+    fn find_type(
+        &mut self,
+        file: FileId,
+        id: Result<Ident, &str>,
+        files: &[parser::Ast],
+    ) -> Option<ty::Id> {
+        if let Ok(id) = id
+            && let Some(&ty) = self.syms.get(&SymKey::Decl(file, id))
+        {
+            if let ty::Kind::Global(g) = ty.expand() {
+                let g = &self.globals[g as usize];
+                if g.ty == ty::Id::TYPE {
+                    return Some(ty::Id::from(
+                        u32::from_ne_bytes(*g.data.first_chunk().unwrap()) as u64
+                    ));
+                }
+            }
+
+            return Some(ty);
+        }
+
+        let f = &files[file as usize];
+        let (Expr::BinOp { left, right, .. }, name) = f.find_decl(id)? else { unreachable!() };
+
+        let ty = left
+            .find_pattern_path(name, right, |right| self.ty(file, right, files))
+            .unwrap_or_else(|_| unreachable!())?;
+        if let ty::Kind::Struct(s) = ty.expand() {
+            self.structs[s as usize].name = name;
+        }
+
+        self.syms.insert(SymKey::Decl(file, name), ty);
+        Some(ty)
+    }
+
     /// returns none if comptime eval is required
     fn ty(&mut self, file: FileId, expr: &Expr, files: &[parser::Ast]) -> Option<ty::Id> {
         Some(match *expr {
+            Expr::Mod { id, .. } => ty::Kind::Module(id).compress(),
             Expr::UnOp { op: TokenKind::Xor, val, .. } => {
                 let base = self.ty(file, val, files)?;
                 self.make_ptr(base)
             }
             Expr::Ident { id, .. } if ident::is_null(id) => id.into(),
-            Expr::Ident { id, .. } => {
-                let f = &files[file as usize];
-                let (Expr::BinOp { right, .. }, name) = f.find_decl(Ok(id))? else {
-                    unreachable!()
+            Expr::Ident { id, .. } => self.find_type(file, Ok(id), files)?,
+            Expr::Field { target, name, .. } => {
+                let ty::Kind::Module(file) = self.ty(file, target, files)?.expand() else {
+                    return None;
                 };
-                let ty = self.ty(file, right, files)?;
-                if let ty::Kind::Struct(s) = ty.expand() {
-                    self.structs[s as usize].name = name;
-                }
-                ty
+
+                self.find_type(file, Err(name), files)?
             }
             Expr::Slice { size: None, item, .. } => {
                 let ty = self.ty(file, item, files)?;
                 self.make_array(ty, ArrayLen::MAX)
             }
-            //Expr::Slice { size: Some(&Expr::Number { value, .. }), item, .. } => {
-            //    let ty = self.ty(file, item, files)?;
-            //    self.make_array(ty, value as _)
-            //}
+            Expr::Slice { size: Some(&Expr::Number { value, .. }), item, .. } => {
+                let ty = self.ty(file, item, files)?;
+                self.make_array(ty, value as _)
+            }
             Expr::Struct { pos, fields, packed, .. } => {
-                let sym = SymKey { file, ident: pos };
+                let sym = SymKey::Struct(file, pos);
                 if let Some(&ty) = self.syms.get(&sym) {
                     return Some(ty);
                 }
@@ -875,10 +909,8 @@ impl Types {
     }
 
     fn make_ptr_low(&mut self, base: ty::Id) -> ty::Ptr {
-        let id = SymKey::pointer_to(base);
-
         self.syms
-            .entry(id)
+            .entry(SymKey::Pointer(base))
             .or_insert_with(|| {
                 self.ptrs.push(Ptr { base });
                 ty::Kind::Ptr(self.ptrs.len() as u32 - 1).compress()
@@ -892,16 +924,8 @@ impl Types {
     }
 
     fn make_array_low(&mut self, ty: ty::Id, len: ArrayLen) -> ty::Slice {
-        let id = SymKey {
-            file: match len {
-                ArrayLen::MAX => ArrayLen::MAX - 1,
-                len => ArrayLen::MAX - len - 2,
-            },
-            ident: ty.repr(),
-        };
-
         self.syms
-            .entry(id)
+            .entry(SymKey::Array(ty, len))
             .or_insert_with(|| {
                 self.arrays.push(Array { ty, len });
                 ty::Kind::Slice(self.arrays.len() as u32 - 1).compress()
