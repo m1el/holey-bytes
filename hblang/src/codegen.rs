@@ -747,18 +747,18 @@ impl Codegen {
             return ty.expand().inner();
         }
 
-        let prev_tmp = self.tys.tmp.fields.len();
+        let prev_tmp = self.tys.ins.fields.len();
         for sf in fields.iter().filter_map(CommentOr::or) {
             let f = Field { name: self.tys.names.intern(sf.name), ty: self.ty(&sf.ty) };
-            self.tys.tmp.fields.push(f);
+            self.tys.ins.fields.push(f);
         }
         self.tys.ins.structs.push(Struct {
-            field_start: self.tys.fields.len() as _,
+            field_start: self.tys.ins.fields.len() as _,
             explicit_alignment,
             file,
             ..Default::default()
         });
-        self.tys.fields.extend(self.tys.tmp.fields.drain(prev_tmp..));
+        self.tys.ins.fields.extend(self.tys.ins.fields.drain(prev_tmp..));
 
         if let Some(sym) = sym {
             self.tys
@@ -1123,8 +1123,8 @@ impl Codegen {
                 }
 
                 let reloc = Reloc::new(self.ci.code.len() as _, 3, 4);
-                let glob = self.tys.globals.len() as ty::Global;
-                self.tys.globals.push(Global { data: str, ..Default::default() });
+                let glob = self.tys.ins.globals.len() as ty::Global;
+                self.tys.ins.globals.push(Global { data: str, ..Default::default() });
                 self.ci
                     .relocs
                     .push(TypedReloc { target: ty::Kind::Global(glob).compress(), reloc });
@@ -2043,7 +2043,7 @@ impl Codegen {
         let ptr = self.ci.regs.allocate();
 
         let reloc = Reloc::new(self.ci.code.len(), 3, 4);
-        let global = &mut self.tys.globals[id as usize];
+        let global = &mut self.tys.ins.globals[id as usize];
         self.ci.relocs.push(TypedReloc { target: ty::Kind::Global(id).compress(), reloc });
         self.ci.emit(instrs::lra(ptr.get(), 0, 0));
 
@@ -2525,8 +2525,8 @@ impl Codegen {
                 ty::Kind::Struct(str)
             }
             Expr::BinOp { left, op: TokenKind::Decl, right } => {
-                let gid = self.tys.globals.len() as ty::Global;
-                self.tys.globals.push(Global { file, name: ident, ..Default::default() });
+                let gid = self.tys.ins.globals.len() as ty::Global;
+                self.tys.ins.globals.push(Global { file, name: ident, ..Default::default() });
 
                 let ci = ItemCtx {
                     file,
@@ -2535,7 +2535,7 @@ impl Codegen {
                 };
 
                 _ = left.find_pattern_path(ident, right, |expr| {
-                    self.tys.globals[gid as usize] = self
+                    self.tys.ins.globals[gid as usize] = self
                         .ct_eval(ci, |s, _| Ok::<_, !>(s.generate_global(expr, file, ident)))
                         .into_ok();
                 });
@@ -2754,7 +2754,7 @@ impl Codegen {
 
     pub fn assemble(&mut self, buf: &mut Vec<u8>) {
         self.tys.funcs.iter_mut().for_each(|f| f.offset = u32::MAX);
-        self.tys.globals.iter_mut().for_each(|g| g.offset = u32::MAX);
+        self.tys.ins.globals.iter_mut().for_each(|g| g.offset = u32::MAX);
         self.tys.assemble(buf)
     }
 }

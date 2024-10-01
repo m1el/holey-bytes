@@ -736,12 +736,12 @@ impl Types {
         let end = self
             .ins.structs
             .get(strct as usize + 1)
-            .map_or(self.fields.len(), |s| s.field_start as usize);
+            .map_or(self.ins.fields.len(), |s| s.field_start as usize);
         start..end
     }
 
     fn struct_fields(&self, strct: ty::Struct) -> &[Field] {
-        &self.fields[self.struct_field_range(strct)]
+        &self.ins.fields[self.struct_field_range(strct)]
     }
 
     fn find_type(
@@ -754,7 +754,7 @@ impl Types {
             && let Some(&ty) = self.syms.get(&SymKey::Decl(file, id))
         {
             if let ty::Kind::Global(g) = ty.expand() {
-                let g = &self.globals[g as usize];
+                let g = &self.ins.globals[g as usize];
                 if g.ty == ty::Id::TYPE {
                     return Some(ty::Id::from(
                         u32::from_ne_bytes(*g.data.first_chunk().unwrap()) as u64
@@ -810,22 +810,22 @@ impl Types {
                     return Some(ty);
                 }
 
-                let prev_tmp = self.tmp.fields.len();
+                let prev_tmp = self.ins.fields.len();
                 for field in fields.iter().filter_map(CommentOr::or) {
                     let Some(ty) = self.ty(file, &field.ty, files) else {
-                        self.tmp.fields.truncate(prev_tmp);
+                        self.ins.fields.truncate(prev_tmp);
                         return None;
                     };
-                    self.tmp.fields.push(Field { name: self.names.intern(field.name), ty });
+                    self.ins.fields.push(Field { name: self.names.intern(field.name), ty });
                 }
 
                 self.ins.structs.push(Struct {
                     file,
-                    field_start: self.fields.len() as _,
+                    field_start: self.ins.fields.len() as _,
                     explicit_alignment: packed.then_some(1),
                     ..Default::default()
                 });
-                self.fields.extend(self.tmp.fields.drain(prev_tmp..));
+                self.ins.fields.extend(self.ins.fields.drain(prev_tmp..));
 
                 let ty = ty::Kind::Struct(self.ins.structs.len() as u32 - 1).compress();
                 self.syms.insert(sym, ty);
@@ -849,7 +849,7 @@ impl Types {
     fn dump_reachable(&mut self, from: ty::Func, to: &mut Vec<u8>) -> AbleOsExecutableHeader {
         debug_assert!(self.tmp.frontier.is_empty());
         debug_assert!(self.tmp.funcs.is_empty());
-        debug_assert!(self.tmp.globals.is_empty());
+        debug_assert!(self.ins.globals.is_empty());
 
         self.tmp.frontier.push(ty::Kind::Func(from).compress());
         while let Some(itm) = self.tmp.frontier.pop() {
@@ -864,12 +864,12 @@ impl Types {
                     self.tmp.frontier.extend(fuc.relocs.iter().map(|r| r.target));
                 }
                 ty::Kind::Global(glob) => {
-                    let glb = &mut self.globals[glob as usize];
+                    let glb = &mut self.ins.globals[glob as usize];
                     if task::is_done(glb.offset) {
                         continue;
                     }
                     glb.offset = 0;
-                    self.tmp.globals.push(glob);
+                    self.ins.globals.push(glob);
                 }
                 _ => unreachable!(),
             }
@@ -883,8 +883,8 @@ impl Types {
 
         let code_length = to.len();
 
-        for global in self.tmp.globals.drain(..) {
-            let global = &mut self.globals[global as usize];
+        for global in self.ins.globals.drain(..) {
+            let global = &mut self.ins.globals[global as usize];
             global.offset = to.len() as _;
             to.extend(&global.data);
         }
@@ -896,7 +896,7 @@ impl Types {
             for rel in &fuc.relocs {
                 let offset = match rel.target.expand() {
                     ty::Kind::Func(fun) => self.funcs[fun as usize].offset,
-                    ty::Kind::Global(glo) => self.globals[glo as usize].offset,
+                    ty::Kind::Global(glo) => self.ins.globals[glo as usize].offset,
                     _ => unreachable!(),
                 };
                 rel.reloc.apply_jump(to, offset, fuc.offset);
@@ -940,7 +940,7 @@ impl Types {
                 };
                 (f.offset, (name, f.code.len() as u32, DisasmItem::Func))
             })
-            .chain(self.globals.iter().filter(|g| task::is_done(g.offset)).map(|g| {
+            .chain(self.ins.globals.iter().filter(|g| task::is_done(g.offset)).map(|g| {
                 let name = if g.file == u32::MAX {
                     core::str::from_utf8(&g.data).unwrap()
                 } else {
@@ -1082,7 +1082,7 @@ impl OffsetIter {
 
     fn next<'a>(&mut self, tys: &'a Types) -> Option<(&'a Field, Offset)> {
         let stru = &tys.ins.structs[self.strct as usize];
-        let field = &tys.fields[self.fields.next()?];
+        let field = &tys.ins.fields[self.ins.fields.next()?];
 
         let align = stru.explicit_alignment.map_or_else(|| tys.align_of(field.ty), |a| a as u32);
         self.offset = (self.offset + align - 1) & !(align - 1);
