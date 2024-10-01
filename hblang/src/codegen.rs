@@ -741,29 +741,32 @@ impl Codegen {
         fields: &[CommentOr<StructField>],
     ) -> ty::Struct {
         let sym = pos.map(|pos| SymKey::Struct(file, pos));
-        if let Some(ref sym) = sym
-            && let Some(&ty) = self.tys.syms.get(sym)
+        if let Some(sym) = sym
+            && let Some(&ty) = self.tys.syms.get(sym, &self.tys.ins)
         {
             return ty.expand().inner();
         }
 
-        let prev_tmp = self.tys.ins.fields.len();
+        let prev_tmp = self.tys.tmp.fields.len();
         for sf in fields.iter().filter_map(CommentOr::or) {
             let f = Field { name: self.tys.names.intern(sf.name), ty: self.ty(&sf.ty) };
-            self.tys.ins.fields.push(f);
+            self.tys.tmp.fields.push(f);
         }
         self.tys.ins.structs.push(Struct {
             field_start: self.tys.ins.fields.len() as _,
+            pos: pos.unwrap_or(Pos::MAX),
             explicit_alignment,
             file,
             ..Default::default()
         });
-        self.tys.ins.fields.extend(self.tys.ins.fields.drain(prev_tmp..));
+        self.tys.ins.fields.extend(self.tys.tmp.fields.drain(prev_tmp..));
 
         if let Some(sym) = sym {
-            self.tys
-                .syms
-                .insert(sym, ty::Kind::Struct(self.tys.ins.structs.len() as u32 - 1).compress());
+            self.tys.syms.insert(
+                sym,
+                ty::Kind::Struct(self.tys.ins.structs.len() as u32 - 1).compress(),
+                &self.tys.ins,
+            );
         }
 
         self.tys.ins.structs.len() as u32 - 1
@@ -884,7 +887,7 @@ impl Codegen {
                     self.report(func_ast.pos(), "first argument of inline needs to be a function");
                 };
 
-                let fuc = &self.tys.funcs[func as usize];
+                let fuc = &self.tys.ins.funcs[func as usize];
                 let fast = self.files[fuc.file as usize].clone();
                 let E::BinOp { right: &E::Closure { args: cargs, body, .. }, .. } =
                     fuc.expr.get(&fast).unwrap()
@@ -899,7 +902,7 @@ impl Codegen {
 
                 if scope == self.ci.vars.len() {
                     for ((arg, ti), carg) in args.iter().zip(sig.args.range()).zip(cargs) {
-                        let ty = self.tys.args[ti];
+                        let ty = self.tys.ins.args[ti];
                         let loc = self.expr_ctx(arg, Ctx::default().with_ty(ty))?.loc;
                         self.ci.vars.push(Variable { id: carg.id, value: Value { ty, loc } });
                     }
@@ -909,7 +912,7 @@ impl Codegen {
 
                 let loc = self.alloc_ret(sig.ret, ctx, true);
                 let prev_ret_reg = core::mem::replace(&mut self.ci.inline_ret_loc, loc);
-                let fuc = &self.tys.funcs[func as usize];
+                let fuc = &self.tys.ins.funcs[func as usize];
                 let prev_file = core::mem::replace(&mut self.ci.file, fuc.file);
                 let prev_ret = core::mem::replace(&mut self.ci.ret, Some(sig.ret));
                 self.expr(body);
@@ -1347,7 +1350,7 @@ impl Codegen {
                 //self.output.trunc(&snap);
                 self.ci.vars.truncate(scope);
 
-                let fuc = &self.tys.funcs[func as usize];
+                let fuc = &self.tys.ins.funcs[func as usize];
                 let ast = self.files[fuc.file as usize].clone();
                 let E::BinOp { right: &E::Closure { args: cargs, .. }, .. } =
                     fuc.expr.get(&ast).unwrap()
@@ -1363,7 +1366,7 @@ impl Codegen {
                 self.assert_arg_count(expr.pos(), args.len(), cargs.len(), "function call");
 
                 for (i, (arg, carg)) in args.iter().zip(cargs).enumerate() {
-                    let ty = self.tys.args[sig_args.next().unwrap()];
+                    let ty = self.tys.ins.args[sig_args.next().unwrap()];
                     let sym = parser::find_symbol(&ast.symbols, carg.id);
                     if sym.flags & idfl::COMPTIME != 0 {
                         sig_args.next().unwrap();
@@ -1740,7 +1743,7 @@ impl Codegen {
     }
 
     fn compute_signature(&mut self, func: &mut ty::Func, pos: Pos, args: &[Expr]) -> Option<Sig> {
-        let fuc = &self.tys.funcs[*func as usize];
+        let fuc = &self.tys.ins.funcs[*func as usize];
         let fast = self.files[fuc.file as usize].clone();
         let Expr::BinOp { right: &Expr::Closure { args: cargs, ret, .. }, .. } =
             fuc.expr.get(&fast).unwrap()
@@ -1751,11 +1754,11 @@ impl Codegen {
         Some(if let Some(sig) = fuc.sig {
             sig
         } else {
-            let arg_base = self.tys.args.len();
+            let arg_base = self.tys.ins.args.len();
 
             for (arg, carg) in args.iter().zip(cargs) {
                 let ty = self.ty(&carg.ty);
-                self.tys.args.push(ty);
+                self.tys.ins.args.push(ty);
                 let sym = parser::find_symbol(&fast.symbols, carg.id);
                 let loc = if sym.flags & idfl::COMPTIME == 0 {
                     // FIXME: could fuck us
@@ -1767,7 +1770,7 @@ impl Codegen {
                         "TODO: we dont support anything except type generics"
                     );
                     let arg = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
-                    self.tys.args.push(arg.loc.to_ty().unwrap());
+                    self.tys.ins.args.push(arg.loc.to_ty().unwrap());
                     arg.loc
                 };
 
@@ -1778,11 +1781,13 @@ impl Codegen {
             let ret = self.ty(ret);
 
             let sym = SymKey::FuncInst(*func, args);
-            let ct = || {
-                let func_id = self.tys.funcs.len();
-                let fuc = &self.tys.funcs[*func as usize];
-                self.tys.funcs.push(Func {
+            let ct = |ins: &mut crate::TypeIns| {
+                let func_id = ins.funcs.len();
+                let fuc = &ins.funcs[*func as usize];
+                ins.funcs.push(Func {
                     file: fuc.file,
+                    name: fuc.name,
+                    base: Some(*func),
                     sig: Some(Sig { args, ret }),
                     expr: fuc.expr,
                     ..Default::default()
@@ -1790,7 +1795,7 @@ impl Codegen {
 
                 ty::Kind::Func(func_id as _).compress()
             };
-            *func = self.tys.syms.entry(sym).or_insert_with(ct).expand().inner();
+            *func = self.tys.syms.get_or_insert(sym, &mut self.tys.ins, ct).expand().inner();
 
             Sig { args, ret }
         })
@@ -2084,7 +2089,7 @@ impl Codegen {
     }
 
     fn handle_task(&mut self, FTask { file, id }: FTask) {
-        let func = &self.tys.funcs[id as usize];
+        let func = &self.tys.ins.funcs[id as usize];
         debug_assert!(func.file == file);
         let sig = func.sig.unwrap();
         let ast = self.files[file as usize].clone();
@@ -2114,10 +2119,10 @@ impl Codegen {
         let mut parama = self.tys.parama(sig.ret);
         let mut sig_args = sig.args.range();
         for arg in args.iter() {
-            let ty = self.tys.args[sig_args.next().unwrap()];
+            let ty = self.tys.ins.args[sig_args.next().unwrap()];
             let sym = parser::find_symbol(&ast.symbols, arg.id).flags;
             let loc = match sym & idfl::COMPTIME != 0 {
-                true => Loc::ty(self.tys.args[sig_args.next().unwrap()]),
+                true => Loc::ty(self.tys.ins.args[sig_args.next().unwrap()]),
                 false => self.load_arg(sym, ty, &mut parama),
             };
             self.ci.vars.push(Variable { id: arg.id, value: Value { ty, loc } });
@@ -2144,8 +2149,8 @@ impl Codegen {
         self.ci.finalize();
         self.ci.emit(jala(ZERO, RET_ADDR, 0));
         self.ci.regs.free(core::mem::take(&mut self.ci.ret_reg));
-        self.tys.funcs[id as usize].code.append(&mut self.ci.code);
-        self.tys.funcs[id as usize].relocs.append(&mut self.ci.relocs);
+        self.tys.ins.funcs[id as usize].code.append(&mut self.ci.code);
+        self.tys.ins.funcs[id as usize].relocs.append(&mut self.ci.relocs);
         self.pool.cis.push(core::mem::replace(&mut self.ci, prev_ci));
         self.ct.vm.write_reg(reg::STACK_PTR, ct_stack_base);
     }
@@ -2423,15 +2428,14 @@ impl Codegen {
                 .compress();
                 self.ci.vars.truncate(prev_len);
                 self.ct.vm.write_reg(1, stru.repr() as u64);
-                debug_assert_ne!(stru.expand().inner(), 1);
             }
             trap::Trap::MomizedCall(trap::MomizedCall { func }) => {
-                let sym = SymKey::MomizedCall(func);
-                if let Some(&ty) = self.tys.syms.get(&sym) {
+                if let Some(ty) = self.tys.ins.funcs[func as usize].computed {
                     self.ct.vm.write_reg(1, ty.repr());
                 } else {
                     self.run_vm();
-                    self.tys.syms.insert(sym, self.ct.vm.read_reg(1).0.into());
+                    self.tys.ins.funcs[func as usize].computed =
+                        Some(self.ct.vm.read_reg(1).0.into());
                 }
                 code_index += jal(0, 0, 0).0 + tx().0;
             }
@@ -2463,9 +2467,9 @@ impl Codegen {
         };
 
         let key = SymKey::Decl(file, ident);
-        if let Some(existing) = self.tys.syms.get(&key) {
+        if let Some(existing) = self.tys.syms.get(key, &self.tys.ins) {
             if let ty::Kind::Func(id) = existing.expand()
-                && let func = &mut self.tys.funcs[id as usize]
+                && let func = &mut self.tys.ins.funcs[id as usize]
                 && let Err(idx) = task::unpack(func.offset)
                 && idx < self.tasks.len()
             {
@@ -2479,22 +2483,23 @@ impl Codegen {
         let prev_file = core::mem::replace(&mut self.ci.file, file);
         let sym = match expr {
             Expr::BinOp {
-                left: &Expr::Ident { .. },
+                left: &Expr::Ident { id, .. },
                 op: TokenKind::Decl,
                 right: &Expr::Closure { pos, args, ret, .. },
             } => {
                 let func = Func {
                     file,
+                    name: id,
                     sig: 'b: {
-                        let arg_base = self.tys.args.len();
+                        let arg_base = self.tys.ins.args.len();
                         for arg in args {
                             let sym = find_symbol(&self.files[file as usize].symbols, arg.id);
                             if sym.flags & idfl::COMPTIME != 0 {
-                                self.tys.args.truncate(arg_base);
+                                self.tys.ins.args.truncate(arg_base);
                                 break 'b None;
                             }
                             let ty = self.ty(&arg.ty);
-                            self.tys.args.push(ty);
+                            self.tys.ins.args.push(ty);
                         }
 
                         let args = self.pack_args(pos, arg_base);
@@ -2510,8 +2515,8 @@ impl Codegen {
                     ..Default::default()
                 };
 
-                let id = self.tys.funcs.len() as _;
-                self.tys.funcs.push(func);
+                let id = self.tys.ins.funcs.len() as _;
+                self.tys.ins.funcs.push(func);
 
                 ty::Kind::Func(id)
             }
@@ -2545,12 +2550,12 @@ impl Codegen {
             e => unimplemented!("{e:#?}"),
         };
         self.ci.file = prev_file;
-        self.tys.syms.insert(key, sym.compress());
+        self.tys.syms.insert(key, sym.compress(), &self.tys.ins);
         sym
     }
 
     fn make_func_reachable(&mut self, func: ty::Func) {
-        let fuc = &mut self.tys.funcs[func as usize];
+        let fuc = &mut self.tys.ins.funcs[func as usize];
         if fuc.offset == u32::MAX {
             fuc.offset = task::id(self.tasks.len() as _);
             self.tasks.push(Some(FTask { file: fuc.file, id: func }));
@@ -2604,11 +2609,11 @@ impl Codegen {
         }
 
         if ret.is_ok() {
-            let last_fn = self.tys.funcs.len();
-            self.tys.funcs.push(Default::default());
+            let last_fn = self.tys.ins.funcs.len();
+            self.tys.ins.funcs.push(Default::default());
 
-            self.tys.funcs[last_fn].code = core::mem::take(&mut self.ci.code);
-            self.tys.funcs[last_fn].relocs = core::mem::take(&mut self.ci.relocs);
+            self.tys.ins.funcs[last_fn].code = core::mem::take(&mut self.ci.code);
+            self.tys.ins.funcs[last_fn].relocs = core::mem::take(&mut self.ci.relocs);
 
             if is_on_stack {
                 let size =
@@ -2619,7 +2624,8 @@ impl Codegen {
             }
 
             self.tys.dump_reachable(last_fn as _, &mut self.ct.code);
-            let entry = &mut self.ct.code[self.tys.funcs[last_fn].offset as usize] as *mut _ as _;
+            let entry =
+                &mut self.ct.code[self.tys.ins.funcs[last_fn].offset as usize] as *mut _ as _;
             let prev_pc = core::mem::replace(&mut self.ct.vm.pc, hbvm::mem::Address::new(entry))
                 - self.ct.code.as_ptr() as usize;
 
@@ -2640,7 +2646,7 @@ impl Codegen {
             self.run_vm();
             self.ct.vm.pc = prev_pc + self.ct.code.as_ptr() as usize;
 
-            let func = self.tys.funcs.pop().unwrap();
+            let func = self.tys.ins.funcs.pop().unwrap();
             self.ci.code = func.code;
             self.ci.code.clear();
             self.ci.relocs = func.relocs;
@@ -2729,15 +2735,15 @@ impl Codegen {
     }
 
     fn pack_args(&mut self, pos: Pos, arg_base: usize) -> ty::Tuple {
-        let needle = &self.tys.args[arg_base..];
+        let needle = &self.tys.ins.args[arg_base..];
         if needle.is_empty() {
             return ty::Tuple::empty();
         }
         let len = needle.len();
         // FIXME: maybe later when this becomes a bottleneck we use more
         // efficient search (SIMD?, indexing?)
-        let sp = self.tys.args.windows(needle.len()).position(|val| val == needle).unwrap();
-        self.tys.args.truncate((sp + needle.len()).max(arg_base));
+        let sp = self.tys.ins.args.windows(needle.len()).position(|val| val == needle).unwrap();
+        self.tys.ins.args.truncate((sp + needle.len()).max(arg_base));
         ty::Tuple::new(sp, len)
             .unwrap_or_else(|| self.report(pos, "amount of arguments not supported"))
     }
@@ -2753,7 +2759,7 @@ impl Codegen {
     }
 
     pub fn assemble(&mut self, buf: &mut Vec<u8>) {
-        self.tys.funcs.iter_mut().for_each(|f| f.offset = u32::MAX);
+        self.tys.ins.funcs.iter_mut().for_each(|f| f.offset = u32::MAX);
         self.tys.ins.globals.iter_mut().for_each(|g| g.offset = u32::MAX);
         self.tys.assemble(buf)
     }
@@ -2764,6 +2770,9 @@ mod tests {
     use alloc::{string::String, vec::Vec};
 
     fn generate(ident: &'static str, input: &'static str, output: &mut String) {
+        _ = log::set_logger(&crate::fs::Logger);
+        log::set_max_level(log::LevelFilter::Error);
+
         let mut codegen =
             super::Codegen { files: crate::test_parse_files(ident, input), ..Default::default() };
 

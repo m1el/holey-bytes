@@ -123,18 +123,18 @@ mod ctx_map {
     impl<T: CtxEntry> CtxMap<T> {
         pub fn entry<'a, 'b>(
             &'a mut self,
-            value: T::Key<'b>,
+            key: T::Key<'b>,
             ctx: &'b T::Ctx,
         ) -> (hashbrown::hash_map::RawEntryMut<'a, Key<T>, (), HashBuilder>, Hash) {
-            let hash = crate::FnvBuildHasher::default().hash_one(&value);
-            (self.inner.raw_entry_mut().from_hash(hash, |k| k.value.key(ctx) == value), hash)
+            let hash = crate::FnvBuildHasher::default().hash_one(&key);
+            (self.inner.raw_entry_mut().from_hash(hash, |k| k.value.key(ctx) == key), hash)
         }
 
-        pub fn get<'a>(&self, value: T::Key<'a>, ctx: &'a T::Ctx) -> Option<&T> {
-            let hash = crate::FnvBuildHasher::default().hash_one(&value);
+        pub fn get<'a>(&self, key: T::Key<'a>, ctx: &'a T::Ctx) -> Option<&T> {
+            let hash = crate::FnvBuildHasher::default().hash_one(&key);
             self.inner
                 .raw_entry()
-                .from_hash(hash, |k| k.value.key(ctx) == value)
+                .from_hash(hash, |k| k.value.key(ctx) == key)
                 .map(|(k, _)| &k.value)
         }
 
@@ -142,11 +142,36 @@ mod ctx_map {
             self.inner.clear();
         }
 
-        pub fn remove<'a>(&mut self, value: &T, ctx: &'a T::Ctx) -> Option<T> {
+        pub fn remove(&mut self, value: &T, ctx: &T::Ctx) -> Option<T> {
             let (entry, _) = self.entry(value.key(ctx), ctx);
             match entry {
                 hashbrown::hash_map::RawEntryMut::Occupied(o) => Some(o.remove_entry().0.value),
                 hashbrown::hash_map::RawEntryMut::Vacant(_) => None,
+            }
+        }
+
+        pub fn insert<'a>(&mut self, key: T::Key<'a>, value: T, ctx: &'a T::Ctx) {
+            let (entry, hash) = self.entry(key, ctx);
+            match entry {
+                hashbrown::hash_map::RawEntryMut::Occupied(_) => unreachable!(),
+                hashbrown::hash_map::RawEntryMut::Vacant(v) => {
+                    _ = v.insert(Key { hash, value }, ())
+                }
+            }
+        }
+
+        pub fn get_or_insert<'a>(
+            &mut self,
+            key: T::Key<'a>,
+            ctx: &'a mut T::Ctx,
+            with: impl FnOnce(&'a mut T::Ctx) -> T,
+        ) -> &mut T {
+            let (entry, hash) = self.entry(key, unsafe { &mut *(&mut *ctx as *mut _) });
+            match entry {
+                hashbrown::hash_map::RawEntryMut::Occupied(o) => &mut o.into_key_value().0.value,
+                hashbrown::hash_map::RawEntryMut::Vacant(v) => {
+                    &mut v.insert(Key { hash, value: with(ctx) }, ()).0.value
+                }
             }
         }
     }
@@ -205,7 +230,7 @@ mod ty {
         crate::{
             ident,
             lexer::TokenKind,
-            parser::{self},
+            parser::{self, Pos},
         },
         core::{num::NonZeroU32, ops::Range},
     };
@@ -254,11 +279,32 @@ mod ty {
     pub struct Id(NonZeroU32);
 
     impl crate::ctx_map::CtxEntry for Id {
-        type Ctx = TypeInsts;
+        type Ctx = crate::TypeIns;
         type Key<'a> = crate::SymKey<'a>;
 
         fn key<'a>(&self, ctx: &'a Self::Ctx) -> Self::Key<'a> {
-            todo!()
+            match self.expand() {
+                Kind::Struct(s) => {
+                    let st = &ctx.structs[s as usize];
+                    debug_assert_ne!(st.pos, Pos::MAX);
+                    crate::SymKey::Struct(st.file, st.pos)
+                }
+                Kind::Ptr(p) => crate::SymKey::Pointer(&ctx.ptrs[p as usize]),
+                Kind::Func(f) => {
+                    let fc = &ctx.funcs[f as usize];
+                    if let Some(base) = fc.base {
+                        crate::SymKey::FuncInst(base, fc.sig.unwrap().args)
+                    } else {
+                        crate::SymKey::Decl(fc.file, fc.name)
+                    }
+                }
+                Kind::Global(g) => {
+                    let gb = &ctx.globals[g as usize];
+                    crate::SymKey::Decl(gb.file, gb.name)
+                }
+                Kind::Slice(s) => crate::SymKey::Array(&ctx.arrays[s as usize]),
+                Kind::Module(_) | Kind::Builtin(_) => crate::SymKey::Decl(u32::MAX, u32::MAX),
+            }
         }
     }
 
@@ -521,12 +567,11 @@ fn emit(out: &mut Vec<u8>, (len, instr): EncodedInstr) {
     out.extend_from_slice(&instr[..len]);
 }
 
-#[derive(PartialEq, Eq, Hash)]
-enum SymKey<'a> {
+#[derive(PartialEq, Eq, Hash, Clone, Copy)]
+pub enum SymKey<'a> {
     Pointer(&'a Ptr),
     Struct(FileId, Pos),
     FuncInst(ty::Func, ty::Tuple),
-    MomizedCall(ty::Func),
     Decl(FileId, Ident),
     Array(&'a Array),
 }
@@ -539,6 +584,9 @@ struct Sig {
 
 struct Func {
     file: FileId,
+    name: Ident,
+    base: Option<ty::Func>,
+    computed: Option<ty::Id>,
     expr: ExprRef,
     sig: Option<Sig>,
     offset: Offset,
@@ -551,6 +599,9 @@ impl Default for Func {
     fn default() -> Self {
         Self {
             file: u32::MAX,
+            name: 0,
+            base: None,
+            computed: None,
             expr: Default::default(),
             sig: None,
             offset: u32::MAX,
@@ -620,6 +671,7 @@ struct Field {
 #[derive(Default)]
 struct Struct {
     name: Ident,
+    pos: Pos,
     file: FileId,
     size: Cell<Size>,
     align: Cell<u8>,
@@ -628,12 +680,12 @@ struct Struct {
 }
 
 #[derive(PartialEq, Eq, Hash)]
-struct Ptr {
+pub struct Ptr {
     base: ty::Id,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct Array {
+pub struct Array {
     ty: ty::Id,
     len: ArrayLen,
 }
@@ -710,7 +762,7 @@ struct TypesTmp {
 }
 
 #[derive(Default)]
-struct TypeIns {
+pub struct TypeIns {
     funcs: Vec<Func>,
     args: Vec<ty::Id>,
     globals: Vec<Global>,
@@ -734,7 +786,8 @@ impl Types {
     fn struct_field_range(&self, strct: ty::Struct) -> Range<usize> {
         let start = self.ins.structs[strct as usize].field_start as usize;
         let end = self
-            .ins.structs
+            .ins
+            .structs
             .get(strct as usize + 1)
             .map_or(self.ins.fields.len(), |s| s.field_start as usize);
         start..end
@@ -751,7 +804,7 @@ impl Types {
         files: &[parser::Ast],
     ) -> Option<ty::Id> {
         if let Ok(id) = id
-            && let Some(&ty) = self.syms.get(&SymKey::Decl(file, id))
+            && let Some(&ty) = self.syms.get(SymKey::Decl(file, id), &self.ins)
         {
             if let ty::Kind::Global(g) = ty.expand() {
                 let g = &self.ins.globals[g as usize];
@@ -775,7 +828,7 @@ impl Types {
             self.ins.structs[s as usize].name = name;
         }
 
-        self.syms.insert(SymKey::Decl(file, name), ty);
+        self.syms.insert(SymKey::Decl(file, name), ty, &self.ins);
         Some(ty)
     }
 
@@ -806,29 +859,30 @@ impl Types {
             }
             Expr::Struct { pos, fields, packed, .. } => {
                 let sym = SymKey::Struct(file, pos);
-                if let Some(&ty) = self.syms.get(&sym) {
+                if let Some(&ty) = self.syms.get(sym, &self.ins) {
                     return Some(ty);
                 }
 
-                let prev_tmp = self.ins.fields.len();
+                let prev_tmp = self.tmp.fields.len();
                 for field in fields.iter().filter_map(CommentOr::or) {
                     let Some(ty) = self.ty(file, &field.ty, files) else {
-                        self.ins.fields.truncate(prev_tmp);
+                        self.tmp.fields.truncate(prev_tmp);
                         return None;
                     };
-                    self.ins.fields.push(Field { name: self.names.intern(field.name), ty });
+                    self.tmp.fields.push(Field { name: self.names.intern(field.name), ty });
                 }
 
                 self.ins.structs.push(Struct {
                     file,
+                    pos,
                     field_start: self.ins.fields.len() as _,
                     explicit_alignment: packed.then_some(1),
                     ..Default::default()
                 });
-                self.ins.fields.extend(self.ins.fields.drain(prev_tmp..));
+                self.ins.fields.extend(self.tmp.fields.drain(prev_tmp..));
 
                 let ty = ty::Kind::Struct(self.ins.structs.len() as u32 - 1).compress();
-                self.syms.insert(sym, ty);
+                self.syms.insert(sym, ty, &self.ins);
                 ty
             }
             _ => return None,
@@ -841,7 +895,7 @@ impl Types {
         emit(to, instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
         emit(to, instrs::tx());
         let exe = self.dump_reachable(0, to);
-        Reloc::new(HEADER_SIZE, 3, 4).apply_jump(to, self.funcs[0].offset, 0);
+        Reloc::new(HEADER_SIZE, 3, 4).apply_jump(to, self.ins.funcs[0].offset, 0);
 
         unsafe { *to.as_mut_ptr().cast::<AbleOsExecutableHeader>() = exe }
     }
@@ -849,13 +903,13 @@ impl Types {
     fn dump_reachable(&mut self, from: ty::Func, to: &mut Vec<u8>) -> AbleOsExecutableHeader {
         debug_assert!(self.tmp.frontier.is_empty());
         debug_assert!(self.tmp.funcs.is_empty());
-        debug_assert!(self.ins.globals.is_empty());
+        debug_assert!(self.tmp.globals.is_empty());
 
         self.tmp.frontier.push(ty::Kind::Func(from).compress());
         while let Some(itm) = self.tmp.frontier.pop() {
             match itm.expand() {
                 ty::Kind::Func(func) => {
-                    let fuc = &mut self.funcs[func as usize];
+                    let fuc = &mut self.ins.funcs[func as usize];
                     if task::is_done(fuc.offset) {
                         continue;
                     }
@@ -869,21 +923,21 @@ impl Types {
                         continue;
                     }
                     glb.offset = 0;
-                    self.ins.globals.push(glob);
+                    self.tmp.globals.push(glob);
                 }
                 _ => unreachable!(),
             }
         }
 
         for &func in &self.tmp.funcs {
-            let fuc = &mut self.funcs[func as usize];
+            let fuc = &mut self.ins.funcs[func as usize];
             fuc.offset = to.len() as _;
             to.extend(&fuc.code);
         }
 
         let code_length = to.len();
 
-        for global in self.ins.globals.drain(..) {
+        for global in self.tmp.globals.drain(..) {
             let global = &mut self.ins.globals[global as usize];
             global.offset = to.len() as _;
             to.extend(&global.data);
@@ -892,10 +946,10 @@ impl Types {
         let data_length = to.len() - code_length;
 
         for func in self.tmp.funcs.drain(..) {
-            let fuc = &self.funcs[func as usize];
+            let fuc = &self.ins.funcs[func as usize];
             for rel in &fuc.relocs {
                 let offset = match rel.target.expand() {
-                    ty::Kind::Func(fun) => self.funcs[fun as usize].offset,
+                    ty::Kind::Func(fun) => self.ins.funcs[fun as usize].offset,
                     ty::Kind::Global(glo) => self.ins.globals[glo as usize].offset,
                     _ => unreachable!(),
                 };
@@ -923,6 +977,7 @@ impl Types {
     ) -> Result<(), hbbytecode::DisasmError<'a>> {
         use instrs::DisasmItem;
         let functions = self
+            .ins
             .funcs
             .iter()
             .filter(|f| task::is_done(f.offset))
@@ -962,14 +1017,25 @@ impl Types {
     }
 
     fn make_ptr_low(&mut self, base: ty::Id) -> ty::Ptr {
-        self.syms
-            .entry(SymKey::Pointer(base))
-            .or_insert_with(|| {
-                self.ins.ptrs.push(Ptr { base });
-                ty::Kind::Ptr(self.ins.ptrs.len() as u32 - 1).compress()
-            })
-            .expand()
-            .inner()
+        let ptr = Ptr { base };
+        let (entry, hash) = self.syms.entry(SymKey::Pointer(&ptr), &self.ins);
+        match entry {
+            hash_map::RawEntryMut::Occupied(o) => o.get_key_value().0.value,
+            hash_map::RawEntryMut::Vacant(v) => {
+                self.ins.ptrs.push(ptr);
+                v.insert(
+                    ctx_map::Key {
+                        value: ty::Kind::Ptr(self.ins.ptrs.len() as u32 - 1).compress(),
+                        hash,
+                    },
+                    (),
+                )
+                .0
+                .value
+            }
+        }
+        .expand()
+        .inner()
     }
 
     fn make_array(&mut self, ty: ty::Id, len: ArrayLen) -> ty::Id {
@@ -978,13 +1044,32 @@ impl Types {
 
     fn make_array_low(&mut self, ty: ty::Id, len: ArrayLen) -> ty::Slice {
         self.syms
-            .entry(SymKey::Array(ty, len))
-            .or_insert_with(|| {
-                self.ins.arrays.push(Array { ty, len });
-                ty::Kind::Slice(self.ins.arrays.len() as u32 - 1).compress()
+            .get_or_insert(SymKey::Array(&Array { ty, len }), &mut self.ins, |ins| {
+                ins.arrays.push(Array { ty, len });
+                ty::Kind::Slice(ins.arrays.len() as u32 - 1).compress()
             })
             .expand()
             .inner()
+
+        //let array = Array { ty, len };
+        //let (entry, hash) = self.syms.entry(SymKey::Array(&array), &self.ins);
+        //match entry {
+        //    hash_map::RawEntryMut::Occupied(o) => o.get_key_value().0.value,
+        //    hash_map::RawEntryMut::Vacant(v) => {
+        //        self.ins.arrays.push(array);
+        //        v.insert(
+        //            ctx_map::Key {
+        //                value: ty::Kind::Slice(self.ins.ptrs.len() as u32 - 1).compress(),
+        //                hash,
+        //            },
+        //            (),
+        //        )
+        //        .0
+        //        .value
+        //    }
+        //}
+        //.expand()
+        //.inner()
     }
 
     fn size_of(&self, ty: ty::Id) -> Size {
@@ -1082,7 +1167,7 @@ impl OffsetIter {
 
     fn next<'a>(&mut self, tys: &'a Types) -> Option<(&'a Field, Offset)> {
         let stru = &tys.ins.structs[self.strct as usize];
-        let field = &tys.ins.fields[self.ins.fields.next()?];
+        let field = &tys.ins.fields[self.fields.next()?];
 
         let align = stru.explicit_alignment.map_or_else(|| tys.align_of(field.ty), |a| a as u32);
         self.offset = (self.offset + align - 1) & !(align - 1);

@@ -20,9 +20,7 @@ use {
         cell::RefCell,
         convert::identity,
         fmt::{self, Debug, Display, Write},
-        format_args as fa,
-        hash::BuildHasher,
-        mem, ops, usize,
+        format_args as fa, mem, ops,
     },
     hashbrown::hash_map,
     regalloc2::VReg,
@@ -1033,7 +1031,7 @@ impl Codegen {
     }
 
     fn make_func_reachable(&mut self, func: ty::Func) {
-        let fuc = &mut self.tys.funcs[func as usize];
+        let fuc = &mut self.tys.ins.funcs[func as usize];
         if fuc.offset == u32::MAX {
             fuc.offset = task::id(self.tasks.len() as _);
             self.tasks.push(Some(FTask { file: fuc.file, id: func }));
@@ -1237,7 +1235,7 @@ impl Codegen {
 
                 self.make_func_reachable(func);
 
-                let fuc = &self.tys.funcs[func as usize];
+                let fuc = &self.tys.ins.funcs[func as usize];
                 let sig = fuc.sig.expect("TODO: generic functions");
                 let ast = self.files[fuc.file as usize].clone();
                 let Expr::BinOp { right: &Expr::Closure { args: cargs, .. }, .. } =
@@ -1259,7 +1257,7 @@ impl Codegen {
 
                 let mut inps = Vc::from([self.ci.ctrl]);
                 for ((arg, carg), tyx) in args.iter().zip(cargs).zip(sig.args.range()) {
-                    let ty = self.tys.args[tyx];
+                    let ty = self.tys.ins.args[tyx];
                     if self.tys.size_of(ty) == 0 {
                         continue;
                     }
@@ -1639,7 +1637,7 @@ impl Codegen {
     }
 
     fn emit_func(&mut self, FTask { file, id }: FTask) {
-        let func = &mut self.tys.funcs[id as usize];
+        let func = &mut self.tys.ins.funcs[id as usize];
         func.offset = u32::MAX - 1;
         debug_assert!(func.file == file);
         let sig = func.sig.unwrap();
@@ -1676,7 +1674,7 @@ impl Codegen {
 
         let mut sig_args = sig.args.range();
         for (arg, index) in args.iter().zip(0u32..) {
-            let ty = self.tys.args[sig_args.next().unwrap()];
+            let ty = self.tys.ins.args[sig_args.next().unwrap()];
             let value = self.ci.nodes.new_node(ty, Kind::Arg { index }, [VOID]);
             self.ci.nodes.lock(value);
             let sym = parser::find_symbol(&ast.symbols, arg.id);
@@ -1802,8 +1800,8 @@ impl Codegen {
             self.ci.emit(instrs::jala(reg::ZERO, reg::RET_ADDR, 0));
         }
 
-        self.tys.funcs[id as usize].code.append(&mut self.ci.code);
-        self.tys.funcs[id as usize].relocs.append(&mut self.ci.relocs);
+        self.tys.ins.funcs[id as usize].code.append(&mut self.ci.code);
+        self.tys.ins.funcs[id as usize].relocs.append(&mut self.ci.relocs);
         self.ci.nodes.clear();
         self.ci.filled.clear();
         self.pool.cis.push(core::mem::replace(&mut self.ci, prev_ci));
@@ -2012,9 +2010,9 @@ impl Codegen {
         };
 
         let key = SymKey::Decl(file, ident);
-        if let Some(existing) = self.tys.syms.get(&key) {
+        if let Some(existing) = self.tys.syms.get(key, &self.tys.ins) {
             if let ty::Kind::Func(id) = existing.expand()
-                && let func = &mut self.tys.funcs[id as usize]
+                && let func = &mut self.tys.ins.funcs[id as usize]
                 && let Err(idx) = task::unpack(func.offset)
                 && idx < self.tasks.len()
             {
@@ -2028,19 +2026,20 @@ impl Codegen {
         let prev_file = core::mem::replace(&mut self.ci.file, file);
         let sym = match expr {
             Expr::BinOp {
-                left: Expr::Ident { .. },
+                left: &Expr::Ident { id, .. },
                 op: TokenKind::Decl,
                 right: &Expr::Closure { pos, args, ret, .. },
             } => {
                 let func = Func {
                     file,
+                    name: id,
                     sig: '_b: {
-                        let arg_base = self.tys.args.len();
+                        let arg_base = self.tys.ins.args.len();
                         for arg in args {
                             let sym = parser::find_symbol(&f.symbols, arg.id);
                             assert!(sym.flags & idfl::COMPTIME == 0, "TODO");
                             let ty = self.ty(&arg.ty);
-                            self.tys.args.push(ty);
+                            self.tys.ins.args.push(ty);
                         }
 
                         let Some(args) = self.pack_args(arg_base) else {
@@ -2061,8 +2060,8 @@ impl Codegen {
                     ..Default::default()
                 };
 
-                let id = self.tys.funcs.len() as _;
-                self.tys.funcs.push(func);
+                let id = self.tys.ins.funcs.len() as _;
+                self.tys.ins.funcs.push(func);
 
                 ty::Kind::Func(id)
             }
@@ -2074,7 +2073,7 @@ impl Codegen {
             e => unimplemented!("{e:#?}"),
         };
         self.ci.file = prev_file;
-        self.tys.syms.insert(key, sym.compress());
+        self.tys.syms.insert(key, sym.compress(), &self.tys.ins);
         sym
     }
 
@@ -2153,15 +2152,15 @@ impl Codegen {
     }
 
     fn pack_args(&mut self, arg_base: usize) -> Option<ty::Tuple> {
-        let needle = &self.tys.args[arg_base..];
+        let needle = &self.tys.ins.args[arg_base..];
         if needle.is_empty() {
             return Some(ty::Tuple::empty());
         }
         let len = needle.len();
         // FIXME: maybe later when this becomes a bottleneck we use more
         // efficient search (SIMD?, indexing?)
-        let sp = self.tys.args.windows(needle.len()).position(|val| val == needle).unwrap();
-        self.tys.args.truncate((sp + needle.len()).max(arg_base));
+        let sp = self.tys.ins.args.windows(needle.len()).position(|val| val == needle).unwrap();
+        self.tys.ins.args.truncate((sp + needle.len()).max(arg_base));
         ty::Tuple::new(sp, len)
     }
 
@@ -2397,7 +2396,7 @@ impl<'a> Function<'a> {
                 for (arg, ti) in
                     self.nodes[VOID].clone().outputs.into_iter().skip(2).zip(self.sig.args.range())
                 {
-                    let ty = self.tys.args[ti];
+                    let ty = self.tys.ins.args[ti];
                     match self.tys.size_of(ty) {
                         0 => continue,
                         1..=8 => {
@@ -2446,7 +2445,7 @@ impl<'a> Function<'a> {
                 self.nodes[nid].ralloc_backref = self.nodes[prev].ralloc_backref;
                 let mut ops = vec![];
 
-                let fuc = self.tys.funcs[func as usize].sig.unwrap();
+                let fuc = self.tys.ins.funcs[func as usize].sig.unwrap();
                 if self.tys.size_of(fuc.ret) != 0 {
                     self.def_nid(nid);
                     ops.push(regalloc2::Operand::reg_fixed_def(
@@ -2457,7 +2456,7 @@ impl<'a> Function<'a> {
 
                 let mut parama = self.tys.parama(fuc.ret);
                 for (&(mut i), ti) in node.inputs[1..].iter().zip(fuc.args.range()) {
-                    let ty = self.tys.args[ti];
+                    let ty = self.tys.ins.args[ti];
                     loop {
                         match self.nodes[i].kind {
                             Kind::Stre { .. } => i = self.nodes[i].inputs[2],
