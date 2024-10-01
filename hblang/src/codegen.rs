@@ -747,10 +747,10 @@ impl Codegen {
             return ty.expand().inner();
         }
 
-        let prev_tmp = self.tys.fields_tmp.len();
+        let prev_tmp = self.tys.tmp.fields.len();
         for sf in fields.iter().filter_map(CommentOr::or) {
-            let f = Field { name: self.tys.field_names.intern(sf.name), ty: self.ty(&sf.ty) };
-            self.tys.fields_tmp.push(f);
+            let f = Field { name: self.tys.names.intern(sf.name), ty: self.ty(&sf.ty) };
+            self.tys.tmp.fields.push(f);
         }
         self.tys.structs.push(Struct {
             field_start: self.tys.fields.len() as _,
@@ -758,7 +758,7 @@ impl Codegen {
             file,
             ..Default::default()
         });
-        self.tys.fields.extend(self.tys.fields_tmp.drain(prev_tmp..));
+        self.tys.fields.extend(self.tys.tmp.fields.drain(prev_tmp..));
 
         if let Some(sym) = sym {
             self.tys
@@ -2580,7 +2580,7 @@ impl Codegen {
 
         self.ci.free_loc(ret.loc);
 
-        Global { ty: ret.ty, file, name, data, ast: ExprRef::new(expr), ..Default::default() }
+        Global { ty: ret.ty, file, name, data, ..Default::default() }
     }
 
     fn ct_eval<T, E>(

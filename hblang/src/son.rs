@@ -1,5 +1,6 @@
 use {
     crate::{
+        ctx_map::CtxEntry,
         ident::Ident,
         instrs,
         lexer::{self, TokenKind},
@@ -11,7 +12,7 @@ use {
         task,
         ty::{self},
         vc::{BitSet, Vc},
-        Func, HashMap, IdentityHasher, Offset, OffsetIter, Reloc, Sig, SymKey, TypedReloc, Types,
+        Func, HashMap, Offset, OffsetIter, Reloc, Sig, SymKey, TypedReloc, Types,
     },
     alloc::{borrow::ToOwned, string::String, vec::Vec},
     core::{
@@ -20,12 +21,11 @@ use {
         convert::identity,
         fmt::{self, Debug, Display, Write},
         format_args as fa,
-        hash::{BuildHasher, Hasher},
-        mem, ops,
+        hash::BuildHasher,
+        mem, ops, usize,
     },
     hashbrown::hash_map,
     regalloc2::VReg,
-    std::process::id,
 };
 
 const VOID: Nid = 0;
@@ -44,18 +44,16 @@ pub mod reg {
     pub type Reg = u8;
 }
 
-struct LookupEntry {
-    nid: Nid,
-    hash: u64,
-}
+type Lookup = crate::ctx_map::CtxMap<Nid>;
 
-impl core::hash::Hash for LookupEntry {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_u64(self.hash);
+impl crate::ctx_map::CtxEntry for Nid {
+    type Ctx = [Result<Node, Nid>];
+    type Key<'a> = (Kind, &'a [Nid], ty::Id);
+
+    fn key<'a>(&self, ctx: &'a Self::Ctx) -> Self::Key<'a> {
+        ctx[*self as usize].as_ref().unwrap().key()
     }
 }
-
-type Lookup = hashbrown::HashMap<LookupEntry, (), core::hash::BuildHasherDefault<IdentityHasher>>;
 
 struct Nodes {
     values: Vec<Result<Node, Nid>>,
@@ -106,10 +104,10 @@ impl Nodes {
 
         let mut lookup_meta = None;
         if !node.is_lazy_phi() {
-            let (raw_entry, hash) = Self::find_node(&mut self.lookup, &self.values, &node);
+            let (raw_entry, hash) = self.lookup.entry(node.key(), &self.values);
 
             let entry = match raw_entry {
-                hash_map::RawEntryMut::Occupied(o) => return o.get_key_value().0.nid,
+                hash_map::RawEntryMut::Occupied(o) => return o.get_key_value().0.value,
                 hash_map::RawEntryMut::Vacant(v) => v,
             };
 
@@ -129,38 +127,14 @@ impl Nodes {
         self.free = mem::replace(&mut self.values[free as usize], Ok(node)).unwrap_err();
 
         if let Some((entry, hash)) = lookup_meta {
-            entry.insert(LookupEntry { nid: free, hash }, ());
+            entry.insert(crate::ctx_map::Key { value: free, hash }, ());
         }
         free
     }
 
-    fn find_node<'a>(
-        lookup: &'a mut Lookup,
-        values: &[Result<Node, Nid>],
-        node: &Node,
-    ) -> (
-        hash_map::RawEntryMut<'a, LookupEntry, (), core::hash::BuildHasherDefault<IdentityHasher>>,
-        u64,
-    ) {
-        let hash = crate::FnvBuildHasher::default().hash_one(node.key());
-        let entry = lookup
-            .raw_entry_mut()
-            .from_hash(hash, |n| values[n.nid as usize].as_ref().unwrap().key() == node.key());
-        (entry, hash)
-    }
-
     fn remove_node_lookup(&mut self, target: Nid) {
         if !self[target].is_lazy_phi() {
-            match Self::find_node(
-                &mut self.lookup,
-                &self.values,
-                self.values[target as usize].as_ref().unwrap(),
-            )
-            .0
-            {
-                hash_map::RawEntryMut::Occupied(o) => o.remove(),
-                hash_map::RawEntryMut::Vacant(_) => unreachable!(),
-            };
+            self.lookup.remove(&target, &self.values).unwrap();
         }
     }
 
@@ -379,20 +353,16 @@ impl Nodes {
 
         let prev = self[target].inputs[inp_index];
         self[target].inputs[inp_index] = with;
-        let (entry, hash) = Self::find_node(
-            &mut self.lookup,
-            &self.values,
-            self.values[target as usize].as_ref().unwrap(),
-        );
+        let (entry, hash) = self.lookup.entry(target.key(&self.values), &self.values);
         match entry {
             hash_map::RawEntryMut::Occupied(other) => {
-                let rpl = other.get_key_value().0.nid;
+                let rpl = other.get_key_value().0.value;
                 self[target].inputs[inp_index] = prev;
                 self.replace(target, rpl);
                 rpl
             }
             hash_map::RawEntryMut::Vacant(slot) => {
-                slot.insert(LookupEntry { nid: target, hash }, ());
+                slot.insert(crate::ctx_map::Key { value: target, hash }, ());
                 let index = self[prev].outputs.iter().position(|&o| o == target).unwrap();
                 self[prev].outputs.swap_remove(index);
                 self[with].outputs.push(target);
@@ -845,7 +815,7 @@ impl fmt::Display for Kind {
 
 #[derive(Debug, Default, Clone)]
 //#[repr(align(64))]
-struct Node {
+pub struct Node {
     kind: Kind,
     inputs: Vc,
     outputs: Vc,
@@ -1144,7 +1114,7 @@ impl Codegen {
                         .tys
                         .struct_fields(s)
                         .iter()
-                        .map(|f| self.tys.field_names.ident_str(f.name))
+                        .map(|f| self.tys.names.ident_str(f.name))
                         .intersperse("', '")
                         .collect::<String>();
                     self.report(
@@ -1374,7 +1344,7 @@ impl Codegen {
                     .iter()
                     .zip(offs)
                     .filter(|&(_, (ty, _))| ty != ty::Id::UNDECLARED)
-                    .map(|(f, _)| self.tys.field_names.ident_str(f.name))
+                    .map(|(f, _)| self.tys.names.ident_str(f.name))
                     .intersperse(", ")
                     .collect::<String>();
 

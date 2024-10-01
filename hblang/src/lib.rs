@@ -36,7 +36,7 @@ use {
         ty::ArrayLen,
     },
     alloc::{collections::BTreeMap, string::String, vec::Vec},
-    core::{cell::Cell, fmt::Display, hash::BuildHasher, ops::Range, usize},
+    core::{cell::Cell, fmt::Display, ops::Range},
     hashbrown::hash_map,
     hbbytecode as instrs,
 };
@@ -68,6 +68,89 @@ pub mod son;
 
 mod lexer;
 mod vc;
+
+mod ctx_map {
+    use core::hash::BuildHasher;
+
+    pub type Hash = u64;
+    pub type HashBuilder = core::hash::BuildHasherDefault<IdentityHasher>;
+
+    #[derive(Default)]
+    pub struct IdentityHasher(u64);
+
+    impl core::hash::Hasher for IdentityHasher {
+        fn finish(&self) -> u64 {
+            self.0
+        }
+
+        fn write(&mut self, _: &[u8]) {
+            unimplemented!()
+        }
+
+        fn write_u64(&mut self, i: u64) {
+            self.0 = i;
+        }
+    }
+
+    pub struct Key<T> {
+        pub value: T,
+        pub hash: Hash,
+    }
+
+    impl<T> core::hash::Hash for Key<T> {
+        fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
+            state.write_u64(self.hash);
+        }
+    }
+
+    pub trait CtxEntry {
+        type Ctx: ?Sized;
+        type Key<'a>: Eq + core::hash::Hash;
+
+        fn key<'a>(&self, ctx: &'a Self::Ctx) -> Self::Key<'a>;
+    }
+
+    pub struct CtxMap<T> {
+        inner: hashbrown::HashMap<Key<T>, (), HashBuilder>,
+    }
+
+    impl<T> Default for CtxMap<T> {
+        fn default() -> Self {
+            Self { inner: Default::default() }
+        }
+    }
+
+    impl<T: CtxEntry> CtxMap<T> {
+        pub fn entry<'a, 'b>(
+            &'a mut self,
+            value: T::Key<'b>,
+            ctx: &'b T::Ctx,
+        ) -> (hashbrown::hash_map::RawEntryMut<'a, Key<T>, (), HashBuilder>, Hash) {
+            let hash = crate::FnvBuildHasher::default().hash_one(&value);
+            (self.inner.raw_entry_mut().from_hash(hash, |k| k.value.key(ctx) == value), hash)
+        }
+
+        pub fn get<'a>(&self, value: T::Key<'a>, ctx: &'a T::Ctx) -> Option<&T> {
+            let hash = crate::FnvBuildHasher::default().hash_one(&value);
+            self.inner
+                .raw_entry()
+                .from_hash(hash, |k| k.value.key(ctx) == value)
+                .map(|(k, _)| &k.value)
+        }
+
+        pub fn clear(&mut self) {
+            self.inner.clear();
+        }
+
+        pub fn remove<'a>(&mut self, value: &T, ctx: &'a T::Ctx) -> Option<T> {
+            let (entry, _) = self.entry(value.key(ctx), ctx);
+            match entry {
+                hashbrown::hash_map::RawEntryMut::Occupied(o) => Some(o.remove_entry().0.value),
+                hashbrown::hash_map::RawEntryMut::Vacant(_) => None,
+            }
+        }
+    }
+}
 
 mod task {
     use super::Offset;
@@ -124,7 +207,7 @@ mod ty {
             lexer::TokenKind,
             parser::{self},
         },
-        core::{num::NonZeroU32, ops::Range, usize},
+        core::{num::NonZeroU32, ops::Range},
     };
 
     pub type ArrayLen = u32;
@@ -153,10 +236,6 @@ mod ty {
             Some(Self((pos << Self::LEN_BITS | len) as u32))
         }
 
-        //pub fn view(self, slice: &[Id]) -> &[Id] {
-        //    &slice[self.0 as usize >> Self::LEN_BITS..][..self.len()]
-        //}
-
         pub fn range(self) -> Range<usize> {
             let start = self.0 as usize >> Self::LEN_BITS;
             start..start + self.len()
@@ -169,14 +248,19 @@ mod ty {
         pub fn empty() -> Self {
             Self(0)
         }
-
-        pub fn repr(&self) -> u32 {
-            self.0
-        }
     }
 
     #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug, Hash)]
     pub struct Id(NonZeroU32);
+
+    impl crate::ctx_map::CtxEntry for Id {
+        type Ctx = TypeInsts;
+        type Key<'a> = crate::SymKey<'a>;
+
+        fn key<'a>(&self, ctx: &'a Self::Ctx) -> Self::Key<'a> {
+            todo!()
+        }
+    }
 
     impl Default for Id {
         fn default() -> Self {
@@ -399,12 +483,7 @@ mod ty {
                             if i != 0 {
                                 write!(f, ", ")?;
                             }
-                            write!(
-                                f,
-                                "{}: {}",
-                                self.tys.field_names.ident_str(name),
-                                self.rety(ty)
-                            )?;
+                            write!(f, "{}: {}", self.tys.names.ident_str(name), self.rety(ty))?;
                         }
                         write!(f, "}}")
                     } else {
@@ -442,15 +521,14 @@ fn emit(out: &mut Vec<u8>, (len, instr): EncodedInstr) {
     out.extend_from_slice(&instr[..len]);
 }
 
-#[derive(PartialEq, Eq, Hash, Debug)]
-enum SymKey {
-    Pointer(ty::Id),
+#[derive(PartialEq, Eq, Hash)]
+enum SymKey<'a> {
+    Pointer(&'a Ptr),
     Struct(FileId, Pos),
     FuncInst(ty::Func, ty::Tuple),
     MomizedCall(ty::Func),
     Decl(FileId, Ident),
-    Slice(ty::Id),
-    Array(ty::Id, ArrayLen),
+    Array(&'a Array),
 }
 
 #[derive(Clone, Copy)]
@@ -491,7 +569,6 @@ struct Global {
     file: FileId,
     name: Ident,
     ty: ty::Id,
-    ast: ExprRef,
     offset: Offset,
     data: Vec<u8>,
 }
@@ -502,7 +579,6 @@ impl Default for Global {
             ty: Default::default(),
             offset: u32::MAX,
             data: Default::default(),
-            ast: ExprRef::default(),
             file: u32::MAX,
             name: u32::MAX,
         }
@@ -551,11 +627,12 @@ struct Struct {
     field_start: u32,
 }
 
+#[derive(PartialEq, Eq, Hash)]
 struct Ptr {
     base: ty::Id,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct Array {
     ty: ty::Id,
     len: ArrayLen,
@@ -586,56 +663,30 @@ struct AbleOsExecutableHeader {
     metadata_length: u64,
 }
 
-struct IdentEntry {
-    hash: u32,
-    ident: Ident,
-}
+impl ctx_map::CtxEntry for Ident {
+    type Ctx = str;
+    type Key<'a> = &'a str;
 
-impl core::hash::Hash for IdentEntry {
-    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {
-        state.write_u64((self.hash as u64) << 32);
-    }
-}
-
-#[derive(Default)]
-struct IdentityHasher(u64);
-
-impl core::hash::Hasher for IdentityHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, _: &[u8]) {
-        unimplemented!()
-    }
-
-    fn write_u64(&mut self, i: u64) {
-        self.0 = i;
+    fn key<'a>(&self, ctx: &'a Self::Ctx) -> Self::Key<'a> {
+        unsafe { ctx.get_unchecked(ident::range(*self)) }
     }
 }
 
 #[derive(Default)]
 struct IdentInterner {
-    lookup: hashbrown::HashMap<IdentEntry, (), core::hash::BuildHasherDefault<IdentityHasher>>,
+    lookup: ctx_map::CtxMap<Ident>,
     strings: String,
 }
 
 impl IdentInterner {
     fn intern(&mut self, ident: &str) -> Ident {
-        let hash = FnvBuildHasher::default().hash_one(ident) & 0xFFFFFFFF00000000;
-        match self.lookup.raw_entry_mut().from_hash(
-            hash,
-            |k| unsafe { self.strings.get_unchecked(ident::range(k.ident)) } == ident,
-        ) {
-            hash_map::RawEntryMut::Occupied(o) => o.get_key_value().0.ident,
+        let (entry, hash) = self.lookup.entry(ident, &self.strings);
+        match entry {
+            hash_map::RawEntryMut::Occupied(o) => o.get_key_value().0.value,
             hash_map::RawEntryMut::Vacant(v) => {
                 let id = ident::new(self.strings.len() as _, ident.len() as _);
                 self.strings.push_str(ident);
-                v.insert_hashed_nocheck(
-                    hash,
-                    IdentEntry { hash: (hash >> 32) as _, ident: id },
-                    (),
-                );
+                v.insert(ctx_map::Key { hash, value: id }, ());
                 id
             }
         }
@@ -646,33 +697,35 @@ impl IdentInterner {
     }
 
     fn project(&self, ident: &str) -> Option<Ident> {
-        let hash = FnvBuildHasher::default().hash_one(ident) & 0xFFFFFFFF00000000;
-        self.lookup
-            .raw_entry()
-            .from_hash(
-                hash,
-                |k| unsafe { self.strings.get_unchecked(ident::range(k.ident)) } == ident,
-            )
-            .map(|(k, _)| k.ident)
+        self.lookup.get(ident, &self.strings).copied()
     }
 }
 
 #[derive(Default)]
-struct Types {
-    syms: HashMap<SymKey, ty::Id>,
+struct TypesTmp {
+    fields: Vec<Field>,
+    frontier: Vec<ty::Id>,
+    globals: Vec<ty::Global>,
+    funcs: Vec<ty::Func>,
+}
+
+#[derive(Default)]
+struct TypeIns {
     funcs: Vec<Func>,
     args: Vec<ty::Id>,
     globals: Vec<Global>,
     structs: Vec<Struct>,
     fields: Vec<Field>,
-    field_names: IdentInterner,
     ptrs: Vec<Ptr>,
     arrays: Vec<Array>,
+}
 
-    fields_tmp: Vec<Field>,
-    frontier_tmp: Vec<ty::Id>,
-    reachable_globals: Vec<ty::Global>,
-    reachable_funcs: Vec<ty::Func>,
+#[derive(Default)]
+struct Types {
+    syms: ctx_map::CtxMap<ty::Id>,
+    names: IdentInterner,
+    ins: TypeIns,
+    tmp: TypesTmp,
 }
 
 const HEADER_SIZE: usize = core::mem::size_of::<AbleOsExecutableHeader>();
@@ -757,13 +810,13 @@ impl Types {
                     return Some(ty);
                 }
 
-                let prev_tmp = self.fields_tmp.len();
+                let prev_tmp = self.tmp.fields.len();
                 for field in fields.iter().filter_map(CommentOr::or) {
                     let Some(ty) = self.ty(file, &field.ty, files) else {
-                        self.fields_tmp.truncate(prev_tmp);
+                        self.tmp.fields.truncate(prev_tmp);
                         return None;
                     };
-                    self.fields_tmp.push(Field { name: self.field_names.intern(field.name), ty });
+                    self.tmp.fields.push(Field { name: self.names.intern(field.name), ty });
                 }
 
                 self.structs.push(Struct {
@@ -772,7 +825,7 @@ impl Types {
                     explicit_alignment: packed.then_some(1),
                     ..Default::default()
                 });
-                self.fields.extend(self.fields_tmp.drain(prev_tmp..));
+                self.fields.extend(self.tmp.fields.drain(prev_tmp..));
 
                 let ty = ty::Kind::Struct(self.structs.len() as u32 - 1).compress();
                 self.syms.insert(sym, ty);
@@ -794,12 +847,12 @@ impl Types {
     }
 
     fn dump_reachable(&mut self, from: ty::Func, to: &mut Vec<u8>) -> AbleOsExecutableHeader {
-        debug_assert!(self.frontier_tmp.is_empty());
-        debug_assert!(self.reachable_funcs.is_empty());
-        debug_assert!(self.reachable_globals.is_empty());
+        debug_assert!(self.tmp.frontier.is_empty());
+        debug_assert!(self.tmp.funcs.is_empty());
+        debug_assert!(self.tmp.globals.is_empty());
 
-        self.frontier_tmp.push(ty::Kind::Func(from).compress());
-        while let Some(itm) = self.frontier_tmp.pop() {
+        self.tmp.frontier.push(ty::Kind::Func(from).compress());
+        while let Some(itm) = self.tmp.frontier.pop() {
             match itm.expand() {
                 ty::Kind::Func(func) => {
                     let fuc = &mut self.funcs[func as usize];
@@ -807,8 +860,8 @@ impl Types {
                         continue;
                     }
                     fuc.offset = 0;
-                    self.reachable_funcs.push(func);
-                    self.frontier_tmp.extend(fuc.relocs.iter().map(|r| r.target));
+                    self.tmp.funcs.push(func);
+                    self.tmp.frontier.extend(fuc.relocs.iter().map(|r| r.target));
                 }
                 ty::Kind::Global(glob) => {
                     let glb = &mut self.globals[glob as usize];
@@ -816,13 +869,13 @@ impl Types {
                         continue;
                     }
                     glb.offset = 0;
-                    self.reachable_globals.push(glob);
+                    self.tmp.globals.push(glob);
                 }
                 _ => unreachable!(),
             }
         }
 
-        for &func in &self.reachable_funcs {
+        for &func in &self.tmp.funcs {
             let fuc = &mut self.funcs[func as usize];
             fuc.offset = to.len() as _;
             to.extend(&fuc.code);
@@ -830,7 +883,7 @@ impl Types {
 
         let code_length = to.len();
 
-        for global in self.reachable_globals.drain(..) {
+        for global in self.tmp.globals.drain(..) {
             let global = &mut self.globals[global as usize];
             global.offset = to.len() as _;
             to.extend(&global.data);
@@ -838,7 +891,7 @@ impl Types {
 
         let data_length = to.len() - code_length;
 
-        for func in self.reachable_funcs.drain(..) {
+        for func in self.tmp.funcs.drain(..) {
             let fuc = &self.funcs[func as usize];
             for rel in &fuc.relocs {
                 let offset = match rel.target.expand() {
@@ -1003,7 +1056,7 @@ impl Types {
     }
 
     fn find_struct_field(&self, s: ty::Struct, name: &str) -> Option<usize> {
-        let name = self.field_names.project(name)?;
+        let name = self.names.project(name)?;
         self.struct_fields(s).iter().position(|f| f.name == name)
     }
 }
@@ -1020,7 +1073,7 @@ impl OffsetIter {
     }
 
     fn offset_of(tys: &Types, idx: ty::Struct, field: &str) -> Option<(Offset, ty::Id)> {
-        let field_id = tys.field_names.project(field)?;
+        let field_id = tys.names.project(field)?;
         OffsetIter::new(idx, tys)
             .into_iter(tys)
             .find(|(f, _)| f.name == field_id)
