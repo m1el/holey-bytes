@@ -10,8 +10,8 @@ use {
         ty, Field, Func, Global, LoggedMem, OffsetIter, ParamAlloc, Reloc, Sig, Struct, SymKey,
         TypedReloc, Types,
     },
-    alloc::{borrow::ToOwned, boxed::Box, string::String, vec::Vec},
-    core::{fmt::Display, panic},
+    alloc::{boxed::Box, string::String, vec::Vec},
+    core::fmt::Display,
 };
 
 type Offset = u32;
@@ -171,9 +171,9 @@ mod reg {
 
     type Reg = u8;
 
-    #[cfg(feature = "std")]
+    #[cfg(all(debug_assertions, feature = "std"))]
     type Bt = std::backtrace::Backtrace;
-    #[cfg(not(feature = "std"))]
+    #[cfg(not(all(debug_assertions, feature = "std")))]
     type Bt = ();
 
     #[derive(Default, Debug)]
@@ -209,15 +209,15 @@ mod reg {
         }
     }
 
-    #[cfg(feature = "std")]
+    #[cfg(all(debug_assertions, feature = "std"))]
     impl Drop for Id {
         fn drop(&mut self) {
             let is_panicking = {
-                #[cfg(feature = "std")]
+                #[cfg(all(debug_assertions, feature = "std"))]
                 {
                     std::thread::panicking()
                 }
-                #[cfg(not(feature = "std"))]
+                #[cfg(not(all(debug_assertions, feature = "std")))]
                 {
                     false
                 }
@@ -246,9 +246,9 @@ mod reg {
             self.max_used = self.max_used.max(reg);
             Id(
                 reg,
-                #[cfg(feature = "std")]
+                #[cfg(all(debug_assertions, feature = "std"))]
                 Some(std::backtrace::Backtrace::capture()),
-                #[cfg(not(feature = "std"))]
+                #[cfg(not(all(debug_assertions, feature = "std")))]
                 Some(()),
             )
         }
@@ -883,9 +883,8 @@ impl Codegen {
                 self.assert_arg_count(expr.pos(), args.len(), cargs.len(), "inline function call");
 
                 if scope == self.ci.vars.len() {
-                    for ((arg, ty), carg) in
-                        args.iter().zip(sig.args.view(&self.tys.args).to_owned()).zip(cargs)
-                    {
+                    for ((arg, ti), carg) in args.iter().zip(sig.args.range()).zip(cargs) {
+                        let ty = self.tys.args[ti];
                         let loc = self.expr_ctx(arg, Ctx::default().with_ty(ty))?.loc;
                         self.ci.vars.push(Variable { id: carg.id, value: Value { ty, loc } });
                     }
@@ -903,9 +902,11 @@ impl Codegen {
                 self.ci.file = prev_file;
                 self.ci.ret = prev_ret;
 
-                for var in self.ci.vars.drain(scope..).collect::<Vec<_>>() {
+                let mut vars = std::mem::take(&mut self.ci.vars);
+                for var in vars.drain(scope..) {
                     self.ci.free_loc(var.value.loc);
                 }
+                self.ci.vars = vars;
 
                 if let Some(last_ret) = self.ci.ret_relocs.last()
                     && last_ret.offset as usize == self.ci.code.len() - 5
@@ -1796,26 +1797,32 @@ impl Codegen {
             id: self.ci.id,
             ret: self.ci.ret,
             task_base: self.ci.task_base,
-            loops: self.ci.loops.clone(),
-            vars: self
-                .ci
-                .vars
-                .iter()
-                .map(|v| Variable {
-                    id: v.id,
-                    value: Value { ty: v.value.ty, loc: v.value.loc.as_ref() },
-                })
-                .collect(),
-            stack_relocs: self.ci.stack_relocs.clone(),
-            ret_relocs: self.ci.ret_relocs.clone(),
-            loop_relocs: self.ci.loop_relocs.clone(),
-            ..Default::default()
+            ..self.pool.cis.pop().unwrap_or_default()
         };
+        ci.loops.extend(self.ci.loops.iter());
+        ci.vars.extend(self.ci.vars.iter().map(|v| Variable {
+            id: v.id,
+            value: Value { ty: v.value.ty, loc: v.value.loc.as_ref() },
+        }));
+        ci.stack_relocs.extend(self.ci.stack_relocs.iter());
+        ci.ret_relocs.extend(self.ci.ret_relocs.iter());
+        ci.loop_relocs.extend(self.ci.loop_relocs.iter());
         ci.regs.init();
+
         core::mem::swap(&mut self.ci, &mut ci);
         let value = self.expr(expr).unwrap();
         self.ci.free_loc(value.loc);
         core::mem::swap(&mut self.ci, &mut ci);
+
+        ci.loops.clear();
+        ci.vars.clear();
+        ci.stack_relocs.clear();
+        ci.ret_relocs.clear();
+        ci.loop_relocs.clear();
+        ci.code.clear();
+        ci.relocs.clear();
+        self.pool.cis.push(ci);
+
         value.ty
     }
 
@@ -2118,9 +2125,11 @@ impl Codegen {
             self.report(body.pos(), "expected all paths in the fucntion to return");
         }
 
-        for vars in self.ci.vars.drain(..).collect::<Vec<_>>() {
-            self.ci.free_loc(vars.value.loc);
+        let mut vars = std::mem::take(&mut self.ci.vars);
+        for var in vars.drain(..) {
+            self.ci.free_loc(var.value.loc);
         }
+        self.ci.vars = vars;
 
         self.ci.finalize();
         self.ci.emit(jala(ZERO, RET_ADDR, 0));
@@ -2570,8 +2579,8 @@ impl Codegen {
             let last_fn = self.tys.funcs.len();
             self.tys.funcs.push(Default::default());
 
-            self.tys.funcs[last_fn].code.append(&mut self.ci.code);
-            self.tys.funcs[last_fn].relocs.append(&mut self.ci.relocs);
+            self.tys.funcs[last_fn].code = std::mem::take(&mut self.ci.code);
+            self.tys.funcs[last_fn].relocs = std::mem::take(&mut self.ci.relocs);
 
             if is_on_stack {
                 let size =
@@ -2603,7 +2612,11 @@ impl Codegen {
             self.run_vm();
             self.ct.vm.pc = prev_pc + self.ct.code.as_ptr() as usize;
 
-            self.tys.funcs.pop().unwrap();
+            let func = self.tys.funcs.pop().unwrap();
+            self.ci.code = func.code;
+            self.ci.code.clear();
+            self.ci.relocs = func.relocs;
+            self.ci.relocs.clear();
         }
 
         self.pool.cis.push(core::mem::replace(&mut self.ci, prev_ci));
@@ -2634,10 +2647,8 @@ impl Codegen {
         ty::Display::new(&self.tys, &self.files, ty)
     }
 
-    fn ast_display(&self, ast: &Expr) -> String {
-        let mut s = String::new();
-        parser::Formatter::new(&self.cfile().file).fmt(ast, &mut s).unwrap();
-        s
+    fn ast_display<'a>(&'a self, ast: &'a Expr<'a>) -> parser::Display<'a> {
+        parser::Display::new(&self.cfile().file, ast)
     }
 
     #[must_use]

@@ -2107,10 +2107,8 @@ impl Codegen {
         ty::Display::new(&self.tys, &self.files, ty)
     }
 
-    fn ast_display(&self, ast: &Expr) -> String {
-        let mut s = String::new();
-        parser::Formatter::new(&self.cfile().file).fmt(ast, &mut s).unwrap();
-        s
+    fn ast_display<'a>(&'a self, ast: &'a Expr<'a>) -> parser::Display<'a> {
+        parser::Display::new(&self.cfile().file, ast)
     }
 
     #[must_use]

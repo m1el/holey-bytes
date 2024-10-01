@@ -18,7 +18,8 @@
     map_try_insert,
     extract_if,
     ptr_internals,
-    iter_intersperse
+    iter_intersperse,
+    slice_from_ptr_range
 )]
 #![warn(clippy::dbg_macro)]
 #![allow(stable_features, internal_features)]
@@ -152,9 +153,9 @@ mod ty {
             Some(Self((pos << Self::LEN_BITS | len) as u32))
         }
 
-        pub fn view(self, slice: &[Id]) -> &[Id] {
-            &slice[self.0 as usize >> Self::LEN_BITS..][..self.len()]
-        }
+        //pub fn view(self, slice: &[Id]) -> &[Id] {
+        //    &slice[self.0 as usize >> Self::LEN_BITS..][..self.len()]
+        //}
 
         pub fn range(self) -> Range<usize> {
             let start = self.0 as usize >> Self::LEN_BITS;
@@ -658,16 +659,19 @@ impl IdentInterner {
 #[derive(Default)]
 struct Types {
     syms: HashMap<SymKey, ty::Id>,
-
     funcs: Vec<Func>,
     args: Vec<ty::Id>,
     globals: Vec<Global>,
     structs: Vec<Struct>,
     fields: Vec<Field>,
-    fields_tmp: Vec<Field>,
     field_names: IdentInterner,
     ptrs: Vec<Ptr>,
     arrays: Vec<Array>,
+
+    fields_tmp: Vec<Field>,
+    frontier_tmp: Vec<ty::Id>,
+    reachable_globals: Vec<ty::Global>,
+    reachable_funcs: Vec<ty::Func>,
 }
 
 const HEADER_SIZE: usize = core::mem::size_of::<AbleOsExecutableHeader>();
@@ -756,12 +760,12 @@ impl Types {
     }
 
     fn dump_reachable(&mut self, from: ty::Func, to: &mut Vec<u8>) -> AbleOsExecutableHeader {
-        let mut used_funcs = vec![];
-        let mut used_globals = vec![];
+        debug_assert!(self.frontier_tmp.is_empty());
+        debug_assert!(self.reachable_funcs.is_empty());
+        debug_assert!(self.reachable_globals.is_empty());
 
-        let mut frontier = vec![ty::Kind::Func(from).compress()];
-
-        while let Some(itm) = frontier.pop() {
+        self.frontier_tmp.push(ty::Kind::Func(from).compress());
+        while let Some(itm) = self.frontier_tmp.pop() {
             match itm.expand() {
                 ty::Kind::Func(func) => {
                     let fuc = &mut self.funcs[func as usize];
@@ -769,8 +773,8 @@ impl Types {
                         continue;
                     }
                     fuc.offset = 0;
-                    used_funcs.push(func);
-                    frontier.extend(fuc.relocs.iter().map(|r| r.target));
+                    self.reachable_funcs.push(func);
+                    self.frontier_tmp.extend(fuc.relocs.iter().map(|r| r.target));
                 }
                 ty::Kind::Global(glob) => {
                     let glb = &mut self.globals[glob as usize];
@@ -778,13 +782,13 @@ impl Types {
                         continue;
                     }
                     glb.offset = 0;
-                    used_globals.push(glob);
+                    self.reachable_globals.push(glob);
                 }
                 _ => unreachable!(),
             }
         }
 
-        for &func in &used_funcs {
+        for &func in &self.reachable_funcs {
             let fuc = &mut self.funcs[func as usize];
             fuc.offset = to.len() as _;
             to.extend(&fuc.code);
@@ -792,7 +796,7 @@ impl Types {
 
         let code_length = to.len();
 
-        for &global in &used_globals {
+        for global in self.reachable_globals.drain(..) {
             let global = &mut self.globals[global as usize];
             global.offset = to.len() as _;
             to.extend(&global.data);
@@ -800,7 +804,7 @@ impl Types {
 
         let data_length = to.len() - code_length;
 
-        for func in used_funcs {
+        for func in self.reachable_funcs.drain(..) {
             let fuc = &self.funcs[func as usize];
             for rel in &fuc.relocs {
                 let offset = match rel.target.expand() {
@@ -1167,9 +1171,10 @@ fn test_parse_files(ident: &'static str, input: &'static str) -> Vec<parser::Ast
             .ok_or("Not Found".to_string())
     };
 
+    let mut stack = parser::StackAlloc::default();
     module_map
         .iter()
-        .map(|&(path, content)| parser::Ast::new(path, content.to_owned(), &loader))
+        .map(|&(path, content)| parser::Ast::new(path, content.to_owned(), &mut stack, &loader))
         .collect()
 }
 

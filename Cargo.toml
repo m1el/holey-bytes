@@ -4,6 +4,7 @@ members = ["hbbytecode", "hbvm", "hbxrt", "xtask", "hblang", "hbjit"]
 
 [profile.release]
 lto = true
+debug = true
 codegen-units = 1
 panic = "abort"
 

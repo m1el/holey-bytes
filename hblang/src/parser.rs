@@ -6,11 +6,13 @@ use {
     alloc::{boxed::Box, string::String, vec::Vec},
     core::{
         cell::UnsafeCell,
-        fmt::{self, Write},
-        ops::{Deref, Not},
+        fmt::{self},
+        marker::PhantomData,
+        ops::Deref,
         ptr::NonNull,
         sync::atomic::AtomicUsize,
     },
+    std::intrinsics::unlikely,
 };
 
 pub type Pos = u32;
@@ -58,10 +60,11 @@ struct ScopeIdent {
 pub struct Parser<'a, 'b> {
     path: &'b str,
     loader: Loader<'b>,
-    lexer: Lexer<'b>,
+    lexer: Lexer<'a>,
     arena: &'b Arena<'a>,
     token: Token,
     symbols: &'b mut Symbols,
+    stack: &'b mut StackAlloc,
     ns_bound: usize,
     trailing_sep: bool,
     packed: bool,
@@ -70,7 +73,12 @@ pub struct Parser<'a, 'b> {
 }
 
 impl<'a, 'b> Parser<'a, 'b> {
-    pub fn new(arena: &'b Arena<'a>, symbols: &'b mut Symbols, loader: Loader<'b>) -> Self {
+    pub fn new(
+        arena: &'b Arena<'a>,
+        symbols: &'b mut Symbols,
+        stack: &'b mut StackAlloc,
+        loader: Loader<'b>,
+    ) -> Self {
         let mut lexer = Lexer::new("");
         Self {
             loader,
@@ -79,6 +87,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             path: "",
             arena,
             symbols,
+            stack,
             ns_bound: 0,
             trailing_sep: false,
             packed: false,
@@ -87,7 +96,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
     }
 
-    pub fn file(&mut self, input: &'b str, path: &'b str) -> &'a [Expr<'a>] {
+    pub fn file(&mut self, input: &'a str, path: &'b str) -> &'a [Expr<'a>] {
         self.path = path;
         self.lexer = Lexer::new(input);
         self.token = self.lexer.next();
@@ -247,8 +256,8 @@ impl<'a, 'b> Parser<'a, 'b> {
         (id.ident, bl)
     }
 
-    fn move_str(&mut self, range: Token) -> &'a str {
-        self.arena.alloc_str(self.lexer.slice(range.range()))
+    fn tok_str(&mut self, range: Token) -> &'a str {
+        self.lexer.slice(range.range())
     }
 
     fn unit_expr(&mut self) -> Expr<'a> {
@@ -278,7 +287,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             }
             T::Directive => E::Directive {
                 pos: pos - 1, // need to undo the directive shift
-                name: self.move_str(token),
+                name: self.tok_str(token),
                 args: {
                     self.expect_advance(T::LParen);
                     self.collect_list(T::Comma, T::RParen, Self::expr)
@@ -287,7 +296,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             T::True => E::Bool { pos, value: true },
             T::False => E::Bool { pos, value: false },
             T::Idk => E::Idk { pos },
-            T::DQuote => E::String { pos, literal: self.move_str(token) },
+            T::DQuote => E::String { pos, literal: self.tok_str(token) },
             T::Packed => {
                 self.packed = true;
                 let expr = self.unit_expr();
@@ -308,13 +317,13 @@ impl<'a, 'b> Parser<'a, 'b> {
                     self.collect_list(T::Comma, T::RBrace, |s| {
                         let tok = s.token;
                         if s.advance_if(T::Comment) {
-                            CommentOr::Comment { literal: s.move_str(tok), pos: tok.start }
+                            CommentOr::Comment { literal: s.tok_str(tok), pos: tok.start }
                         } else {
                             let name = s.expect_advance(T::Ident);
                             s.expect_advance(T::Colon);
                             CommentOr::Or(StructField {
                                 pos: name.start,
-                                name: s.move_str(name),
+                                name: s.tok_str(name),
                                 ty: s.expr(),
                             })
                         }
@@ -338,7 +347,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             },
             T::Ident | T::CtIdent => {
                 let (id, is_first) = self.resolve_ident(token);
-                let name = self.move_str(token);
+                let name = self.tok_str(token);
                 E::Ident { pos, is_ct: token.kind == T::CtIdent, name, id, is_first }
             }
             T::If => E::If {
@@ -369,7 +378,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                         s.expect_advance(T::Colon);
                         Arg {
                             pos: name.start,
-                            name: s.move_str(name),
+                            name: s.tok_str(name),
                             is_ct: name.kind == T::CtIdent,
                             id,
                             ty: s.expr(),
@@ -426,7 +435,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 self.expect_advance(T::RParen);
                 expr
             }
-            T::Comment => Expr::Comment { pos, literal: self.move_str(token) },
+            T::Comment => Expr::Comment { pos, literal: self.tok_str(token) },
             tok => self.report(token.start, format_args!("unexpected token: {tok:?}")),
         };
 
@@ -457,7 +466,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                     pos: token.start,
                     name: {
                         let token = self.expect_advance(T::Ident);
-                        self.move_str(token)
+                        self.tok_str(token)
                     },
                 },
                 _ => break,
@@ -486,7 +495,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             ty: ty.map(|ty| self.arena.alloc(ty)),
             fields: self.collect_list(TokenKind::Comma, TokenKind::RBrace, |s| {
                 let name_tok = s.advance_ident();
-                let name = s.move_str(name_tok);
+                let name = s.tok_str(name_tok);
                 CtorField {
                     pos: name_tok.start,
                     name,
@@ -538,19 +547,13 @@ impl<'a, 'b> Parser<'a, 'b> {
         end: TokenKind,
         mut f: impl FnMut(&mut Self) -> T,
     ) -> &'a [T] {
-        self.collect(|s| {
-            s.advance_if(end).not().then(|| {
-                let val = f(s);
-                s.trailing_sep = s.advance_if(delim);
-                val
-            })
-        })
-    }
-
-    fn collect<T: Copy>(&mut self, mut f: impl FnMut(&mut Self) -> Option<T>) -> &'a [T] {
-        // TODO: avoid this allocation
-        let vec = core::iter::from_fn(|| f(self)).collect::<Vec<_>>();
-        self.arena.alloc_slice(&vec)
+        let mut view = self.stack.view();
+        while !self.advance_if(end) {
+            let val = f(self);
+            self.trailing_sep = self.advance_if(delim);
+            unsafe { self.stack.push(&mut view, val) };
+        }
+        self.arena.alloc_slice(unsafe { self.stack.finalize(view) })
     }
 
     fn advance_if(&mut self, kind: TokenKind) -> bool {
@@ -931,6 +934,22 @@ impl<'a, T: Copy> CommentOr<'a, T> {
     }
 }
 
+pub struct Display<'a> {
+    source: &'a str,
+    expr: &'a Expr<'a>,
+}
+impl<'a> Display<'a> {
+    pub fn new(source: &'a str, expr: &'a Expr<'a>) -> Self {
+        Self { source, expr }
+    }
+}
+
+impl core::fmt::Display for Display<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Formatter::new(self.source).fmt(self.expr, f)
+    }
+}
+
 pub struct Formatter<'a> {
     source: &'a str,
     depth: usize,
@@ -942,14 +961,14 @@ impl<'a> Formatter<'a> {
         Self { source, depth: 0, disp_buff: Default::default() }
     }
 
-    fn fmt_list<T: Poser>(
+    fn fmt_list<T: Poser, F: core::fmt::Write>(
         &mut self,
-        f: &mut String,
+        f: &mut F,
         trailing: bool,
         end: &str,
         sep: &str,
         list: &[T],
-        fmt: impl Fn(&mut Self, &T, &mut String) -> fmt::Result,
+        fmt: impl Fn(&mut Self, &T, &mut F) -> fmt::Result,
     ) -> fmt::Result {
         self.fmt_list_low(f, trailing, end, sep, list, |s, v, f| {
             fmt(s, v, f)?;
@@ -957,14 +976,14 @@ impl<'a> Formatter<'a> {
         })
     }
 
-    fn fmt_list_low<T: Poser>(
+    fn fmt_list_low<T: Poser, F: core::fmt::Write>(
         &mut self,
-        f: &mut String,
+        f: &mut F,
         trailing: bool,
         end: &str,
         sep: &str,
         list: &[T],
-        fmt: impl Fn(&mut Self, &T, &mut String) -> Result<bool, fmt::Error>,
+        fmt: impl Fn(&mut Self, &T, &mut F) -> Result<bool, fmt::Error>,
     ) -> fmt::Result {
         if !trailing {
             let mut first = true;
@@ -1013,10 +1032,10 @@ impl<'a> Formatter<'a> {
         res
     }
 
-    fn fmt_paren(
+    fn fmt_paren<F: core::fmt::Write>(
         &mut self,
         expr: &Expr,
-        f: &mut String,
+        f: &mut F,
         cond: impl FnOnce(&Expr) -> bool,
     ) -> fmt::Result {
         if cond(expr) {
@@ -1028,7 +1047,7 @@ impl<'a> Formatter<'a> {
         }
     }
 
-    pub fn fmt(&mut self, expr: &Expr, f: &mut String) -> fmt::Result {
+    pub fn fmt<F: core::fmt::Write>(&mut self, expr: &Expr, f: &mut F) -> fmt::Result {
         macro_rules! impl_parenter {
             ($($name:ident => $pat:pat,)*) => {
                 $(
@@ -1259,11 +1278,13 @@ impl AstInner<[Symbol]> {
             .0
     }
 
-    fn new(content: String, path: &str, loader: Loader) -> NonNull<Self> {
+    fn new(file: Box<str>, path: &str, stack: &mut StackAlloc, loader: Loader) -> NonNull<Self> {
         let arena = Arena::default();
         let mut syms = Vec::new();
-        let mut parser = Parser::new(&arena, &mut syms, loader);
-        let exprs = parser.file(&content, path) as *const [Expr<'static>];
+        let mut parser = Parser::new(&arena, &mut syms, stack, loader);
+        let exprs =
+            parser.file(unsafe { &*(&*file as *const _) }, path) as *const [Expr<'static>];
+        drop(parser);
 
         syms.sort_unstable_by_key(|s| s.name);
 
@@ -1278,7 +1299,7 @@ impl AstInner<[Symbol]> {
                 mem: arena.chunk.into_inner(),
                 exprs,
                 path: path.into(),
-                file: content.into(),
+                file,
                 symbols: (),
             });
             core::ptr::addr_of_mut!((*inner).symbols)
@@ -1320,8 +1341,8 @@ pub fn report_to(
 pub struct Ast(NonNull<AstInner<[Symbol]>>);
 
 impl Ast {
-    pub fn new(path: &str, content: String, loader: Loader) -> Self {
-        Self(AstInner::new(content, path, loader))
+    pub fn new(path: &str, content: String, stack: &mut StackAlloc, loader: Loader) -> Self {
+        Self(AstInner::new(content.into(), path, stack, loader))
     }
 
     pub fn exprs(&self) -> &[Expr] {
@@ -1346,7 +1367,7 @@ impl Ast {
 
 impl Default for Ast {
     fn default() -> Self {
-        Self(AstInner::new(String::new(), "", &no_loader))
+        Self(AstInner::new("".into(), "", &mut StackAlloc::default(), &no_loader))
     }
 }
 
@@ -1392,7 +1413,10 @@ impl Drop for Ast {
     fn drop(&mut self) {
         let inner = unsafe { self.0.as_ref() };
         if inner.ref_count.fetch_sub(1, core::sync::atomic::Ordering::Relaxed) == 1 {
-            let layout = AstInner::layout(inner.symbols.len());
+            let inner = unsafe { self.0.as_mut() };
+            let len = inner.symbols.len();
+            unsafe { core::ptr::drop_in_place(inner) };
+            let layout = AstInner::layout(len);
             unsafe {
                 alloc::alloc::dealloc(self.0.as_ptr() as _, layout);
             }
@@ -1405,6 +1429,84 @@ impl Deref for Ast {
 
     fn deref(&self) -> &Self::Target {
         self.inner()
+    }
+}
+
+pub struct StackAllocView<T> {
+    prev: usize,
+    base: usize,
+    _ph: PhantomData<T>,
+}
+
+pub struct StackAlloc {
+    data: *mut u8,
+    len: usize,
+    cap: usize,
+}
+
+impl StackAlloc {
+    const MAX_ALIGN: usize = 16;
+
+    fn view<T: Copy>(&mut self) -> StackAllocView<T> {
+        let prev = self.len;
+        let align = core::mem::align_of::<T>();
+        assert!(align <= Self::MAX_ALIGN);
+        self.len = (self.len + align - 1) & !(align - 1);
+        StackAllocView { base: self.len, prev, _ph: PhantomData }
+    }
+
+    unsafe fn push<T: Copy>(&mut self, _view: &mut StackAllocView<T>, value: T) {
+        if unlikely(self.len + core::mem::size_of::<T>() > self.cap) {
+            let next_cap = self.cap.max(16 * 32).max(std::mem::size_of::<T>()) * 2;
+            if self.cap == 0 {
+                let layout =
+                    core::alloc::Layout::from_size_align_unchecked(next_cap, Self::MAX_ALIGN);
+                self.data = alloc::alloc::alloc(layout);
+            } else {
+                let old_layout =
+                    core::alloc::Layout::from_size_align_unchecked(self.cap, Self::MAX_ALIGN);
+                self.data = alloc::alloc::realloc(self.data, old_layout, next_cap);
+            }
+            self.cap = next_cap;
+        }
+
+        let dst = self.data.add(self.len) as *mut T;
+        debug_assert!(
+            dst.is_aligned(),
+            "{:?} {:?} {} {} {}",
+            dst,
+            std::mem::size_of::<T>(),
+            std::mem::align_of::<T>(),
+            self.len,
+            self.cap
+        );
+        self.len += core::mem::size_of::<T>();
+        core::ptr::write(dst, value);
+    }
+
+    unsafe fn finalize<T: Copy>(&mut self, view: StackAllocView<T>) -> &[T] {
+        if unlikely(self.cap == 0) {
+            return &[];
+        }
+        let slice = core::slice::from_ptr_range(
+            self.data.add(view.base) as *const T..self.data.add(self.len) as *const T,
+        );
+        self.len = view.prev;
+        slice
+    }
+}
+
+impl Default for StackAlloc {
+    fn default() -> Self {
+        Self { data: core::ptr::null_mut(), len: 0, cap: 0 }
+    }
+}
+
+impl Drop for StackAlloc {
+    fn drop(&mut self) {
+        let layout =
+            unsafe { core::alloc::Layout::from_size_align_unchecked(self.cap, Self::MAX_ALIGN) };
+        unsafe { alloc::alloc::dealloc(self.data, layout) };
     }
 }
 
@@ -1529,10 +1631,11 @@ impl Drop for ArenaChunk {
 
 #[cfg(test)]
 pub mod test {
-    use {alloc::borrow::ToOwned, std::string::String};
+    use {crate::parser::StackAlloc, alloc::borrow::ToOwned, std::string::String};
 
     pub fn format(ident: &str, input: &str) {
-        let ast = super::Ast::new(ident, input.to_owned(), &|_, _| Ok(0));
+        let ast =
+            super::Ast::new(ident, input.to_owned(), &mut StackAlloc::default(), &|_, _| Ok(0));
         let mut output = String::new();
         crate::fs::format_to(&ast, input, &mut output).unwrap();
 
