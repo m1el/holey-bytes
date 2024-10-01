@@ -705,6 +705,14 @@ impl Types {
                 }
                 ty
             }
+            Expr::Slice { size: None, item, .. } => {
+                let ty = self.ty(file, item, files)?;
+                self.make_array(ty, ArrayLen::MAX)
+            }
+            //Expr::Slice { size: Some(&Expr::Number { value, .. }), item, .. } => {
+            //    let ty = self.ty(file, item, files)?;
+            //    self.make_array(ty, value as _)
+            //}
             Expr::Struct { pos, fields, packed, .. } => {
                 let sym = SymKey { file, ident: pos };
                 if let Some(&ty) = self.syms.get(&sym) {

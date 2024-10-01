@@ -759,9 +759,16 @@ impl Codegen {
         use {Expr as E, TokenKind as T};
         let value = match *expr {
             E::Mod { id, .. } => Some(Value::ty(ty::Kind::Module(id).compress())),
-            E::Struct { captured, .. } => {
+            E::Struct { captured, packed, fields, .. } => {
                 if captured.is_empty() {
-                    Some(Value::ty(self.ty(expr)))
+                    Some(Value::ty(
+                        ty::Kind::Struct(self.build_struct(
+                            self.ci.file,
+                            packed.then_some(1),
+                            fields,
+                        ))
+                        .compress(),
+                    ))
                 } else {
                     let values = captured
                         .iter()
