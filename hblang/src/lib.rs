@@ -471,10 +471,10 @@ mod ty {
                 TK::Module(idx) => write!(f, "@use({:?})[{}]", self.files[idx as usize].path, idx),
                 TK::Builtin(ty) => write!(f, "{}", to_str(ty)),
                 TK::Ptr(ty) => {
-                    write!(f, "^{}", self.rety(self.tys.ptrs[ty as usize].base))
+                    write!(f, "^{}", self.rety(self.tys.ins.ptrs[ty as usize].base))
                 }
                 TK::Struct(idx) => {
-                    let record = &self.tys.structs[idx as usize];
+                    let record = &self.tys.ins.structs[idx as usize];
                     if ident::is_null(record.name) {
                         write!(f, "[{idx}]{{")?;
                         for (i, &super::Field { name, ty }) in
@@ -494,7 +494,7 @@ mod ty {
                 TK::Func(idx) => write!(f, "fn{idx}"),
                 TK::Global(idx) => write!(f, "global{idx}"),
                 TK::Slice(idx) => {
-                    let array = self.tys.arrays[idx as usize];
+                    let array = self.tys.ins.arrays[idx as usize];
                     match array.len {
                         ArrayLen::MAX => write!(f, "[{}]", self.rety(array.ty)),
                         len => write!(f, "[{}; {len}]", self.rety(array.ty)),
@@ -732,9 +732,9 @@ const HEADER_SIZE: usize = core::mem::size_of::<AbleOsExecutableHeader>();
 
 impl Types {
     fn struct_field_range(&self, strct: ty::Struct) -> Range<usize> {
-        let start = self.structs[strct as usize].field_start as usize;
+        let start = self.ins.structs[strct as usize].field_start as usize;
         let end = self
-            .structs
+            .ins.structs
             .get(strct as usize + 1)
             .map_or(self.fields.len(), |s| s.field_start as usize);
         start..end
@@ -772,7 +772,7 @@ impl Types {
             .find_pattern_path(name, right, |right| self.ty(file, right, files))
             .unwrap_or_else(|_| unreachable!())?;
         if let ty::Kind::Struct(s) = ty.expand() {
-            self.structs[s as usize].name = name;
+            self.ins.structs[s as usize].name = name;
         }
 
         self.syms.insert(SymKey::Decl(file, name), ty);
@@ -819,7 +819,7 @@ impl Types {
                     self.tmp.fields.push(Field { name: self.names.intern(field.name), ty });
                 }
 
-                self.structs.push(Struct {
+                self.ins.structs.push(Struct {
                     file,
                     field_start: self.fields.len() as _,
                     explicit_alignment: packed.then_some(1),
@@ -827,7 +827,7 @@ impl Types {
                 });
                 self.fields.extend(self.tmp.fields.drain(prev_tmp..));
 
-                let ty = ty::Kind::Struct(self.structs.len() as u32 - 1).compress();
+                let ty = ty::Kind::Struct(self.ins.structs.len() as u32 - 1).compress();
                 self.syms.insert(sym, ty);
                 ty
             }
@@ -965,8 +965,8 @@ impl Types {
         self.syms
             .entry(SymKey::Pointer(base))
             .or_insert_with(|| {
-                self.ptrs.push(Ptr { base });
-                ty::Kind::Ptr(self.ptrs.len() as u32 - 1).compress()
+                self.ins.ptrs.push(Ptr { base });
+                ty::Kind::Ptr(self.ins.ptrs.len() as u32 - 1).compress()
             })
             .expand()
             .inner()
@@ -980,8 +980,8 @@ impl Types {
         self.syms
             .entry(SymKey::Array(ty, len))
             .or_insert_with(|| {
-                self.arrays.push(Array { ty, len });
-                ty::Kind::Slice(self.arrays.len() as u32 - 1).compress()
+                self.ins.arrays.push(Array { ty, len });
+                ty::Kind::Slice(self.ins.arrays.len() as u32 - 1).compress()
             })
             .expand()
             .inner()
@@ -997,7 +997,7 @@ impl Types {
             ty::Kind::Builtin(ty::I16 | ty::U16) => 2,
             ty::Kind::Builtin(ty::I8 | ty::U8 | ty::BOOL) => 1,
             ty::Kind::Slice(arr) => {
-                let arr = &self.arrays[arr as usize];
+                let arr = &self.ins.arrays[arr as usize];
                 match arr.len {
                     0 => 0,
                     ArrayLen::MAX => 16,
@@ -1005,13 +1005,13 @@ impl Types {
                 }
             }
             ty::Kind::Struct(stru) => {
-                if self.structs[stru as usize].size.get() != 0 {
-                    return self.structs[stru as usize].size.get();
+                if self.ins.structs[stru as usize].size.get() != 0 {
+                    return self.ins.structs[stru as usize].size.get();
                 }
 
                 let mut oiter = OffsetIter::new(stru, self);
                 while oiter.next(self).is_some() {}
-                self.structs[stru as usize].size.set(oiter.offset);
+                self.ins.structs[stru as usize].size.set(oiter.offset);
                 oiter.offset
             }
             ty => unimplemented!("size_of: {:?}", ty),
@@ -1021,10 +1021,10 @@ impl Types {
     fn align_of(&self, ty: ty::Id) -> Size {
         match ty.expand() {
             ty::Kind::Struct(stru) => {
-                if self.structs[stru as usize].align.get() != 0 {
-                    return self.structs[stru as usize].align.get() as _;
+                if self.ins.structs[stru as usize].align.get() != 0 {
+                    return self.ins.structs[stru as usize].align.get() as _;
                 }
-                let align = self.structs[stru as usize].explicit_alignment.map_or_else(
+                let align = self.ins.structs[stru as usize].explicit_alignment.map_or_else(
                     || {
                         self.struct_fields(stru)
                             .iter()
@@ -1034,11 +1034,11 @@ impl Types {
                     },
                     |a| a as _,
                 );
-                self.structs[stru as usize].align.set(align.try_into().unwrap());
+                self.ins.structs[stru as usize].align.set(align.try_into().unwrap());
                 align
             }
             ty::Kind::Slice(arr) => {
-                let arr = &self.arrays[arr as usize];
+                let arr = &self.ins.arrays[arr as usize];
                 match arr.len {
                     ArrayLen::MAX => 8,
                     _ => self.align_of(arr.ty),
@@ -1050,7 +1050,7 @@ impl Types {
 
     fn base_of(&self, ty: ty::Id) -> Option<ty::Id> {
         match ty.expand() {
-            ty::Kind::Ptr(p) => Some(self.ptrs[p as usize].base),
+            ty::Kind::Ptr(p) => Some(self.ins.ptrs[p as usize].base),
             _ => None,
         }
     }
@@ -1081,7 +1081,7 @@ impl OffsetIter {
     }
 
     fn next<'a>(&mut self, tys: &'a Types) -> Option<(&'a Field, Offset)> {
-        let stru = &tys.structs[self.strct as usize];
+        let stru = &tys.ins.structs[self.strct as usize];
         let field = &tys.fields[self.fields.next()?];
 
         let align = stru.explicit_alignment.map_or_else(|| tys.align_of(field.ty), |a| a as u32);

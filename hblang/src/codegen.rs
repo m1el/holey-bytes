@@ -752,7 +752,7 @@ impl Codegen {
             let f = Field { name: self.tys.names.intern(sf.name), ty: self.ty(&sf.ty) };
             self.tys.tmp.fields.push(f);
         }
-        self.tys.structs.push(Struct {
+        self.tys.ins.structs.push(Struct {
             field_start: self.tys.fields.len() as _,
             explicit_alignment,
             file,
@@ -763,10 +763,10 @@ impl Codegen {
         if let Some(sym) = sym {
             self.tys
                 .syms
-                .insert(sym, ty::Kind::Struct(self.tys.structs.len() as u32 - 1).compress());
+                .insert(sym, ty::Kind::Struct(self.tys.ins.structs.len() as u32 - 1).compress());
         }
 
-        self.tys.structs.len() as u32 - 1
+        self.tys.ins.structs.len() as u32 - 1
     }
 
     fn expr_ctx(&mut self, expr: &Expr, mut ctx: Ctx) -> Option<Value> {
@@ -837,13 +837,13 @@ impl Codegen {
                 _ = self.assert_ty(index.pos(), index_val.ty, ty::Id::INT, "subsctipt");
 
                 if let ty::Kind::Ptr(ty) = base_val.ty.expand() {
-                    base_val.ty = self.tys.ptrs[ty as usize].base;
+                    base_val.ty = self.tys.ins.ptrs[ty as usize].base;
                     base_val.loc = base_val.loc.into_derefed();
                 }
 
                 match base_val.ty.expand() {
                     ty::Kind::Slice(arr) => {
-                        let ty = self.tys.arrays[arr as usize].ty;
+                        let ty = self.tys.ins.arrays[arr as usize].ty;
                         let item_size = self.tys.size_of(ty);
 
                         let Loc::Rt { derefed: true, ref mut reg, ref stack, offset } =
@@ -1173,7 +1173,7 @@ impl Codegen {
                         }
                     }
                     ty::Kind::Slice(arr) => {
-                        let arr = self.tys.arrays[arr as usize];
+                        let arr = self.tys.ins.arrays[arr as usize];
                         let item_size = self.tys.size_of(arr.ty);
                         for (i, value) in fields.iter().enumerate() {
                             let loc = loc.as_ref().offset(i as u32 * item_size);
@@ -1204,7 +1204,7 @@ impl Codegen {
                 let mut tal = self.expr(target)?;
 
                 if let ty::Kind::Ptr(ty) = tal.ty.expand() {
-                    tal.ty = self.tys.ptrs[ty as usize].base;
+                    tal.ty = self.tys.ins.ptrs[ty as usize].base;
                     tal.loc = tal.loc.into_derefed();
                 }
 
@@ -1305,7 +1305,7 @@ impl Codegen {
                 let val = self.expr(val)?;
                 match val.ty.expand() {
                     ty::Kind::Ptr(ty) => Some(Value {
-                        ty: self.tys.ptrs[ty as usize].base,
+                        ty: self.tys.ins.ptrs[ty as usize].base,
                         loc: Loc::reg(self.loc_to_reg(val.loc, self.tys.size_of(val.ty)))
                             .into_derefed(),
                     }),
@@ -1639,7 +1639,7 @@ impl Codegen {
                     if matches!(op, T::Add | T::Sub)
                         && let ty::Kind::Ptr(ty) = ty::Kind::from_ty(ty)
                     {
-                        let size = self.tys.size_of(self.tys.ptrs[ty as usize].base);
+                        let size = self.tys.size_of(self.tys.ins.ptrs[ty as usize].base);
                         imm *= size as u64;
                     }
 
@@ -1675,7 +1675,7 @@ impl Codegen {
 
                         let ty::Kind::Ptr(ty) = ty.expand() else { unreachable!() };
 
-                        let size = self.tys.size_of(self.tys.ptrs[ty as usize].base);
+                        let size = self.tys.size_of(self.tys.ins.ptrs[ty as usize].base);
                         self.ci.emit(muli64(offset, offset, size as _));
                     }
                 }
@@ -1954,7 +1954,7 @@ impl Codegen {
                 }
             }
             ty::Kind::Slice(arr) => {
-                let arr = &self.tys.arrays[arr as usize];
+                let arr = &self.tys.ins.arrays[arr as usize];
                 if arr.len == ArrayLen::MAX {
                     ty = self.tys.make_array(arr.ty, field_len as _);
                 } else if arr.len != field_len as u32 {
@@ -2521,7 +2521,7 @@ impl Codegen {
                 right: stru @ Expr::Struct { .. },
             } => {
                 let str = self.ty(stru).expand().inner();
-                self.tys.structs[str as usize].name = id;
+                self.tys.ins.structs[str as usize].name = id;
                 ty::Kind::Struct(str)
             }
             Expr::BinOp { left, op: TokenKind::Decl, right } => {
