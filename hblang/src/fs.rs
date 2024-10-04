@@ -10,7 +10,7 @@ use {
         collections::VecDeque,
         eprintln,
         ffi::OsStr,
-        io,
+        io::{self, Write as _},
         path::{Path, PathBuf},
         string::ToString,
         sync::Mutex,
@@ -68,35 +68,12 @@ impl Options {
     }
 }
 
-pub fn format_to(ast: &parser::Ast, source: &str, out: &mut String) -> core::fmt::Result {
-    for (i, expr) in ast.exprs().iter().enumerate() {
-        parser::Formatter::new(&ast.file).fmt(expr, out)?;
-        if let Some(expr) = ast.exprs().get(i + 1)
-            && let Some(rest) = source.get(expr.pos() as usize..)
-        {
-            if parser::insert_needed_semicolon(rest) {
-                write!(out, ";")?;
-            }
-            if parser::preserve_newlines(&source[..expr.pos() as usize]) > 1 {
-                writeln!(out)?;
-            }
-        }
-
-        if i + 1 != ast.exprs().len() {
-            writeln!(out)?;
-        }
-    }
-
-    Ok(())
-}
-
 pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std::io::Result<()> {
     let parsed = parse_from_fs(options.extra_threads, root_file)?;
 
     fn format_ast(ast: parser::Ast) -> std::io::Result<()> {
         let mut output = String::new();
-        let source = std::fs::read_to_string(&*ast.path)?;
-        format_to(&ast, &source, &mut output).unwrap();
+        write!(output, "{ast}").unwrap();
         std::fs::write(&*ast.path, output)?;
         Ok(())
     }
@@ -107,9 +84,7 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
         }
     } else if options.fmt_stdout {
         let ast = parsed.into_iter().next().unwrap();
-        let source = std::fs::read_to_string(&*ast.path)?;
-        format_to(&ast, &source, unsafe { std::mem::transmute::<&mut Vec<u8>, &mut String>(out) })
-            .unwrap();
+        write!(out, "{ast}").unwrap();
     } else {
         let mut codegen = codegen::Codegen::default();
         codegen.files = parsed;

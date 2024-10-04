@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["hbbytecode", "hbvm", "hbxrt", "xtask", "hblang", "hbjit"]
+members = ["hbbytecode", "hbvm", "hbxrt", "xtask", "hblang", "hbjit", "depell", "depell/html-macro"]
 
 [profile.release]
 lto = true

@@ -12,7 +12,7 @@ use {
         task,
         ty::{self},
         vc::{BitSet, Vc},
-        Func, HashMap, Offset, OffsetIter, Reloc, Sig, SymKey, TypedReloc, Types,
+        Func, HashMap, Offset, OffsetIter, Reloc, Sig, Size, SymKey, TypedReloc, Types,
     },
     alloc::{borrow::ToOwned, string::String, vec::Vec},
     core::{
@@ -20,7 +20,8 @@ use {
         cell::RefCell,
         convert::identity,
         fmt::{self, Debug, Display, Write},
-        format_args as fa, mem, ops,
+        format_args as fa, mem,
+        ops::{self, Range},
     },
     hashbrown::hash_map,
     regalloc2::VReg,
@@ -303,9 +304,16 @@ impl Nodes {
             }
             K::Stre { offset } => {
                 let parent = self[target].inputs[2];
+                let value = self[target].inputs[1];
 
                 if self[parent].kind == (K::Stre { offset }) && self[parent].outputs.len() == 1 {
                     return Some(self.modify_input(parent, 1, self[target].inputs[1]));
+                }
+
+                if self[value].kind == K::Stck {
+                    for str in self[value].outputs.clone() {
+                        assert!(self[str].outputs.is_empty(), "TODO: this is lost cause");
+                    }
                 }
             }
             K::Load { offset } => {
@@ -379,26 +387,6 @@ impl Nodes {
 
     fn iter(&self) -> impl DoubleEndedIterator<Item = (Nid, &Node)> {
         self.values.iter().enumerate().filter_map(|(i, s)| Some((i as _, s.as_ref().ok()?)))
-    }
-
-    fn graphviz_low(&self, out: &mut String) -> core::fmt::Result {
-        use core::fmt::Write;
-
-        for (i, node) in self.iter() {
-            let color = if self.is_cfg(i) { "yellow" } else { "white" };
-            writeln!(out, "node{i}[label=\"{}\" color={color}]", node.kind)?;
-            for (j, &o) in node.outputs.iter().enumerate() {
-                let color = if self.is_cfg(i) && self.is_cfg(o) { "red" } else { "lightgray" };
-                let index = self[o].inputs.iter().position(|&inp| i == inp).unwrap();
-                let style = if index == 0 && !self.is_cfg(o) { "style=dotted" } else { "" };
-                writeln!(
-                    out,
-                    "node{o} -> node{i}[color={color} taillabel={index} headlabel={j} {style}]",
-                )?;
-            }
-        }
-
-        Ok(())
     }
 
     #[allow(clippy::format_in_format_args)]
@@ -536,13 +524,6 @@ impl Nodes {
         let mut out = String::new();
         self.visited.clear(self.values.len());
         self.basic_blocks_low(&mut out, VOID).unwrap();
-        log::info!("{out}");
-    }
-
-    #[allow(dead_code)]
-    fn graphviz(&self) {
-        let out = &mut String::new();
-        _ = self.graphviz_low(out);
         log::info!("{out}");
     }
 
@@ -882,6 +863,7 @@ struct ItemCtx {
     loops: Vec<Loop>,
     vars: Vec<Variable>,
     memories: Vec<MemKey>,
+    clobbered: Vec<Nid>,
     ret_relocs: Vec<Reloc>,
     relocs: Vec<TypedReloc>,
     jump_relocs: Vec<(Nid, Reloc)>,
@@ -960,53 +942,90 @@ pub struct Codegen {
 }
 
 impl Codegen {
-    fn mem_op(
-        &mut self,
-        mut region: Nid,
-        offset: Offset,
-        kind: Kind,
-        mut ty: ty::Id,
-        mut inps: Vc,
-    ) -> Nid {
-        region = self.ci.nodes.trace_mem(region);
+    fn graphviz_low(&self, out: &mut String) -> core::fmt::Result {
+        use core::fmt::Write;
 
-        let size = self.tys.size_of(ty);
-        let insert_start = self
+        for (i, node) in self.ci.nodes.iter() {
+            let color = if self.ci.nodes.is_cfg(i) { "yellow" } else { "white" };
+            writeln!(
+                out,
+                "node{i}[label=\"{} {}\" color={color}]",
+                node.kind,
+                self.ty_display(node.ty)
+            )?;
+            for (j, &o) in node.outputs.iter().enumerate() {
+                let color = if self.ci.nodes.is_cfg(i) && self.ci.nodes.is_cfg(o) {
+                    "red"
+                } else {
+                    "lightgray"
+                };
+                let index = self.ci.nodes[o].inputs.iter().position(|&inp| i == inp).unwrap();
+                let style =
+                    if index == 0 && !self.ci.nodes.is_cfg(o) { "style=dotted" } else { "" };
+                writeln!(
+                    out,
+                    "node{o} -> node{i}[color={color} taillabel={index} headlabel={j} {style}]",
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    fn graphviz(&self) {
+        let out = &mut String::new();
+        _ = self.graphviz_low(out);
+        log::info!("{out}");
+    }
+
+    fn region_range(&self, region: Nid, offset: Offset, size: Size) -> Range<usize> {
+        let start = self
             .ci
             .memories
             .binary_search_by_key(&(region, offset), |k| (k.region, k.offset))
             .unwrap_or_else(identity);
-        let insert_end = self
+        let end = self
             .ci
             .memories
             .binary_search_by(|k| (k.region, k.offset).cmp(&(region, offset + size)))
             .unwrap_or_else(identity);
 
-        for mk in &self.ci.memories[insert_start..insert_end] {
+        start..end
+    }
+
+    fn mem_op(
+        &mut self,
+        mut region: Nid,
+        offset: Offset,
+        kind: Kind,
+        ty: ty::Id,
+        mut inps: Vc,
+    ) -> Nid {
+        region = self.ci.nodes.trace_mem(region);
+        let size = self.tys.size_of(ty);
+        let range = self.region_range(region, offset, size);
+
+        for mk in &self.ci.memories[range.clone()] {
             debug_assert_eq!(mk.region, region);
             debug_assert!(mk.offset >= offset);
             debug_assert!(mk.offset < offset + size);
             inps.push(mk.node);
         }
 
-        if insert_start == insert_end {
+        if range.is_empty() {
             inps.push(region);
         }
 
-        if matches!(kind, Kind::Ptr { .. }) {
-            ty = self.tys.make_ptr(ty);
-        }
-
         let (new_op, peeped) = self.ci.nodes.new_node_low(ty, kind, inps);
-        if !peeped && !matches!(kind, Kind::Ptr { .. }) {
-            for mk in &self.ci.memories[insert_start..insert_end] {
+        if !peeped {
+            for mk in &self.ci.memories[range.clone()] {
                 self.ci.nodes.unlock(mk.node);
             }
 
-            self.ci.memories.splice(
-                insert_start..insert_end,
-                core::iter::once(MemKey { node: new_op, region, offset }),
-            );
+            self.ci
+                .memories
+                .splice(range, core::iter::once(MemKey { node: new_op, region, offset }));
             self.ci.nodes.lock(new_op);
         }
         new_op
@@ -1020,8 +1039,20 @@ impl Codegen {
         self.mem_op(region, offset, Kind::Load { offset }, ty, [VOID].into())
     }
 
-    fn ptr_mem(&mut self, region: Nid, offset: Offset, ty: ty::Id) -> Nid {
-        self.mem_op(region, offset, Kind::Ptr { offset }, ty, [VOID].into())
+    fn ptr_mem(&mut self, on: Nid, offset: Offset, ty: ty::Id, derefed: bool) -> Nid {
+        let offset = match self.ci.nodes[on].kind {
+            Kind::Ptr { offset } => offset,
+            _ => 0,
+        } + offset;
+        let region = self.ci.nodes.trace_mem(on);
+        if region != on {
+            self.ci.nodes.remove(on);
+        }
+        let n = self.ci.nodes.new_node_nop(ty, Kind::Ptr { offset }, [VOID, region]);
+        if derefed {
+            self.ci.nodes[n].offset = u32::MAX;
+        }
+        n
     }
 
     pub fn generate(&mut self) {
@@ -1038,11 +1069,11 @@ impl Codegen {
         }
     }
 
-    fn expr(&mut self, expr: &Expr) -> Option<Nid> {
-        self.expr_ctx(expr, Ctx::default())
+    fn raw_expr(&mut self, expr: &Expr) -> Option<Nid> {
+        self.raw_expr_ctx(expr, Ctx::default())
     }
 
-    fn expr_ctx(&mut self, expr: &Expr, ctx: Ctx) -> Option<Nid> {
+    fn raw_expr_ctx(&mut self, expr: &Expr, ctx: Ctx) -> Option<Nid> {
         let msg = "i know nothing about this name, gal, which is vired \
                   because we parsed succesfully";
         // ordered by complexity of the expression
@@ -1092,7 +1123,7 @@ impl Codegen {
                 None
             }
             Expr::Field { target, name, pos } => {
-                let vtarget = self.expr(target)?;
+                let vtarget = self.raw_expr(target)?;
                 let tty = self.tof(vtarget);
 
                 let ty::Kind::Struct(s) = self.tys.base_of(tty).unwrap_or(tty).expand() else {
@@ -1107,7 +1138,7 @@ impl Codegen {
                     return Some(NEVER);
                 };
 
-                let Some((ty, offset)) = OffsetIter::offset_of(&self.tys, s, name) else {
+                let Some((offset, ty)) = OffsetIter::offset_of(&self.tys, s, name) else {
                     let field_list = self
                         .tys
                         .struct_fields(s)
@@ -1126,24 +1157,25 @@ impl Codegen {
                     return Some(NEVER);
                 };
 
-                Some(self.load_mem(vtarget, ty, offset))
+                Some(self.ptr_mem(vtarget, offset, ty, true))
             }
             Expr::UnOp { op: TokenKind::Band, val, .. } => {
                 let ctx = Ctx { ty: ctx.ty.and_then(|ty| self.tys.base_of(ty)) };
 
-                let mut val = self.expr_ctx(val, ctx)?;
+                let mut val = self.raw_expr_ctx(val, ctx)?;
                 let ty = self.tof(val);
-                if !matches!(self.ci.nodes[val].kind, Kind::Stck) {
+                if !matches!(self.ci.nodes[self.ci.nodes.trace_mem(val)].kind, Kind::Stck) {
                     let stck = self.ci.nodes.new_node_nop(ty, Kind::Stck, [VOID, MEM]);
                     self.store_mem(stck, 0, val);
                     val = stck;
                 }
 
-                Some(self.ptr_mem(val, 0, ty))
+                let ptr = self.tys.make_ptr(ty);
+                Some(self.ptr_mem(val, 0, ptr, false))
             }
             Expr::UnOp { op: TokenKind::Mul, val, pos } => {
                 let ctx = Ctx { ty: ctx.ty.map(|ty| self.tys.make_ptr(ty)) };
-                let val = self.expr_ctx(val, ctx)?;
+                let val = self.raw_expr_ctx(val, ctx)?;
                 let Some(base) = self.get_load_type(val) else {
                     self.report(
                         pos,
@@ -1151,7 +1183,7 @@ impl Codegen {
                     );
                     return Some(NEVER);
                 };
-                Some(self.load_mem(val, 0, base))
+                Some(self.ptr_mem(val, 0, base, true))
             }
             Expr::UnOp { pos, op: op @ TokenKind::Sub, val } => {
                 let val = self.expr_ctx(val, ctx)?;
@@ -1261,7 +1293,7 @@ impl Codegen {
                     if self.tys.size_of(ty) == 0 {
                         continue;
                     }
-                    let mut value = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
+                    let value = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
                     _ = self.assert_ty(
                         arg.pos(),
                         self.tof(value),
@@ -1269,19 +1301,24 @@ impl Codegen {
                         true,
                         fa!("argument {}", carg.name),
                     );
-                    if ty.is_pointer() {
-                        value = self.ci.nodes.trace_mem(value);
-                        value = self
-                            .ci
-                            .memories
-                            .binary_search_by_key(&(value, 0), |k| (k.region, k.offset))
-                            .map_or(value, |i| self.ci.memories[i].node);
-                        // mark the read as clobbed since function can store
-                        self.ci.nodes[value].offset = u32::MAX;
+                    if let Some(base) = self.tys.base_of(ty) {
+                        let Kind::Ptr { offset } = self.ci.nodes[value].kind else {
+                            unreachable!()
+                        };
+                        let reg = self.ci.nodes.trace_mem(value);
+                        let size = self.tys.size_of(base);
+                        for mk in &self.ci.memories[self.region_range(reg, offset, size)] {
+                            self.ci.nodes[mk.node].offset = u32::MAX;
+                            self.ci.clobbered.push(mk.node);
+                        }
                     }
                     inps.push(value);
                 }
                 self.ci.ctrl = self.ci.nodes.new_node(sig.ret, Kind::Call { func }, inps);
+                for c in self.ci.clobbered.drain(..) {
+                    self.ci.nodes[self.ci.ctrl].inputs.push(c);
+                    self.ci.nodes[c].outputs.push(self.ci.ctrl);
+                }
 
                 Some(self.ci.ctrl)
             }
@@ -1559,6 +1596,22 @@ impl Codegen {
         }
     }
 
+    fn expr_ctx(&mut self, expr: &Expr, ctx: Ctx) -> Option<Nid> {
+        let n = self.raw_expr_ctx(expr, ctx)?;
+        if let Kind::Ptr { offset } = self.ci.nodes[n].kind
+            && self.ci.nodes[n].offset == u32::MAX
+        {
+            let r = Some(self.load_mem(n, offset, self.tof(n)));
+            self.ci.nodes.remove(n);
+            return r;
+        }
+        Some(n)
+    }
+
+    fn expr(&mut self, expr: &Expr) -> Option<Nid> {
+        self.expr_ctx(expr, Default::default())
+    }
+
     fn jump_to(&mut self, pos: Pos, id: usize) -> Option<Nid> {
         let Some(mut loob) = self.ci.loops.last_mut() else {
             self.report(pos, "break outside a loop");
@@ -1713,7 +1766,7 @@ impl Codegen {
         }
 
         if self.errors.borrow().is_empty() {
-            self.ci.nodes.graphviz();
+            self.graphviz();
             self.gcm();
 
             #[cfg(debug_assertions)]
@@ -1727,7 +1780,7 @@ impl Codegen {
             }
 
             //self.ci.nodes.basic_blocks();
-            self.ci.nodes.graphviz();
+            self.graphviz();
 
             let mut stack_size = 0;
             '_compute_stack: {
@@ -1941,10 +1994,12 @@ impl Codegen {
                         debug_assert_eq!(size, 8, "TODO");
                         let (base, offset) = match func.nodes[region].kind {
                             Kind::Stck => (reg::STACK_PTR, func.nodes[region].offset + offset),
+                            Kind::Arg { .. } => {
+                                (atr(allocs[1]), func.nodes[region].offset + offset)
+                            }
                             k => unreachable!("{k:?}"),
                         };
-                        let &[dst] = allocs else { unreachable!() };
-                        self.ci.emit(instrs::ld(atr(dst), base, offset as _, size as _));
+                        self.ci.emit(instrs::ld(atr(allocs[0]), base, offset as _, size as _));
                     }
                     Kind::Stre { offset } => {
                         let region = func.nodes.trace_mem(node.inputs[2]);
@@ -2484,15 +2539,12 @@ impl<'a> Function<'a> {
                     }
                 }
             }
-            Kind::Phi | Kind::Arg { .. } | Kind::Mem => {}
-            Kind::Stck => {
-                let ops = vec![self.drg(nid)];
-                self.add_instr(nid, ops);
-            }
+            Kind::Stck | Kind::Phi | Kind::Arg { .. } | Kind::Mem => {}
             Kind::Ptr { .. } => {
                 let region = self.nodes.trace_mem(node.inputs[1]);
                 let ops = match self.nodes[region].kind {
                     Kind::Stck => vec![self.drg(nid)],
+                    Kind::Arg { .. } => vec![self.drg(nid), self.urg(region)],
                     k => unreachable!("{k:?}"),
                 };
                 self.add_instr(nid, ops);
@@ -2501,6 +2553,7 @@ impl<'a> Function<'a> {
                 let region = self.nodes.trace_mem(node.inputs[1]);
                 let ops = match self.nodes[region].kind {
                     Kind::Stck => vec![self.drg(nid)],
+                    Kind::Arg { .. } => vec![self.drg(nid), self.urg(region)],
                     k => unreachable!("{k:?}"),
                 };
                 self.add_instr(nid, ops);
@@ -2833,7 +2886,8 @@ mod tests {
     };
 
     fn generate(ident: &'static str, input: &'static str, output: &mut String) {
-        _ = env_logger::builder().is_test(true).try_init();
+        _ = log::set_logger(&crate::fs::Logger);
+        log::set_max_level(log::LevelFilter::Info);
 
         let mut codegen =
             super::Codegen { files: crate::test_parse_files(ident, input), ..Default::default() };

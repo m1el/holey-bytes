@@ -2150,7 +2150,7 @@ impl Codegen {
         self.ci.emit(jala(ZERO, RET_ADDR, 0));
         self.ci.regs.free(core::mem::take(&mut self.ci.ret_reg));
         self.tys.ins.funcs[id as usize].code.append(&mut self.ci.code);
-        self.tys.ins.funcs[id as usize].relocs.append(&mut self.ci.relocs);
+        self.tys.ins.funcs[id as usize].relocs = self.ci.relocs.drain(..).collect();
         self.pool.cis.push(core::mem::replace(&mut self.ci, prev_ci));
         self.ct.vm.write_reg(reg::STACK_PTR, ct_stack_base);
     }

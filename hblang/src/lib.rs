@@ -61,6 +61,7 @@ macro_rules! run_tests {
 }
 
 pub mod codegen;
+pub mod fmt;
 #[cfg(any(feature = "std", test))]
 pub mod fs;
 pub mod parser;
@@ -1316,13 +1317,13 @@ fn test_parse_files(ident: &'static str, input: &'static str) -> Vec<parser::Ast
     let mut last_start = 0;
     let mut last_module_name = "test";
     for (i, m) in input.match_indices("// in module: ") {
-        parser::test::format(ident, input[last_start..i].trim());
+        fmt::test::format(ident, input[last_start..i].trim());
         module_map.push((last_module_name, &input[last_start..i]));
         let (module_name, _) = input[i + m.len()..].split_once('\n').unwrap();
         last_module_name = module_name;
         last_start = i + m.len() + module_name.len() + 1;
     }
-    parser::test::format(ident, input[last_start..].trim());
+    fmt::test::format(ident, input[last_start..].trim());
     module_map.push((last_module_name, input[last_start..].trim()));
 
     let loader = |path: &str, _: &str| {

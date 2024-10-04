@@ -178,8 +178,7 @@ main := fn(): int {
 }
 
 pass := fn(t: ^Ty): int {
-	.{a, b} := *t
-	return a - b
+	return t.a - t.b
 }
 
 odher_pass := fn(t: Ty2): Ty2 {
