@@ -1,0 +1,17 @@
+<h1>Welcome to depell</h1>
+<p>
+	Depell (dependency hell) is a simple "social" media site best compared to twitter, except that all you can post is
+	<a href="https://git.ablecorp.us/AbleOS/holey-bytes">hblang</a> code with no comments allowed. Instead of likes you
+	run the program, and instead of retweets you import the program as dependency. Run counts even when ran indirectly.
+</p>
+
+<p>
+	The backend only serves the code and frontend compiles and runs it locally. All posts are immutable.
+</p>
+
+<h2>Security?</h2>
+<p>
+	All code runs in WASM (inside a holey-bytes VM until hblang compiles to wasm) and is controlled by JavaScript. WASM
+	cant do any form of IO without going trough JavaScript so as long as JS import does not allow wasm to execute
+	arbitrary JS code, WASM can act as a container inside the JS.
+</p>

@@ -1,0 +1,11 @@
+[package]
+name = "wasm-hbfmt"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+hblang = { version = "0.1.0", path = "../../hblang", default-features = false }
+log = { version = "0.4.22", features = ["max_level_off"] }
