@@ -583,11 +583,7 @@ impl<'a, 'b> Parser<'a, 'b> {
 
     #[track_caller]
     fn report(&self, pos: Pos, msg: impl fmt::Display) -> ! {
-        log::error!("{}", {
-            let mut str = String::new();
-            report_to(self.lexer.source(), self.path, pos, msg, &mut str);
-            str
-        });
+        log::error!("{}", Report::new(self.lexer.source(), self.path, pos, msg));
         unreachable!();
     }
 
@@ -1011,18 +1007,12 @@ impl AstInner<[Symbol]> {
         }
     }
 
-    pub fn report_to(&self, pos: Pos, msg: impl fmt::Display, out: &mut impl fmt::Write) {
-        report_to(&self.file, &self.path, pos, msg, out);
+    pub fn report<D>(&self, pos: Pos, msg: D) -> Report<D> {
+        Report::new(&self.file, &self.path, pos, msg)
     }
 }
 
-pub fn report_to(
-    file: &str,
-    path: &str,
-    pos: Pos,
-    msg: impl fmt::Display,
-    out: &mut impl fmt::Write,
-) {
+fn report_to(file: &str, path: &str, pos: Pos, msg: impl fmt::Display, out: &mut impl fmt::Write) {
     let (line, mut col) = lexer::line_col(file.as_bytes(), pos);
     #[cfg(feature = "std")]
     let disp = crate::fs::display_rel_path(path);
@@ -1036,6 +1026,26 @@ pub fn report_to(
 
     _ = writeln!(out, "{}", line.replace("\t", "    "));
     _ = writeln!(out, "{}^", " ".repeat(col - 1));
+}
+
+pub struct Report<'a, D> {
+    file: &'a str,
+    path: &'a str,
+    pos: Pos,
+    msg: D,
+}
+
+impl<'a, D> Report<'a, D> {
+    pub fn new(file: &'a str, path: &'a str, pos: Pos, msg: D) -> Self {
+        Self { file, path, pos, msg }
+    }
+}
+
+impl<D: core::fmt::Display> core::fmt::Display for Report<'_, D> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        report_to(self.file, self.path, self.pos, &self.msg, f);
+        Ok(())
+    }
 }
 
 #[derive(PartialEq, Eq, Hash)]

@@ -28,6 +28,11 @@ pub fn handle_panic(_info: &core::panic::PanicInfo) -> ! {
     core::arch::wasm32::unreachable();
 }
 
+//#[no_mangle]
+//static mut PANIC_MESSAGE: [u8; 1024] = [0; 1024];
+//#[no_mangle]
+//static mut PANIC_MESSAGE_LEN: usize = 0;
+
 #[global_allocator]
 static ALLOCATOR: ArenaAllocator = ArenaAllocator::new();
 
@@ -94,20 +99,15 @@ impl core::fmt::Write for Write<'_> {
     }
 }
 
-//#[no_mangle]
-//static mut PANIC_MESSAGE: [u8; 1024] = unsafe { core::mem::zeroed() };
-//#[no_mangle]
-//static mut PANIC_MESSAGE_LEN: usize = 0;
-
 #[no_mangle]
-static mut OUTPUT: [u8; MAX_OUTPUT_SIZE] = unsafe { core::mem::zeroed() };
+static mut OUTPUT: [u8; MAX_OUTPUT_SIZE] = [0; MAX_OUTPUT_SIZE];
 #[no_mangle]
 static mut OUTPUT_LEN: usize = 0;
 
 #[no_mangle]
 static MAX_INPUT: usize = MAX_INPUT_SIZE;
 #[no_mangle]
-static mut INPUT: [u8; MAX_INPUT_SIZE] = unsafe { core::mem::zeroed() };
+static mut INPUT: [u8; MAX_INPUT_SIZE] = [0; MAX_INPUT_SIZE];
 #[no_mangle]
 static mut INPUT_LEN: usize = 0;
 

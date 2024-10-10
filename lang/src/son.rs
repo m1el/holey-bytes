@@ -1101,8 +1101,6 @@ impl Codegen {
                     inps.push(m.node);
                 }
 
-                let out = &mut String::new();
-                self.report_log_to(pos, "returning here", out);
                 self.ci.ctrl = self.ci.nodes.new_node(ty::VOID, Kind::Return, inps);
 
                 self.ci.nodes[NEVER].inputs.push(self.ci.ctrl);
@@ -2153,20 +2151,6 @@ impl Codegen {
         }
     }
 
-    fn report_log(&self, pos: Pos, msg: impl core::fmt::Display) {
-        let mut buf = self.errors.borrow_mut();
-        self.report_log_to(pos, msg, &mut *buf);
-    }
-
-    fn report_log_to(
-        &self,
-        pos: Pos,
-        msg: impl core::fmt::Display,
-        out: &mut impl core::fmt::Write,
-    ) {
-        self.cfile().report_to(pos, msg, out);
-    }
-
     #[track_caller]
     fn assert_report(&self, cond: bool, pos: Pos, msg: impl core::fmt::Display) {
         if !cond {
@@ -2176,20 +2160,16 @@ impl Codegen {
 
     #[track_caller]
     fn report(&self, pos: Pos, msg: impl core::fmt::Display) {
-        self.report_log(pos, msg);
+        let mut buf = self.errors.borrow_mut();
+        writeln!(buf, "{}", self.cfile().report(pos, msg)).unwrap();
     }
 
     #[track_caller]
     fn report_unhandled_ast(&self, ast: &Expr, hint: &str) {
+        log::debug!("{ast:#?}");
         self.report(
             ast.pos(),
-            fa!(
-                "compiler does not (yet) know how to handle ({hint}):\n\
-                {:}\n\
-                info for weak people:\n\
-                {ast:#?}",
-                self.ast_display(ast)
-            ),
+            fa!("compiler does not (yet) know how to handle ({hint}):\n{}", self.ast_display(ast)),
         );
     }
 

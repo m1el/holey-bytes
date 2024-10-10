@@ -2703,9 +2703,7 @@ impl Codegen {
     }
 
     fn report_log(&self, pos: Pos, msg: impl core::fmt::Display) {
-        let mut out = String::new();
-        self.cfile().report_to(pos, msg, &mut out);
-        log::error!("{out}");
+        log::error!("{}", self.cfile().report(pos, msg));
     }
 
     #[track_caller]
@@ -2716,13 +2714,11 @@ impl Codegen {
 
     #[track_caller]
     fn report_unhandled_ast(&self, ast: &Expr, hint: &str) -> ! {
+        log::debug!("{ast:#?}");
         self.report(
             ast.pos(),
             format_args!(
-                "compiler does not (yet) know how to handle ({hint}):\n\
-                {:}\n\
-                info for weak people:\n\
-                {ast:#?}",
+                "compiler does not (yet) know how to handle ({hint}):\n{}",
                 self.ast_display(ast)
             ),
         )
