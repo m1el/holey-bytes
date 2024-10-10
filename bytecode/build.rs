@@ -159,7 +159,7 @@ fn comma_sep(items: impl Iterator<Item = String>) -> String {
 }
 
 fn instructions() -> impl Iterator<Item = [&'static str; 4]> {
-    include_str!("../hbbytecode/instructions.in")
+    include_str!("instructions.in")
         .lines()
         .filter_map(|line| line.strip_suffix(';'))
         .map(|line| line.splitn(4, ',').map(str::trim).next_chunk().unwrap())

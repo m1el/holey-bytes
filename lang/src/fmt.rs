@@ -449,7 +449,7 @@ pub mod test {
         let len = crate::fmt::minify(&mut minned);
         minned.truncate(len);
 
-        let ast = parser::Ast::new(ident, minned, &mut ParserCtx::default(), &|_, _| Ok(0));
+        let ast = parser::Ast::new(ident, minned, &mut ParserCtx::default(), &mut |_, _| Ok(0));
         log::error!(
             "{} / {} = {} | {} / {} = {}",
             ast.mem.size(),

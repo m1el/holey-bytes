@@ -1,5 +1,5 @@
 /target
-/hbbytecode/src/instrs.rs
+/bytecode/src/instrs.rs
 /.rgignore
 rustc-ice-*
 db.sqlite

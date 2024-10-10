@@ -23,7 +23,7 @@ pub type Symbols = Vec<Symbol>;
 pub type FileId = u32;
 pub type IdentIndex = u16;
 pub type LoaderError = String;
-pub type Loader<'a> = &'a (dyn Fn(&str, &str) -> Result<FileId, LoaderError> + 'a);
+pub type Loader<'a> = &'a mut (dyn FnMut(&str, &str) -> Result<FileId, LoaderError> + 'a);
 
 pub const SOURCE_TO_AST_FACTOR: usize = 7 * (core::mem::size_of::<usize>() / 4) + 1;
 
@@ -1068,7 +1068,7 @@ impl Ast {
 
 impl Default for Ast {
     fn default() -> Self {
-        Self(AstInner::new("".into(), "", &mut ParserCtx::default(), &no_loader))
+        Self(AstInner::new("".into(), "", &mut ParserCtx::default(), &mut no_loader))
     }
 }
 

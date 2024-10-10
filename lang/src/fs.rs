@@ -188,13 +188,14 @@ impl<T> TaskQueueInner<T> {
 }
 
 pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
-    fn resolve(path: &str, from: &str) -> Result<PathBuf, CantLoadFile> {
-        let path = match Path::new(from).parent() {
-            Some(parent) => PathBuf::from_iter([parent, Path::new(path)]),
-            None => PathBuf::from(path),
+    fn resolve(path: &str, from: &str, tmp: &mut PathBuf) -> Result<PathBuf, CantLoadFile> {
+        tmp.clear();
+        match Path::new(from).parent() {
+            Some(parent) => tmp.extend([parent, Path::new(path)]),
+            None => tmp.push(path),
         };
 
-        path.canonicalize().map_err(|source| CantLoadFile { path, source })
+        tmp.canonicalize().map_err(|source| CantLoadFile { path: std::mem::take(tmp), source })
     }
 
     #[derive(Debug)]
@@ -227,7 +228,7 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     let tasks = TaskQueue::<Task>::new(extra_threads + 1);
     let ast = Mutex::new(Vec::<io::Result<Ast>>::new());
 
-    let loader = |path: &str, from: &str| {
+    let loader = |path: &str, from: &str, tmp: &mut _| {
         if path.starts_with("rel:") {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
@@ -236,17 +237,17 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
             ));
         }
 
-        let physiscal_path = resolve(path, from)?;
+        let mut physiscal_path = resolve(path, from, tmp)?;
 
         let id = {
             let mut seen = seen.lock().unwrap();
             let len = seen.len();
-            match seen.entry(physiscal_path.clone()) {
+            match seen.entry(physiscal_path) {
                 hash_map::Entry::Occupied(entry) => {
                     return Ok(*entry.get());
                 }
                 hash_map::Entry::Vacant(entry) => {
-                    entry.insert(len as _);
+                    physiscal_path = entry.insert_entry(len as _).key().clone();
                     len as u32
                 }
             }
@@ -263,22 +264,23 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
         Ok(id)
     };
 
-    let execute_task = |ctx: &mut _, (_, path): Task| {
+    let execute_task = |ctx: &mut _, (_, path): Task, tmp: &mut _| {
         let path = path.to_str().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("path contains invalid characters: {}", display_rel_path(&path)),
             )
         })?;
-        Ok(Ast::new(path, std::fs::read_to_string(path)?, ctx, &|path, from| {
-            loader(path, from).map_err(|e| e.to_string())
+        Ok(Ast::new(path, std::fs::read_to_string(path)?, ctx, &mut |path, from| {
+            loader(path, from, tmp).map_err(|e| e.to_string())
         }))
     };
 
     let thread = || {
         let mut ctx = ParserCtx::default();
+        let mut tmp = PathBuf::new();
         while let Some(task @ (indx, ..)) = tasks.pop() {
-            let res = execute_task(&mut ctx, task);
+            let res = execute_task(&mut ctx, task, &mut tmp);
             let mut ast = ast.lock().unwrap();
             let len = ast.len().max(indx as usize + 1);
             ast.resize_with(len, || Err(io::ErrorKind::InvalidData.into()));
@@ -286,7 +288,9 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
         }
     };
 
-    let path = Path::new(root).canonicalize()?;
+    let path = Path::new(root).canonicalize().map_err(|e| {
+        io::Error::new(e.kind(), format!("can't canonicalize root file path ({root})"))
+    })?;
     seen.lock().unwrap().insert(path.clone(), 0);
     tasks.push((0, path));
 

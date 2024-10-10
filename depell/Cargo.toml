@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 axum = "0.7.7"
 getrandom = "0.2.15"
-htmlm = "0.3.0"
+htmlm = "0.5.0"
 log = "0.4.22"
 rusqlite = "0.32.1"
 serde = { version = "1.0.210", features = ["derive"] }

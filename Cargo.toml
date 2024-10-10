@@ -1,19 +1,27 @@
 [workspace]
 resolver = "2"
 members = [
-	"hbbytecode",
-	"hbvm",
-	"hbxrt",
+	"bytecode",
+	"vm",
+	"xrt",
 	"xtask",
-	"hblang",
-	"hbjit",
+	"lang",
 	"depell",
-	"depell/wasm-hbfmt"
+	"depell/wasm-fmt",
+	"depell/wasm-hbc",
 ]
+
+[workspace.dependencies]
+hbbytecode = { path = "bytecode", default-features = false }
+hbvm = { path = "vm" }
+hbxrt = { path = "xrt" }
+hblang = { path = "lang", default-features = false }
+hbjit = { path = "jit" }
 
 [profile.release]
 lto = true
 debug = true
+#strip = true
 codegen-units = 1
 panic = "abort"
 

@@ -5,5 +5,5 @@ edition     = "2021"
 default-run = "hbxrt"
 
 [dependencies]
-hbvm.path = "../hbvm"
+hbvm.workspace = true
 memmap2   = "0.9"

@@ -1,12 +1,13 @@
 use {
     axum::{
+        body::Bytes,
         http::{header::COOKIE, request::Parts},
         response::{AppendHeaders, Html},
     },
     core::fmt,
     htmlm::{html, write_html},
     serde::{Deserialize, Serialize},
-    std::net::Ipv4Addr,
+    std::{fmt::Write, net::Ipv4Addr},
 };
 
 const MAX_NAME_LENGTH: usize = 32;
@@ -15,6 +16,17 @@ const MAX_POSTNAME_LENGTH: usize = 64;
 const SESSION_DURATION_SECS: u64 = 60 * 60;
 
 type Redirect<const COUNT: usize = 1> = AppendHeaders<[(&'static str, &'static str); COUNT]>;
+
+macro_rules! static_asset {
+    ($mime:literal, $body:literal) => {
+        get(|| async {
+            axum::http::Response::builder()
+                .header("content-type", $mime)
+                .body(axum::body::Body::from(Bytes::from_static(include_bytes!($body))))
+                .unwrap()
+        })
+    };
+}
 
 async fn amain() {
     use axum::routing::{delete, get, post};
@@ -30,15 +42,10 @@ async fn amain() {
         .route("/", get(Index::page))
         .route(
             "/hbfmt.wasm",
-            get(|| async move {
-                axum::http::Response::builder()
-                    .header("content-type", "application/wasm")
-                    .body(axum::body::Body::from(
-                        include_bytes!("../../target/wasm32-unknown-unknown/small/wasm_hbfmt.wasm")
-                            .to_vec(),
-                    ))
-                    .unwrap()
-            }),
+            static_asset!(
+                "application/wasm",
+                "../../target/wasm32-unknown-unknown/small/wasm_hbfmt.wasm"
+            ),
         )
         .route("/index-view", get(Index::get))
         .route("/feed", get(Index::page))
@@ -71,19 +78,31 @@ async fn amain() {
 }
 
 trait PublicPage: Default {
-    fn render(self) -> String;
+    fn render_to_buf(self, buf: &mut String);
+
+    fn render(self) -> String {
+        let mut str = String::new();
+        Self::default().render_to_buf(&mut str);
+        str
+    }
 
     async fn get() -> Html<String> {
         Html(Self::default().render())
     }
 
     async fn page(session: Option<Session>) -> Html<String> {
-        base(Self::default().render(), session).await
+        base(|s| Self::default().render_to_buf(s), session.as_ref()).await
     }
 }
 
 trait Page: Default {
-    fn render(self, session: &Session) -> String;
+    fn render_to_buf(self, session: &Session, buf: &mut String);
+
+    fn render(self, session: &Session) -> String {
+        let mut str = String::new();
+        Self::default().render_to_buf(session, &mut str);
+        str
+    }
 
     async fn get(session: Session) -> Html<String> {
         Html(Self::default().render(&session))
@@ -91,7 +110,9 @@ trait Page: Default {
 
     async fn page(session: Option<Session>) -> Result<Html<String>, axum::response::Redirect> {
         match session {
-            Some(session) => Ok(base(Self::default().render(&session), Some(session)).await),
+            Some(session) => {
+                Ok(base(|f| Self::default().render_to_buf(&session, f), Some(&session)).await)
+            }
             None => Err(axum::response::Redirect::permanent("/login")),
         }
     }
@@ -101,8 +122,8 @@ trait Page: Default {
 struct Index;
 
 impl PublicPage for Index {
-    fn render(self) -> String {
-        include_str!("welcome-page.html").to_string()
+    fn render_to_buf(self, buf: &mut String) {
+        buf.push_str(include_str!("welcome-page.html"));
     }
 }
 
@@ -124,9 +145,9 @@ struct Post {
 }
 
 impl Page for Post {
-    fn render(self, session: &Session) -> String {
+    fn render_to_buf(self, session: &Session, buf: &mut String) {
         let Self { name, code, error, .. } = self;
-        html! {
+        write_html! { (buf)
             <form id="postForm" "hx-post"="/post" "hx-swap"="outherHTML">
                 if let Some(e) = error { <div class="error">e</div> }
                 <input name="author" type="text" value={session.name} hidden>
@@ -197,7 +218,7 @@ impl fmt::Display for Post {
 struct Profile;
 
 impl Page for Profile {
-    fn render(self, session: &Session) -> String {
+    fn render_to_buf(self, session: &Session, buf: &mut String) {
         db::with(|db| {
             let iter = db
                 .get_user_posts
@@ -214,7 +235,7 @@ impl Page for Profile {
                 .into_iter()
                 .flatten()
                 .filter_map(|p| p.inspect_err(|e| log::error!("{e}")).ok());
-            html! {
+            write_html! { (buf)
                 for post in iter {
                     !{post}
                 } else {
@@ -235,9 +256,9 @@ struct Login {
 }
 
 impl PublicPage for Login {
-    fn render(self) -> String {
+    fn render_to_buf(self, buf: &mut String) {
         let Login { name, password, error } = self;
-        html! {
+        write_html! { (buf)
             <form "hx-post"="/login" "hx-swap"="outherHTML">
                 if let Some(e) = error { <div class="error">e</div> }
                 <input name="name" type="text" autocomplete="name" placeholder="name" value=name
@@ -306,9 +327,9 @@ struct Signup {
 }
 
 impl PublicPage for Signup {
-    fn render(self) -> String {
+    fn render_to_buf(self, buf: &mut String) {
         let Signup { name, new_password, confirm_password, error } = self;
-        html! {
+        write_html! { (buf)
             <form "hx-post"="/signup" "hx-swap"="outherHTML">
                 if let Some(e) = error { <div class="error">e</div> }
                 <input name="name" type="text" autocomplete="name" placeholder="name" value=name
@@ -349,11 +370,11 @@ impl Signup {
     }
 }
 
-async fn base(body: String, session: Option<Session>) -> Html<String> {
-    let username = session.map(|s| s.name);
+async fn base(body: impl FnOnce(&mut String), session: Option<&Session>) -> Html<String> {
+    let username = session.map(|s| &s.name);
 
-    Html(htmlm::html! {
-        "<!DOCTIPE>"
+    Html(html! {
+        "<!DOCTYPE html>"
         <html lang="en">
             <head>
                 <style>!{include_str!("index.css")}</style>
@@ -377,7 +398,7 @@ async fn base(body: String, session: Option<Session>) -> Html<String> {
                     </section>
                 </nav>
                 <section id="post-form"></section>
-                <main>!{body}</main>
+                <main>|f|{body(f)}</main>
             </body>
             <script src="https://unpkg.com/htmx.org@2.0.3" integrity="sha384-0895/pl2MU10Hqc6jd4RvrthNlDiE9U1tWmX7WRESftEDRosgxNsQG/Ze9YMRzHq" crossorigin="anonymous"></script>
             <script>!{include_str!("index.js")}</script>

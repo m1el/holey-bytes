@@ -1348,7 +1348,7 @@ fn test_parse_files(ident: &'static str, input: &'static str) -> Vec<parser::Ast
     fmt::test::format(ident, input[last_start..].trim());
     module_map.push((last_module_name, input[last_start..].trim()));
 
-    let loader = |path: &str, _: &str| {
+    let mut loader = |path: &str, _: &str| {
         module_map
             .iter()
             .position(|&(name, _)| name == path)
@@ -1359,7 +1359,7 @@ fn test_parse_files(ident: &'static str, input: &'static str) -> Vec<parser::Ast
     let mut ctx = parser::ParserCtx::default();
     module_map
         .iter()
-        .map(|&(path, content)| parser::Ast::new(path, content.to_owned(), &mut ctx, &loader))
+        .map(|&(path, content)| parser::Ast::new(path, content.to_owned(), &mut ctx, &mut loader))
         .collect()
 }
 

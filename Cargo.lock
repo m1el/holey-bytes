@@ -272,10 +272,6 @@ name = "hbbytecode"
 version = "0.1.0"
 
 [[package]]
-name = "hbjit"
-version = "0.1.0"
-
-[[package]]
 name = "hblang"
 version = "0.1.0"
 dependencies = [
@@ -309,18 +305,18 @@ checksum = "d231dfb89cfffdbc30e7fc41579ed6066ad03abda9e567ccafae602b97ec5024"
 
 [[package]]
 name = "htmlm"
-version = "0.3.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91eeb833c1f091f72c22c2d213d8acb12b953cea20fd911a2f636e806858a391"
+checksum = "a95b97f2c13991e486bf95be6d19c6c3d1fef4f8ec1e298e40aaf98769789295"
 dependencies = [
  "htmlm-macro",
 ]
 
 [[package]]
 name = "htmlm-macro"
-version = "0.1.0"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3607a5606a3432058fa765bc4dec74ab8d103282cf16f35df7be838a674ebaa9"
+checksum = "7f881f4929b944a9566f12d8ac3bf9881325c77c11b9b0adcdc6944018b55ac7"
 
 [[package]]
 name = "http"
@@ -808,6 +804,10 @@ name = "wasi"
 version = "0.11.0+wasi-snapshot-preview1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9c8d87e72b64a3b4db28d11ce29237c246188f4f51057d65a7eab63b7987e423"
+
+[[package]]
+name = "wasm-hbc"
+version = "0.1.0"
 
 [[package]]
 name = "wasm-hbfmt"

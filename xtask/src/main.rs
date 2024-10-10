@@ -13,10 +13,30 @@ fn root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
 }
 
+fn exec(cmd: impl AsRef<str>) -> io::Result<()> {
+    let mut args = cmd.as_ref().split_whitespace();
+    let mut c = std::process::Command::new(args.next().unwrap());
+    for arg in args {
+        c.arg(arg);
+    }
+    if !c.status()?.success() {
+        return Err(io::Error::other(format!("command failed: {}", cmd.as_ref())));
+    }
+    Ok(())
+}
+
 fn main() -> io::Result<()> {
-    let args = std::env::args().collect::<Vec<_>>();
+    let args = std::env::args().skip(1).collect::<Vec<_>>();
     match args[0].as_str() {
         "fmt" => fmt(args[1] == "-r" || args[1] == "--renumber"),
+        "build-depell" => {
+            exec(
+                "cargo build -p wasm-hbfmt --target wasm32-unknown-unknown \
+                --profile=small -Zbuild-std=core,alloc",
+            )?;
+            exec("cargo build -p depell --release")?;
+            Ok(())
+        }
         _ => Ok(()),
     }
 }
@@ -25,7 +45,7 @@ pub fn fmt(renumber: bool) -> io::Result<()> {
     let mut file = File::options()
         .read(true)
         .write(true)
-        .open(crate::root().join("hbbytecode/instructions.in"))?;
+        .open(crate::root().join("bytecode/instructions.in"))?;
 
     // Extract records
     let reader = BufReader::new(&file);

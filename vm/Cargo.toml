@@ -9,4 +9,4 @@ alloc   = []
 nightly = []
 
 [dependencies]
-hbbytecode = { path = "../hbbytecode", default-features = false }
+hbbytecode = { workspace = true }

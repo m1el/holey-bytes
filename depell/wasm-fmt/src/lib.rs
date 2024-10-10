@@ -120,7 +120,8 @@ unsafe extern "C" fn fmt() {
     let arena =
         hblang::parser::Arena::with_capacity(code.len() * hblang::parser::SOURCE_TO_AST_FACTOR);
     let mut ctx = ParserCtx::default();
-    let exprs = hblang::parser::Parser::parse(&mut ctx, code, "source.hb", &|_, _| Ok(0), &arena);
+    let exprs =
+        hblang::parser::Parser::parse(&mut ctx, code, "source.hb", &mut |_, _| Ok(0), &arena);
 
     let mut f = Write(&mut OUTPUT[..]);
     hblang::fmt::fmt_file(exprs, code, &mut f).unwrap();
