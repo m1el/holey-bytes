@@ -63,63 +63,60 @@ pub struct Parser<'a, 'b> {
     path: &'b str,
     loader: Loader<'b>,
     lexer: Lexer<'a>,
-    arena: &'b Arena<'a>,
+    arena: &'a Arena,
+    ctx: &'b mut ParserCtx,
     token: Token,
-    symbols: &'b mut Symbols,
-    stack: &'b mut StackAlloc,
     ns_bound: usize,
     trailing_sep: bool,
     packed: bool,
-    idents: Vec<ScopeIdent>,
-    captured: Vec<Ident>,
 }
 
 impl<'a, 'b> Parser<'a, 'b> {
-    pub fn new(
-        arena: &'b Arena<'a>,
-        symbols: &'b mut Symbols,
-        stack: &'b mut StackAlloc,
+    pub fn parse(
+        ctx: &'b mut ParserCtx,
+        input: &'a str,
+        path: &'b str,
         loader: Loader<'b>,
-    ) -> Self {
-        let mut lexer = Lexer::new("");
+        arena: &'a Arena,
+    ) -> &'a [Expr<'a>] {
+        let mut lexer = Lexer::new(input);
         Self {
             loader,
             token: lexer.next(),
             lexer,
-            path: "",
+            path,
+            ctx,
             arena,
-            symbols,
-            stack,
             ns_bound: 0,
             trailing_sep: false,
             packed: false,
-            idents: Vec::new(),
-            captured: Vec::new(),
         }
+        .file()
     }
 
-    pub fn file(&mut self, input: &'a str, path: &'b str) -> &'a [Expr<'a>] {
-        self.path = path;
-        self.lexer = Lexer::new(input);
-        self.token = self.lexer.next();
-
+    fn file(&mut self) -> &'a [Expr<'a>] {
         let f = self.collect_list(TokenKind::Semi, TokenKind::Eof, |s| s.expr_low(true));
 
         self.pop_scope(0);
-        let mut errors = String::new();
-        for id in self.idents.drain(..) {
-            report_to(
-                self.lexer.source(),
-                self.path,
-                ident::pos(id.ident),
-                format_args!("undeclared identifier: {}", self.lexer.slice(ident::range(id.ident))),
-                &mut errors,
-            );
-        }
 
-        if !errors.is_empty() {
+        if !self.ctx.idents.is_empty() {
             // TODO: we need error recovery
-            log::error!("{errors}");
+            log::error!("{}", {
+                let mut errors = String::new();
+                for id in self.ctx.idents.drain(..) {
+                    report_to(
+                        self.lexer.source(),
+                        self.path,
+                        ident::pos(id.ident),
+                        format_args!(
+                            "undeclared identifier: {}",
+                            self.lexer.slice(ident::range(id.ident))
+                        ),
+                        &mut errors,
+                    );
+                }
+                errors
+            });
             unreachable!();
         }
 
@@ -153,36 +150,20 @@ impl<'a, 'b> Parser<'a, 'b> {
                 break;
             }
 
-            let checkpoint = self.token.start;
             let op = self.next().kind;
 
             if op == TokenKind::Decl {
                 self.declare_rec(&fold, top_level);
             }
 
-            let op_ass = op.ass_op().map(|op| {
-                // this abomination reparses the left side, so that the desubaring adheres to the
-                // parser invariants.
-                let source = self.lexer.slice(0..checkpoint as usize);
-                let prev_lexer =
-                    core::mem::replace(&mut self.lexer, Lexer::restore(source, fold.pos()));
-                let prev_token = core::mem::replace(&mut self.token, self.lexer.next());
-                let clone = self.expr();
-                self.lexer = prev_lexer;
-                self.token = prev_token;
-
-                (op, clone)
-            });
-
             let right = self.unit_expr();
             let right = self.bin_expr(right, prec, false);
             let right = self.arena.alloc(right);
             let left = self.arena.alloc(fold);
 
-            if let Some((op, clone)) = op_ass {
+            if let Some(op) = op.ass_op() {
                 self.flag_idents(*left, idfl::MUTABLE);
-
-                let right = Expr::BinOp { left: self.arena.alloc(clone), op, right };
+                let right = Expr::BinOp { left: self.arena.alloc(fold), op, right };
                 fold = Expr::BinOp { left, op: TokenKind::Assign, right: self.arena.alloc(right) };
             } else {
                 fold = Expr::BinOp { left, right, op };
@@ -220,15 +201,15 @@ impl<'a, 'b> Parser<'a, 'b> {
             );
         }
 
-        let index = self.idents.binary_search_by_key(&id, |s| s.ident).expect("fck up");
-        if core::mem::replace(&mut self.idents[index].declared, true) {
+        let index = self.ctx.idents.binary_search_by_key(&id, |s| s.ident).expect("fck up");
+        if core::mem::replace(&mut self.ctx.idents[index].declared, true) {
             self.report(
                 pos,
                 format_args!("redeclaration of identifier: {}", self.lexer.slice(ident::range(id))),
             )
         }
 
-        self.idents[index].ordered = ordered;
+        self.ctx.idents[index].ordered = ordered;
     }
 
     fn resolve_ident(&mut self, token: Token) -> (Ident, bool) {
@@ -240,6 +221,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
 
         let (i, id, bl) = match self
+            .ctx
             .idents
             .iter_mut()
             .enumerate()
@@ -248,20 +230,20 @@ impl<'a, 'b> Parser<'a, 'b> {
             Some((i, elem)) => (i, elem, false),
             None => {
                 let id = ident::new(token.start, name.len() as _);
-                self.idents.push(ScopeIdent {
+                self.ctx.idents.push(ScopeIdent {
                     ident: id,
                     declared: false,
                     ordered: false,
                     flags: 0,
                 });
-                (self.idents.len() - 1, self.idents.last_mut().unwrap(), true)
+                (self.ctx.idents.len() - 1, self.ctx.idents.last_mut().unwrap(), true)
             }
         };
 
         id.flags |= idfl::COMPTIME * is_ct as u32;
         if id.declared && id.ordered && self.ns_bound > i {
             id.flags |= idfl::COMPTIME;
-            self.captured.push(id.ident);
+            self.ctx.captured.push(id.ident);
         }
 
         (id.ident, bl)
@@ -273,21 +255,22 @@ impl<'a, 'b> Parser<'a, 'b> {
 
     fn unit_expr(&mut self) -> Expr<'a> {
         use {Expr as E, TokenKind as T};
-        let frame = self.idents.len();
+        let frame = self.ctx.idents.len();
         let token @ Token { start: pos, .. } = self.next();
         let prev_boundary = self.ns_bound;
-        let prev_captured = self.captured.len();
+        let prev_captured = self.ctx.captured.len();
         let mut expr = match token.kind {
             T::Ct => E::Ct { pos, value: self.ptr_expr() },
             T::Directive if self.lexer.slice(token.range()) == "use" => {
                 self.expect_advance(TokenKind::LParen);
                 let str = self.expect_advance(TokenKind::DQuote);
                 self.expect_advance(TokenKind::RParen);
-                let path = self.lexer.slice(str.range()).trim_matches('"');
+                let path = self.lexer.slice(str.range());
+                let path = &path[1..path.len() - 1];
 
                 E::Mod {
                     pos,
-                    path: self.arena.alloc_str(path),
+                    path,
                     id: match (self.loader)(path, self.path) {
                         Ok(id) => id,
                         Err(e) => {
@@ -323,7 +306,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             T::Struct => E::Struct {
                 packed: core::mem::take(&mut self.packed),
                 fields: {
-                    self.ns_bound = self.idents.len();
+                    self.ns_bound = self.ctx.idents.len();
                     self.expect_advance(T::LBrace);
                     self.collect_list(T::Comma, T::RBrace, |s| {
                         let tok = s.token;
@@ -342,15 +325,23 @@ impl<'a, 'b> Parser<'a, 'b> {
                 },
                 captured: {
                     self.ns_bound = prev_boundary;
-                    self.captured[prev_captured..].sort_unstable();
-                    let preserved = self.captured[prev_captured..].partition_dedup().0.len();
-                    self.captured.truncate(prev_captured + preserved);
-                    self.arena.alloc_slice(&self.captured[prev_captured..])
+                    let mut captured = &mut self.ctx.captured[prev_captured..];
+                    while let Some(it) = captured.take_first_mut() {
+                        for ot in &mut *captured {
+                            if it > ot {
+                                core::mem::swap(it, ot);
+                            }
+                        }
+                    }
+                    debug_assert!(captured.is_sorted());
+                    let preserved = self.ctx.captured[prev_captured..].partition_dedup().0.len();
+                    self.ctx.captured.truncate(prev_captured + preserved);
+                    self.arena.alloc_slice(&self.ctx.captured[prev_captured..])
                 },
                 pos: {
                     if self.ns_bound == 0 {
                         // we might save some memory
-                        self.captured.clear();
+                        self.ctx.captured.clear();
                     }
                     pos
                 },
@@ -427,9 +418,9 @@ impl<'a, 'b> Parser<'a, 'b> {
             T::Number => {
                 let slice = self.lexer.slice(token.range());
                 let (slice, radix) = match &slice.get(0..2) {
-                    Some("0x") => (slice.trim_start_matches("0x"), Radix::Hex),
-                    Some("0b") => (slice.trim_start_matches("0b"), Radix::Binary),
-                    Some("0o") => (slice.trim_start_matches("0o"), Radix::Octal),
+                    Some("0x") => (&slice[2..], Radix::Hex),
+                    Some("0b") => (&slice[2..], Radix::Binary),
+                    Some("0o") => (&slice[2..], Radix::Octal),
                     _ => (slice, Radix::Decimal),
                 };
                 E::Number {
@@ -447,7 +438,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 expr
             }
             T::Comment => Expr::Comment { pos, literal: self.tok_str(token) },
-            tok => self.report(token.start, format_args!("unexpected token: {tok:?}")),
+            tok => self.report(token.start, format_args!("unexpected token: {tok}")),
         };
 
         loop {
@@ -528,24 +519,25 @@ impl<'a, 'b> Parser<'a, 'b> {
         } else {
             self.report(
                 self.token.start,
-                format_args!("expected identifier, found {:?}", self.token.kind),
+                format_args!("expected identifier, found {}", self.token.kind),
             )
         }
     }
 
     fn pop_scope(&mut self, frame: usize) {
         let mut undeclared_count = frame;
-        for i in frame..self.idents.len() {
-            if !&self.idents[i].declared {
-                self.idents.swap(i, undeclared_count);
+        for i in frame..self.ctx.idents.len() {
+            if !&self.ctx.idents[i].declared {
+                self.ctx.idents.swap(i, undeclared_count);
                 undeclared_count += 1;
             }
         }
 
-        self.idents
+        self.ctx
+            .idents
             .drain(undeclared_count..)
             .map(|ident| Symbol { name: ident.ident, flags: ident.flags })
-            .collect_into(self.symbols);
+            .collect_into(&mut self.ctx.symbols);
     }
 
     fn ptr_unit_expr(&mut self) -> &'a Expr<'a> {
@@ -558,13 +550,13 @@ impl<'a, 'b> Parser<'a, 'b> {
         end: TokenKind,
         mut f: impl FnMut(&mut Self) -> T,
     ) -> &'a [T] {
-        let mut view = self.stack.view();
+        let mut view = self.ctx.stack.view();
         while !self.advance_if(end) {
             let val = f(self);
             self.trailing_sep = self.advance_if(delim);
-            unsafe { self.stack.push(&mut view, val) };
+            unsafe { self.ctx.stack.push(&mut view, val) };
         }
-        self.arena.alloc_slice(unsafe { self.stack.finalize(view) })
+        self.arena.alloc_slice(unsafe { self.ctx.stack.finalize(view) })
     }
 
     fn advance_if(&mut self, kind: TokenKind) -> bool {
@@ -580,7 +572,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         if self.token.kind != kind {
             self.report(
                 self.token.start,
-                format_args!("expected {:?}, found {:?}", kind, self.token.kind),
+                format_args!("expected {}, found {}", kind, self.token.kind),
             );
         }
         self.next()
@@ -588,15 +580,17 @@ impl<'a, 'b> Parser<'a, 'b> {
 
     #[track_caller]
     fn report(&self, pos: Pos, msg: impl fmt::Display) -> ! {
-        let mut str = String::new();
-        report_to(self.lexer.source(), self.path, pos, msg, &mut str);
-        log::error!("{str}");
+        log::error!("{}", {
+            let mut str = String::new();
+            report_to(self.lexer.source(), self.path, pos, msg, &mut str);
+            str
+        });
         unreachable!();
     }
 
     fn flag_idents(&mut self, e: Expr<'a>, flags: IdentFlags) {
         match e {
-            Expr::Ident { id, .. } => find_ident(&mut self.idents, id).flags |= flags,
+            Expr::Ident { id, .. } => find_ident(&mut self.ctx.idents, id).flags |= flags,
             Expr::Field { target, .. } => self.flag_idents(*target, flags),
             _ => {}
         }
@@ -634,7 +628,7 @@ macro_rules! generate_expr {
             $($field:ident: $ty:ty,)*
         },
     )*}) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        $(#[$meta])*
         $vis enum $name<$lt> {$(
             $(#[$field_meta])*
             $variant {
@@ -648,17 +642,6 @@ macro_rules! generate_expr {
                 match self {
                     $(Self::$variant { $($field),* } => generate_expr!(@first $(($field),)*).posi(),)*
                 }
-            }
-
-            pub fn used_bytes(&self) -> usize {
-                match self {$(
-                    Self::$variant { $($field,)* } => {
-                         #[allow(clippy::size_of_ref)]
-                         let fields = [$(($field as *const _ as usize - self as *const _ as usize, core::mem::size_of_val($field)),)*];
-                         let (last, size) = fields.iter().copied().max().unwrap();
-                         last + size
-                    },
-               )*}
             }
         }
     };
@@ -806,6 +789,7 @@ generate_expr! {
         /// `Expr '.' Ident`
         Field {
             target: &'a Self,
+            // we put it second place because its the pos of '.'
             pos: Pos,
             name:  &'a str,
         },
@@ -820,7 +804,7 @@ generate_expr! {
         },
         /// `'@' Ident List('(', ',', ')', Expr)`
         Directive {
-            pos:  u32,
+            pos:  Pos,
             name: &'a str,
             args: &'a [Self],
         },
@@ -959,6 +943,14 @@ impl core::fmt::Display for Display<'_> {
     }
 }
 
+#[derive(Default)]
+pub struct ParserCtx {
+    symbols: Symbols,
+    stack: StackAlloc,
+    idents: Vec<ScopeIdent>,
+    captured: Vec<Ident>,
+}
+
 #[repr(C)]
 pub struct AstInner<T: ?Sized> {
     ref_count: AtomicUsize,
@@ -978,21 +970,18 @@ impl AstInner<[Symbol]> {
             .0
     }
 
-    fn new(file: Box<str>, path: &str, stack: &mut StackAlloc, loader: Loader) -> NonNull<Self> {
+    fn new(file: Box<str>, path: &str, ctx: &mut ParserCtx, loader: Loader) -> NonNull<Self> {
         let arena = Arena::default();
-        let mut syms = Vec::new();
-        let mut parser = Parser::new(&arena, &mut syms, stack, loader);
         let exprs =
-            parser.file(unsafe { &*(&*file as *const _) }, path) as *const [Expr<'static>];
-        drop(parser);
+            unsafe { core::mem::transmute(Parser::parse(ctx, &file, path, loader, &arena)) };
 
-        syms.sort_unstable_by_key(|s| s.name);
+        ctx.symbols.sort_unstable_by_key(|s| s.name);
 
-        let layout = Self::layout(syms.len());
+        let layout = Self::layout(ctx.symbols.len());
 
         unsafe {
             let ptr = alloc::alloc::alloc(layout);
-            let inner: *mut Self = core::ptr::from_raw_parts_mut(ptr as *mut _, syms.len());
+            let inner: *mut Self = core::ptr::from_raw_parts_mut(ptr as *mut _, ctx.symbols.len());
 
             core::ptr::write(inner as *mut AstInner<()>, AstInner {
                 ref_count: AtomicUsize::new(1),
@@ -1004,7 +993,7 @@ impl AstInner<[Symbol]> {
             });
             core::ptr::addr_of_mut!((*inner).symbols)
                 .as_mut_ptr()
-                .copy_from_nonoverlapping(syms.as_ptr(), syms.len());
+                .copy_from_nonoverlapping(ctx.symbols.as_ptr(), ctx.symbols.len());
 
             NonNull::new_unchecked(inner)
         }
@@ -1041,8 +1030,8 @@ pub fn report_to(
 pub struct Ast(NonNull<AstInner<[Symbol]>>);
 
 impl Ast {
-    pub fn new(path: &str, content: String, stack: &mut StackAlloc, loader: Loader) -> Self {
-        Self(AstInner::new(content.into(), path, stack, loader))
+    pub fn new(path: &str, content: String, ctx: &mut ParserCtx, loader: Loader) -> Self {
+        Self(AstInner::new(content.into(), path, ctx, loader))
     }
 
     pub fn exprs(&self) -> &[Expr] {
@@ -1067,7 +1056,7 @@ impl Ast {
 
 impl Default for Ast {
     fn default() -> Self {
-        Self(AstInner::new("".into(), "", &mut StackAlloc::default(), &no_loader))
+        Self(AstInner::new("".into(), "", &mut ParserCtx::default(), &no_loader))
     }
 }
 
@@ -1132,13 +1121,13 @@ impl Deref for Ast {
     }
 }
 
-pub struct StackAllocView<T> {
+struct StackAllocView<T> {
     prev: usize,
     base: usize,
     _ph: PhantomData<T>,
 }
 
-pub struct StackAlloc {
+struct StackAlloc {
     data: *mut u8,
     len: usize,
     cap: usize,
@@ -1203,29 +1192,22 @@ impl Drop for StackAlloc {
 }
 
 #[derive(Default)]
-pub struct Arena<'a> {
+pub struct Arena {
     chunk: UnsafeCell<ArenaChunk>,
-    ph: core::marker::PhantomData<&'a ()>,
 }
 
-impl<'a> Arena<'a> {
-    pub fn alloc_str(&self, token: &str) -> &'a str {
-        let ptr = self.alloc_slice(token.as_bytes());
-        unsafe { core::str::from_utf8_unchecked(ptr) }
-    }
-
-    pub fn alloc(&self, expr: Expr<'a>) -> &'a Expr<'a> {
-        let align = core::mem::align_of::<Expr<'a>>();
-        let size = expr.used_bytes();
-        let layout = unsafe { core::alloc::Layout::from_size_align_unchecked(size, align) };
+impl Arena {
+    pub fn alloc<'a>(&'a self, expr: Expr<'a>) -> &'a Expr<'a> {
+        let layout = core::alloc::Layout::new::<Expr<'a>>();
         let ptr = self.alloc_low(layout);
         unsafe {
-            ptr.cast::<u64>().copy_from_nonoverlapping(NonNull::from(&expr).cast(), size / 8)
+            ptr.cast::<u64>()
+                .copy_from_nonoverlapping(NonNull::from(&expr).cast(), layout.size() / 8)
         };
         unsafe { ptr.cast::<Expr<'a>>().as_ref() }
     }
 
-    pub fn alloc_slice<T: Copy>(&self, slice: &[T]) -> &'a [T] {
+    pub fn alloc_slice<'a, T: Copy>(&'a self, slice: &[T]) -> &'a [T] {
         if slice.is_empty() || core::mem::size_of::<T>() == 0 {
             return &mut [];
         }
@@ -1266,7 +1248,7 @@ impl Default for ArenaChunk {
 }
 
 impl ArenaChunk {
-    const ALIGN: usize = core::mem::align_of::<Self>();
+    const ALIGN: usize = 16;
     const CHUNK_SIZE: usize = 1 << 16;
     const LAYOUT: core::alloc::Layout =
         unsafe { core::alloc::Layout::from_size_align_unchecked(Self::CHUNK_SIZE, Self::ALIGN) };

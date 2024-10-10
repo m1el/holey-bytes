@@ -9,7 +9,7 @@ use {
             idfl::{self},
             Expr, ExprRef, FileId, Pos,
         },
-        task,
+        reg, task,
         ty::{self},
         vc::{BitSet, Vc},
         Func, HashMap, Offset, OffsetIter, Reloc, Sig, Size, SymKey, TypedReloc, Types,
@@ -33,15 +33,6 @@ const ENTRY: Nid = 2;
 const MEM: Nid = 3;
 
 type Nid = u16;
-
-pub mod reg {
-    pub const STACK_PTR: Reg = 254;
-    pub const ZERO: Reg = 0;
-    pub const RET: Reg = 1;
-    pub const RET_ADDR: Reg = 31;
-
-    pub type Reg = u8;
-}
 
 type Lookup = crate::ctx_map::CtxMap<Nid>;
 

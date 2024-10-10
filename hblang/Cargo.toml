@@ -12,8 +12,13 @@ hashbrown = { version = "0.15.0", default-features = false, features = ["raw-ent
 hbbytecode = { version = "0.1.0", path = "../hbbytecode" }
 hbvm = { path = "../hbvm", features = ["nightly"] }
 log = { version = "0.4.22", features = ["release_max_level_error"] }
-regalloc2 = { git = "https://github.com/jakubDoka/regalloc2", branch = "reuse-allocations", features = [] }
+
+[dependencies.regalloc2]
+git = "https://github.com/jakubDoka/regalloc2"
+branch = "reuse-allocations"
+optional = true
 
 [features]
-default = ["std"]
+default = ["std", "opts"]
 std = []
+opts = ["regalloc2"]

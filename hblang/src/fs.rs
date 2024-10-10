@@ -1,7 +1,7 @@
 use {
     crate::{
         codegen,
-        parser::{self, Ast, StackAlloc},
+        parser::{self, Ast, ParserCtx},
     },
     alloc::{string::String, vec::Vec},
     core::{fmt::Write, num::NonZeroUsize},
@@ -263,22 +263,22 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
         Ok(id)
     };
 
-    let execute_task = |stack: &mut _, (_, path): Task| {
+    let execute_task = |ctx: &mut _, (_, path): Task| {
         let path = path.to_str().ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("path contains invalid characters: {}", display_rel_path(&path)),
             )
         })?;
-        Ok(Ast::new(path, std::fs::read_to_string(path)?, stack, &|path, from| {
+        Ok(Ast::new(path, std::fs::read_to_string(path)?, ctx, &|path, from| {
             loader(path, from).map_err(|e| e.to_string())
         }))
     };
 
     let thread = || {
-        let mut stack = StackAlloc::default();
+        let mut ctx = ParserCtx::default();
         while let Some(task @ (indx, ..)) = tasks.pop() {
-            let res = execute_task(&mut stack, task);
+            let res = execute_task(&mut ctx, task);
             let mut ast = ast.lock().unwrap();
             let len = ast.len().max(indx as usize + 1);
             ast.resize_with(len, || Err(io::ErrorKind::InvalidData.into()));

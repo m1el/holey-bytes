@@ -8,7 +8,6 @@
     never_type,
     unwrap_infallible,
     slice_partition_dedup,
-    hash_raw_entry,
     portable_simd,
     iter_collect_into,
     new_uninit,
@@ -19,6 +18,8 @@
     extract_if,
     ptr_internals,
     iter_intersperse,
+    str_from_raw_parts,
+    ptr_sub_ptr,
     slice_from_ptr_range
 )]
 #![warn(clippy::dbg_macro)]
@@ -32,7 +33,6 @@ use {
         ident::Ident,
         lexer::TokenKind,
         parser::{CommentOr, Expr, ExprRef, FileId, Pos},
-        son::reg,
         ty::ArrayLen,
     },
     alloc::{collections::BTreeMap, string::String, vec::Vec},
@@ -65,10 +65,21 @@ pub mod fmt;
 #[cfg(any(feature = "std", test))]
 pub mod fs;
 pub mod parser;
+#[cfg(feature = "opts")]
 pub mod son;
 
 mod lexer;
+#[cfg(feature = "opts")]
 mod vc;
+
+pub mod reg {
+    pub const STACK_PTR: Reg = 254;
+    pub const ZERO: Reg = 0;
+    pub const RET: Reg = 1;
+    pub const RET_ADDR: Reg = 31;
+
+    pub type Reg = u8;
+}
 
 mod ctx_map {
     use core::hash::BuildHasher;
@@ -139,10 +150,12 @@ mod ctx_map {
                 .map(|(k, _)| &k.value)
         }
 
+        #[cfg_attr(not(feature = "opts"), expect(dead_code))]
         pub fn clear(&mut self) {
             self.inner.clear();
         }
 
+        #[cfg_attr(not(feature = "opts"), expect(dead_code))]
         pub fn remove(&mut self, value: &T, ctx: &T::Ctx) -> Option<T> {
             let (entry, _) = self.entry(value.key(ctx), ctx);
             match entry {
@@ -193,6 +206,7 @@ mod task {
         unpack(offset).is_ok()
     }
 
+    #[cfg_attr(not(feature = "opts"), expect(dead_code))]
     pub fn id(index: usize) -> Offset {
         1 << 31 | index as u32
     }
@@ -397,8 +411,14 @@ mod ty {
 
             mod __lc_names {
                 use super::*;
-                $(pub const $name: &[u8] = &array_to_lower_case(unsafe {
-                    *(stringify!($name).as_ptr() as *const [u8; stringify!($name).len()]) });)*
+                $(pub const $name: &str = unsafe {
+                    const LCL: &[u8] = unsafe {
+                        &array_to_lower_case(
+                            *(stringify!($name).as_ptr() as *const [u8; stringify!($name).len()])
+                        )
+                    };
+                    core::str::from_utf8_unchecked(LCL)
+                };)*
             }
 
             #[allow(dead_code)]
@@ -407,7 +427,7 @@ mod ty {
             }
 
             pub fn from_str(name: &str) -> Option<Builtin> {
-                match name.as_bytes() {
+                match name {
                     $(__lc_names::$name => Some($name),)*
                     _ => None,
                 }
@@ -415,7 +435,7 @@ mod ty {
 
             pub fn to_str(ty: Builtin) -> &'static str {
                 match ty {
-                    $($name => unsafe { core::str::from_utf8_unchecked(__lc_names::$name) },)*
+                    $($name => __lc_names::$name,)*
                     v => unreachable!("invalid type: {}", v),
                 }
             }
@@ -551,6 +571,7 @@ mod ty {
         }
     }
 
+    #[cfg_attr(not(feature = "opts"), expect(dead_code))]
     pub fn bin_ret(ty: Id, op: TokenKind) -> Id {
         use TokenKind as T;
         match op {
@@ -1141,6 +1162,7 @@ impl Types {
         }
     }
 
+    #[cfg_attr(not(feature = "opts"), expect(dead_code))]
     fn find_struct_field(&self, s: ty::Struct, name: &str) -> Option<usize> {
         let name = self.names.project(name)?;
         self.struct_fields(s).iter().position(|f| f.name == name)
@@ -1188,8 +1210,8 @@ impl OffsetIter {
     }
 }
 
+#[cfg(any(feature = "opts", feature = "std"))]
 type HashMap<K, V> = hashbrown::HashMap<K, V, FnvBuildHasher>;
-type _HashSet<K> = hashbrown::HashSet<K, FnvBuildHasher>;
 type FnvBuildHasher = core::hash::BuildHasherDefault<FnvHasher>;
 
 struct FnvHasher(u64);
@@ -1334,10 +1356,10 @@ fn test_parse_files(ident: &'static str, input: &'static str) -> Vec<parser::Ast
             .ok_or("Not Found".to_string())
     };
 
-    let mut stack = parser::StackAlloc::default();
+    let mut ctx = parser::ParserCtx::default();
     module_map
         .iter()
-        .map(|&(path, content)| parser::Ast::new(path, content.to_owned(), &mut stack, &loader))
+        .map(|&(path, content)| parser::Ast::new(path, content.to_owned(), &mut ctx, &loader))
         .collect()
 }
 

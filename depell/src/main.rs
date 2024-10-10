@@ -28,6 +28,18 @@ async fn amain() {
 
     let router = axum::Router::new()
         .route("/", get(Index::page))
+        .route(
+            "/hbfmt.wasm",
+            get(|| async move {
+                axum::http::Response::builder()
+                    .header("content-type", "application/wasm")
+                    .body(axum::body::Body::from(
+                        include_bytes!("../../target/wasm32-unknown-unknown/small/wasm_hbfmt.wasm")
+                            .to_vec(),
+                    ))
+                    .unwrap()
+            }),
+        )
         .route("/index-view", get(Index::get))
         .route("/feed", get(Index::page))
         .route("/profile", get(Profile::page))
@@ -117,7 +129,7 @@ impl Page for Post {
                 <input name="author" type="text" value={session.name} hidden>
                 <input name="name" type="text" placeholder="name" value=name
                     required maxlength=MAX_POSTNAME_LENGTH>
-                <textarea name="code" placeholder="code" required form="postForm">code</textarea>
+                <textarea name="code" placeholder="code" rows=1 required>code</textarea>
                 <input type="submit" value="submit">
                 <input type="button" "hx-get"="/post-preview" "hx-swap"="outherHTML"
                     "hx-target"="postForm" value="preview">
@@ -158,18 +170,19 @@ impl fmt::Display for Post {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self { author, name, timestamp, imports, runs, dependencies, code, .. } = self;
         write_html! { f <div class="preview">
-            <div>
-                <span>author</span>
-                "/"
-                <span>name</span>
-                <span apply="fmtTimestamp">timestamp</span>
+            <div class="info">
+                <span>author "/" name</span>
+                <span apply="timestamp">timestamp</span>
             </div>
             <div class="stats">
-                "imps: "<span>imports</span>
-                "runs: "<span>runs</span>
-                "deps: "<span>dependencies</span>
+                for (name, count) in "inps runs deps".split(' ')
+                    .zip([imports, runs, dependencies])
+                    .filter(|(_, &c)| c != 0)
+                {
+                    name ": "<span>count</span>
+                }
             </div>
-            <pre>code</pre>
+            <pre apply="fmt">code</pre>
             if *timestamp == 0 {
                 <button "hx-get"="/post" "hx-swap"="outherHTML"
                     "hx-target"="[preview]">"edit"</button>
@@ -380,11 +393,11 @@ struct Session {
 impl<S> axum::extract::FromRequestParts<S> for Session {
     /// If the extractor fails it'll use this "rejection" type. A rejection is
     /// a kind of error that can be converted into a response.
-    type Rejection = axum::response::Redirect;
+    type Rejection = Redirect;
 
     /// Perform the extraction.
     async fn from_request_parts(parts: &mut Parts, _: &S) -> Result<Self, Self::Rejection> {
-        let err = || axum::response::Redirect::permanent("/login");
+        let err = redirect("/login");
 
         let value = parts
             .headers
@@ -392,20 +405,20 @@ impl<S> axum::extract::FromRequestParts<S> for Session {
             .into_iter()
             .find_map(|c| c.to_str().ok()?.trim().strip_prefix("id="))
             .map(|c| c.split_once(';').unwrap_or((c, "")).0)
-            .ok_or(err())?;
+            .ok_or(err)?;
         let mut id = [0u8; 32];
-        parse_hex(value, &mut id).ok_or(err())?;
+        parse_hex(value, &mut id).ok_or(err)?;
 
         let (name, expiration) = db::with(|db| {
             db.get_session
                 .query_row((dbg!(id),), |r| Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?)))
                 .inspect_err(|e| log::error!("{e}"))
-                .map_err(|_| err())
+                .map_err(|_| err)
         })?;
 
         if expiration < now() {
             log::error!("expired");
-            return Err(err());
+            return Err(err);
         }
 
         Ok(Self { name, id })

@@ -1,6 +1,15 @@
 [workspace]
 resolver = "2"
-members = ["hbbytecode", "hbvm", "hbxrt", "xtask", "hblang", "hbjit", "depell"]
+members = [
+	"hbbytecode",
+	"hbvm",
+	"hbxrt",
+	"xtask",
+	"hblang",
+	"hbjit",
+	"depell",
+	"depell/wasm-hbfmt"
+]
 
 [profile.release]
 lto = true

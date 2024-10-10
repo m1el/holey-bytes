@@ -839,8 +839,8 @@ impl Codegen {
                 let index_val = self.expr(index)?;
                 _ = self.assert_ty(index.pos(), index_val.ty, ty::Id::INT, "subsctipt");
 
-                if let ty::Kind::Ptr(ty) = base_val.ty.expand() {
-                    base_val.ty = self.tys.ins.ptrs[ty as usize].base;
+                if let Some(ty) = self.tys.base_of(base_val.ty) {
+                    base_val.ty = ty;
                     base_val.loc = base_val.loc.into_derefed();
                 }
 
@@ -1070,7 +1070,7 @@ impl Codegen {
                 Some(Value { ty, loc })
             }
             E::String { pos, mut literal } => {
-                literal = literal.trim_matches('"');
+                literal = &literal[1..literal.len() - 1];
 
                 if !literal.ends_with("\\0") {
                     self.report(pos, "string literal must end with null byte (for now)");
@@ -1206,8 +1206,8 @@ impl Codegen {
                 let checkpoint = self.ci.snap();
                 let mut tal = self.expr(target)?;
 
-                if let ty::Kind::Ptr(ty) = tal.ty.expand() {
-                    tal.ty = self.tys.ins.ptrs[ty as usize].base;
+                if let Some(ty) = self.tys.base_of(tal.ty) {
+                    tal.ty = ty;
                     tal.loc = tal.loc.into_derefed();
                 }
 
@@ -1306,9 +1306,9 @@ impl Codegen {
             }
             E::UnOp { op: T::Mul, val, pos } => {
                 let val = self.expr(val)?;
-                match val.ty.expand() {
-                    ty::Kind::Ptr(ty) => Some(Value {
-                        ty: self.tys.ins.ptrs[ty as usize].base,
+                match self.tys.base_of(val.ty) {
+                    Some(ty) => Some(Value {
+                        ty,
                         loc: Loc::reg(self.loc_to_reg(val.loc, self.tys.size_of(val.ty)))
                             .into_derefed(),
                     }),
@@ -1640,10 +1640,9 @@ impl Codegen {
                         imm = u64::from_ne_bytes(dst);
                     }
                     if matches!(op, T::Add | T::Sub)
-                        && let ty::Kind::Ptr(ty) = ty::Kind::from_ty(ty)
+                        && let Some(ty) = self.tys.base_of(ty)
                     {
-                        let size = self.tys.size_of(self.tys.ins.ptrs[ty as usize].base);
-                        imm *= size as u64;
+                        imm *= self.tys.size_of(ty) as u64;
                     }
 
                     self.ci.emit(oper(dst.get(), lhs.get(), imm));
@@ -1676,9 +1675,8 @@ impl Codegen {
                             (lhs.get(), right.ty)
                         };
 
-                        let ty::Kind::Ptr(ty) = ty.expand() else { unreachable!() };
-
-                        let size = self.tys.size_of(self.tys.ins.ptrs[ty as usize].base);
+                        let ty = self.tys.base_of(ty).unwrap();
+                        let size = self.tys.size_of(ty);
                         self.ci.emit(muli64(offset, offset, size as _));
                     }
                 }

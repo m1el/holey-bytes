@@ -2,3 +2,4 @@
 /hbbytecode/src/instrs.rs
 /.rgignore
 rustc-ice-*
+db.sqlite

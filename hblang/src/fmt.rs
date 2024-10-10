@@ -3,11 +3,10 @@ use {
         lexer::{self, TokenKind},
         parser::{self, CommentOr, CtorField, Expr, Poser, Radix, StructField},
     },
-    alloc::string::String,
     core::fmt,
 };
 
-pub fn minify(source: &mut str) -> Option<&str> {
+pub fn minify(source: &mut str) -> usize {
     fn needs_space(c: u8) -> bool {
         matches!(c, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | 127..)
     }
@@ -15,6 +14,7 @@ pub fn minify(source: &mut str) -> Option<&str> {
     let mut writer = source.as_mut_ptr();
     let mut reader = &source[..];
     let mut prev_needs_whitecpace = false;
+    let mut prev_needs_newline = false;
     loop {
         let mut token = lexer::Lexer::new(reader).next();
         match token.kind {
@@ -23,46 +23,59 @@ pub fn minify(source: &mut str) -> Option<&str> {
             _ => {}
         }
 
-        let mut suffix = 0;
-        if token.kind == TokenKind::Comment && reader.as_bytes()[token.end as usize - 1] != b'/' {
-            token.end = token.start + reader[token.range()].trim_end().len() as u32;
-            suffix = b'\n';
-        }
+        let cpy_len = token.range().len();
 
         let mut prefix = 0;
         if prev_needs_whitecpace && needs_space(reader.as_bytes()[token.start as usize]) {
             prefix = b' ';
+            debug_assert!(token.start != 0, "{reader}");
+        }
+        prev_needs_whitecpace = needs_space(reader.as_bytes()[token.end as usize - 1]);
+
+        let inbetween_new_lines =
+            reader[..token.start as usize].bytes().filter(|&b| b == b'\n').count()
+                + token.kind.precedence().is_some() as usize;
+        let extra_prefix_new_lines = if inbetween_new_lines > 1 {
+            1 + token.kind.precedence().is_none() as usize
+        } else {
+            prev_needs_newline as usize
+        };
+
+        if token.kind == TokenKind::Comment && reader.as_bytes()[token.end as usize - 1] != b'/' {
+            prev_needs_newline = true;
+            prev_needs_whitecpace = false;
+        } else {
+            prev_needs_newline = false;
         }
 
-        prev_needs_whitecpace = needs_space(reader.as_bytes()[token.end as usize - 1]);
         let sstr = reader[token.start as usize..].as_ptr();
         reader = &reader[token.end as usize..];
         unsafe {
-            if prefix != 0 {
+            if extra_prefix_new_lines != 0 {
+                for _ in 0..extra_prefix_new_lines {
+                    writer.write(b'\n');
+                    writer = writer.add(1);
+                }
+            } else if prefix != 0 {
                 writer.write(prefix);
                 writer = writer.add(1);
             }
-            writer.copy_from(sstr, token.range().len());
-            writer = writer.add(token.range().len());
-            if suffix != 0 {
-                writer.write(suffix);
-                writer = writer.add(1);
-            }
+            writer.copy_from(sstr, cpy_len);
+            writer = writer.add(cpy_len);
         }
     }
 
-    None
+    unsafe { writer.sub_ptr(source.as_mut_ptr()) }
 }
 
 pub struct Formatter<'a> {
     source: &'a str,
     depth: usize,
-    disp_buff: String,
 }
 
 impl<'a> Formatter<'a> {
     pub fn new(source: &'a str) -> Self {
-        Self { source, depth: 0, disp_buff: Default::default() }
+        Self { source, depth: 0 }
     }
 
     fn fmt_list<T: Poser, F: core::fmt::Write>(
@@ -172,7 +185,7 @@ impl<'a> Formatter<'a> {
                 self.fmt(value, f)
             }
             Expr::String { literal, .. } => write!(f, "{literal}"),
-            Expr::Comment { literal, .. } => write!(f, "{}", literal.trim_end()),
+            Expr::Comment { literal, .. } => write!(f, "{literal}"),
             Expr::Mod { path, .. } => write!(f, "@use(\"{path}\")"),
             Expr::Field { target, name: field, .. } => {
                 self.fmt_paren(target, f, postfix)?;
@@ -194,7 +207,7 @@ impl<'a> Formatter<'a> {
                             write!(f, "{name}: ")?;
                             s.fmt(ty, f)?
                         }
-                        CommentOr::Comment { literal, .. } => write!(f, "{literal}")?,
+                        CommentOr::Comment { literal, .. } => writeln!(f, "{literal}")?,
                     }
                     Ok(field.or().is_some())
                 })
@@ -294,30 +307,42 @@ impl<'a> Formatter<'a> {
                 write!(f, "{{")?;
                 self.fmt_list(f, true, "}", "", stmts, Self::fmt)
             }
-            Expr::Number { value, radix, .. } => match radix {
-                Radix::Decimal => write!(f, "{value}"),
-                Radix::Hex => write!(f, "{value:#X}"),
-                Radix::Octal => write!(f, "{value:#o}"),
-                Radix::Binary => write!(f, "{value:#b}"),
-            },
+            Expr::Number { value, radix, .. } => {
+                fn display_radix(radix: Radix, mut value: u64, buf: &mut [u8; 64]) -> &str {
+                    fn conv_radix(d: u8) -> u8 {
+                        match d {
+                            0..=9 => d + b'0',
+                            _ => d - 10 + b'A',
+                        }
+                    }
+
+                    for (i, b) in buf.iter_mut().enumerate().rev() {
+                        let d = (value % radix as u64) as u8;
+                        value /= radix as u64;
+                        *b = conv_radix(d);
+                        if value == 0 {
+                            return unsafe { core::str::from_utf8_unchecked(&buf[i..]) };
+                        }
+                    }
+
+                    unreachable!()
+                }
+                let mut buf = [0u8; 64];
+                let value = display_radix(radix, value as u64, &mut buf);
+                match radix {
+                    Radix::Decimal => write!(f, "{value}"),
+                    Radix::Hex => write!(f, "0x{value}"),
+                    Radix::Octal => write!(f, "0o{value}"),
+                    Radix::Binary => write!(f, "0b{value}"),
+                }
+            }
             Expr::Bool { value, .. } => write!(f, "{value}"),
             Expr::Idk { .. } => write!(f, "idk"),
             Expr::BinOp {
                 left,
                 op: TokenKind::Assign,
-                right: Expr::BinOp { left: lleft, op, right },
-            } if {
-                let mut b = core::mem::take(&mut self.disp_buff);
-                self.fmt(lleft, &mut b)?;
-                let len = b.len();
-                self.fmt(left, &mut b)?;
-                let (lleft, left) = b.split_at(len);
-                let res = lleft == left;
-                b.clear();
-                self.disp_buff = b;
-                res
-            } =>
-            {
+                right: &Expr::BinOp { left: lleft, op, right },
+            } if left.pos() == lleft.pos() => {
                 self.fmt(left, f)?;
                 write!(f, " {op}= ")?;
                 self.fmt(right, f)
@@ -355,7 +380,7 @@ impl<'a> Formatter<'a> {
 }
 
 pub fn preserve_newlines(source: &str) -> usize {
-    source[source.trim_end().len()..].chars().filter(|&c| c == '\n').count()
+    source[source.trim_end().len()..].bytes().filter(|&c| c == b'\n').count()
 }
 
 pub fn insert_needed_semicolon(source: &str) -> bool {
@@ -365,39 +390,46 @@ pub fn insert_needed_semicolon(source: &str) -> bool {
 
 impl core::fmt::Display for parser::Ast {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (i, expr) in self.exprs().iter().enumerate() {
-            Formatter::new(&self.file).fmt(expr, f)?;
-            if let Some(expr) = self.exprs().get(i + 1)
-                && let Some(rest) = self.file.get(expr.pos() as usize..)
-            {
-                if insert_needed_semicolon(rest) {
-                    write!(f, ";")?;
-                }
+        fmt_file(self.exprs(), &self.file, f)
+    }
+}
 
-                if preserve_newlines(&self.file[..expr.pos() as usize]) > 1 {
-                    writeln!(f)?;
-                }
+pub fn fmt_file(exprs: &[Expr], file: &str, f: &mut impl fmt::Write) -> fmt::Result {
+    for (i, expr) in exprs.iter().enumerate() {
+        Formatter::new(file).fmt(expr, f)?;
+        if let Some(expr) = exprs.get(i + 1)
+            && let Some(rest) = file.get(expr.pos() as usize..)
+        {
+            if insert_needed_semicolon(rest) {
+                write!(f, ";")?;
             }
 
-            if i + 1 != self.exprs().len() {
+            if preserve_newlines(&file[..expr.pos() as usize]) > 1 {
                 writeln!(f)?;
             }
         }
-        Ok(())
+
+        if i + 1 != exprs.len() {
+            writeln!(f)?;
+        }
     }
+    Ok(())
 }
 
 #[cfg(test)]
 pub mod test {
     use {
-        crate::parser::{self, StackAlloc},
+        crate::parser::{self, ParserCtx},
         alloc::borrow::ToOwned,
         std::{fmt::Write, string::String},
     };
 
     pub fn format(ident: &str, input: &str) {
-        let ast =
-            parser::Ast::new(ident, input.to_owned(), &mut StackAlloc::default(), &|_, _| Ok(0));
+        let mut minned = input.to_owned();
+        let len = crate::fmt::minify(&mut minned);
+        minned.truncate(len);
+
+        let ast = parser::Ast::new(ident, minned, &mut ParserCtx::default(), &|_, _| Ok(0));
         let mut output = String::new();
         write!(output, "{ast}").unwrap();
 

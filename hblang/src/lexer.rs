@@ -1,4 +1,4 @@
-use crate::{instrs, EncodedInstr};
+use crate::EncodedInstr;
 
 const fn ascii_mask(chars: &[u8]) -> u128 {
     let mut eq = 0;
@@ -83,7 +83,7 @@ macro_rules! gen_token_kind {
     };
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, PartialOrd, Ord)]
+#[derive(PartialEq, Eq, Clone, Copy, Hash, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum TokenKind {
     Not = b'!',
@@ -170,9 +170,16 @@ pub enum TokenKind {
     ShlAss = b'<' - 5 + 128,
 }
 
+impl core::fmt::Debug for TokenKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        core::fmt::Display::fmt(self, f)
+    }
+}
+
 impl TokenKind {
     #[allow(clippy::type_complexity)]
     pub fn cond_op(self, signed: bool) -> Option<(fn(u8, u8, i16) -> EncodedInstr, bool)> {
+        use crate::instrs;
         Some((
             match self {
                 Self::Le if signed => instrs::jgts,
@@ -192,7 +199,7 @@ impl TokenKind {
     }
 
     pub fn binop(self, signed: bool, size: u32) -> Option<fn(u8, u8, u8) -> EncodedInstr> {
-        use instrs::*;
+        use crate::instrs::*;
 
         macro_rules! div { ($($op:ident),*) => {[$(|a, b, c| $op(a, 0, b, c)),*]}; }
         macro_rules! rem { ($($op:ident),*) => {[$(|a, b, c| $op(0, a, b, c)),*]}; }
@@ -219,7 +226,7 @@ impl TokenKind {
 
     #[allow(clippy::type_complexity)]
     pub fn imm_binop(self, signed: bool, size: u32) -> Option<fn(u8, u8, u64) -> EncodedInstr> {
-        use instrs::*;
+        use crate::instrs::*;
         macro_rules! def_op {
             ($name:ident |$a:ident, $b:ident, $c:ident| $($tt:tt)*) => {
                 macro_rules! $name {
@@ -286,7 +293,7 @@ impl TokenKind {
 
     pub fn unop(&self) -> Option<fn(u8, u8) -> EncodedInstr> {
         Some(match self {
-            Self::Sub => instrs::neg,
+            Self::Sub => crate::instrs::neg,
             _ => return None,
         })
     }
@@ -362,7 +369,7 @@ gen_token_kind! {
 
 pub struct Lexer<'a> {
     pos: u32,
-    bytes: &'a [u8],
+    source: &'a [u8],
 }
 
 impl<'a> Lexer<'a> {
@@ -371,22 +378,22 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn restore(input: &'a str, pos: u32) -> Self {
-        Self { pos, bytes: input.as_bytes() }
+        Self { pos, source: input.as_bytes() }
     }
 
     pub fn source(&self) -> &'a str {
-        unsafe { core::str::from_utf8_unchecked(self.bytes) }
+        unsafe { core::str::from_utf8_unchecked(self.source) }
     }
 
     pub fn slice(&self, tok: core::ops::Range<usize>) -> &'a str {
-        unsafe { core::str::from_utf8_unchecked(&self.bytes[tok]) }
+        unsafe { core::str::from_utf8_unchecked(&self.source[tok]) }
     }
 
     fn peek(&self) -> Option<u8> {
-        if core::intrinsics::unlikely(self.pos >= self.bytes.len() as u32) {
+        if core::intrinsics::unlikely(self.pos >= self.source.len() as u32) {
             None
         } else {
-            Some(unsafe { *self.bytes.get_unchecked(self.pos as usize) })
+            Some(unsafe { *self.source.get_unchecked(self.pos as usize) })
         }
     }
 
@@ -453,7 +460,7 @@ impl<'a> Lexer<'a> {
                 }
                 b'a'..=b'z' | b'A'..=b'Z' | b'_' | 127.. => {
                     advance_ident(self);
-                    let ident = &self.bytes[start as usize..self.pos as usize];
+                    let ident = &self.source[start as usize..self.pos as usize];
                     T::from_ident(ident)
                 }
                 b'"' | b'\'' => loop {
@@ -465,10 +472,18 @@ impl<'a> Lexer<'a> {
                     }
                 },
                 b'/' if self.advance_if(b'/') => {
-                    while let Some(l) = self.advance()
+                    while let Some(l) = self.peek()
                         && l != b'\n'
-                    {}
-                    T::Comment
+                    {
+                        self.pos += 1;
+                    }
+
+                    let end = self.source[..self.pos as usize]
+                        .iter()
+                        .rposition(|&b| !b.is_ascii_whitespace())
+                        .map_or(self.pos, |i| i as u32 + 1);
+
+                    return Token { kind: T::Comment, start, end };
                 }
                 b'/' if self.advance_if(b'*') => {
                     let mut depth = 1;
