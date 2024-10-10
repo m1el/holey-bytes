@@ -450,6 +450,15 @@ pub mod test {
         minned.truncate(len);
 
         let ast = parser::Ast::new(ident, minned, &mut ParserCtx::default(), &|_, _| Ok(0));
+        log::error!(
+            "{} / {} = {} | {} / {} = {}",
+            ast.mem.size(),
+            input.len(),
+            ast.mem.size() as f32 / input.len() as f32,
+            ast.mem.size(),
+            ast.file.len(),
+            ast.mem.size() as f32 / ast.file.len() as f32
+        );
         let mut output = String::new();
         write!(output, "{ast}").unwrap();
 

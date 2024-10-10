@@ -6,6 +6,7 @@ use {
     },
     alloc::{boxed::Box, string::String, vec::Vec},
     core::{
+        alloc::Layout,
         cell::UnsafeCell,
         fmt::{self},
         intrinsics::unlikely,
@@ -23,6 +24,8 @@ pub type FileId = u32;
 pub type IdentIndex = u16;
 pub type LoaderError = String;
 pub type Loader<'a> = &'a (dyn Fn(&str, &str) -> Result<FileId, LoaderError> + 'a);
+
+pub const SOURCE_TO_AST_FACTOR: usize = 7 * (core::mem::size_of::<usize>() / 4) + 1;
 
 pub mod idfl {
     use super::*;
@@ -637,6 +640,15 @@ macro_rules! generate_expr {
         )*}
 
         impl<$lt> $name<$lt> {
+            pub fn used_bytes(&self) -> usize {
+                match self {
+                    $(Self::$variant { $($field),* } => {
+                        0 $(.max($field as *const _ as usize - self as *const _ as usize
+                            + core::mem::size_of::<$ty>()))*
+                    })*
+                }
+            }
+
             pub fn pos(&self) -> Pos {
                 #[allow(unused_variables)]
                 match self {
@@ -653,7 +665,7 @@ macro_rules! generate_expr {
     (@last ($($last:tt)*),) => { $($last)* };
 }
 
-#[repr(u32)]
+#[repr(u8)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Radix {
     Hex = 16,
@@ -954,7 +966,7 @@ pub struct ParserCtx {
 #[repr(C)]
 pub struct AstInner<T: ?Sized> {
     ref_count: AtomicUsize,
-    mem: ArenaChunk,
+    pub mem: ArenaChunk,
     exprs: *const [Expr<'static>],
 
     pub path: Box<str>,
@@ -971,7 +983,7 @@ impl AstInner<[Symbol]> {
     }
 
     fn new(file: Box<str>, path: &str, ctx: &mut ParserCtx, loader: Loader) -> NonNull<Self> {
-        let arena = Arena::default();
+        let arena = Arena::with_capacity(file.len() * SOURCE_TO_AST_FACTOR);
         let exprs =
             unsafe { core::mem::transmute(Parser::parse(ctx, &file, path, loader, &arena)) };
 
@@ -1070,7 +1082,7 @@ impl ExprRef {
     }
 
     pub fn get<'a>(&self, from: &'a Ast) -> Option<&'a Expr<'a>> {
-        ArenaChunk::contains(from.mem.base, self.0.as_ptr() as _).then_some(())?;
+        from.mem.contains(self.0.as_ptr() as _).then_some(())?;
         // SAFETY: the pointer is or was a valid reference in the past, if it points within one of
         // arenas regions, it muts be walid, since arena does not give invalid pointers to its
         // allocations
@@ -1197,12 +1209,22 @@ pub struct Arena {
 }
 
 impl Arena {
+    pub fn with_capacity(cap: usize) -> Arena {
+        Self { chunk: UnsafeCell::new(ArenaChunk::new(cap, ArenaChunk::default())) }
+    }
+
     pub fn alloc<'a>(&'a self, expr: Expr<'a>) -> &'a Expr<'a> {
-        let layout = core::alloc::Layout::new::<Expr<'a>>();
+        let layout = core::alloc::Layout::from_size_align(
+            expr.used_bytes(),
+            core::mem::align_of::<Expr<'a>>(),
+        )
+        .unwrap();
         let ptr = self.alloc_low(layout);
         unsafe {
-            ptr.cast::<u64>()
-                .copy_from_nonoverlapping(NonNull::from(&expr).cast(), layout.size() / 8)
+            ptr.cast::<usize>().copy_from_nonoverlapping(
+                NonNull::from(&expr).cast(),
+                layout.size() / core::mem::size_of::<usize>(),
+            )
         };
         unsafe { ptr.cast::<Expr<'a>>().as_ref() }
     }
@@ -1219,9 +1241,6 @@ impl Arena {
     }
 
     fn alloc_low(&self, layout: core::alloc::Layout) -> NonNull<u8> {
-        assert!(layout.align() <= ArenaChunk::ALIGN);
-        assert!(layout.size() <= ArenaChunk::CHUNK_SIZE);
-
         let chunk = unsafe { &mut *self.chunk.get() };
 
         if let Some(ptr) = chunk.alloc(layout) {
@@ -1229,44 +1248,46 @@ impl Arena {
         }
 
         unsafe {
-            core::ptr::write(chunk, ArenaChunk::new(chunk.base));
+            core::ptr::write(
+                chunk,
+                ArenaChunk::new(
+                    1024 * 4 - core::mem::size_of::<ArenaChunk>(),
+                    core::ptr::read(chunk),
+                ),
+            );
         }
 
         chunk.alloc(layout).unwrap()
     }
 }
 
-struct ArenaChunk {
+pub struct ArenaChunk {
     base: *mut u8,
     end: *mut u8,
+    size: usize,
 }
 
 impl Default for ArenaChunk {
     fn default() -> Self {
-        Self { base: core::ptr::null_mut(), end: core::ptr::null_mut() }
+        Self {
+            base: core::mem::size_of::<Self>() as _,
+            end: core::mem::size_of::<Self>() as _,
+            size: 0,
+        }
     }
 }
 
 impl ArenaChunk {
-    const ALIGN: usize = 16;
-    const CHUNK_SIZE: usize = 1 << 16;
-    const LAYOUT: core::alloc::Layout =
-        unsafe { core::alloc::Layout::from_size_align_unchecked(Self::CHUNK_SIZE, Self::ALIGN) };
-    const NEXT_OFFSET: usize = Self::CHUNK_SIZE - core::mem::size_of::<*mut u8>();
-
-    fn new(next: *mut u8) -> Self {
-        let base = unsafe { alloc::alloc::alloc(Self::LAYOUT) };
-        let end = unsafe { base.add(Self::NEXT_OFFSET) };
-        Self::set_next(base, next);
-        Self { base, end }
+    fn layout(size: usize) -> Layout {
+        Layout::new::<Self>().extend(Layout::array::<u8>(size).unwrap()).unwrap().0
     }
 
-    fn set_next(curr: *mut u8, next: *mut u8) {
-        unsafe { core::ptr::write(curr.add(Self::NEXT_OFFSET) as *mut _, next) };
-    }
-
-    fn next(curr: *mut u8) -> *mut u8 {
-        unsafe { core::ptr::read(curr.add(Self::NEXT_OFFSET) as *mut _) }
+    fn new(size: usize, next: Self) -> Self {
+        let mut base = unsafe { alloc::alloc::alloc(Self::layout(size)) };
+        let end = unsafe { base.add(size) };
+        unsafe { core::ptr::write(base.cast(), next) };
+        base = unsafe { base.add(core::mem::size_of::<Self>()) };
+        Self { base, end, size }
     }
 
     fn alloc(&mut self, layout: core::alloc::Layout) -> Option<NonNull<u8>> {
@@ -1279,26 +1300,31 @@ impl ArenaChunk {
         unsafe { Some(NonNull::new_unchecked(self.end)) }
     }
 
-    fn contains(base: *mut u8, arg: *mut u8) -> bool {
-        !base.is_null()
-            && ((unsafe { base.add(Self::CHUNK_SIZE) } > arg && base <= arg)
-                || Self::contains(Self::next(base), arg))
+    fn next(&self) -> Option<&Self> {
+        unsafe { self.base.cast::<Self>().sub(1).as_ref() }
+    }
+
+    fn contains(&self, arg: *mut u8) -> bool {
+        (self.base <= arg && unsafe { self.base.add(self.size) } > arg)
+            || self.next().map_or(false, |s| s.contains(arg))
+    }
+
+    pub fn size(&self) -> usize {
+        self.base as usize + self.size - self.end as usize + self.next().map_or(0, Self::size)
     }
 }
 
 impl Drop for ArenaChunk {
     fn drop(&mut self) {
-        //log::inf!(
-        //    "dropping chunk of size: {}",
-        //    (Self::LAYOUT.size() - (self.end as usize - self.base as usize))
-        //        * !self.end.is_null() as usize
-        //);
-        let mut current = self.base;
-        while !current.is_null() {
-            let next = Self::next(current);
-            unsafe { alloc::alloc::dealloc(current, Self::LAYOUT) };
-            current = next;
-            //log::dbg!("deallocating full chunk");
+        if self.size == 0 {
+            return;
+        }
+        _ = self.next().map(|r| unsafe { core::ptr::read(r) });
+        unsafe {
+            alloc::alloc::dealloc(
+                self.base.sub(core::mem::size_of::<Self>()),
+                Self::layout(self.size),
+            )
         }
     }
 }

@@ -117,7 +117,8 @@ unsafe extern "C" fn fmt() {
 
     let code = core::str::from_raw_parts(core::ptr::addr_of!(INPUT).cast(), INPUT_LEN);
 
-    let arena = hblang::parser::Arena::default();
+    let arena =
+        hblang::parser::Arena::with_capacity(code.len() * hblang::parser::SOURCE_TO_AST_FACTOR);
     let mut ctx = ParserCtx::default();
     let exprs = hblang::parser::Parser::parse(&mut ctx, code, "source.hb", &|_, _| Ok(0), &arena);
 

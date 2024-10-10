@@ -635,7 +635,7 @@ struct Pool {
     arg_locs: Vec<Loc>,
 }
 
-const VM_STACK_SIZE: usize = 1024 * 1024 * 2;
+const VM_STACK_SIZE: usize = 1024 * 64;
 
 struct Comptime {
     vm: hbvm::Vm<LoggedMem, { 1024 * 10 }>,

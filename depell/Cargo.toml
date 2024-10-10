@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-anyhow = "1.0.89"
 axum = "0.7.7"
 getrandom = "0.2.15"
 htmlm = "0.3.0"

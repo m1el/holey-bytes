@@ -89,8 +89,11 @@ trait Page: Default {
         Html(Self::default().render(&session))
     }
 
-    async fn page(session: Session) -> Html<String> {
-        base(Self::default().render(&session), Some(session)).await
+    async fn page(session: Option<Session>) -> Result<Html<String>, axum::response::Redirect> {
+        match session {
+            Some(session) => Ok(base(Self::default().render(&session), Some(session)).await),
+            None => Err(axum::response::Redirect::permanent("/login")),
+        }
     }
 }
 
@@ -409,7 +412,7 @@ impl<S> axum::extract::FromRequestParts<S> for Session {
 
         let (name, expiration) = db::with(|db| {
             db.get_session
-                .query_row((dbg!(id),), |r| Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?)))
+                .query_row((id,), |r| Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?)))
                 .inspect_err(|e| log::error!("{e}"))
                 .map_err(|_| err)
         })?;
