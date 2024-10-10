@@ -131,8 +131,6 @@ impl Page for Post {
                     required maxlength=MAX_POSTNAME_LENGTH>
                 <textarea name="code" placeholder="code" rows=1 required>code</textarea>
                 <input type="submit" value="submit">
-                <input type="button" "hx-get"="/post-preview" "hx-swap"="outherHTML"
-                    "hx-target"="postForm" value="preview">
             </form>
             !{include_str!("post-page.html")}
         }

@@ -73,6 +73,7 @@ pub struct Formatter<'a> {
     depth: usize,
 }
 
+// we exclusively use `write_str` to reduce bloat
 impl<'a> Formatter<'a> {
     pub fn new(source: &'a str) -> Self {
         Self { source, depth: 0 }
@@ -106,11 +107,12 @@ impl<'a> Formatter<'a> {
             let mut first = true;
             for expr in list {
                 if !core::mem::take(&mut first) {
-                    write!(f, "{sep} ")?;
+                    f.write_str(sep)?;
+                    f.write_str(" ")?;
                 }
                 first = !fmt(self, expr, f)?;
             }
-            return write!(f, "{end}");
+            return f.write_str(end);
         }
 
         writeln!(f)?;
@@ -118,24 +120,24 @@ impl<'a> Formatter<'a> {
         let res = (|| {
             for (i, stmt) in list.iter().enumerate() {
                 for _ in 0..self.depth {
-                    write!(f, "\t")?;
+                    f.write_str("\t")?;
                 }
                 let add_sep = fmt(self, stmt, f)?;
                 if add_sep {
-                    write!(f, "{sep}")?;
+                    f.write_str(sep)?;
                 }
                 if let Some(expr) = list.get(i + 1)
                     && let Some(rest) = self.source.get(expr.posi() as usize..)
                 {
                     if insert_needed_semicolon(rest) {
-                        write!(f, ";")?;
+                        f.write_str(";")?;
                     }
                     if preserve_newlines(&self.source[..expr.posi() as usize]) > 1 {
-                        writeln!(f)?;
+                        f.write_str("\n")?;
                     }
                 }
                 if add_sep {
-                    writeln!(f)?;
+                    f.write_str("\n")?;
                 }
             }
             Ok(())
@@ -143,9 +145,9 @@ impl<'a> Formatter<'a> {
         self.depth -= 1;
 
         for _ in 0..self.depth {
-            write!(f, "\t")?;
+            f.write_str("\t")?;
         }
-        write!(f, "{end}")?;
+        f.write_str(end)?;
         res
     }
 
@@ -156,9 +158,9 @@ impl<'a> Formatter<'a> {
         cond: impl FnOnce(&Expr) -> bool,
     ) -> fmt::Result {
         if cond(expr) {
-            write!(f, "(")?;
+            f.write_str("(")?;
             self.fmt(expr, f)?;
-            write!(f, ")")
+            f.write_str(")")
         } else {
             self.fmt(expr, f)
         }
@@ -181,33 +183,40 @@ impl<'a> Formatter<'a> {
 
         match *expr {
             Expr::Ct { value, .. } => {
-                write!(f, "$: ")?;
+                f.write_str("$: ")?;
                 self.fmt(value, f)
             }
-            Expr::String { literal, .. } => write!(f, "{literal}"),
-            Expr::Comment { literal, .. } => write!(f, "{literal}"),
+            Expr::String { literal, .. } => f.write_str(literal),
+            Expr::Comment { literal, .. } => f.write_str(literal),
             Expr::Mod { path, .. } => write!(f, "@use(\"{path}\")"),
             Expr::Field { target, name: field, .. } => {
                 self.fmt_paren(target, f, postfix)?;
-                write!(f, ".{field}")
+                f.write_str(".")?;
+                f.write_str(field)
             }
             Expr::Directive { name, args, .. } => {
-                write!(f, "@{name}(")?;
+                f.write_str("@")?;
+                f.write_str(name)?;
+                f.write_str("(")?;
                 self.fmt_list(f, false, ")", ",", args, Self::fmt)
             }
             Expr::Struct { fields, trailing_comma, packed, .. } => {
                 if packed {
-                    write!(f, "packed ")?;
+                    f.write_str("packed ")?;
                 }
 
                 write!(f, "struct {{")?;
                 self.fmt_list_low(f, trailing_comma, "}", ",", fields, |s, field, f| {
                     match field {
                         CommentOr::Or(StructField { name, ty, .. }) => {
-                            write!(f, "{name}: ")?;
+                            f.write_str(name)?;
+                            f.write_str(": ")?;
                             s.fmt(ty, f)?
                         }
-                        CommentOr::Comment { literal, .. } => writeln!(f, "{literal}")?,
+                        CommentOr::Comment { literal, .. } => {
+                            f.write_str(literal)?;
+                            f.write_str("\n")?;
+                        }
                     }
                     Ok(field.or().is_some())
                 })
@@ -216,7 +225,7 @@ impl<'a> Formatter<'a> {
                 if let Some(ty) = ty {
                     self.fmt_paren(ty, f, unary)?;
                 }
-                write!(f, ".{{")?;
+                f.write_str(".{")?;
                 self.fmt_list(
                     f,
                     trailing_comma,
@@ -224,12 +233,12 @@ impl<'a> Formatter<'a> {
                     ",",
                     fields,
                     |s: &mut Self, CtorField { name, value, .. }: &_, f| {
-                        if matches!(value, Expr::Ident { name: n, .. } if name == n) {
-                            write!(f, "{name}")
-                        } else {
-                            write!(f, "{name}: ")?;
-                            s.fmt(value, f)
+                        f.write_str(name)?;
+                        if !matches!(value, Expr::Ident { name: n, .. } if name == n) {
+                            f.write_str(": ")?;
+                            s.fmt(value, f)?;
                         }
+                        Ok(())
                     },
                 )
             }
@@ -237,74 +246,78 @@ impl<'a> Formatter<'a> {
                 if let Some(ty) = ty {
                     self.fmt_paren(ty, f, unary)?;
                 }
-                write!(f, ".(")?;
+                f.write_str(".(")?;
                 self.fmt_list(f, trailing_comma, ")", ",", fields, Self::fmt)
             }
             Expr::Slice { item, size, .. } => {
-                write!(f, "[")?;
+                f.write_str("[")?;
                 self.fmt(item, f)?;
                 if let Some(size) = size {
-                    write!(f, "; ")?;
+                    f.write_str("; ")?;
                     self.fmt(size, f)?;
                 }
-                write!(f, "]")
+                f.write_str("]")
             }
             Expr::Index { base, index } => {
                 self.fmt(base, f)?;
-                write!(f, "[")?;
+                f.write_str("[")?;
                 self.fmt(index, f)?;
-                write!(f, "]")
+                f.write_str("]")
             }
             Expr::UnOp { op, val, .. } => {
-                write!(f, "{op}")?;
+                f.write_str(op.name())?;
                 self.fmt_paren(val, f, unary)
             }
-            Expr::Break { .. } => write!(f, "break"),
-            Expr::Continue { .. } => write!(f, "continue"),
+            Expr::Break { .. } => f.write_str("break"),
+            Expr::Continue { .. } => f.write_str("continue"),
             Expr::If { cond, then, else_, .. } => {
-                write!(f, "if ")?;
+                f.write_str("if ")?;
                 self.fmt(cond, f)?;
-                write!(f, " ")?;
+                f.write_str(" ")?;
                 self.fmt_paren(then, f, consecutive)?;
                 if let Some(e) = else_ {
-                    write!(f, " else ")?;
+                    f.write_str(" else ")?;
                     self.fmt(e, f)?;
                 }
                 Ok(())
             }
             Expr::Loop { body, .. } => {
-                write!(f, "loop ")?;
+                f.write_str("loop ")?;
                 self.fmt(body, f)
             }
             Expr::Closure { ret, body, args, .. } => {
-                write!(f, "fn(")?;
+                f.write_str("fn(")?;
                 self.fmt_list(f, false, "", ",", args, |s, arg, f| {
                     if arg.is_ct {
-                        write!(f, "$")?;
+                        f.write_str("$")?;
                     }
-                    write!(f, "{}: ", arg.name)?;
+                    f.write_str(arg.name)?;
+                    f.write_str(": ")?;
                     s.fmt(&arg.ty, f)
                 })?;
-                write!(f, "): ")?;
+                f.write_str("): ")?;
                 self.fmt(ret, f)?;
-                write!(f, " ")?;
+                f.write_str(" ")?;
                 self.fmt_paren(body, f, consecutive)?;
                 Ok(())
             }
             Expr::Call { func, args, trailing_comma } => {
                 self.fmt_paren(func, f, postfix)?;
-                write!(f, "(")?;
+                f.write_str("(")?;
                 self.fmt_list(f, trailing_comma, ")", ",", args, Self::fmt)
             }
             Expr::Return { val: Some(val), .. } => {
-                write!(f, "return ")?;
+                f.write_str("return ")?;
                 self.fmt(val, f)
             }
-            Expr::Return { val: None, .. } => write!(f, "return"),
-            Expr::Ident { name, is_ct: true, .. } => write!(f, "${name}"),
-            Expr::Ident { name, is_ct: false, .. } => write!(f, "{name}"),
+            Expr::Return { val: None, .. } => f.write_str("return"),
+            Expr::Ident { name, is_ct: true, .. } => {
+                f.write_str("$")?;
+                f.write_str(name)
+            }
+            Expr::Ident { name, is_ct: false, .. } => f.write_str(name),
             Expr::Block { stmts, .. } => {
-                write!(f, "{{")?;
+                f.write_str("{")?;
                 self.fmt_list(f, true, "}", "", stmts, Self::fmt)
             }
             Expr::Number { value, radix, .. } => {
@@ -327,24 +340,26 @@ impl<'a> Formatter<'a> {
 
                     unreachable!()
                 }
+                f.write_str(match radix {
+                    Radix::Decimal => "",
+                    Radix::Hex => "0x",
+                    Radix::Octal => "0o",
+                    Radix::Binary => "0b",
+                })?;
                 let mut buf = [0u8; 64];
-                let value = display_radix(radix, value as u64, &mut buf);
-                match radix {
-                    Radix::Decimal => write!(f, "{value}"),
-                    Radix::Hex => write!(f, "0x{value}"),
-                    Radix::Octal => write!(f, "0o{value}"),
-                    Radix::Binary => write!(f, "0b{value}"),
-                }
+                f.write_str(display_radix(radix, value as u64, &mut buf))
             }
-            Expr::Bool { value, .. } => write!(f, "{value}"),
-            Expr::Idk { .. } => write!(f, "idk"),
+            Expr::Bool { value, .. } => f.write_str(if value { "true" } else { "false" }),
+            Expr::Idk { .. } => f.write_str("idk"),
             Expr::BinOp {
                 left,
                 op: TokenKind::Assign,
                 right: &Expr::BinOp { left: lleft, op, right },
             } if left.pos() == lleft.pos() => {
                 self.fmt(left, f)?;
-                write!(f, " {op}= ")?;
+                f.write_str(" ")?;
+                f.write_str(op.name())?;
+                f.write_str("= ")?;
                 self.fmt(right, f)
             }
             Expr::BinOp { right, op, left } => {
@@ -362,16 +377,21 @@ impl<'a> Formatter<'a> {
                     let exact_bound = lexer::Lexer::new(&prev[estimate_bound..]).last().start;
                     prev = &prev[..exact_bound as usize + estimate_bound];
                     if preserve_newlines(prev) > 0 {
-                        writeln!(f)?;
+                        f.write_str("\n")?;
                         for _ in 0..self.depth + 1 {
-                            write!(f, "\t")?;
+                            f.write_str("\t")?;
                         }
-                        write!(f, "{op} ")?;
+                        f.write_str(op.name())?;
+                        f.write_str(" ")?;
                     } else {
-                        write!(f, " {op} ")?;
+                        f.write_str(" ")?;
+                        f.write_str(op.name())?;
+                        f.write_str(" ")?;
                     }
                 } else {
-                    write!(f, " {op} ")?;
+                    f.write_str(" ")?;
+                    f.write_str(op.name())?;
+                    f.write_str(" ")?;
                 }
                 self.fmt_paren(right, f, pec_miss)
             }

@@ -45,6 +45,8 @@ div.preview {
 		display: flex;
 		gap: var(--small-gap);
 	}
+
+	margin: var(--small-gap) 0px;
 }
 
 form {
@@ -63,16 +65,22 @@ form {
 
 }
 
-pre,
 textarea {
 	outline: none;
 	border: none;
 	background: var(--secondary);
 	padding: var(--small-gap);
 	padding-top: calc(var(--small-gap) * 1.5);
-	margin: var(--small-gap) 0px;
 	font-family: var(--monospace);
 	resize: none;
+}
+
+pre {
+	background: var(--secondary);
+	padding: var(--small-gap);
+	padding-top: calc(var(--small-gap) * 1.5);
+	margin: 0px;
+	font-family: var(--monospace);
 	tab-size: 4;
 }
 

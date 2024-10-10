@@ -7,5 +7,4 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-hblang = { version = "0.1.0", path = "../../hblang", default-features = false }
-log = { version = "0.4.22", features = ["max_level_off"] }
+hblang = { version = "0.1.0", path = "../../hblang", default-features = false, features = ["no_log"] }

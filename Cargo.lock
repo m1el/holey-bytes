@@ -821,7 +821,6 @@ name = "wasm-hbfmt"
 version = "0.1.0"
 dependencies = [
  "hblang",
- "log",
 ]
 
 [[package]]
