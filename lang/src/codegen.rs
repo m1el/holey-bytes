@@ -1359,7 +1359,7 @@ impl Codegen {
                 };
 
                 let mut parama = self.tys.parama(sig.ret);
-                let mut values = Vec::with_capacity(args.len());
+                let base = self.pool.arg_locs.len();
                 let mut sig_args = sig.args.range();
                 let mut should_momize = !args.is_empty() && sig.ret == ty::Id::from(ty::TYPE);
 
@@ -1377,11 +1377,11 @@ impl Codegen {
                     let varg = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
                     _ = self.assert_ty(arg.pos(), varg.ty, ty, format_args!("argument({i})"));
                     self.pass_arg(&varg, &mut parama);
-                    values.push(varg.loc);
+                    self.pool.arg_locs.push(varg.loc);
                     should_momize = false;
                 }
 
-                for value in values {
+                for value in self.pool.arg_locs.drain(base..) {
                     self.ci.free_loc(value);
                 }
 
