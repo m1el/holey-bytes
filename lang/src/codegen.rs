@@ -905,6 +905,7 @@ impl Codegen {
 
                 let scope = self.ci.vars.len();
                 let sig = self.compute_signature(&mut func, func_ast.pos(), args)?;
+                self.ci.vars.truncate(scope);
 
                 self.assert_arg_count(expr.pos(), args.len(), cargs.len(), "inline function call");
 
@@ -912,13 +913,10 @@ impl Codegen {
                 for (arg, carg) in args.iter().zip(cargs) {
                     let ty = self.tys.ins.args[sig_args.next().unwrap()];
                     let sym = parser::find_symbol(&ast.symbols, carg.id);
-                    if sym.flags & idfl::COMPTIME != 0 {
-                        sig_args.next().unwrap();
-                        continue;
-                    }
-
-                    debug_assert_ne!(ty, ty::Id::TYPE);
-                    let loc = self.expr_ctx(arg, Ctx::default().with_ty(ty))?.loc;
+                    let loc = match sym.flags & idfl::COMPTIME != 0 {
+                        true => Loc::ty(self.tys.ins.args[sig_args.next().unwrap()]),
+                        false => self.expr_ctx(arg, Ctx::default().with_ty(ty))?.loc,
+                    };
                     self.ci.vars.push(Variable { id: carg.id, value: Value { ty, loc } });
                 }
 
