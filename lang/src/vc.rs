@@ -272,7 +272,7 @@ impl BitSet {
     const ELEM_SIZE: usize = core::mem::size_of::<usize>() * 8;
 
     pub fn clear(&mut self, bit_size: usize) {
-        let new_len = (bit_size + Self::ELEM_SIZE - 1) / Self::ELEM_SIZE;
+        let new_len = bit_size.div_ceil(Self::ELEM_SIZE);
         self.data.clear();
         self.data.resize(new_len, 0);
     }

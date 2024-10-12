@@ -2556,7 +2556,7 @@ impl<'a> Function<'a> {
     }
 }
 
-impl<'a> regalloc2::Function for Function<'a> {
+impl regalloc2::Function for Function<'_> {
     fn num_insts(&self) -> usize {
         self.instrs.len()
     }

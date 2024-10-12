@@ -33,27 +33,34 @@ fn build_wasm_blob(name: &str, debug: bool) -> io::Result<()> {
     let mut c = build_cmd(if debug { "cargo wasm-build-debug" } else { "cargo wasm-build" });
     c.arg(format!("wasm-{name}"));
     exec(c)?;
-
-    let out_path = format!("target/wasm32-unknown-unknown/small/wasm_{name}.wasm");
+    let profile = if debug { "small-dev" } else { "small" };
+    let out_path = format!("target/wasm32-unknown-unknown/{profile}/wasm_{name}.wasm");
     if !debug {
         exec(build_cmd(format!("wasm-opt -Oz {out_path} -o {out_path}")))?;
     }
-    exec(build_cmd(format!("cp {out_path} depell/src/wasm-{name}.wasm")))
+    exec(build_cmd(format!("cp {out_path} depell/src/{name}.wasm")))?;
+    exec(build_cmd(format!("gzip -f depell/src/{name}.wasm")))?;
+    Ok(())
 }
 
 fn main() -> io::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match args[0].as_str() {
         "fmt" => fmt(args[1] == "-r" || args[1] == "--renumber"),
-        "build-depell" => {
-            build_wasm_blob("hbfmt", false)?;
-            build_wasm_blob("hbc", false)?;
-            exec(build_cmd("cargo build -p depell --release"))?;
-            Ok(())
-        }
         "build-depell-debug" => {
             build_wasm_blob("hbfmt", true)?;
             build_wasm_blob("hbc", true)?;
+            exec(build_cmd("gzip -k -f depell/src/index.js"))?;
+            exec(build_cmd("gzip -k -f depell/src/index.css"))?;
+            exec(build_cmd("cargo run -p depell --features gzip"))?;
+            Ok(())
+        }
+        "build-depell" => {
+            build_wasm_blob("hbfmt", false)?;
+            build_wasm_blob("hbc", false)?;
+            exec(build_cmd("gzip -k -f depell/src/index.js"))?;
+            exec(build_cmd("gzip -k -f depell/src/index.css"))?;
+            exec(build_cmd("cargo run -p depell --features gzip --release"))?;
             Ok(())
         }
         _ => Ok(()),

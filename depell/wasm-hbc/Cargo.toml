@@ -9,6 +9,6 @@ crate-type = ["cdylib"]
 [dependencies]
 hblang = { workspace = true, features = [] }
 hbvm.workspace = true
-log = "0.4.22"
+log = { version = "0.4.22", features = ["release_max_level_error"] }
 wasm-rt = { version = "0.1.0", path = "../wasm-rt", features = ["log"] }
 

@@ -294,7 +294,7 @@ enum LocCow<'a> {
     Owned(Loc),
 }
 
-impl<'a> LocCow<'a> {
+impl LocCow<'_> {
     fn as_ref(&self) -> &Loc {
         match self {
             Self::Ref(value) => value,
@@ -309,7 +309,7 @@ impl<'a> From<&'a Loc> for LocCow<'a> {
     }
 }
 
-impl<'a> From<Loc> for LocCow<'a> {
+impl From<Loc> for LocCow<'_> {
     fn from(value: Loc) -> Self {
         Self::Owned(value)
     }

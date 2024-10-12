@@ -23,6 +23,7 @@
     slice_from_ptr_range,
     is_sorted
 )]
+#![feature(pointer_is_aligned_to)]
 #![warn(clippy::dbg_macro)]
 #![allow(stable_features, internal_features)]
 #![no_std]
@@ -532,7 +533,7 @@ mod ty {
         }
     }
 
-    impl<'a> core::fmt::Display for Display<'a> {
+    impl core::fmt::Display for Display<'_> {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             use Kind as TK;
             match TK::from_ty(self.ty) {

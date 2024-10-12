@@ -1,4 +1,5 @@
 #![feature(alloc_error_handler)]
+#![feature(pointer_is_aligned_to)]
 #![feature(slice_take)]
 #![no_std]
 
@@ -36,9 +37,9 @@ macro_rules! decl_runtime {
 
                 unsafe {
                     use core::fmt::Write;
-                    let mut f = Write(&mut PANIC_MESSAGE[..]);
+                    let mut f = $crate::Write(&mut PANIC_MESSAGE[..]);
                     _ = writeln!(f, "{}", _info);
-                    PANIC_MESSAGE_LEN = 1024 - f.0.len();
+                    PANIC_MESSAGE_LEN = $max_panic_size - f.0.len();
                 }
             }
 
@@ -67,7 +68,7 @@ impl log::Log for Logger {
 
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
-            const MAX_LOG_MESSAGE: usize = 1024 * 4;
+            const MAX_LOG_MESSAGE: usize = 1024 * 8;
             #[no_mangle]
             static mut LOG_MESSAGES: [u8; MAX_LOG_MESSAGE] = [0; MAX_LOG_MESSAGE];
             #[no_mangle]
@@ -115,7 +116,8 @@ unsafe impl<const SIZE: usize> GlobalAlloc for ArenaAllocator<SIZE> {
         let until = self.arena.get() as *mut u8;
 
         let new_head = (*self.head.get()).sub(size);
-        let aligned_head = (new_head as usize & !(1 << (align - 1))) as *mut u8;
+        let aligned_head = (new_head as usize & !(align - 1)) as *mut u8;
+        debug_assert!(aligned_head.is_aligned_to(align));
 
         if until > aligned_head {
             return core::ptr::null_mut();

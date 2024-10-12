@@ -3,4 +3,4 @@
 /.rgignore
 rustc-ice-*
 db.sqlite
-/depell/src/*.wasm
+/depell/src/*.gz

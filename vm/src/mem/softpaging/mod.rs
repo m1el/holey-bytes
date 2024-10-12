@@ -32,8 +32,8 @@ pub struct SoftPagedMem<'p, PfH, const OUT_PROG_EXEC: bool = true> {
     pub icache: ICache,
 }
 
-impl<'p, PfH: HandlePageFault, const OUT_PROG_EXEC: bool> Memory
-    for SoftPagedMem<'p, PfH, OUT_PROG_EXEC>
+impl<PfH: HandlePageFault, const OUT_PROG_EXEC: bool> Memory
+    for SoftPagedMem<'_, PfH, OUT_PROG_EXEC>
 {
     /// Load value from an address
     ///
@@ -92,7 +92,7 @@ impl<'p, PfH: HandlePageFault, const OUT_PROG_EXEC: bool> Memory
     }
 }
 
-impl<'p, PfH: HandlePageFault, const OUT_PROG_EXEC: bool> SoftPagedMem<'p, PfH, OUT_PROG_EXEC> {
+impl<PfH: HandlePageFault, const OUT_PROG_EXEC: bool> SoftPagedMem<'_, PfH, OUT_PROG_EXEC> {
     // Everyone behold, the holy function, the god of HBVM memory accesses!
 
     /// Split address to pages, check their permissions and feed pointers with offset

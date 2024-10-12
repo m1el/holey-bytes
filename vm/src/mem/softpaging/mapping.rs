@@ -10,7 +10,7 @@ use {
     alloc::boxed::Box,
 };
 
-impl<'p, A, const OUT_PROG_EXEC: bool> SoftPagedMem<'p, A, OUT_PROG_EXEC> {
+impl<A, const OUT_PROG_EXEC: bool> SoftPagedMem<'_, A, OUT_PROG_EXEC> {
     /// Maps host's memory into VM's memory
     ///
     /// # Safety

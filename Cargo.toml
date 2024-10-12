@@ -29,13 +29,16 @@ codegen-units = 1
 panic = "abort"
 
 [profile.small]
-#rustflags = ["-Zfmt-debug=none", "-Zlocation-detail=none"]
+rustflags = ["-Zfmt-debug=none", "-Zlocation-detail=none"]
 inherits = "release"
 opt-level = "z"
-strip = "debuginfo"
-#strip = true
+strip = true
 lto = true
 codegen-units = 1
 panic = "abort"
 
-
+[profile.small-dev]
+inherits = "dev"
+opt-level = "z"
+strip = "debuginfo"
+panic = "abort"

@@ -818,7 +818,7 @@ generate_expr! {
     }
 }
 
-impl<'a> Expr<'a> {
+impl Expr<'_> {
     pub fn declares(&self, iden: Result<Ident, &str>) -> Option<Ident> {
         match *self {
             Self::Ident { id, name, .. } if iden == Ok(id) || iden == Err(name) => Some(id),
@@ -897,13 +897,13 @@ impl Poser for Pos {
     }
 }
 
-impl<'a> Poser for Expr<'a> {
+impl Poser for Expr<'_> {
     fn posi(&self) -> Pos {
         self.pos()
     }
 }
 
-impl<'a, T: Poser> Poser for CommentOr<'a, T> {
+impl<T: Poser> Poser for CommentOr<'_, T> {
     fn posi(&self) -> Pos {
         match self {
             CommentOr::Or(expr) => expr.posi(),
@@ -918,7 +918,7 @@ pub enum CommentOr<'a, T> {
     Comment { literal: &'a str, pos: Pos },
 }
 
-impl<'a, T: Copy> CommentOr<'a, T> {
+impl<T: Copy> CommentOr<'_, T> {
     pub fn or(&self) -> Option<T> {
         match *self {
             CommentOr::Or(v) => Some(v),
@@ -1175,7 +1175,7 @@ impl StackAlloc {
         }
 
         let dst = self.data.add(self.len) as *mut T;
-        debug_assert!(dst.is_aligned(),);
+        debug_assert!(dst.is_aligned());
         self.len += core::mem::size_of::<T>();
         core::ptr::write(dst, value);
     }

@@ -22,7 +22,10 @@ macro_rules! static_asset {
         get(|| async {
             axum::http::Response::builder()
                 .header("content-type", $mime)
-                .body(axum::body::Body::from(Bytes::from_static(include_bytes!($body))))
+                .header("content-encoding", "gzip")
+                .body(axum::body::Body::from(Bytes::from_static(include_bytes!(concat!(
+                    $body, ".gz"
+                )))))
                 .unwrap()
         })
     };
@@ -42,20 +45,8 @@ async fn amain() {
         .route("/", get(Index::page))
         .route("/index.css", static_asset!("text/css", "index.css"))
         .route("/index.js", static_asset!("text/javascript", "index.js"))
-        .route(
-            "/hbfmt.wasm",
-            static_asset!(
-                "application/wasm",
-                "../../target/wasm32-unknown-unknown/small/wasm_hbfmt.wasm"
-            ),
-        )
-        .route(
-            "/hbc.wasm",
-            static_asset!(
-                "application/wasm",
-                "../../target/wasm32-unknown-unknown/small/wasm_hbc.wasm"
-            ),
-        )
+        .route("/hbfmt.wasm", static_asset!("application/wasm", "hbfmt.wasm"))
+        .route("/hbc.wasm", static_asset!("application/wasm", "hbc.wasm"))
         .route("/index-view", get(Index::get))
         .route("/feed", get(Index::page))
         .route("/profile", get(Profile::page))
