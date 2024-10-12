@@ -18,7 +18,7 @@ wasm_rt::decl_buffer!(MAX_INPUT_SIZE, MAX_INPUT, INPUT, INPUT_LEN);
 unsafe fn compile_and_run(mut fuel: usize) {
     ALLOCATOR.reset();
 
-    log::set_logger(&wasm_rt::Logger).unwrap();
+    _ = log::set_logger(&wasm_rt::Logger);
     log::set_max_level(log::LevelFilter::Error);
 
     struct File<'a> {
@@ -81,7 +81,12 @@ unsafe fn compile_and_run(mut fuel: usize) {
                 let unknown = ct.vm.read_reg(2).0;
                 log::error!("unknown ecall: {unknown}")
             }
-            Ok(hbvm::VmRunOk::Timer) => fuel -= 1,
+            Ok(hbvm::VmRunOk::Timer) => {
+                fuel -= 1;
+                if fuel == 0 {
+                    log::error!("program timed out");
+                }
+            }
             Ok(hbvm::VmRunOk::Breakpoint) => todo!(),
             Err(e) => {
                 log::error!("vm error: {e}");

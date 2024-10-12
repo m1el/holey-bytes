@@ -70,6 +70,7 @@ textarea {
 	padding-top: calc(var(--small-gap) * 1.5);
 	font-family: var(--monospace);
 	resize: none;
+	tab-size: 4;
 }
 
 pre {

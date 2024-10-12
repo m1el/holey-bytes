@@ -153,8 +153,9 @@ impl Page for Post {
                 <input name="author" type="text" value={session.name} hidden>
                 <input name="name" type="text" placeholder="name" value=name
                     required maxlength=MAX_POSTNAME_LENGTH>
-                <textarea name="code" placeholder="code" rows=1 required>code</textarea>
+                <textarea id="code-edit" name="code" placeholder="code" rows=1 required>code</textarea>
                 <input type="submit" value="submit">
+                <pre id="compiler-output"></pre>
             </form>
             !{include_str!("post-page.html")}
         }

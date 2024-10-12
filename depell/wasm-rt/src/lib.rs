@@ -25,16 +25,18 @@ macro_rules! decl_buffer {
 #[macro_export]
 macro_rules! decl_runtime {
     ($memory_size:expr, $max_panic_size:expr) => {
+        #[cfg(debug_assertions)]
+        #[no_mangle]
+        static mut PANIC_MESSAGE: [u8; $max_panic_size] = [0; $max_panic_size];
+        #[cfg(debug_assertions)]
+        #[no_mangle]
+        static mut PANIC_MESSAGE_LEN: usize = 0;
+
         #[cfg(target_arch = "wasm32")]
         #[panic_handler]
         pub fn handle_panic(_info: &core::panic::PanicInfo) -> ! {
             #[cfg(debug_assertions)]
             {
-                #[no_mangle]
-                static mut PANIC_MESSAGE: [u8; $max_panic_size] = [0; $max_panic_size];
-                #[no_mangle]
-                static mut PANIC_MESSAGE_LEN: usize = 0;
-
                 unsafe {
                     use core::fmt::Write;
                     let mut f = $crate::Write(&mut PANIC_MESSAGE[..]);
@@ -52,6 +54,16 @@ macro_rules! decl_runtime {
         #[cfg(target_arch = "wasm32")]
         #[alloc_error_handler]
         fn alloc_error(_: core::alloc::Layout) -> ! {
+            #[cfg(debug_assertions)]
+            {
+                unsafe {
+                    use core::fmt::Write;
+                    let mut f = $crate::Write(&mut PANIC_MESSAGE[..]);
+                    _ = writeln!(f, "out of memory");
+                    PANIC_MESSAGE_LEN = $max_panic_size - f.0.len();
+                }
+            }
+
             core::arch::wasm32::unreachable()
         }
     };

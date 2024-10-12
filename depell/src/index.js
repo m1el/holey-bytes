@@ -5,28 +5,21 @@ function never() { throw new Error() }
 
 /**@type{WebAssembly.Instance}*/ let hbcInstance;
 /**@type{Promise<WebAssembly.WebAssemblyInstantiatedSource>}*/ let hbcInstaceFuture;
-/** @param {Uint8Array} code @param {number} fuel
- * @returns {Promise<string | undefined> | string | undefined} */
-function compileCode(code, fuel) {
-	if (!hbcInstance) {
-		hbcInstaceFuture ??= WebAssembly.instantiateStreaming(fetch("/hbc.wasm"), {});
-		return (async () => {
-			hbcInstance = (await hbcInstaceFuture).instance;
-			return compileCodeSync(hbcInstance, code, fuel);
-		})();
-	} else {
-		return compileCodeSync(hbcInstance, code, fuel);
-	}
-
+async function getHbcInstance() {
+	hbcInstaceFuture ??= WebAssembly.instantiateStreaming(fetch("/hbc.wasm"), {});
+	return hbcInstance ??= (await hbcInstaceFuture).instance;
 }
 
-/** @param {WebAssembly.Instance} instance @param {Uint8Array} code @param {number} fuel @returns {string | undefined} */
-function compileCodeSync(instance, code, fuel) {
+const stack_pointer_offset = 1 << 20;
+
+/** @param {WebAssembly.Instance} instance @param {Uint8Array} code @param {number} fuel
+ * @returns {string} */
+function compileCode(instance, code, fuel) {
 	let {
 		INPUT, INPUT_LEN,
 		LOG_MESSAGES, LOG_MESSAGES_LEN,
 		PANIC_MESSAGE, PANIC_MESSAGE_LEN,
-		memory, compile_and_run
+		memory, compile_and_run,
 	} = instance.exports;
 
 	if (!(true
@@ -48,12 +41,29 @@ function compileCodeSync(instance, code, fuel) {
 	} catch (e) {
 		if (PANIC_MESSAGE instanceof WebAssembly.Global
 			&& PANIC_MESSAGE_LEN instanceof WebAssembly.Global) {
-			console.error(bufToString(memory, PANIC_MESSAGE, PANIC_MESSAGE_LEN));
+			console.error(e, bufToString(memory, PANIC_MESSAGE, PANIC_MESSAGE_LEN));
 		}
-		let log = bufToString(memory, LOG_MESSAGES, LOG_MESSAGES_LEN);
-		console.error(log, e);
-		return undefined;
+		return bufToString(memory, LOG_MESSAGES, LOG_MESSAGES_LEN);
 	}
+}
+
+/** @typedef {Object} Post
+ * @property {string} path 
+ * @property {string} code */
+
+/** @param {Post[]} posts @returns {Uint8Array} */
+function packPosts(posts) {
+	let len = 0; for (const post of posts) len += 2 + post.path.length + 2 + post.code.length;
+
+	const buf = new Uint8Array(len), view = new DataView(buf.buffer), enc = new TextEncoder();
+	len = 0; for (const post of posts) {
+		view.setUint16(len, post.path.length, true); len += 2;
+		buf.set(enc.encode(post.path), len); len += post.path.length;
+		view.setUint16(len, post.code.length, true); len += 2;
+		buf.set(enc.encode(post.code), len); len += post.code.length;
+	}
+
+	return buf;
 }
 
 /** @param {WebAssembly.Memory} mem
@@ -61,35 +71,27 @@ function compileCodeSync(instance, code, fuel) {
  * @param {WebAssembly.Global} len
  * @return {string} */
 function bufToString(mem, ptr, len) {
-	return new TextDecoder()
+	const res = new TextDecoder()
 		.decode(new Uint8Array(mem.buffer, ptr.value,
 			new DataView(mem.buffer).getUint32(len.value, true)));
+	new DataView(mem.buffer).setUint32(len.value, 0, true);
+	return res;
 }
 
 /**@type{WebAssembly.Instance}*/ let fmtInstance;
 /**@type{Promise<WebAssembly.WebAssemblyInstantiatedSource>}*/ let fmtInstaceFuture;
 /** @param {string} code @param {"fmt" | "minify"} action
- * @returns {Promise<string | undefined> | string | undefined} */
-function modifyCode(code, action) {
-	if (!fmtInstance) {
-		fmtInstaceFuture ??= WebAssembly.instantiateStreaming(fetch("/hbfmt.wasm"), {});
-		return (async () => {
-			fmtInstance = (await fmtInstaceFuture).instance;
-			return modifyCodeSync(fmtInstance, code, action);
-		})();
-	} else {
-		return modifyCodeSync(fmtInstance, code, action);
-	}
-}
+ * @returns {Promise<string | undefined>} */
+async function modifyCode(code, action) {
+	fmtInstaceFuture ??= WebAssembly.instantiateStreaming(fetch("/hbfmt.wasm"), {});
+	fmtInstance ??= (await fmtInstaceFuture).instance;
 
-/** @param {WebAssembly.Instance} instance @param {string} code @param {"fmt" | "minify"} action @returns {string | undefined} */
-function modifyCodeSync(instance, code, action) {
 	let {
 		INPUT, INPUT_LEN,
 		OUTPUT, OUTPUT_LEN,
 		PANIC_MESSAGE, PANIC_MESSAGE_LEN,
 		memory, fmt, minify
-	} = instance.exports;
+	} = fmtInstance.exports;
 
 	if (!(true
 		&& INPUT instanceof WebAssembly.Global
@@ -136,16 +138,35 @@ function wireUp(target) {
 	execApply(target);
 	cacheInputs(target);
 	bindTextareaAutoResize(target);
+	bindCodeEdit(target);
 }
 
 /** @type {{ [key: string]: (content: string) => Promise<string> | string }} */
 const applyFns = {
 	timestamp: (content) => new Date(parseInt(content) * 1000).toLocaleString(),
-	fmt: (content) => {
-		let res = modifyCode(content, "fmt");
-		return res instanceof Promise ? res.then(c => c ?? content) : res ?? content;
-	},
+	fmt: (content) => modifyCode(content, "fmt").then(c => c ?? "post has invalid code"),
 };
+
+/** @param {HTMLElement} target */
+async function bindCodeEdit(target) {
+	const edit = target.querySelector("#code-edit");
+	if (!(edit instanceof HTMLTextAreaElement)) return;
+	const errors = target.querySelector("#compiler-output");
+	if (!(errors instanceof HTMLPreElement)) never();
+
+	const hbc = await getHbcInstance();
+
+	const debounce = 0;
+	let timeout = 0;
+	edit.addEventListener("input", () => {
+		if (timeout) clearTimeout(timeout);
+		timeout = setTimeout(() => {
+			const buf = packPosts([{ path: "local.hb", code: edit.value }]);
+			errors.textContent = compileCode(hbc, buf, 1);
+			timeout = 0;
+		}, debounce);
+	});
+}
 
 /** @param {HTMLElement} target */
 function execApply(target) {
@@ -175,23 +196,9 @@ function bindTextareaAutoResize(target) {
 		});
 
 		textarea.onkeydown = (ev) => {
-			const selecting = textarea.selectionStart !== textarea.selectionEnd;
-
 			if (ev.key === "Tab") {
 				ev.preventDefault();
-				document.execCommand('insertText', false, "    ");
-			}
-
-			if (ev.key === "Backspace" && textarea.selectionStart != 0 && !selecting) {
-				let i = textarea.selectionStart, looped = false;
-				while (textarea.value.charCodeAt(--i) === ' '.charCodeAt(0)) looped = true;
-				if (textarea.value.charCodeAt(i) === '\n'.charCodeAt(0) && looped) {
-					ev.preventDefault();
-					let toDelete = (textarea.selectionStart - (i + 1)) % 4;
-					if (toDelete === 0) toDelete = 4;
-					textarea.selectionStart -= toDelete;
-					document.execCommand('delete', false);
-				}
+				document.execCommand('insertText', false, "\t");
 			}
 		}
 	}
@@ -235,17 +242,13 @@ if (window.location.hostname === 'localhost') {
 			if (code != prev) console.error(code, prev);
 		}
 		{
-
-			const name = "foo.hb";
-			const code = "main:=fn():void{return 42}";
-			const buf = new Uint8Array(2 + name.length + 2 + code.length);
-			const view = new DataView(buf.buffer);
-			view.setUint16(0, name.length, true);
-			buf.set(new TextEncoder().encode(name), 2);
-			view.setUint16(2 + name.length, code.length, true);
-			buf.set(new TextEncoder().encode(code), 2 + name.length + 2);
-			const res = await compileCode(buf, 1) ?? never();
-			const expected = "";
+			const posts = [{
+				path: "foo.hb",
+				code: "main:=fn():int{return 42}",
+			}];
+			const buf = packPosts(posts);
+			const res = compileCode(await getHbcInstance(), buf, 1) ?? never();
+			const expected = "exit code: 42\n";
 			if (expected != res) console.error(expected, res);
 		}
 	})()

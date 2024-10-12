@@ -1,6 +1,12 @@
+# garbage
 /target
-/bytecode/src/instrs.rs
-/.rgignore
 rustc-ice-*
+
+# sqlite
 db.sqlite
+db.sqlite-journal
+
+# assets
 /depell/src/*.gz
+/depell/src/*.wasm
+/bytecode/src/instrs.rs

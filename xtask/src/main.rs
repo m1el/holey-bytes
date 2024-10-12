@@ -52,7 +52,6 @@ fn main() -> io::Result<()> {
             build_wasm_blob("hbc", true)?;
             exec(build_cmd("gzip -k -f depell/src/index.js"))?;
             exec(build_cmd("gzip -k -f depell/src/index.css"))?;
-            exec(build_cmd("cargo run -p depell --features gzip"))?;
             Ok(())
         }
         "build-depell" => {
@@ -60,7 +59,12 @@ fn main() -> io::Result<()> {
             build_wasm_blob("hbc", false)?;
             exec(build_cmd("gzip -k -f depell/src/index.js"))?;
             exec(build_cmd("gzip -k -f depell/src/index.css"))?;
-            exec(build_cmd("cargo run -p depell --features gzip --release"))?;
+            Ok(())
+        }
+        "watch-depell" => {
+            let mut c = build_cmd("cargo watch --why");
+            c.arg("--exec=xtask build-depell-debug").arg("--exec=run -p depell");
+            exec(c)?;
             Ok(())
         }
         _ => Ok(()),
