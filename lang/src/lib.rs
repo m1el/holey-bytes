@@ -800,6 +800,7 @@ struct TypesTmp {
     frontier: Vec<ty::Id>,
     globals: Vec<ty::Global>,
     funcs: Vec<ty::Func>,
+    args: Vec<ty::Id>,
 }
 
 #[derive(Default)]

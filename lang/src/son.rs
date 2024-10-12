@@ -2078,12 +2078,12 @@ impl Codegen {
                     file,
                     name: id,
                     sig: '_b: {
-                        let arg_base = self.tys.ins.args.len();
+                        let arg_base = self.tys.tmp.args.len();
                         for arg in args {
                             let sym = parser::find_symbol(&f.symbols, arg.id);
                             assert!(sym.flags & idfl::COMPTIME == 0, "TODO");
                             let ty = self.ty(&arg.ty);
-                            self.tys.ins.args.push(ty);
+                            self.tys.tmp.args.push(ty);
                         }
 
                         let Some(args) = self.pack_args(arg_base) else {

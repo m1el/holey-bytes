@@ -1755,11 +1755,11 @@ impl Codegen {
         Some(if let Some(sig) = fuc.sig {
             sig
         } else {
-            let arg_base = self.tys.ins.args.len();
+            let arg_base = self.tys.tmp.args.len();
 
             for (arg, carg) in args.iter().zip(cargs) {
                 let ty = self.ty(&carg.ty);
-                self.tys.ins.args.push(ty);
+                self.tys.tmp.args.push(ty);
                 let sym = parser::find_symbol(&fast.symbols, carg.id);
                 let loc = if sym.flags & idfl::COMPTIME == 0 {
                     // FIXME: could fuck us
@@ -1771,7 +1771,7 @@ impl Codegen {
                         "TODO: we dont support anything except type generics"
                     );
                     let arg = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
-                    self.tys.ins.args.push(arg.loc.to_ty().unwrap());
+                    self.tys.tmp.args.push(arg.loc.to_ty().unwrap());
                     arg.loc
                 };
 
@@ -1976,7 +1976,7 @@ impl Codegen {
             _ => self.report(
                 pos,
                 format_args!(
-                    "expected expression to evaluate to struct (or array maybe) ({})",
+                    "expected expression to evaluate to struct (or array maybe) but it evaluated to {}",
                     self.ty_display(ty)
                 ),
             ),
@@ -2498,7 +2498,7 @@ impl Codegen {
                     file,
                     name: id,
                     sig: 'b: {
-                        let arg_base = self.tys.ins.args.len();
+                        let arg_base = self.tys.tmp.args.len();
                         for arg in args {
                             let sym = find_symbol(&self.files[file as usize].symbols, arg.id);
                             if sym.flags & idfl::COMPTIME != 0 {
@@ -2506,7 +2506,7 @@ impl Codegen {
                                 break 'b None;
                             }
                             let ty = self.ty(&arg.ty);
-                            self.tys.ins.args.push(ty);
+                            self.tys.tmp.args.push(ty);
                         }
 
                         let args = self.pack_args(pos, arg_base);
@@ -2728,7 +2728,9 @@ impl Codegen {
     }
 
     fn pack_args(&mut self, pos: Pos, arg_base: usize) -> ty::Tuple {
-        let needle = &self.tys.ins.args[arg_base..];
+        let base = self.tys.ins.args.len();
+        self.tys.ins.args.extend(self.tys.tmp.args.drain(arg_base..));
+        let needle = &self.tys.ins.args[base..];
         if needle.is_empty() {
             return ty::Tuple::empty();
         }
@@ -2736,7 +2738,7 @@ impl Codegen {
         // FIXME: maybe later when this becomes a bottleneck we use more
         // efficient search (SIMD?, indexing?)
         let sp = self.tys.ins.args.windows(needle.len()).position(|val| val == needle).unwrap();
-        self.tys.ins.args.truncate((sp + needle.len()).max(arg_base));
+        self.tys.ins.args.truncate((sp + needle.len()).max(base));
         ty::Tuple::new(sp, len)
             .unwrap_or_else(|| self.report(pos, "amount of arguments not supported"))
     }
