@@ -896,9 +896,9 @@ impl Codegen {
                 };
 
                 let fuc = &self.tys.ins.funcs[func as usize];
-                let fast = self.files[fuc.file as usize].clone();
+                let ast = self.files[fuc.file as usize].clone();
                 let E::BinOp { right: &E::Closure { args: cargs, body, .. }, .. } =
-                    fuc.expr.get(&fast).unwrap()
+                    fuc.expr.get(&ast).unwrap()
                 else {
                     unreachable!();
                 };
@@ -908,12 +908,18 @@ impl Codegen {
 
                 self.assert_arg_count(expr.pos(), args.len(), cargs.len(), "inline function call");
 
-                if scope == self.ci.vars.len() {
-                    for ((arg, ti), carg) in args.iter().zip(sig.args.range()).zip(cargs) {
-                        let ty = self.tys.ins.args[ti];
-                        let loc = self.expr_ctx(arg, Ctx::default().with_ty(ty))?.loc;
-                        self.ci.vars.push(Variable { id: carg.id, value: Value { ty, loc } });
+                let mut sig_args = sig.args.range();
+                for (arg, carg) in args.iter().zip(cargs) {
+                    let ty = self.tys.ins.args[sig_args.next().unwrap()];
+                    let sym = parser::find_symbol(&ast.symbols, carg.id);
+                    if sym.flags & idfl::COMPTIME != 0 {
+                        sig_args.next().unwrap();
+                        continue;
                     }
+
+                    debug_assert_ne!(ty, ty::Id::TYPE);
+                    let loc = self.expr_ctx(arg, Ctx::default().with_ty(ty))?.loc;
+                    self.ci.vars.push(Variable { id: carg.id, value: Value { ty, loc } });
                 }
 
                 let ret_reloc_base = self.ci.ret_relocs.len();
@@ -1350,15 +1356,7 @@ impl Codegen {
 
                 // TODO: this will be usefull but not now
                 let scope = self.ci.vars.len();
-                //let mut snap = self.output.snap();
-                //snap.sub(&self.ci.snap);
-                //let prev_stack_rel = self.ci.stack_relocs.len();
-                //let prev_ret_rel = self.ci.ret_relocs.len();
                 let sig = self.compute_signature(&mut func, expr.pos(), args)?;
-                //self.ci.ret_relocs.truncate(prev_ret_rel);
-                //self.ci.stack_relocs.truncate(prev_stack_rel);
-                //snap.add(&self.ci.snap);
-                //self.output.trunc(&snap);
                 self.ci.vars.truncate(scope);
 
                 let fuc = &self.tys.ins.funcs[func as usize];
@@ -1975,7 +1973,13 @@ impl Codegen {
                     );
                 }
             }
-            _ => self.report(pos, "expected expression to evaluate to struct (or array maybe)"),
+            _ => self.report(
+                pos,
+                format_args!(
+                    "expected expression to evaluate to struct (or array maybe) ({})",
+                    self.ty_display(ty)
+                ),
+            ),
         }
 
         let size = self.tys.size_of(ty);
@@ -2798,6 +2802,7 @@ mod tests {
         global_variables;
         generic_types;
         generic_functions;
+        inlined_generic_functions;
         c_strings;
         idk;
         struct_patterns;

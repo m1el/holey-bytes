@@ -789,6 +789,18 @@ integer := fn(min: int, max: int): int {
 }
 ```
 
+#### inlined_generic_functions
+```hb
+abs := fn($Expr: type, x: Expr): Expr {
+	mask := x >> @bitcast(@sizeof(Expr) - 1)
+	return (x ^ mask) - mask
+}
+
+main := fn(): int {
+	return @inline(abs, int, -10)
+}
+```
+
 #### some_generic_code
 ```hb
 some_func := fn($Elem: type): void {
