@@ -85,7 +85,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         let mut lexer = Lexer::new(input);
         Self {
             loader,
-            token: lexer.next(),
+            token: lexer.eat(),
             lexer,
             path,
             ctx,
@@ -111,7 +111,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                         self.lexer.source(),
                         self.path,
                         ident::pos(id.ident),
-                        format_args!(
+                        &format_args!(
                             "undeclared identifier: {}",
                             self.lexer.slice(ident::range(id.ident))
                         ),
@@ -127,7 +127,7 @@ impl<'a, 'b> Parser<'a, 'b> {
     }
 
     fn next(&mut self) -> Token {
-        core::mem::replace(&mut self.token, self.lexer.next())
+        core::mem::replace(&mut self.token, self.lexer.eat())
     }
 
     fn ptr_expr(&mut self) -> &'a Expr<'a> {
@@ -328,16 +328,9 @@ impl<'a, 'b> Parser<'a, 'b> {
                 },
                 captured: {
                     self.ns_bound = prev_boundary;
-                    let mut captured = &mut self.ctx.captured[prev_captured..];
-                    while let Some(it) = captured.take_first_mut() {
-                        for ot in &mut *captured {
-                            if it > ot {
-                                core::mem::swap(it, ot);
-                            }
-                        }
-                    }
-                    debug_assert!(captured.is_sorted());
-                    let preserved = self.ctx.captured[prev_captured..].partition_dedup().0.len();
+                    let captured = &mut self.ctx.captured[prev_captured..];
+                    crate::quad_sort(captured, core::cmp::Ord::cmp);
+                    let preserved = captured.partition_dedup().0.len();
                     self.ctx.captured.truncate(prev_captured + preserved);
                     self.arena.alloc_slice(&self.ctx.captured[prev_captured..])
                 },
@@ -983,7 +976,7 @@ impl AstInner<[Symbol]> {
         let exprs =
             unsafe { core::mem::transmute(Parser::parse(ctx, &file, path, loader, &arena)) };
 
-        ctx.symbols.sort_unstable_by_key(|s| s.name);
+        crate::quad_sort(&mut ctx.symbols, |a, b| a.name.cmp(&b.name));
 
         let layout = Self::layout(ctx.symbols.len());
 
@@ -1012,22 +1005,6 @@ impl AstInner<[Symbol]> {
     }
 }
 
-fn report_to(file: &str, path: &str, pos: Pos, msg: impl fmt::Display, out: &mut impl fmt::Write) {
-    let (line, mut col) = lexer::line_col(file.as_bytes(), pos);
-    #[cfg(feature = "std")]
-    let disp = crate::fs::display_rel_path(path);
-    #[cfg(not(feature = "std"))]
-    let disp = path;
-    _ = writeln!(out, "{}:{}:{}: {}", disp, line, col, msg);
-
-    let line = &file[file[..pos as usize].rfind('\n').map_or(0, |i| i + 1)
-        ..file[pos as usize..].find('\n').unwrap_or(file.len()) + pos as usize];
-    col += line.matches('\t').count() * 3;
-
-    _ = writeln!(out, "{}", line.replace("\t", "    "));
-    _ = writeln!(out, "{}^", " ".repeat(col - 1));
-}
-
 pub struct Report<'a, D> {
     file: &'a str,
     path: &'a str,
@@ -1046,6 +1023,22 @@ impl<D: core::fmt::Display> core::fmt::Display for Report<'_, D> {
         report_to(self.file, self.path, self.pos, &self.msg, f);
         Ok(())
     }
+}
+
+fn report_to(file: &str, path: &str, pos: Pos, msg: &dyn fmt::Display, out: &mut impl fmt::Write) {
+    let (line, mut col) = lexer::line_col(file.as_bytes(), pos);
+    #[cfg(feature = "std")]
+    let disp = crate::fs::display_rel_path(path);
+    #[cfg(not(feature = "std"))]
+    let disp = path;
+    _ = writeln!(out, "{}:{}:{}: {}", disp, line, col, msg);
+
+    let line = &file[file[..pos as usize].rfind('\n').map_or(0, |i| i + 1)
+        ..file[pos as usize..].find('\n').map_or(file.len(), |i| i + pos as usize)];
+    col += line.matches('\t').count() * 3;
+
+    _ = writeln!(out, "{}", line.replace("\t", "    "));
+    _ = writeln!(out, "{}^", " ".repeat(col - 1));
 }
 
 #[derive(PartialEq, Eq, Hash)]

@@ -54,9 +54,6 @@ form {
 	flex-direction: column;
 	gap: var(--small-gap);
 
-	::placeholder {
-		color: var(--placeholder);
-	}
 
 	.error {
 		color: var(--error);

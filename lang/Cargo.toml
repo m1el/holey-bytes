@@ -11,7 +11,7 @@ path = "src/main.rs"
 hashbrown = { version = "0.15.0", default-features = false, features = ["raw-entry"] }
 hbbytecode = { workspace = true, features = ["disasm"] }
 hbvm = { workspace = true, features = ["nightly"] }
-log = { version = "0.4.22", features = ["release_max_level_error"] }
+log = "0.4.22"
 
 [dependencies.regalloc2]
 git = "https://github.com/jakubDoka/regalloc2"

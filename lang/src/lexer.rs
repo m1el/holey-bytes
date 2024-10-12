@@ -72,7 +72,6 @@ macro_rules! gen_token_kind {
                 } + 1)
             }
 
-            #[inline(always)]
             fn from_ident(ident: &[u8]) -> Self {
                 match ident {
                     $($keyword_lit => Self::$keyword,)*
@@ -377,6 +376,25 @@ impl<'a> Lexer<'a> {
         Self::restore(input, 0)
     }
 
+    pub fn imports(input: &'a str) -> impl Iterator<Item = &'a str> {
+        let mut s = Self::new(input);
+        core::iter::from_fn(move || loop {
+            let t = s.eat();
+            if t.kind == TokenKind::Eof {
+                return None;
+            }
+            if t.kind == TokenKind::Directive
+                && s.slice(t.range()) == "use"
+                && s.eat().kind == TokenKind::LParen
+            {
+                let t = s.eat();
+                if t.kind == TokenKind::DQuote {
+                    return Some(&s.slice(t.range())[1..t.range().len() - 1]);
+                }
+            }
+        })
+    }
+
     pub fn restore(input: &'a str, pos: u32) -> Self {
         Self { pos, source: input.as_bytes() }
     }
@@ -404,9 +422,9 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn last(&mut self) -> Token {
-        let mut token = self.next();
+        let mut token = self.eat();
         loop {
-            let next = self.next();
+            let next = self.eat();
             if next.kind == TokenKind::Eof {
                 break;
             }
@@ -415,7 +433,7 @@ impl<'a> Lexer<'a> {
         token
     }
 
-    pub fn next(&mut self) -> Token {
+    pub fn eat(&mut self) -> Token {
         use TokenKind as T;
         loop {
             let mut start = self.pos;

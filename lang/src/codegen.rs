@@ -8,7 +8,7 @@ use {
             self, find_symbol, idfl, CommentOr, CtorField, Expr, ExprRef, FileId, Pos, StructField,
         },
         ty, Field, Func, Global, LoggedMem, OffsetIter, ParamAlloc, Reloc, Sig, Struct, SymKey,
-        TypedReloc, Types,
+        TypedReloc, Types, HEADER_SIZE,
     },
     alloc::{boxed::Box, string::String, vec::Vec},
     core::fmt::Display,
@@ -637,10 +637,18 @@ struct Pool {
 
 const VM_STACK_SIZE: usize = 1024 * 64;
 
-struct Comptime {
-    vm: hbvm::Vm<LoggedMem, { 1024 * 10 }>,
-    _stack: Box<[u8; VM_STACK_SIZE]>,
+pub struct Comptime {
+    pub vm: hbvm::Vm<LoggedMem, { 1024 * 10 }>,
+    stack: Box<[u8; VM_STACK_SIZE]>,
     code: Vec<u8>,
+}
+impl Comptime {
+    fn reset(&mut self) {
+        let ptr = unsafe { self.stack.as_mut_ptr().cast::<u8>().add(VM_STACK_SIZE) as u64 };
+        self.vm.registers.fill(hbvm::value::Value(0));
+        self.vm.write_reg(STACK_PTR, ptr);
+        self.vm.pc = hbvm::mem::Address::new(self.code.as_ptr() as u64 + HEADER_SIZE as u64);
+    }
 }
 
 impl Default for Comptime {
@@ -649,7 +657,7 @@ impl Default for Comptime {
         let mut vm = hbvm::Vm::default();
         let ptr = unsafe { stack.as_mut_ptr().cast::<u8>().add(VM_STACK_SIZE) as u64 };
         vm.write_reg(STACK_PTR, ptr);
-        Self { vm, _stack: unsafe { stack.assume_init() }, code: Default::default() }
+        Self { vm, stack: unsafe { stack.assume_init() }, code: Default::default() }
     }
 }
 
@@ -1233,9 +1241,12 @@ impl Codegen {
                             e => unimplemented!("{e:?}"),
                         }
                     }
-                    smh => self.report(
+                    _ => self.report(
                         target.pos(),
-                        format_args!("the field operation is not supported: {smh:?}"),
+                        format_args!(
+                            "the field operation is not supported: {}",
+                            self.ty_display(tal.ty)
+                        ),
                     ),
                 }
             }
@@ -1456,8 +1467,7 @@ impl Codegen {
                         self.report(
                             pos,
                             format_args!(
-                                "this integer was inferred to be '{}' \
-                                which does not make sense",
+                                "this integer was inferred to be '{}'",
                                 self.ty_display(ty)
                             ),
                         );
@@ -1715,16 +1725,11 @@ impl Codegen {
                 unimplemented!("{:#?}", op)
             }
             E::Comment { .. } => Some(Value::void()),
-            ref ast => self.report_unhandled_ast(ast, "expression"),
+            ref ast => self.report_unhandled_ast(ast, "something"),
         }?;
 
         if let Some(ty) = ctx.ty {
-            _ = self.assert_ty(
-                expr.pos(),
-                value.ty,
-                ty,
-                format_args!("'{}'", self.ast_display(expr)),
-            );
+            _ = self.assert_ty(expr.pos(), value.ty, ty, "somehow");
         }
 
         Some(match ctx.loc {
@@ -2666,7 +2671,7 @@ impl Codegen {
 
     fn run_vm(&mut self) {
         loop {
-            match self.ct.vm.run().unwrap() {
+            match self.ct.vm.run().unwrap_or_else(|e| panic!("{e:?}")) {
                 hbvm::VmRunOk::End => break,
                 hbvm::VmRunOk::Timer => unreachable!(),
                 hbvm::VmRunOk::Ecall => self.handle_ecall(),
@@ -2702,26 +2707,16 @@ impl Codegen {
         }
     }
 
-    fn report_log(&self, pos: Pos, msg: impl core::fmt::Display) {
-        log::error!("{}", self.cfile().report(pos, msg));
-    }
-
     #[track_caller]
     fn report(&self, pos: Pos, msg: impl core::fmt::Display) -> ! {
-        self.report_log(pos, msg);
+        log::error!("{}", self.cfile().report(pos, msg));
         unreachable!();
     }
 
     #[track_caller]
     fn report_unhandled_ast(&self, ast: &Expr, hint: &str) -> ! {
         log::debug!("{ast:#?}");
-        self.report(
-            ast.pos(),
-            format_args!(
-                "compiler does not (yet) know how to handle ({hint}):\n{}",
-                self.ast_display(ast)
-            ),
-        )
+        self.report(ast.pos(), format_args!("compiler does not (yet) know how to handle ({hint})",))
     }
 
     fn cfile(&self) -> &parser::Ast {
@@ -2753,9 +2748,14 @@ impl Codegen {
     }
 
     pub fn assemble(&mut self, buf: &mut Vec<u8>) {
-        self.tys.ins.funcs.iter_mut().for_each(|f| f.offset = u32::MAX);
-        self.tys.ins.globals.iter_mut().for_each(|g| g.offset = u32::MAX);
-        self.tys.assemble(buf)
+        self.tys.reassemble(buf);
+    }
+
+    pub fn assemble_comptime(mut self) -> Comptime {
+        self.ct.code.clear();
+        self.tys.reassemble(&mut self.ct.code);
+        self.ct.reset();
+        self.ct
     }
 }
 

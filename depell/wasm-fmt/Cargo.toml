@@ -8,3 +8,4 @@ crate-type = ["cdylib"]
 
 [dependencies]
 hblang = { workspace = true, features = ["no_log"] }
+wasm-rt = { version = "0.1.0", path = "../wasm-rt" }

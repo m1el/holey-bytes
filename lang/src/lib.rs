@@ -20,7 +20,8 @@
     iter_intersperse,
     str_from_raw_parts,
     ptr_sub_ptr,
-    slice_from_ptr_range
+    slice_from_ptr_range,
+    is_sorted
 )]
 #![warn(clippy::dbg_macro)]
 #![allow(stable_features, internal_features)]
@@ -36,7 +37,7 @@ use {
         ty::ArrayLen,
     },
     alloc::{collections::BTreeMap, string::String, vec::Vec},
-    core::{cell::Cell, fmt::Display, ops::Range},
+    core::{cell::Cell, ops::Range},
     hashbrown::hash_map,
     hbbytecode as instrs,
 };
@@ -68,7 +69,7 @@ pub mod parser;
 #[cfg(feature = "opts")]
 pub mod son;
 
-mod lexer;
+pub mod lexer;
 #[cfg(feature = "opts")]
 mod vc;
 
@@ -535,37 +536,54 @@ mod ty {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             use Kind as TK;
             match TK::from_ty(self.ty) {
-                TK::Module(idx) => write!(f, "@use({:?})[{}]", self.files[idx as usize].path, idx),
-                TK::Builtin(ty) => write!(f, "{}", to_str(ty)),
-                TK::Ptr(ty) => {
-                    write!(f, "^{}", self.rety(self.tys.ins.ptrs[ty as usize].base))
+                TK::Module(idx) => {
+                    f.write_str("@use(\"")?;
+                    self.files[idx as usize].path.fmt(f)?;
+                    f.write_str(")[")?;
+                    idx.fmt(f)?;
+                    f.write_str("]")
                 }
+                TK::Builtin(ty) => f.write_str(to_str(ty)),
+                TK::Ptr(ty) => self.rety(self.tys.ins.ptrs[ty as usize].base).fmt(f),
                 TK::Struct(idx) => {
                     let record = &self.tys.ins.structs[idx as usize];
                     if ident::is_null(record.name) {
-                        write!(f, "[{idx}]{{")?;
+                        f.write_str("[")?;
+                        idx.fmt(f)?;
+                        f.write_str("]{")?;
                         for (i, &super::Field { name, ty }) in
                             self.tys.struct_fields(idx).iter().enumerate()
                         {
                             if i != 0 {
-                                write!(f, ", ")?;
+                                f.write_str(", ")?;
                             }
-                            write!(f, "{}: {}", self.tys.names.ident_str(name), self.rety(ty))?;
+                            f.write_str(self.tys.names.ident_str(name))?;
+                            f.write_str(": ")?;
+                            self.rety(ty).fmt(f)?;
                         }
-                        write!(f, "}}")
+                        f.write_str("}")
                     } else {
                         let file = &self.files[record.file as usize];
-                        write!(f, "{}", file.ident_str(record.name))
+                        f.write_str(file.ident_str(record.name))
                     }
                 }
-                TK::Func(idx) => write!(f, "fn{idx}"),
-                TK::Global(idx) => write!(f, "global{idx}"),
+                TK::Func(idx) => {
+                    f.write_str("fn")?;
+                    idx.fmt(f)
+                }
+                TK::Global(idx) => {
+                    f.write_str("global")?;
+                    idx.fmt(f)
+                }
                 TK::Slice(idx) => {
                     let array = self.tys.ins.arrays[idx as usize];
-                    match array.len {
-                        ArrayLen::MAX => write!(f, "[{}]", self.rety(array.ty)),
-                        len => write!(f, "[{}; {len}]", self.rety(array.ty)),
+                    f.write_str("[")?;
+                    self.rety(array.ty).fmt(f)?;
+                    if array.len != ArrayLen::MAX {
+                        f.write_str("; ")?;
+                        array.len.fmt(f)?;
                     }
+                    f.write_str("]")
                 }
             }
         }
@@ -909,6 +927,12 @@ impl Types {
             }
             _ => return None,
         })
+    }
+
+    fn reassemble(&mut self, buf: &mut Vec<u8>) {
+        self.ins.funcs.iter_mut().for_each(|f| f.offset = u32::MAX);
+        self.ins.globals.iter_mut().for_each(|g| g.offset = u32::MAX);
+        self.assemble(buf)
     }
 
     fn assemble(&mut self, to: &mut Vec<u8>) {
@@ -1505,11 +1529,22 @@ impl hbvm::mem::Memory for LoggedMem {
 
 struct AsHex<'a>(&'a [u8]);
 
-impl Display for AsHex<'_> {
+impl core::fmt::Display for AsHex<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         for &b in self.0 {
             write!(f, "{b:02x}")?;
         }
         Ok(())
     }
+}
+
+pub fn quad_sort<T>(mut slice: &mut [T], mut cmp: impl FnMut(&T, &T) -> core::cmp::Ordering) {
+    while let Some(it) = slice.take_first_mut() {
+        for ot in &mut *slice {
+            if cmp(it, ot) == core::cmp::Ordering::Greater {
+                core::mem::swap(it, ot);
+            }
+        }
+    }
+    debug_assert!(slice.is_sorted_by(|a, b| cmp(a, b) != core::cmp::Ordering::Greater));
 }

@@ -126,10 +126,32 @@ pub enum VmRunError {
 
     /// Invalid operand
     InvalidOperand,
-
-    /// Unimplemented feature
-    Unimplemented,
 }
+
+impl core::fmt::Display for VmRunError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            VmRunError::InvalidOpcode(op) => {
+                f.write_str("invalid op code: ").and_then(|_| op.fmt(f))
+            }
+            VmRunError::LoadAccessEx(address) => {
+                f.write_str("falied to load at ").and_then(|_| address.fmt(f))
+            }
+            VmRunError::ProgramFetchLoadEx(address) => {
+                f.write_str("falied to load instruction at ").and_then(|_| address.fmt(f))
+            }
+            VmRunError::StoreAccessEx(address) => {
+                f.write_str("falied to store at ").and_then(|_| address.fmt(f))
+            }
+            VmRunError::RegOutOfBounds => f.write_str("reg out of bounds"),
+            VmRunError::AddrOutOfBounds => f.write_str("addr out-of-bounds"),
+            VmRunError::Unreachable => f.write_str("unreachable"),
+            VmRunError::InvalidOperand => f.write_str("invalud operand"),
+        }
+    }
+}
+
+impl core::error::Error for VmRunError {}
 
 /// Virtual machine halt ok
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

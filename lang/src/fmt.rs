@@ -6,6 +6,26 @@ use {
     core::fmt,
 };
 
+pub fn display_radix(radix: Radix, mut value: u64, buf: &mut [u8; 64]) -> &str {
+    fn conv_radix(d: u8) -> u8 {
+        match d {
+            0..=9 => d + b'0',
+            _ => d - 10 + b'A',
+        }
+    }
+
+    for (i, b) in buf.iter_mut().enumerate().rev() {
+        let d = (value % radix as u64) as u8;
+        value /= radix as u64;
+        *b = conv_radix(d);
+        if value == 0 {
+            return unsafe { core::str::from_utf8_unchecked(&buf[i..]) };
+        }
+    }
+
+    unreachable!()
+}
+
 pub fn minify(source: &mut str) -> usize {
     fn needs_space(c: u8) -> bool {
         matches!(c, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | 127..)
@@ -16,7 +36,7 @@ pub fn minify(source: &mut str) -> usize {
     let mut prev_needs_whitecpace = false;
     let mut prev_needs_newline = false;
     loop {
-        let mut token = lexer::Lexer::new(reader).next();
+        let mut token = lexer::Lexer::new(reader).eat();
         match token.kind {
             TokenKind::Eof => break,
             TokenKind::CtIdent | TokenKind::Directive => token.start -= 1,
@@ -321,25 +341,6 @@ impl<'a> Formatter<'a> {
                 self.fmt_list(f, true, "}", "", stmts, Self::fmt)
             }
             Expr::Number { value, radix, .. } => {
-                fn display_radix(radix: Radix, mut value: u64, buf: &mut [u8; 64]) -> &str {
-                    fn conv_radix(d: u8) -> u8 {
-                        match d {
-                            0..=9 => d + b'0',
-                            _ => d - 10 + b'A',
-                        }
-                    }
-
-                    for (i, b) in buf.iter_mut().enumerate().rev() {
-                        let d = (value % radix as u64) as u8;
-                        value /= radix as u64;
-                        *b = conv_radix(d);
-                        if value == 0 {
-                            return unsafe { core::str::from_utf8_unchecked(&buf[i..]) };
-                        }
-                    }
-
-                    unreachable!()
-                }
                 f.write_str(match radix {
                     Radix::Decimal => "",
                     Radix::Hex => "0x",
@@ -404,7 +405,7 @@ pub fn preserve_newlines(source: &str) -> usize {
 }
 
 pub fn insert_needed_semicolon(source: &str) -> bool {
-    let kind = lexer::Lexer::new(source).next().kind;
+    let kind = lexer::Lexer::new(source).eat().kind;
     kind.precedence().is_some() || matches!(kind, TokenKind::Ctor | TokenKind::Tupl)
 }
 
@@ -450,15 +451,15 @@ pub mod test {
         minned.truncate(len);
 
         let ast = parser::Ast::new(ident, minned, &mut ParserCtx::default(), &mut |_, _| Ok(0));
-        log::error!(
-            "{} / {} = {} | {} / {} = {}",
-            ast.mem.size(),
-            input.len(),
-            ast.mem.size() as f32 / input.len() as f32,
-            ast.mem.size(),
-            ast.file.len(),
-            ast.mem.size() as f32 / ast.file.len() as f32
-        );
+        //log::error!(
+        //    "{} / {} = {} | {} / {} = {}",
+        //    ast.mem.size(),
+        //    input.len(),
+        //    ast.mem.size() as f32 / input.len() as f32,
+        //    ast.mem.size(),
+        //    ast.file.len(),
+        //    ast.mem.size() as f32 / ast.file.len() as f32
+        //);
         let mut output = String::new();
         write!(output, "{ast}").unwrap();
 

@@ -13,16 +13,32 @@ fn root() -> &'static Path {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap()
 }
 
-fn exec(cmd: impl AsRef<str>) -> io::Result<()> {
+fn build_cmd(cmd: impl AsRef<str>) -> std::process::Command {
     let mut args = cmd.as_ref().split_whitespace();
     let mut c = std::process::Command::new(args.next().unwrap());
     for arg in args {
         c.arg(arg);
     }
-    if !c.status()?.success() {
-        return Err(io::Error::other(format!("command failed: {}", cmd.as_ref())));
+    c
+}
+
+fn exec(mut cmd: std::process::Command) -> io::Result<()> {
+    if !cmd.status()?.success() {
+        return Err(io::Error::other(format!("command failed: {:?}", cmd)));
     }
     Ok(())
+}
+
+fn build_wasm_blob(name: &str, debug: bool) -> io::Result<()> {
+    let mut c = build_cmd(if debug { "cargo wasm-build-debug" } else { "cargo wasm-build" });
+    c.arg(format!("wasm-{name}"));
+    exec(c)?;
+
+    let out_path = format!("target/wasm32-unknown-unknown/small/wasm_{name}.wasm");
+    if !debug {
+        exec(build_cmd(format!("wasm-opt -Oz {out_path} -o {out_path}")))?;
+    }
+    exec(build_cmd(format!("cp {out_path} depell/src/wasm-{name}.wasm")))
 }
 
 fn main() -> io::Result<()> {
@@ -30,11 +46,14 @@ fn main() -> io::Result<()> {
     match args[0].as_str() {
         "fmt" => fmt(args[1] == "-r" || args[1] == "--renumber"),
         "build-depell" => {
-            exec(
-                "cargo build -p wasm-hbfmt --target wasm32-unknown-unknown \
-                --profile=small -Zbuild-std=core,alloc",
-            )?;
-            exec("cargo build -p depell --release")?;
+            build_wasm_blob("hbfmt", false)?;
+            build_wasm_blob("hbc", false)?;
+            exec(build_cmd("cargo build -p depell --release"))?;
+            Ok(())
+        }
+        "build-depell-debug" => {
+            build_wasm_blob("hbfmt", true)?;
+            build_wasm_blob("hbc", true)?;
             Ok(())
         }
         _ => Ok(()),

@@ -40,11 +40,20 @@ async fn amain() {
 
     let router = axum::Router::new()
         .route("/", get(Index::page))
+        .route("/index.css", static_asset!("text/css", "index.css"))
+        .route("/index.js", static_asset!("text/javascript", "index.js"))
         .route(
             "/hbfmt.wasm",
             static_asset!(
                 "application/wasm",
                 "../../target/wasm32-unknown-unknown/small/wasm_hbfmt.wasm"
+            ),
+        )
+        .route(
+            "/hbc.wasm",
+            static_asset!(
+                "application/wasm",
+                "../../target/wasm32-unknown-unknown/small/wasm_hbc.wasm"
             ),
         )
         .route("/index-view", get(Index::get))
@@ -377,7 +386,7 @@ async fn base(body: impl FnOnce(&mut String), session: Option<&Session>) -> Html
         "<!DOCTYPE html>"
         <html lang="en">
             <head>
-                <style>!{include_str!("index.css")}</style>
+                <link rel="stylesheet" href="/index.css">
             </head>
             <body>
                 <nav>
@@ -401,7 +410,7 @@ async fn base(body: impl FnOnce(&mut String), session: Option<&Session>) -> Html
                 <main>|f|{body(f)}</main>
             </body>
             <script src="https://unpkg.com/htmx.org@2.0.3" integrity="sha384-0895/pl2MU10Hqc6jd4RvrthNlDiE9U1tWmX7WRESftEDRosgxNsQG/Ze9YMRzHq" crossorigin="anonymous"></script>
-            <script>!{include_str!("index.js")}</script>
+            <script src="/index.js"></script>
         </html>
     })
 }

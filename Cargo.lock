@@ -810,6 +810,9 @@ name = "wasm-hbc"
 version = "0.1.0"
 dependencies = [
  "hblang",
+ "hbvm",
+ "log",
+ "wasm-rt",
 ]
 
 [[package]]
@@ -817,6 +820,14 @@ name = "wasm-hbfmt"
 version = "0.1.0"
 dependencies = [
  "hblang",
+ "wasm-rt",
+]
+
+[[package]]
+name = "wasm-rt"
+version = "0.1.0"
+dependencies = [
+ "log",
 ]
 
 [[package]]

@@ -3,19 +3,82 @@
 /** @return {never} */
 function never() { throw new Error() }
 
-/**@type{WebAssembly.Instance}*/ let instance;
-/**@type{Promise<WebAssembly.WebAssemblyInstantiatedSource>}*/ let instaceFuture;
+/**@type{WebAssembly.Instance}*/ let hbcInstance;
+/**@type{Promise<WebAssembly.WebAssemblyInstantiatedSource>}*/ let hbcInstaceFuture;
+/** @param {Uint8Array} code @param {number} fuel
+ * @returns {Promise<string | undefined> | string | undefined} */
+function compileCode(code, fuel) {
+	if (!hbcInstance) {
+		hbcInstaceFuture ??= WebAssembly.instantiateStreaming(fetch("/hbc.wasm"), {});
+		return (async () => {
+			hbcInstance = (await hbcInstaceFuture).instance;
+			return compileCodeSync(hbcInstance, code, fuel);
+		})();
+	} else {
+		return compileCodeSync(hbcInstance, code, fuel);
+	}
+
+}
+
+/** @param {WebAssembly.Instance} instance @param {Uint8Array} code @param {number} fuel @returns {string | undefined} */
+function compileCodeSync(instance, code, fuel) {
+	let {
+		INPUT, INPUT_LEN,
+		LOG_MESSAGES, LOG_MESSAGES_LEN,
+		PANIC_MESSAGE, PANIC_MESSAGE_LEN,
+		memory, compile_and_run
+	} = instance.exports;
+
+	if (!(true
+		&& INPUT instanceof WebAssembly.Global
+		&& INPUT_LEN instanceof WebAssembly.Global
+		&& LOG_MESSAGES instanceof WebAssembly.Global
+		&& LOG_MESSAGES_LEN instanceof WebAssembly.Global
+		&& memory instanceof WebAssembly.Memory
+		&& typeof compile_and_run === "function"
+	)) console.log(instance.exports), never();
+
+	const dw = new DataView(memory.buffer);
+	dw.setUint32(INPUT_LEN.value, code.length, true);
+	new Uint8Array(memory.buffer, INPUT.value).set(code);
+
+	try {
+		compile_and_run(fuel);
+		return bufToString(memory, LOG_MESSAGES, LOG_MESSAGES_LEN);
+	} catch (e) {
+		if (PANIC_MESSAGE instanceof WebAssembly.Global
+			&& PANIC_MESSAGE_LEN instanceof WebAssembly.Global) {
+			console.error(bufToString(memory, PANIC_MESSAGE, PANIC_MESSAGE_LEN));
+		}
+		let log = bufToString(memory, LOG_MESSAGES, LOG_MESSAGES_LEN);
+		console.error(log, e);
+		return undefined;
+	}
+}
+
+/** @param {WebAssembly.Memory} mem
+ * @param {WebAssembly.Global} ptr
+ * @param {WebAssembly.Global} len
+ * @return {string} */
+function bufToString(mem, ptr, len) {
+	return new TextDecoder()
+		.decode(new Uint8Array(mem.buffer, ptr.value,
+			new DataView(mem.buffer).getUint32(len.value, true)));
+}
+
+/**@type{WebAssembly.Instance}*/ let fmtInstance;
+/**@type{Promise<WebAssembly.WebAssemblyInstantiatedSource>}*/ let fmtInstaceFuture;
 /** @param {string} code @param {"fmt" | "minify"} action
  * @returns {Promise<string | undefined> | string | undefined} */
 function modifyCode(code, action) {
-	if (!instance) {
-		instaceFuture ??= WebAssembly.instantiateStreaming(fetch("/hbfmt.wasm"), {});
+	if (!fmtInstance) {
+		fmtInstaceFuture ??= WebAssembly.instantiateStreaming(fetch("/hbfmt.wasm"), {});
 		return (async () => {
-			instance = (await instaceFuture).instance;
-			return modifyCodeSync(instance, code, action);
+			fmtInstance = (await fmtInstaceFuture).instance;
+			return modifyCodeSync(fmtInstance, code, action);
 		})();
 	} else {
-		return modifyCodeSync(instance, code, action);
+		return modifyCodeSync(fmtInstance, code, action);
 	}
 }
 
@@ -100,11 +163,15 @@ function bindTextareaAutoResize(target) {
 	for (const textarea of target.querySelectorAll("textarea")) {
 		if (!(textarea instanceof HTMLTextAreaElement)) never();
 
-		textarea.style.height = textarea.scrollHeight + "px";
+		const taCssMap = window.getComputedStyle(textarea);
+		const padding = parseInt(taCssMap.getPropertyValue('padding-top') ?? "0")
+			+ parseInt(taCssMap.getPropertyValue('padding-top') ?? "0");
+		textarea.style.height = "auto";
+		textarea.style.height = (textarea.scrollHeight - padding) + "px";
 		textarea.style.overflowY = "hidden";
 		textarea.addEventListener("input", function() {
 			textarea.style.height = "auto";
-			textarea.style.height = textarea.scrollHeight + "px";
+			textarea.style.height = (textarea.scrollHeight - padding) + "px";
 		});
 
 		textarea.onkeydown = (ev) => {
@@ -112,10 +179,7 @@ function bindTextareaAutoResize(target) {
 
 			if (ev.key === "Tab") {
 				ev.preventDefault();
-				const prevPos = textarea.selectionStart;
-				textarea.value = textarea.value.slice(0, textarea.selectionStart) +
-					'    ' + textarea.value.slice(textarea.selectionEnd);
-				textarea.selectionStart = textarea.selectionEnd = prevPos + 4;
+				document.execCommand('insertText', false, "    ");
 			}
 
 			if (ev.key === "Backspace" && textarea.selectionStart != 0 && !selecting) {
@@ -125,10 +189,8 @@ function bindTextareaAutoResize(target) {
 					ev.preventDefault();
 					let toDelete = (textarea.selectionStart - (i + 1)) % 4;
 					if (toDelete === 0) toDelete = 4;
-					const prevPos = textarea.selectionStart;
-					textarea.value = textarea.value.slice(0, textarea.selectionStart - toDelete) +
-						textarea.value.slice(textarea.selectionEnd);
-					textarea.selectionStart = textarea.selectionEnd = prevPos - toDelete;
+					textarea.selectionStart -= toDelete;
+					document.execCommand('delete', false);
 				}
 			}
 		}
@@ -165,11 +227,27 @@ if (window.location.hostname === 'localhost') {
 		if (id !== new_id) window.location.reload();
 	}, 300);
 
-	(async function testCodeChange() {
-		const code = "main:=fn():void{return}";
-		const fmtd = await modifyCode(code, "fmt") ?? never();
-		const prev = await modifyCode(fmtd, "minify") ?? never();
-		if (code != prev) console.error(code, prev);
+	(async function test() {
+		{
+			const code = "main:=fn():void{return}";
+			const fmtd = await modifyCode(code, "fmt") ?? never();
+			const prev = await modifyCode(fmtd, "minify") ?? never();
+			if (code != prev) console.error(code, prev);
+		}
+		{
+
+			const name = "foo.hb";
+			const code = "main:=fn():void{return 42}";
+			const buf = new Uint8Array(2 + name.length + 2 + code.length);
+			const view = new DataView(buf.buffer);
+			view.setUint16(0, name.length, true);
+			buf.set(new TextEncoder().encode(name), 2);
+			view.setUint16(2 + name.length, code.length, true);
+			buf.set(new TextEncoder().encode(code), 2 + name.length + 2);
+			const res = await compileCode(buf, 1) ?? never();
+			const expected = "";
+			if (expected != res) console.error(expected, res);
+		}
 	})()
 }
 

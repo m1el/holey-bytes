@@ -1,3 +1,5 @@
+cargo-features = ["profile-rustflags"]
+
 [workspace]
 resolver = "2"
 members = [
@@ -9,11 +11,12 @@ members = [
 	"depell",
 	"depell/wasm-fmt",
 	"depell/wasm-hbc",
+	"depell/wasm-rt",
 ]
 
 [workspace.dependencies]
 hbbytecode = { path = "bytecode", default-features = false }
-hbvm = { path = "vm" }
+hbvm = { path = "vm", default-features = false }
 hbxrt = { path = "xrt" }
 hblang = { path = "lang", default-features = false }
 hbjit = { path = "jit" }
@@ -26,9 +29,13 @@ codegen-units = 1
 panic = "abort"
 
 [profile.small]
+#rustflags = ["-Zfmt-debug=none", "-Zlocation-detail=none"]
 inherits = "release"
 opt-level = "z"
-strip = true
+strip = "debuginfo"
+#strip = true
 lto = true
 codegen-units = 1
 panic = "abort"
+
+
