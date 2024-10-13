@@ -801,7 +801,7 @@ impl Codegen {
         use {Expr as E, TokenKind as T};
         let value = match *expr {
             E::Mod { id, .. } => Some(Value::ty(ty::Kind::Module(id).compress())),
-            E::Embed { id, .. } => Some(Value::ty(ty::Kind::Global(id).compress())),
+            E::Embed { id, .. } => self.handle_global(id),
             E::Struct { captured, packed, fields, pos, .. } => {
                 if captured.is_empty() {
                     Some(Value::ty(
