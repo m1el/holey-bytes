@@ -1389,7 +1389,6 @@ fn test_parse_files(ident: &'static str, input: &'static str) -> (Vec<parser::As
         last_module_name = module_name;
         last_start = i + m.len() + module_name.len() + 1;
     }
-
     if last_module_name.ends_with(".hb") {
         fmt::test::format(ident, input[last_start..].trim());
         module_map.push((last_module_name, &input[last_start..]));

@@ -1004,11 +1004,11 @@ impl Codegen {
             }
             E::Directive { name: "sizeof", args: [ty], .. } => {
                 let ty = self.ty(ty);
-                return Some(Value::imm(self.tys.size_of(ty) as _));
+                Some(Value::imm(self.tys.size_of(ty) as _))
             }
             E::Directive { name: "alignof", args: [ty], .. } => {
                 let ty = self.ty(ty);
-                return Some(Value::imm(self.tys.align_of(ty) as _));
+                Some(Value::imm(self.tys.align_of(ty) as _))
             }
             E::Directive { name: "intcast", args: [val], .. } => {
                 let Some(ty) = ctx.ty else {

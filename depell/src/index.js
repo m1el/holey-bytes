@@ -12,9 +12,9 @@ async function getHbcInstance() {
 
 const stack_pointer_offset = 1 << 20;
 
-/** @param {WebAssembly.Instance} instance @param {Uint8Array} code @param {number} fuel
+/** @param {WebAssembly.Instance} instance @param {Post[]} packages @param {number} fuel
  * @returns {string} */
-function compileCode(instance, code, fuel) {
+function compileCode(instance, packages, fuel) {
 	let {
 		INPUT, INPUT_LEN,
 		LOG_MESSAGES, LOG_MESSAGES_LEN,
@@ -30,9 +30,8 @@ function compileCode(instance, code, fuel) {
 		&& typeof compile_and_run === "function"
 	)) never();
 
-	const dw = new DataView(memory.buffer);
-	dw.setUint32(INPUT_LEN.value, code.length, true);
-	new Uint8Array(memory.buffer, INPUT.value).set(code);
+	const codeLength = packPosts(packages, new DataView(memory.buffer, INPUT.value));
+	new DataView(memory.buffer).setUint32(INPUT_LEN.value, codeLength, true);
 
 	runWasmFunction(instance, compile_and_run, fuel);
 	return bufToString(memory, LOG_MESSAGES, LOG_MESSAGES_LEN);
@@ -111,19 +110,16 @@ function runWasmFunction(instance, func, ...args) {
  * @property {string} path 
  * @property {string} code */
 
-/** @param {Post[]} posts @returns {Uint8Array} */
-function packPosts(posts) {
-	let len = 0; for (const post of posts) len += 2 + post.path.length + 2 + post.code.length;
-
-	const buf = new Uint8Array(len), view = new DataView(buf.buffer), enc = new TextEncoder();
-	len = 0; for (const post of posts) {
+/** @param {Post[]} posts @param {DataView} view  @returns {number} */
+function packPosts(posts, view) {
+	const enc = new TextEncoder(), buf = new Uint8Array(view.buffer, view.byteOffset);
+	let len = 0; for (const post of posts) {
 		view.setUint16(len, post.path.length, true); len += 2;
 		buf.set(enc.encode(post.path), len); len += post.path.length;
 		view.setUint16(len, post.code.length, true); len += 2;
 		buf.set(enc.encode(post.code), len); len += post.code.length;
 	}
-
-	return buf;
+	return len;
 }
 
 /** @param {WebAssembly.Memory} mem
@@ -146,35 +142,98 @@ function wireUp(target) {
 	bindCodeEdit(target);
 }
 
-/** @type {{ [key: string]: (content: string) => Promise<string> | string }} */
-const applyFns = {
-	timestamp: (content) => new Date(parseInt(content) * 1000).toLocaleString(),
-	fmt: (content) => getFmtInstance().then(i => modifyCode(i, content, "fmt") ?? "invalid code"),
-};
+const importRe = /@use\s*\(\s*"(([^"]|\\")+)"\s*\)/g;
+/** @param {string} code @param {string[]} matches @returns {string[]} */
+function findImports(code, matches) {
+	matches.length = 0;
+	for (const match of code.matchAll(importRe)) {
+		matches.push(match[1]);
+	}
+
+	matches.sort();
+
+	let c = 0;
+	for (let i = 1; i < matches.length; i++) {
+		if (matches[c] != matches[i]) {
+			matches[++c] = matches[i];
+		}
+	}
+	matches.length = Math.min(matches.length, c + 1);
+
+	return matches;
+}
+
 
 /** @param {HTMLElement} target */
 async function bindCodeEdit(target) {
 	const edit = target.querySelector("#code-edit");
 	if (!(edit instanceof HTMLTextAreaElement)) return;
+
 	const codeSize = target.querySelector("#code-size");
-	if (!(codeSize instanceof HTMLSpanElement)) never();
+	const errors = target.querySelector("#compiler-output");
+	if (!(true
+		&& codeSize instanceof HTMLSpanElement
+		&& errors instanceof HTMLPreElement
+	)) never();
+
 	const MAX_CODE_SIZE = parseInt(codeSize.innerHTML);
 	if (Number.isNaN(MAX_CODE_SIZE)) never();
-	const errors = target.querySelector("#compiler-output");
-	if (!(errors instanceof HTMLPreElement)) never();
 
-	const hbc = await getHbcInstance();
-	const fmt = await getFmtInstance();
-
+	const hbc = await getHbcInstance(), fmt = await getFmtInstance();
+	const prevImports = [];
+	const matches = [];
+	/**@type{Post[]}*/
+	const packages = [{ path: "local.hb", code: "" }];
 	const debounce = 100;
+	/**@type{AbortController|undefined}*/
+	let cancelation = undefined;
 	let timeout = 0;
+
 	edit.addEventListener("input", () => {
 		if (timeout) clearTimeout(timeout);
 		timeout = setTimeout(() => {
-			const buf = packPosts([
-				{ path: "local.hb", code: edit.value },
-			]);
-			errors.textContent = compileCode(hbc, buf, 1);
+			prevImports.length = 0; prevImports.push(...matches);
+			const imports = findImports(edit.value, matches);
+			let changed = imports.length !== prevImports.length;
+			for (let i = 0; i < imports.length && !changed; i++) {
+				changed ||= imports[i] !== prevImports[i];
+			}
+
+			if (changed && imports.length !== 0) {
+				if (cancelation) cancelation.abort();
+				cancelation = new AbortController();
+				errors.textContent = "fetching: " + imports.join(", ");
+				fetch(`/code`, {
+					method: "POST",
+					signal: cancelation.signal,
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(imports),
+				}).then(async e => {
+					try {
+						const json = await e.json();
+						if (e.status == 200) {
+							packages.length = 1;
+							packages.push(...json);
+							cancelation = undefined;
+							edit.dispatchEvent(new InputEvent("input"));
+						} else {
+							errors.textContent = "failed to fetch: " + json.join(", ");
+						}
+					} catch (er) {
+						errors.textContent = "completely failed to fetch ("
+							+ e.status + "): " + imports.join(", ");
+						console.error(e);
+					}
+				});
+			}
+
+			if (cancelation && imports.length !== 0) {
+				return;
+			}
+
+			packages[0].code = edit.value;
+
+			errors.textContent = compileCode(hbc, packages, 1);
 			const minified_size = modifyCode(fmt, edit.value, "minify")?.length;
 			if (minified_size) {
 				codeSize.textContent = (MAX_CODE_SIZE - minified_size) + "";
@@ -187,6 +246,11 @@ async function bindCodeEdit(target) {
 	edit.dispatchEvent(new InputEvent("input"));
 }
 
+/** @type {{ [key: string]: (content: string) => Promise<string> | string }} */
+const applyFns = {
+	timestamp: (content) => new Date(parseInt(content) * 1000).toLocaleString(),
+	fmt: (content) => getFmtInstance().then(i => modifyCode(i, content, "fmt") ?? "invalid code"),
+};
 /** @param {HTMLElement} target */
 function execApply(target) {
 	for (const elem of target.querySelectorAll('[apply]')) {
@@ -268,8 +332,7 @@ if (window.location.hostname === 'localhost') {
 				path: "foo.hb",
 				code: "main:=fn():int{return 42}",
 			}];
-			const buf = packPosts(posts);
-			const res = compileCode(await getHbcInstance(), buf, 1) ?? never();
+			const res = compileCode(await getHbcInstance(), posts, 1) ?? never();
 			const expected = "exit code: 42\n";
 			if (expected != res) console.error(expected, res);
 		}

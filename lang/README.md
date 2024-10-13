@@ -174,7 +174,7 @@ main := fn(): int {
 		return 9001
 	}
 
-	finst := Ty2.{ty: .{a: 4, b: 1}, c: 3}
+	finst := Ty2.{ty: .{a: @bitcast(@sizeof(u32)), b: 1}, c: 3}
 	inst := odher_pass(finst)
 	if inst.c == 3 {
 		return pass(&inst.ty)
