@@ -1,7 +1,7 @@
 use {
     crate::{
         codegen,
-        parser::{self, Ast, ParserCtx},
+        parser::{self, Ast, FileKind, ParserCtx},
     },
     alloc::{string::String, vec::Vec},
     core::{fmt::Write, num::NonZeroUsize},
@@ -10,7 +10,9 @@ use {
         collections::VecDeque,
         eprintln,
         ffi::OsStr,
-        io::{self, Write as _},
+        io::{
+            Write as _, {self},
+        },
         path::{Path, PathBuf},
         string::ToString,
         sync::Mutex,
@@ -79,15 +81,16 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
     }
 
     if options.fmt {
-        for parsed in parsed {
+        for parsed in parsed.ast {
             format_ast(parsed)?;
         }
     } else if options.fmt_stdout {
-        let ast = parsed.into_iter().next().unwrap();
+        let ast = parsed.ast.into_iter().next().unwrap();
         write!(out, "{ast}").unwrap();
     } else {
         let mut codegen = codegen::Codegen::default();
-        codegen.files = parsed;
+        codegen.files = parsed.ast;
+        codegen.embeds = parsed.embeds;
 
         codegen.generate(0);
         if options.dump_asm {
@@ -187,7 +190,12 @@ impl<T> TaskQueueInner<T> {
     }
 }
 
-pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
+pub struct Loaded {
+    ast: Vec<Ast>,
+    embeds: Vec<Vec<u8>>,
+}
+
+pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Loaded> {
     fn resolve(path: &str, from: &str, tmp: &mut PathBuf) -> Result<PathBuf, CantLoadFile> {
         tmp.clear();
         match Path::new(from).parent() {
@@ -224,44 +232,73 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
 
     type Task = (u32, PathBuf);
 
-    let seen = Mutex::new(crate::HashMap::<PathBuf, u32>::default());
+    let seen_modules = Mutex::new(crate::HashMap::<PathBuf, u32>::default());
+    let seen_embeds = Mutex::new(crate::HashMap::<PathBuf, u32>::default());
     let tasks = TaskQueue::<Task>::new(extra_threads + 1);
     let ast = Mutex::new(Vec::<io::Result<Ast>>::new());
+    let embeds = Mutex::new(Vec::<Vec<u8>>::new());
 
-    let loader = |path: &str, from: &str, tmp: &mut _| {
-        if path.starts_with("rel:") {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "`rel:` prefix was removed and is now equivalent to no prefix (remove it)"
-                    .to_string(),
-            ));
-        }
-
+    let loader = |path: &str, from: &str, kind: FileKind, tmp: &mut _| {
         let mut physiscal_path = resolve(path, from, tmp)?;
 
-        let id = {
-            let mut seen = seen.lock().unwrap();
-            let len = seen.len();
-            match seen.entry(physiscal_path) {
-                hash_map::Entry::Occupied(entry) => {
-                    return Ok(*entry.get());
+        match kind {
+            FileKind::Module => {
+                let id = {
+                    let mut seen = seen_modules.lock().unwrap();
+                    let len = seen.len();
+                    match seen.entry(physiscal_path) {
+                        hash_map::Entry::Occupied(entry) => {
+                            return Ok(*entry.get());
+                        }
+                        hash_map::Entry::Vacant(entry) => {
+                            physiscal_path = entry.insert_entry(len as _).key().clone();
+                            len as u32
+                        }
+                    }
+                };
+
+                if !physiscal_path.exists() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("can't find file: {}", display_rel_path(&physiscal_path)),
+                    ));
                 }
-                hash_map::Entry::Vacant(entry) => {
-                    physiscal_path = entry.insert_entry(len as _).key().clone();
-                    len as u32
-                }
+
+                tasks.push((id, physiscal_path));
+                Ok(id)
             }
-        };
+            FileKind::Embed => {
+                let id = {
+                    let mut seen = seen_embeds.lock().unwrap();
+                    let len = seen.len();
+                    match seen.entry(physiscal_path) {
+                        hash_map::Entry::Occupied(entry) => {
+                            return Ok(*entry.get());
+                        }
+                        hash_map::Entry::Vacant(entry) => {
+                            physiscal_path = entry.insert_entry(len as _).key().clone();
+                            len as u32
+                        }
+                    }
+                };
 
-        if !physiscal_path.exists() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("can't find file: {}", display_rel_path(&physiscal_path)),
-            ));
+                let content = std::fs::read(&physiscal_path).map_err(|e| {
+                    io::Error::new(
+                        e.kind(),
+                        format!(
+                            "can't load embed file: {}: {e}",
+                            display_rel_path(&physiscal_path)
+                        ),
+                    )
+                })?;
+                let mut embeds = embeds.lock().unwrap();
+                if id as usize >= embeds.len() {
+                    embeds.resize(id as usize + 1, Default::default());
+                }
+                embeds[id as usize] = content;
+                Ok(id)
+            }
         }
-
-        tasks.push((id, physiscal_path));
-        Ok(id)
     };
 
     let execute_task = |ctx: &mut _, (_, path): Task, tmp: &mut _| {
@@ -271,8 +308,8 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
                 format!("path contains invalid characters: {}", display_rel_path(&path)),
             )
         })?;
-        Ok(Ast::new(path, std::fs::read_to_string(path)?, ctx, &mut |path, from| {
-            loader(path, from, tmp).map_err(|e| e.to_string())
+        Ok(Ast::new(path, std::fs::read_to_string(path)?, ctx, &mut |path, from, kind| {
+            loader(path, from, kind, tmp).map_err(|e| e.to_string())
         }))
     };
 
@@ -291,7 +328,7 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
     let path = Path::new(root).canonicalize().map_err(|e| {
         io::Error::new(e.kind(), format!("can't canonicalize root file path ({root})"))
     })?;
-    seen.lock().unwrap().insert(path.clone(), 0);
+    seen_modules.lock().unwrap().insert(path.clone(), 0);
     tasks.push((0, path));
 
     if extra_threads == 0 {
@@ -300,7 +337,10 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Vec<Ast>> {
         std::thread::scope(|s| (0..extra_threads + 1).for_each(|_| _ = s.spawn(thread)));
     }
 
-    ast.into_inner().unwrap().into_iter().collect::<io::Result<Vec<_>>>()
+    Ok(Loaded {
+        ast: ast.into_inner().unwrap().into_iter().collect::<io::Result<Vec<_>>>()?,
+        embeds: embeds.into_inner().unwrap(),
+    })
 }
 
 pub fn display_rel_path(path: &(impl AsRef<OsStr> + ?Sized)) -> std::path::Display {

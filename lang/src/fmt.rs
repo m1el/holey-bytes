@@ -210,6 +210,7 @@ impl<'a> Formatter<'a> {
             Expr::String { literal, .. } => f.write_str(literal),
             Expr::Comment { literal, .. } => f.write_str(literal),
             Expr::Mod { path, .. } => write!(f, "@use(\"{path}\")"),
+            Expr::Embed { path, .. } => write!(f, "@embed(\"{path}\")"),
             Expr::Field { target, name: field, .. } => {
                 self.fmt_paren(target, f, postfix)?;
                 f.write_str(".")?;
@@ -366,13 +367,20 @@ impl<'a> Formatter<'a> {
                 self.fmt(right, f)
             }
             Expr::BinOp { right, op, left } => {
-                let pec_miss = |e: &Expr| {
+                let prec_miss_left = |e: &Expr| {
                     matches!(
                         e, Expr::BinOp { op: lop, .. } if op.precedence() > lop.precedence()
                     )
                 };
+                let prec_miss_right = |e: &Expr| {
+                    matches!(
+                        e, Expr::BinOp { op: lop, .. }
+                            if (op.precedence() == lop.precedence() && !op.is_comutative())
+                                || op.precedence() > lop.precedence()
+                    )
+                };
 
-                self.fmt_paren(left, f, pec_miss)?;
+                self.fmt_paren(left, f, prec_miss_left)?;
                 if let Some(mut prev) = self.source.get(..right.pos() as usize) {
                     prev = prev.trim_end();
                     let estimate_bound =
@@ -396,7 +404,7 @@ impl<'a> Formatter<'a> {
                     f.write_str(op.name())?;
                     f.write_str(" ")?;
                 }
-                self.fmt_paren(right, f, pec_miss)
+                self.fmt_paren(right, f, prec_miss_right)
             }
         }
     }
@@ -452,7 +460,8 @@ pub mod test {
         let len = crate::fmt::minify(&mut minned);
         minned.truncate(len);
 
-        let ast = parser::Ast::new(ident, minned, &mut ParserCtx::default(), &mut |_, _| Ok(0));
+        let ast =
+            parser::Ast::new(ident, minned, &mut ParserCtx::default(), &mut parser::no_loader);
         //log::error!(
         //    "{} / {} = {} | {} / {} = {}",
         //    ast.mem.size(),

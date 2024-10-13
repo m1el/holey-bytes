@@ -727,6 +727,7 @@ mod trap {
 #[derive(Default)]
 pub struct Codegen {
     pub files: Vec<parser::Ast>,
+    pub embeds: Vec<Vec<u8>>,
     tasks: Vec<Option<FTask>>,
 
     tys: Types,
@@ -1615,6 +1616,7 @@ impl Codegen {
             E::BinOp { left, op, right } if op != T::Decl => 'ops: {
                 let left = self.expr_ctx(left, Ctx {
                     ty: ctx.ty.filter(|_| op.is_homogenous()),
+                    check: ctx.check,
                     ..Default::default()
                 })?;
 
@@ -2743,6 +2745,7 @@ impl Codegen {
         } else {
             let dty = self.ty_display(ty);
             let dexpected = self.ty_display(expected);
+            log::info!("mode: {:?}", kind);
             self.report(pos, format_args!("expected {hint} of type {dexpected}, got {dty}",));
         }
     }
@@ -2814,7 +2817,7 @@ mod tests {
 
     fn generate(ident: &'static str, input: &'static str, output: &mut String) {
         _ = log::set_logger(&crate::fs::Logger);
-        log::set_max_level(log::LevelFilter::Error);
+        log::set_max_level(log::LevelFilter::Debug);
 
         let mut codegen =
             super::Codegen { files: crate::test_parse_files(ident, input), ..Default::default() };

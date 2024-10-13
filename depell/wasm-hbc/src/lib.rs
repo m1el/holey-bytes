@@ -55,7 +55,10 @@ unsafe fn compile_and_run(mut fuel: usize) {
     let files = {
         let mut ctx = hblang::parser::ParserCtx::default();
         let paths = files.iter().map(|f| f.path).collect::<Vec<_>>();
-        let mut loader = |path: &str, _: &str| Ok(paths.binary_search(&path).unwrap() as FileId);
+        let mut loader = |path: &str, _: &str, kind| match kind {
+            hblang::parser::FileKind::Module => Ok(paths.binary_search(&path).unwrap() as FileId),
+            hblang::parser::FileKind::Embed => Err("embeds are not supported".into()),
+        };
         files
             .into_iter()
             .map(|f| {

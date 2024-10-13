@@ -23,7 +23,13 @@ pub type Symbols = Vec<Symbol>;
 pub type FileId = u32;
 pub type IdentIndex = u16;
 pub type LoaderError = String;
-pub type Loader<'a> = &'a mut (dyn FnMut(&str, &str) -> Result<FileId, LoaderError> + 'a);
+pub type Loader<'a> = &'a mut (dyn FnMut(&str, &str, FileKind) -> Result<FileId, LoaderError> + 'a);
+
+#[derive(PartialEq, Eq, Debug)]
+pub enum FileKind {
+    Module,
+    Embed,
+}
 
 pub const SOURCE_TO_AST_FACTOR: usize = 7 * (core::mem::size_of::<usize>() / 4) + 1;
 
@@ -44,8 +50,8 @@ pub mod idfl {
     }
 }
 
-pub fn no_loader(_: &str, _: &str) -> Result<FileId, LoaderError> {
-    Err(String::new())
+pub fn no_loader(_: &str, _: &str, _: FileKind) -> Result<FileId, LoaderError> {
+    Ok(0)
 }
 
 #[derive(Debug)]
@@ -276,11 +282,28 @@ impl<'a, 'b> Parser<'a, 'b> {
                 E::Mod {
                     pos,
                     path,
-                    id: match (self.loader)(path, self.path) {
+                    id: match (self.loader)(path, self.path, FileKind::Module) {
                         Ok(id) => id,
                         Err(e) => {
                             self.report(str.start, format_args!("error loading dependency: {e:#}"))
                         }
+                    },
+                }
+            }
+            T::Directive if self.lexer.slice(token.range()) == "embed" => {
+                self.expect_advance(TokenKind::LParen);
+                let str = self.expect_advance(TokenKind::DQuote);
+                self.expect_advance(TokenKind::RParen);
+                let path = self.lexer.slice(str.range());
+                let path = &path[1..path.len() - 1];
+
+                E::Embed {
+                    pos,
+                    path,
+                    id: match (self.loader)(path, self.path, FileKind::Embed) {
+                        Ok(id) => id,
+                        Err(e) => self
+                            .report(str.start, format_args!("error loading embedded file: {e:#}")),
                     },
                 }
             }
@@ -812,6 +835,12 @@ generate_expr! {
         },
         /// `'@use' '(' String ')'`
         Mod {
+            pos:  Pos,
+            id:   FileId,
+            path: &'a str,
+        },
+        /// `'@use' '(' String ')'`
+        Embed {
             pos:  Pos,
             id:   FileId,
             path: &'a str,

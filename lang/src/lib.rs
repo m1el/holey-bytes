@@ -249,7 +249,7 @@ mod ty {
             lexer::TokenKind,
             parser::{self, Pos},
         },
-        core::{default, num::NonZeroU32, ops::Range},
+        core::{num::NonZeroU32, ops::Range},
     };
 
     pub type ArrayLen = u32;
@@ -384,7 +384,7 @@ mod ty {
         }
     }
 
-    #[derive(PartialEq, Eq, Default, Debug)]
+    #[derive(PartialEq, Eq, Default, Debug, Clone, Copy)]
     pub enum TyCheck {
         BinOp,
         #[default]
@@ -1345,7 +1345,10 @@ pub fn run_test(
 
 #[cfg(test)]
 fn test_parse_files(ident: &'static str, input: &'static str) -> Vec<parser::Ast> {
-    use std::{borrow::ToOwned, string::ToString};
+    use {
+        self::parser::FileKind,
+        std::{borrow::ToOwned, string::ToString},
+    };
 
     fn find_block(mut input: &'static str, test_name: &'static str) -> &'static str {
         const CASE_PREFIX: &str = "#### ";
@@ -1385,7 +1388,8 @@ fn test_parse_files(ident: &'static str, input: &'static str) -> Vec<parser::Ast
     fmt::test::format(ident, input[last_start..].trim());
     module_map.push((last_module_name, input[last_start..].trim()));
 
-    let mut loader = |path: &str, _: &str| {
+    let mut loader = |path: &str, _: &str, kind| {
+        assert_eq!(kind, FileKind::Module);
         module_map
             .iter()
             .position(|&(name, _)| name == path)

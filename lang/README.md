@@ -131,6 +131,12 @@ fib := fn(n: int): int {
 main := fn(): int {
 	a := 1
 	b := &a
+
+	boundary := 1000
+
+	b = b + boundary - 2
+	b = b - (boundary - 2)
+
 	modify(b)
 	drop(a)
 	return *b - 2
