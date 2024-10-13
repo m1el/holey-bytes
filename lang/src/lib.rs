@@ -41,6 +41,7 @@ use {
     core::{cell::Cell, ops::Range},
     hashbrown::hash_map,
     hbbytecode as instrs,
+    std::println,
 };
 
 #[macro_use]
@@ -248,7 +249,7 @@ mod ty {
             lexer::TokenKind,
             parser::{self, Pos},
         },
-        core::{num::NonZeroU32, ops::Range},
+        core::{fmt::Write, num::NonZeroU32, ops::Range},
     };
 
     pub type ArrayLen = u32;
@@ -544,7 +545,10 @@ mod ty {
                     f.write_str("]")
                 }
                 TK::Builtin(ty) => f.write_str(to_str(ty)),
-                TK::Ptr(ty) => self.rety(self.tys.ins.ptrs[ty as usize].base).fmt(f),
+                TK::Ptr(ty) => {
+                    f.write_str("^")?;
+                    self.rety(self.tys.ins.ptrs[ty as usize].base).fmt(f)
+                }
                 TK::Struct(idx) => {
                     let record = &self.tys.ins.structs[idx as usize];
                     if ident::is_null(record.name) {
@@ -1069,6 +1073,7 @@ impl Types {
         match entry {
             hash_map::RawEntryMut::Occupied(o) => o.get_key_value().0.value,
             hash_map::RawEntryMut::Vacant(v) => {
+                println!("waht");
                 self.ins.ptrs.push(ptr);
                 v.insert(
                     ctx_map::Key {

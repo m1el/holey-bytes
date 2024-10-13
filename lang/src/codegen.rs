@@ -1151,6 +1151,7 @@ impl Codegen {
                         us to construct '{}' with struct constructor",
                     );
                 };
+
                 for &CtorField { pos, name, ref value, .. } in fields {
                     let Some((offset, ty)) = OffsetIter::offset_of(&self.tys, stru, name) else {
                         self.report(pos, format_args!("field not found: {name:?}"));
@@ -1178,6 +1179,12 @@ impl Codegen {
                             let loc = loc.as_ref().offset(offset);
                             let ctx = Ctx::default().with_loc(loc).with_ty(ty);
                             let value = self.expr_ctx(field, ctx)?;
+                            std::println!(
+                                "{} {} {}",
+                                self.ty_display(ty),
+                                self.ty_display(value.ty),
+                                self.ast_display(field)
+                            );
                             self.ci.free_loc(value.loc);
                         }
                     }
@@ -1283,6 +1290,7 @@ impl Codegen {
             }
             E::UnOp { op: T::Xor, val, .. } => {
                 let val = self.ty(val);
+                let ptr = self.tys.make_ptr(val);
                 Some(Value::ty(self.tys.make_ptr(val)))
             }
             E::UnOp { op: T::Band, val, pos } => {
@@ -1725,7 +1733,7 @@ impl Codegen {
         }?;
 
         if let Some(ty) = ctx.ty {
-            _ = self.assert_ty(expr.pos(), value.ty, ty, "somehow");
+            _ = self.assert_ty(expr.pos(), value.ty, ty, "something");
         }
 
         Some(match ctx.loc {
@@ -1946,6 +1954,10 @@ impl Codegen {
         let Some(mut ty) = ty.map(|ty| self.ty(ty)).or(ctx.ty) else {
             self.report(pos, "expected type, (it cannot be inferred)");
         };
+
+        if let Some(expected) = ctx.ty {
+            _ = self.assert_ty(pos, ty, expected, "struct");
+        }
 
         match ty.expand() {
             ty::Kind::Struct(stru) => {
@@ -2500,7 +2512,7 @@ impl Codegen {
                         for arg in args {
                             let sym = find_symbol(&self.files[file as usize].symbols, arg.id);
                             if sym.flags & idfl::COMPTIME != 0 {
-                                self.tys.ins.args.truncate(arg_base);
+                                self.tys.tmp.args.truncate(arg_base);
                                 break 'b None;
                             }
                             let ty = self.ty(&arg.ty);
@@ -2810,6 +2822,7 @@ mod tests {
         struct_return_from_module_function;
         //comptime_pointers;
         sort_something_viredly;
+        wired_mem_swap;
         hex_octal_binary_literals;
         //comptime_min_reg_leak;
         // structs_in_registers;
