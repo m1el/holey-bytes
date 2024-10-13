@@ -2140,7 +2140,7 @@ impl Codegen {
         preserve_expected: bool,
         hint: impl fmt::Display,
     ) -> ty::Id {
-        if let Some(res) = ty.try_upcast(expected)
+        if let Some(res) = ty.try_upcast(expected, ty::TyCheck::BinOp)
             && (!preserve_expected || res == expected)
         {
             res

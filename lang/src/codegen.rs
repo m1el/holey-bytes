@@ -7,7 +7,8 @@ use {
         parser::{
             self, find_symbol, idfl, CommentOr, CtorField, Expr, ExprRef, FileId, Pos, StructField,
         },
-        ty, Field, Func, Global, LoggedMem, OffsetIter, ParamAlloc, Reloc, Sig, Struct, SymKey,
+        ty::{self, TyCheck},
+        Field, Func, Global, LoggedMem, OffsetIter, ParamAlloc, Reloc, Sig, Struct, SymKey,
         TypedReloc, Types, HEADER_SIZE,
     },
     alloc::{boxed::Box, string::String, vec::Vec},
@@ -607,6 +608,7 @@ struct FTask {
 struct Ctx {
     loc: Option<Loc>,
     ty: Option<ty::Id>,
+    check: TyCheck,
 }
 
 impl Ctx {
@@ -618,6 +620,10 @@ impl Ctx {
         Self { ty: Some(ty.into()), ..self }
     }
 
+    pub fn with_check(self, check: TyCheck) -> Self {
+        Self { check, ..self }
+    }
+
     fn into_value(self) -> Option<Value> {
         Some(Value { ty: self.ty.unwrap(), loc: self.loc? })
     }
@@ -625,7 +631,7 @@ impl Ctx {
 
 impl From<Value> for Ctx {
     fn from(value: Value) -> Self {
-        Self { loc: Some(value.loc), ty: Some(value.ty) }
+        Self { loc: Some(value.loc), ty: Some(value.ty), ..Default::default() }
     }
 }
 
@@ -839,7 +845,13 @@ impl Codegen {
                     base_val.loc = self.make_loc_owned(base_val.loc, base_val.ty);
                 }
                 let index_val = self.expr(index)?;
-                _ = self.assert_ty(index.pos(), index_val.ty, ty::Id::INT, "subsctipt");
+                _ = self.assert_ty(
+                    index.pos(),
+                    index_val.ty,
+                    ty::Id::INT,
+                    TyCheck::BinOp,
+                    "subsctipt",
+                );
 
                 if let Some(ty) = self.tys.base_of(base_val.ty) {
                     base_val.ty = ty;
@@ -1179,12 +1191,6 @@ impl Codegen {
                             let loc = loc.as_ref().offset(offset);
                             let ctx = Ctx::default().with_loc(loc).with_ty(ty);
                             let value = self.expr_ctx(field, ctx)?;
-                            std::println!(
-                                "{} {} {}",
-                                self.ty_display(ty),
-                                self.ty_display(value.ty),
-                                self.ast_display(field)
-                            );
                             self.ci.free_loc(value.loc);
                         }
                     }
@@ -1290,7 +1296,6 @@ impl Codegen {
             }
             E::UnOp { op: T::Xor, val, .. } => {
                 let val = self.ty(val);
-                let ptr = self.tys.make_ptr(val);
                 Some(Value::ty(self.tys.make_ptr(val)))
             }
             E::UnOp { op: T::Band, val, pos } => {
@@ -1384,7 +1389,13 @@ impl Codegen {
 
                     // TODO: pass the arg as dest
                     let varg = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
-                    _ = self.assert_ty(arg.pos(), varg.ty, ty, format_args!("argument({i})"));
+                    _ = self.assert_ty(
+                        arg.pos(),
+                        varg.ty,
+                        ty,
+                        TyCheck::Assign,
+                        format_args!("argument({i})"),
+                    );
                     self.pass_arg(&varg, &mut parama);
                     self.pool.arg_locs.push(varg.loc);
                     should_momize = false;
@@ -1443,14 +1454,16 @@ impl Codegen {
                     _ => Some(Loc::reg(self.ci.ret_reg.as_ref()).into_derefed()),
                 };
                 let value = if let Some(val) = val {
-                    self.expr_ctx(val, Ctx { ty: self.ci.ret, loc })?
+                    self.expr_ctx(val, Ctx { ty: self.ci.ret, loc, ..Default::default() })?
                 } else {
                     Value::void()
                 };
 
                 match self.ci.ret {
                     None => self.ci.ret = Some(value.ty),
-                    Some(ret) => _ = self.assert_ty(pos, value.ty, ret, "return type"),
+                    Some(ret) => {
+                        _ = self.assert_ty(pos, value.ty, ret, TyCheck::Assign, "return type")
+                    }
                 }
 
                 self.ci.ret_relocs.push(Reloc::new(self.ci.code.len(), 1, 4));
@@ -1613,7 +1626,13 @@ impl Codegen {
 
                 if let ty::Kind::Struct(_) = left.ty.expand() {
                     let right = self.expr_ctx(right, Ctx::default().with_ty(left.ty))?;
-                    _ = self.assert_ty(expr.pos(), right.ty, left.ty, "right struct operand");
+                    _ = self.assert_ty(
+                        expr.pos(),
+                        right.ty,
+                        left.ty,
+                        TyCheck::Assign,
+                        "right struct operand",
+                    );
                     return self.struct_op(op, left.ty, ctx, left.loc, right.loc);
                 }
 
@@ -1636,10 +1655,17 @@ impl Codegen {
                     let lhs = self.loc_to_reg(left.loc, lsize);
                     (lhs.as_ref(), lhs, Loc::default())
                 };
-                let right = self.expr_ctx(right, Ctx::default().with_ty(left.ty))?;
+                let right = self
+                    .expr_ctx(right, Ctx::default().with_ty(left.ty).with_check(TyCheck::BinOp))?;
                 let rsize = self.tys.size_of(right.ty);
 
-                let ty = self.assert_ty(expr.pos(), right.ty, left.ty, "right sclalar operand");
+                let ty = self.assert_ty(
+                    expr.pos(),
+                    right.ty,
+                    left.ty,
+                    TyCheck::BinOp,
+                    "right sclalar operand",
+                );
                 let size = self.tys.size_of(ty);
                 let signed = ty.is_signed();
 
@@ -1733,7 +1759,7 @@ impl Codegen {
         }?;
 
         if let Some(ty) = ctx.ty {
-            _ = self.assert_ty(expr.pos(), value.ty, ty, "something");
+            _ = self.assert_ty(expr.pos(), value.ty, ty, ctx.check, "something");
         }
 
         Some(match ctx.loc {
@@ -1870,7 +1896,7 @@ impl Codegen {
                 s.ci.ret_reg = reg;
             };
 
-            let ctx = Ctx { loc: None, ty: s.ci.ret };
+            let ctx = Ctx { ty: s.ci.ret, ..Default::default() };
             if s.expr_ctx(&Expr::Return { pos: 0, val: Some(expr) }, ctx).is_some() {
                 s.report(expr.pos(), "we fucked up");
             };
@@ -1956,7 +1982,7 @@ impl Codegen {
         };
 
         if let Some(expected) = ctx.ty {
-            _ = self.assert_ty(pos, ty, expected, "struct");
+            _ = self.assert_ty(pos, ty, expected, TyCheck::Assign, "struct");
         }
 
         match ty.expand() {
@@ -2704,8 +2730,15 @@ impl Codegen {
 
     #[must_use]
     #[track_caller]
-    fn assert_ty(&self, pos: Pos, ty: ty::Id, expected: ty::Id, hint: impl Display) -> ty::Id {
-        if let Some(res) = ty.try_upcast(expected) {
+    fn assert_ty(
+        &self,
+        pos: Pos,
+        ty: ty::Id,
+        expected: ty::Id,
+        kind: TyCheck,
+        hint: impl Display,
+    ) -> ty::Id {
+        if let Some(res) = ty.try_upcast(expected, kind) {
             res
         } else {
             let dty = self.ty_display(ty);
@@ -2822,7 +2855,6 @@ mod tests {
         struct_return_from_module_function;
         //comptime_pointers;
         sort_something_viredly;
-        wired_mem_swap;
         hex_octal_binary_literals;
         //comptime_min_reg_leak;
         // structs_in_registers;

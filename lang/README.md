@@ -388,56 +388,6 @@ main := fn(major: int, minor: int): OemIdent {
 
 ### Incomplete Examples
 
-#### wired_mem_swap
-```hb
-Color := struct {x: int}
-
-put_trisquare := fn(pos: Vec2(int), size: Vec2(int), color: Color): void {
-	step := Vec2(int).(1, 1)
-	if size.x < 0 {
-		step.x = -1
-	}
-	if size.y < 0 {
-		step.y = -1
-	}
-
-	target := pos + size
-
-	loop if pos.x == target.x break else {
-		put_vline(pos.x, pos.y, target.y, color)
-		pos.x += step.x
-	}
-
-	return
-}
-
-put_vline := fn(x: int, y0: int, y1: int, color: Color): void {
-	return
-}
-
-
-Vec2 := fn($Expr: type): type {
-	return struct {x: Expr, y: Expr}
-}
-
-MemSwap := fn($Expr: type): type {
-	return struct {a: Expr, b: Expr}
-}
-
-memswap := fn($Expr: type, a: ^Expr, b: ^Expr): void {
-	MemSwap(Expr).(b, a) = MemSwap(Expr).(*a, *b)
-	return
-}
-
-main := fn(): int {
-	put_trisquare(.(0, 0), .(0, 0), .(0))
-	a := 10
-	b := 50
-	//memswap(int, a, b)
-	return a
-}
-```
-
 #### comptime_pointers
 ```hb
 main := fn(): int {

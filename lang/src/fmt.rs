@@ -4,7 +4,7 @@ use {
         lexer::{self, Lexer, TokenKind},
         parser::{self, CommentOr, CtorField, Expr, Poser, Radix, StructField},
     },
-    core::{fmt, usize},
+    core::fmt,
 };
 
 pub fn display_radix(radix: Radix, mut value: u64, buf: &mut [u8; 64]) -> &str {

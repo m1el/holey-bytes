@@ -249,7 +249,7 @@ mod ty {
             lexer::TokenKind,
             parser::{self, Pos},
         },
-        core::{fmt::Write, num::NonZeroU32, ops::Range},
+        core::{default, num::NonZeroU32, ops::Range},
     };
 
     pub type ArrayLen = u32;
@@ -355,7 +355,7 @@ mod ty {
             matches!(Kind::from_ty(self), Kind::Ptr(_))
         }
 
-        pub fn try_upcast(self, ob: Self) -> Option<Self> {
+        pub fn try_upcast(self, ob: Self, kind: TyCheck) -> Option<Self> {
             let (oa, ob) = (Self(self.0.min(ob.0)), Self(self.0.max(ob.0)));
             let (a, b) = (oa.strip_pointer(), ob.strip_pointer());
             Some(match () {
@@ -365,7 +365,7 @@ mod ty {
                 _ if oa.is_pointer() && ob.is_pointer() => return None,
                 _ if a.is_signed() && b.is_signed() || a.is_unsigned() && b.is_unsigned() => ob,
                 _ if a.is_unsigned() && b.is_signed() && a.repr() - U8 < b.repr() - I8 => ob,
-                _ if oa.is_integer() && ob.is_pointer() => ob,
+                _ if oa.is_integer() && ob.is_pointer() && kind == TyCheck::BinOp => ob,
                 _ => return None,
             })
         }
@@ -382,6 +382,13 @@ mod ty {
         pub fn is_struct(&self) -> bool {
             matches!(self.expand(), Kind::Struct(_))
         }
+    }
+
+    #[derive(PartialEq, Eq, Default, Debug)]
+    pub enum TyCheck {
+        BinOp,
+        #[default]
+        Assign,
     }
 
     impl From<u64> for Id {
