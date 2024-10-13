@@ -2861,8 +2861,8 @@ mod tests {
         _ = log::set_logger(&crate::fs::Logger);
         log::set_max_level(log::LevelFilter::Info);
 
-        let mut codegen =
-            super::Codegen { files: crate::test_parse_files(ident, input), ..Default::default() };
+        let (files, _embeds) = crate::test_parse_files(ident, input);
+        let mut codegen = super::Codegen { files, ..Default::default() };
 
         codegen.generate();
 

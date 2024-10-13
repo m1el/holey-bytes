@@ -12,7 +12,7 @@ use {
 
 const MAX_NAME_LENGTH: usize = 32;
 const MAX_POSTNAME_LENGTH: usize = 64;
-//const MAX_CODE_LENGTH: usize = 1024 * 4;
+const MAX_CODE_LENGTH: usize = 1024 * 4;
 const SESSION_DURATION_SECS: u64 = 60 * 60;
 
 type Redirect<const COUNT: usize = 1> = AppendHeaders<[(&'static str, &'static str); COUNT]>;
@@ -153,7 +153,11 @@ impl Page for Post {
                 <input name="author" type="text" value={session.name} hidden>
                 <input name="name" type="text" placeholder="name" value=name
                     required maxlength=MAX_POSTNAME_LENGTH>
-                <textarea id="code-edit" name="code" placeholder="code" rows=1 required>code</textarea>
+                <div id="code-editor">
+                    <textarea id="code-edit" name="code" placeholder="code" rows=1 required
+                        style="flex: 1">code</textarea>
+                    <span id="code-size">MAX_CODE_LENGTH</span>
+                </div>
                 <input type="submit" value="submit">
                 <pre id="compiler-output"></pre>
             </form>

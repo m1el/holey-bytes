@@ -104,3 +104,14 @@ button {
 button:hover:not(:active) {
 	background: white;
 }
+
+div#code-editor {
+	display: flex;
+	position: relative;
+
+	span#code-size {
+		position: absolute;
+		right: 2px;
+		font-size: 12px;
+	}
+}

@@ -41,7 +41,6 @@ use {
     core::{cell::Cell, ops::Range},
     hashbrown::hash_map,
     hbbytecode as instrs,
-    std::println,
 };
 
 #[macro_use]
@@ -1081,7 +1080,6 @@ impl Types {
         match entry {
             hash_map::RawEntryMut::Occupied(o) => o.get_key_value().0.value,
             hash_map::RawEntryMut::Vacant(v) => {
-                println!("waht");
                 self.ins.ptrs.push(ptr);
                 v.insert(
                     ctx_map::Key {
@@ -1345,7 +1343,7 @@ pub fn run_test(
 }
 
 #[cfg(test)]
-fn test_parse_files(ident: &'static str, input: &'static str) -> Vec<parser::Ast> {
+fn test_parse_files(ident: &'static str, input: &'static str) -> (Vec<parser::Ast>, Vec<Vec<u8>>) {
     use {
         self::parser::FileKind,
         std::{borrow::ToOwned, string::ToString},
@@ -1377,32 +1375,51 @@ fn test_parse_files(ident: &'static str, input: &'static str) -> Vec<parser::Ast
     let input = find_block(input, ident);
 
     let mut module_map = Vec::new();
+    let mut embed_map = Vec::new();
     let mut last_start = 0;
-    let mut last_module_name = "test";
+    let mut last_module_name = "test.hb";
     for (i, m) in input.match_indices("// in module: ") {
-        fmt::test::format(ident, input[last_start..i].trim());
-        module_map.push((last_module_name, &input[last_start..i]));
+        if last_module_name.ends_with(".hb") {
+            fmt::test::format(ident, input[last_start..i].trim());
+            module_map.push((last_module_name, &input[last_start..i]));
+        } else {
+            embed_map.push((last_module_name, &input[last_start..i]));
+        }
         let (module_name, _) = input[i + m.len()..].split_once('\n').unwrap();
         last_module_name = module_name;
         last_start = i + m.len() + module_name.len() + 1;
     }
-    fmt::test::format(ident, input[last_start..].trim());
-    module_map.push((last_module_name, input[last_start..].trim()));
 
-    let mut loader = |path: &str, _: &str, kind| {
-        assert_eq!(kind, FileKind::Module);
-        module_map
+    if last_module_name.ends_with(".hb") {
+        fmt::test::format(ident, input[last_start..].trim());
+        module_map.push((last_module_name, &input[last_start..]));
+    } else {
+        embed_map.push((last_module_name, &input[last_start..]));
+    }
+
+    let mut loader = |path: &str, _: &str, kind| match kind {
+        FileKind::Module => module_map
             .iter()
             .position(|&(name, _)| name == path)
             .map(|i| i as parser::FileId)
-            .ok_or("Not Found".to_string())
+            .ok_or("Module Not Found".to_string()),
+        FileKind::Embed => embed_map
+            .iter()
+            .position(|&(name, _)| name == path)
+            .map(|i| i as parser::FileId)
+            .ok_or("Embed Not Found".to_string()),
     };
 
     let mut ctx = parser::ParserCtx::default();
-    module_map
-        .iter()
-        .map(|&(path, content)| parser::Ast::new(path, content.to_owned(), &mut ctx, &mut loader))
-        .collect()
+    (
+        module_map
+            .iter()
+            .map(|&(path, content)| {
+                parser::Ast::new(path, content.to_owned(), &mut ctx, &mut loader)
+            })
+            .collect(),
+        embed_map.iter().map(|&(_, content)| content.to_owned().into_bytes()).collect(),
+    )
 }
 
 #[cfg(test)]

@@ -104,5 +104,5 @@ unsafe fn compile_and_run(mut fuel: usize) {
         }
     }
 
-    log::error!("memory consumption: {}b / {}b", ALLOCATOR.used(), ARENA_CAP);
+    //log::error!("memory consumption: {}b / {}b", ALLOCATOR.used(), ARENA_CAP);
 }

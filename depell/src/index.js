@@ -40,17 +40,19 @@ function compileCode(instance, code, fuel) {
 
 /**@type{WebAssembly.Instance}*/ let fmtInstance;
 /**@type{Promise<WebAssembly.WebAssemblyInstantiatedSource>}*/ let fmtInstaceFuture;
-/** @param {string} code @param {"fmt" | "minify"} action
- * @returns {Promise<string>} */
-async function modifyCode(code, action) {
+async function getFmtInstance() {
 	fmtInstaceFuture ??= WebAssembly.instantiateStreaming(fetch("/hbfmt.wasm"), {});
-	fmtInstance ??= (await fmtInstaceFuture).instance;
+	return fmtInstance ??= (await fmtInstaceFuture).instance;
+}
 
+/** @param {WebAssembly.Instance} instance @param {string} code @param {"fmt" | "minify"} action
+ * @returns {string | undefined} */
+function modifyCode(instance, code, action) {
 	let {
 		INPUT, INPUT_LEN,
 		OUTPUT, OUTPUT_LEN,
 		memory, fmt, minify
-	} = fmtInstance.exports;
+	} = instance.exports;
 
 	if (!(true
 		&& memory instanceof WebAssembly.Memory
@@ -71,15 +73,15 @@ async function modifyCode(code, action) {
 	dw.setUint32(INPUT_LEN.value, code.length, true);
 	new Uint8Array(memory.buffer, INPUT.value).set(new TextEncoder().encode(code));
 
-	return runWasmFunction(fmtInstance, action === "fmt" ? fmt : minify) ?
-		bufToString(memory, OUTPUT, OUTPUT_LEN) : "invalid code";
+	return runWasmFunction(instance, action === "fmt" ? fmt : minify) ?
+		bufToString(memory, OUTPUT, OUTPUT_LEN) : undefined;
 }
 
 
 /** @param {WebAssembly.Instance} instance @param {CallableFunction} func @param {any[]} args
  * @returns {boolean} */
 function runWasmFunction(instance, func, ...args) {
-	const prev = performance.now();
+	//const prev = performance.now();
 	const { PANIC_MESSAGE, PANIC_MESSAGE_LEN, memory, stack_pointer } = instance.exports;
 	if (!(true
 		&& memory instanceof WebAssembly.Memory
@@ -101,7 +103,7 @@ function runWasmFunction(instance, func, ...args) {
 		stack_pointer.value = ptr;
 		return false;
 	} finally {
-		console.log("compiletion took:", performance.now() - prev);
+		//console.log("compiletion took:", performance.now() - prev);
 	}
 }
 
@@ -147,17 +149,22 @@ function wireUp(target) {
 /** @type {{ [key: string]: (content: string) => Promise<string> | string }} */
 const applyFns = {
 	timestamp: (content) => new Date(parseInt(content) * 1000).toLocaleString(),
-	fmt: (content) => modifyCode(content, "fmt").then(c => c),
+	fmt: (content) => getFmtInstance().then(i => modifyCode(i, content, "fmt") ?? "invalid code"),
 };
 
 /** @param {HTMLElement} target */
 async function bindCodeEdit(target) {
 	const edit = target.querySelector("#code-edit");
 	if (!(edit instanceof HTMLTextAreaElement)) return;
+	const codeSize = target.querySelector("#code-size");
+	if (!(codeSize instanceof HTMLSpanElement)) never();
+	const MAX_CODE_SIZE = parseInt(codeSize.innerHTML);
+	if (Number.isNaN(MAX_CODE_SIZE)) never();
 	const errors = target.querySelector("#compiler-output");
 	if (!(errors instanceof HTMLPreElement)) never();
 
 	const hbc = await getHbcInstance();
+	const fmt = await getFmtInstance();
 
 	const debounce = 100;
 	let timeout = 0;
@@ -166,9 +173,14 @@ async function bindCodeEdit(target) {
 		timeout = setTimeout(() => {
 			const buf = packPosts([
 				{ path: "local.hb", code: edit.value },
-				{ path: "lam.hb", code: "foo:=10" },
 			]);
 			errors.textContent = compileCode(hbc, buf, 1);
+			const minified_size = modifyCode(fmt, edit.value, "minify")?.length;
+			if (minified_size) {
+				codeSize.textContent = (MAX_CODE_SIZE - minified_size) + "";
+				const perc = Math.min(100, Math.floor(100 * (minified_size / MAX_CODE_SIZE)));
+				codeSize.style.color = `color-mix(in srgb, white, var(--error) ${perc}%)`;
+			}
 			timeout = 0;
 		}, debounce);
 	});
@@ -246,8 +258,9 @@ if (window.location.hostname === 'localhost') {
 	(async function test() {
 		{
 			const code = "main:=fn():void{return}";
-			const fmtd = await modifyCode(code, "fmt") ?? never();
-			const prev = await modifyCode(fmtd, "minify") ?? never();
+			const inst = await getFmtInstance()
+			const fmtd = modifyCode(inst, code, "fmt") ?? never();
+			const prev = modifyCode(inst, fmtd, "minify") ?? never();
 			if (code != prev) console.error(code, prev);
 		}
 		{

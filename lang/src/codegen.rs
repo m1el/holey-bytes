@@ -12,7 +12,7 @@ use {
         TypedReloc, Types, HEADER_SIZE,
     },
     alloc::{boxed::Box, string::String, vec::Vec},
-    core::{fmt::Display, u16},
+    core::fmt::Display,
 };
 
 type Offset = u32;
@@ -2843,8 +2843,9 @@ mod tests {
         _ = log::set_logger(&crate::fs::Logger);
         log::set_max_level(log::LevelFilter::Debug);
 
-        let mut codegen =
-            super::Codegen { files: crate::test_parse_files(ident, input), ..Default::default() };
+        let (files, embeds) = crate::test_parse_files(ident, input);
+        let mut codegen = super::Codegen { files, ..Default::default() };
+        codegen.push_embeds(embeds);
 
         codegen.generate(0);
         let mut out = Vec::new();
