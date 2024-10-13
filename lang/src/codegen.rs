@@ -1438,7 +1438,7 @@ impl Codegen {
             E::Ident { id, .. } if ident::is_null(id) => Some(Value::ty(id.into())),
             E::Ident { id, .. }
                 if let Some((var_index, var)) =
-                    self.ci.vars.iter_mut().enumerate().find(|(_, v)| v.id == id) =>
+                    self.ci.vars.iter_mut().enumerate().rfind(|(_, v)| v.id == id) =>
             {
                 let loc = var.value.loc.as_ref();
                 Some(Value { ty: self.ci.vars[var_index].value.ty, loc })
