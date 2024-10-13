@@ -1,9 +1,10 @@
 use {
     crate::{
-        lexer::{self, TokenKind},
+        ident,
+        lexer::{self, Lexer, TokenKind},
         parser::{self, CommentOr, CtorField, Expr, Poser, Radix, StructField},
     },
-    core::fmt,
+    core::{fmt, usize},
 };
 
 pub fn display_radix(radix: Radix, mut value: u64, buf: &mut [u8; 64]) -> &str {
@@ -254,7 +255,7 @@ impl<'a> Formatter<'a> {
                     fields,
                     |s: &mut Self, CtorField { name, value, .. }: &_, f| {
                         f.write_str(name)?;
-                        if !matches!(value, Expr::Ident { name: n, .. } if name == n) {
+                        if !matches!(value, &Expr::Ident { id, .. } if *name == &self.source[ident::range(id)]) {
                             f.write_str(": ")?;
                             s.fmt(value, f)?;
                         }
@@ -331,11 +332,12 @@ impl<'a> Formatter<'a> {
                 self.fmt(val, f)
             }
             Expr::Return { val: None, .. } => f.write_str("return"),
-            Expr::Ident { name, is_ct: true, .. } => {
-                f.write_str("$")?;
-                f.write_str(name)
+            Expr::Ident { pos, is_ct, .. } => {
+                if is_ct {
+                    f.write_str("$")?;
+                }
+                f.write_str(&self.source[Lexer::restore(self.source, pos).eat().range()])
             }
-            Expr::Ident { name, is_ct: false, .. } => f.write_str(name),
             Expr::Block { stmts, .. } => {
                 f.write_str("{")?;
                 self.fmt_list(f, true, "}", "", stmts, Self::fmt)

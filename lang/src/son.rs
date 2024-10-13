@@ -1243,9 +1243,10 @@ impl Codegen {
                     [VOID],
                 ))
             }
-            Expr::Call { func: &Expr::Ident { pos, id, name, .. }, args, .. } => {
+            Expr::Call { func: &Expr::Ident { pos, id, .. }, args, .. } => {
                 self.ci.call_count += 1;
-                let func = self.find_or_declare(pos, self.ci.file, Some(id), name);
+                let cfile = self.cfile().clone();
+                let func = self.find_or_declare(pos, self.ci.file, Some(id), cfile.ident_str(id));
                 let ty::Kind::Func(func) = func else {
                     self.report(
                         pos,

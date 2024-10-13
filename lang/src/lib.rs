@@ -231,9 +231,8 @@ mod ident {
         (ident >> LEN_BITS).saturating_sub(1)
     }
 
-    pub fn new(pos: u32, len: u32) -> u32 {
-        debug_assert!(len < (1 << LEN_BITS));
-        ((pos + 1) << LEN_BITS) | len
+    pub fn new(pos: u32, len: u32) -> Option<u32> {
+        (len < (1 << LEN_BITS)).then_some(((pos + 1) << LEN_BITS) | len)
     }
 
     pub fn range(ident: u32) -> core::ops::Range<usize> {
@@ -777,7 +776,7 @@ impl IdentInterner {
         match entry {
             hash_map::RawEntryMut::Occupied(o) => o.get_key_value().0.value,
             hash_map::RawEntryMut::Vacant(v) => {
-                let id = ident::new(self.strings.len() as _, ident.len() as _);
+                let id = ident::new(self.strings.len() as _, ident.len() as _).unwrap();
                 self.strings.push_str(ident);
                 v.insert(ctx_map::Key { hash, value: id }, ());
                 id
@@ -1032,12 +1031,12 @@ impl Types {
             .map(|f| {
                 let name = if f.file != u32::MAX {
                     let file = &files[f.file as usize];
-                    let Expr::BinOp { left: &Expr::Ident { name, .. }, .. } =
+                    let Expr::BinOp { left: &Expr::Ident { id, .. }, .. } =
                         f.expr.get(file).unwrap()
                     else {
                         unreachable!()
                     };
-                    name
+                    file.ident_str(id)
                 } else {
                     "target_fn"
                 };

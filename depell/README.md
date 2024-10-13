@@ -5,6 +5,6 @@ Depell is a website that allows users to import/post/run hblang code and create 
 ## Local Development
 
 ```bash
-cargo xtask watch-depell
+cargo xtask watch-depell-debug
 # browser http://localhost:8080
 ```

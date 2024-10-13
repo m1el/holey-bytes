@@ -253,8 +253,8 @@ mod reg {
             )
         }
 
-        pub fn free(&mut self, reg: Id) {
-            if reg.1.is_some() {
+        pub fn free(&mut self, mut reg: Id) {
+            if reg.1.take().is_some() {
                 self.free.push(reg.0);
                 core::mem::forget(reg);
             }
@@ -730,9 +730,9 @@ pub struct Codegen {
 }
 
 impl Codegen {
-    pub fn generate(&mut self) {
+    pub fn generate(&mut self, root: FileId) {
         self.ci.emit_entry_prelude();
-        self.find_or_declare(0, 0, Err("main"), "");
+        self.find_or_declare(0, root, Err("main"), "");
         self.make_func_reachable(0);
         self.complete_call_graph();
     }
@@ -798,13 +798,7 @@ impl Codegen {
                 } else {
                     let values = captured
                         .iter()
-                        .map(|&id| E::Ident {
-                            pos: 0,
-                            is_ct: false,
-                            id,
-                            name: "booodab",
-                            is_first: false,
-                        })
+                        .map(|&id| E::Ident { pos: 0, is_ct: false, id, is_first: false })
                         .map(|expr| self.expr(&expr))
                         .collect::<Option<Vec<_>>>()?;
                     let values_size =
@@ -1236,7 +1230,7 @@ impl Codegen {
                         self.ci.revert(checkpoint);
                         match self.ty(target).expand() {
                             ty::Kind::Module(idx) => {
-                                match self.find_or_declare(target.pos(), idx, Err(field), "") {
+                                match self.find_or_declare(pos, idx, Err(field), "") {
                                     ty::Kind::Global(idx) => self.handle_global(idx),
                                     e => Some(Value::ty(e.compress())),
                                 }
@@ -1418,8 +1412,14 @@ impl Codegen {
                 let loc = var.value.loc.as_ref();
                 Some(Value { ty: self.ci.vars[var_index].value.ty, loc })
             }
-            E::Ident { id, name, .. } => {
-                match self.find_or_declare(ident::pos(id), self.ci.file, Ok(id), name) {
+            E::Ident { id, .. } => {
+                let cfile = self.cfile().clone();
+                match self.find_or_declare(
+                    ident::pos(id),
+                    self.ci.file,
+                    Ok(id),
+                    cfile.ident_str(id),
+                ) {
                     ty::Kind::Global(id) => self.handle_global(id),
                     tk => Some(Value::ty(tk.compress())),
                 }
@@ -2465,7 +2465,7 @@ impl Codegen {
         let f = self.files[file as usize].clone();
         let Some((expr, ident)) = f.find_decl(name) else {
             match name {
-                Ok(_) => self.report(pos, format_args!("undefined indentifier: {lit_name}")),
+                Ok(_) => self.report(pos, format_args!("undefined identifier: {lit_name}")),
                 Err("main") => self.report(pos, format_args!("missing main function")),
                 Err(name) => self.report(pos, format_args!("undefined indentifier: {name}")),
             }
@@ -2774,7 +2774,7 @@ mod tests {
         let mut codegen =
             super::Codegen { files: crate::test_parse_files(ident, input), ..Default::default() };
 
-        codegen.generate();
+        codegen.generate(0);
         let mut out = Vec::new();
         codegen.assemble(&mut out);
 

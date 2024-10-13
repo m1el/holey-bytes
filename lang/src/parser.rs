@@ -232,7 +232,9 @@ impl<'a, 'b> Parser<'a, 'b> {
         {
             Some((i, elem)) => (i, elem, false),
             None => {
-                let id = ident::new(token.start, name.len() as _);
+                let Some(id) = ident::new(token.start, name.len() as _) else {
+                    self.report(token.start, "identifier can at most have 64 characters");
+                };
                 self.ctx.idents.push(ScopeIdent {
                     ident: id,
                     declared: false,
@@ -345,8 +347,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             },
             T::Ident | T::CtIdent => {
                 let (id, is_first) = self.resolve_ident(token);
-                let name = self.tok_str(token);
-                E::Ident { pos, is_ct: token.kind == T::CtIdent, name, id, is_first }
+                E::Ident { pos, is_ct: token.kind == T::CtIdent, id, is_first }
             }
             T::If => E::If {
                 pos,
@@ -501,7 +502,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                         s.expr()
                     } else {
                         let (id, is_first) = s.resolve_ident(name_tok);
-                        Expr::Ident { pos: name_tok.start, is_ct: false, id, name, is_first }
+                        Expr::Ident { pos: name_tok.start, is_ct: false, id, is_first }
                     },
                 }
             }),
@@ -716,7 +717,7 @@ generate_expr! {
             is_ct: bool,
             is_first: bool,
             id: Ident,
-            name: &'a str,
+            //name: &'a str,
         },
         /// `LIST('{', [';'], '}', Expr)`
         Block {
@@ -819,10 +820,12 @@ generate_expr! {
 }
 
 impl Expr<'_> {
-    pub fn declares(&self, iden: Result<Ident, &str>) -> Option<Ident> {
+    pub fn declares(&self, iden: Result<Ident, &str>, source: &str) -> Option<Ident> {
         match *self {
-            Self::Ident { id, name, .. } if iden == Ok(id) || iden == Err(name) => Some(id),
-            Self::Ctor { fields, .. } => fields.iter().find_map(|f| f.value.declares(iden)),
+            Self::Ident { id, .. } if iden == Ok(id) || iden == Err(&source[ident::range(id)]) => {
+                Some(id)
+            }
+            Self::Ctor { fields, .. } => fields.iter().find_map(|f| f.value.declares(iden, source)),
             _ => None,
         }
     }
@@ -972,7 +975,9 @@ impl AstInner<[Symbol]> {
     }
 
     fn new(file: Box<str>, path: &str, ctx: &mut ParserCtx, loader: Loader) -> NonNull<Self> {
-        let arena = Arena::with_capacity(file.len() * SOURCE_TO_AST_FACTOR);
+        let arena = Arena::with_capacity(
+            SOURCE_TO_AST_FACTOR * file.bytes().filter(|b| !b.is_ascii_whitespace()).count(),
+        );
         let exprs =
             unsafe { core::mem::transmute(Parser::parse(ctx, &file, path, loader, &arena)) };
 
@@ -1059,7 +1064,9 @@ impl Ast {
 
     pub fn find_decl(&self, id: Result<Ident, &str>) -> Option<(&Expr, Ident)> {
         self.exprs().iter().find_map(|expr| match expr {
-            Expr::BinOp { left, op: TokenKind::Decl, .. } => left.declares(id).map(|id| (expr, id)),
+            Expr::BinOp { left, op: TokenKind::Decl, .. } => {
+                left.declares(id, &self.file).map(|id| (expr, id))
+            }
             _ => None,
         })
     }
@@ -1224,10 +1231,7 @@ impl Arena {
         .unwrap();
         let ptr = self.alloc_low(layout);
         unsafe {
-            ptr.cast::<usize>().copy_from_nonoverlapping(
-                NonNull::from(&expr).cast(),
-                layout.size() / core::mem::size_of::<usize>(),
-            )
+            ptr.cast::<u8>().copy_from_nonoverlapping(NonNull::from(&expr).cast(), layout.size())
         };
         unsafe { ptr.cast::<Expr<'a>>().as_ref() }
     }
@@ -1250,14 +1254,35 @@ impl Arena {
             return ptr;
         }
 
-        unsafe {
-            core::ptr::write(
-                chunk,
-                ArenaChunk::new(
-                    1024 * 4 - core::mem::size_of::<ArenaChunk>(),
-                    core::ptr::read(chunk),
-                ),
-            );
+        const EXPANSION_ALLOC: usize = 1024 * 4 - core::mem::size_of::<ArenaChunk>();
+
+        if layout.size() > EXPANSION_ALLOC {
+            let next_ptr = chunk.next_ptr();
+            if next_ptr.is_null() {
+                unsafe {
+                    core::ptr::write(
+                        chunk,
+                        ArenaChunk::new(
+                            layout.size() + layout.align() - 1 + core::mem::size_of::<ArenaChunk>(),
+                            Default::default(),
+                        ),
+                    );
+                }
+            } else {
+                unsafe {
+                    let chunk = ArenaChunk::new(
+                        layout.size() + layout.align() - 1 + core::mem::size_of::<ArenaChunk>(),
+                        core::ptr::read(next_ptr),
+                    );
+                    let alloc = chunk.base.add(chunk.base.align_offset(layout.align()));
+                    core::ptr::write(next_ptr, chunk);
+                    return NonNull::new_unchecked(alloc);
+                }
+            }
+        } else {
+            unsafe {
+                core::ptr::write(chunk, ArenaChunk::new(EXPANSION_ALLOC, core::ptr::read(chunk)));
+            }
         }
 
         chunk.alloc(layout).unwrap()
@@ -1300,11 +1325,16 @@ impl ArenaChunk {
             return None;
         }
         unsafe { self.end = self.end.sub(size) };
+        debug_assert!(self.end >= self.base, "{:?} {:?}", self.end, self.base);
         unsafe { Some(NonNull::new_unchecked(self.end)) }
     }
 
     fn next(&self) -> Option<&Self> {
-        unsafe { self.base.cast::<Self>().sub(1).as_ref() }
+        unsafe { self.next_ptr().as_ref() }
+    }
+
+    fn next_ptr(&self) -> *mut Self {
+        unsafe { self.base.cast::<Self>().sub(1) }
     }
 
     fn contains(&self, arg: *mut u8) -> bool {

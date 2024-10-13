@@ -264,7 +264,7 @@ impl PublicPage for Login {
                 if let Some(e) = error { <div class="error">e</div> }
                 <input name="name" type="text" autocomplete="name" placeholder="name" value=name
                     required maxlength=MAX_NAME_LENGTH>
-                <input name="password" type="password" autocomplete="password" placeholder="password"
+                <input name="password" type="password" autocomplete="current-password" placeholder="password"
                     value=password>
                 <input type="submit" value="submit">
             </form>
@@ -402,7 +402,7 @@ async fn base(body: impl FnOnce(&mut String), session: Option<&Session>) -> Html
                 <main>|f|{body(f)}</main>
             </body>
             <script src="https://unpkg.com/htmx.org@2.0.3" integrity="sha384-0895/pl2MU10Hqc6jd4RvrthNlDiE9U1tWmX7WRESftEDRosgxNsQG/Ze9YMRzHq" crossorigin="anonymous"></script>
-            <script src="/index.js"></script>
+            <script type="module" src="/index.js"></script>
         </html>
     })
 }

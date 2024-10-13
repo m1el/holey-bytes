@@ -2,11 +2,13 @@ mod utils;
 
 use {
     crate::utils::IterExt,
+    anyhow::Context,
     std::{
         fs::File,
         io::{self, BufRead, BufReader, BufWriter, Seek, Write},
         path::Path,
     },
+    walrus::{ir::Value, ConstExpr, GlobalKind, ValType},
 };
 
 fn root() -> &'static Path {
@@ -29,7 +31,25 @@ fn exec(mut cmd: std::process::Command) -> io::Result<()> {
     Ok(())
 }
 
-fn build_wasm_blob(name: &str, debug: bool) -> io::Result<()> {
+fn insert_stack_pointer_shim(file: impl AsRef<str>) -> anyhow::Result<()> {
+    let mut module = walrus::Module::from_file(file.as_ref())?;
+
+    let global = module
+        .globals
+        .iter()
+        .find(|g| g.ty == ValType::I32 && g.mutable)
+        .filter(|g| match g.kind {
+            GlobalKind::Local(ConstExpr::Value(Value::I32(n))) => n != 0,
+            _ => false,
+        })
+        .context("binary is missing a stak pointer")?;
+
+    module.exports.add("stack_pointer", global.id());
+
+    module.emit_wasm_file(file.as_ref())
+}
+
+fn build_wasm_blob(name: &str, debug: bool) -> anyhow::Result<()> {
     let mut c = build_cmd(if debug { "cargo wasm-build-debug" } else { "cargo wasm-build" });
     c.arg(format!("wasm-{name}"));
     exec(c)?;
@@ -39,14 +59,15 @@ fn build_wasm_blob(name: &str, debug: bool) -> io::Result<()> {
         exec(build_cmd(format!("wasm-opt -Oz {out_path} -o {out_path}")))?;
     }
     exec(build_cmd(format!("cp {out_path} depell/src/{name}.wasm")))?;
+    insert_stack_pointer_shim(format!("depell/src/{name}.wasm"))?;
     exec(build_cmd(format!("gzip -f depell/src/{name}.wasm")))?;
     Ok(())
 }
 
-fn main() -> io::Result<()> {
+fn main() -> anyhow::Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     match args[0].as_str() {
-        "fmt" => fmt(args[1] == "-r" || args[1] == "--renumber"),
+        "fmt" => fmt(args[1] == "-r" || args[1] == "--renumber").context(""),
         "build-depell-debug" => {
             build_wasm_blob("hbfmt", true)?;
             build_wasm_blob("hbc", true)?;
@@ -61,9 +82,15 @@ fn main() -> io::Result<()> {
             exec(build_cmd("gzip -k -f depell/src/index.css"))?;
             Ok(())
         }
-        "watch-depell" => {
+        "watch-depell-debug" => {
             let mut c = build_cmd("cargo watch --why");
             c.arg("--exec=xtask build-depell-debug").arg("--exec=run -p depell");
+            exec(c)?;
+            Ok(())
+        }
+        "watch-depell" => {
+            let mut c = build_cmd("cargo watch --why");
+            c.arg("--exec=xtask build-depell").arg("--exec=run -p depell");
             exec(c)?;
             Ok(())
         }

@@ -9,7 +9,8 @@ use {
 
 extern crate alloc;
 
-wasm_rt::decl_runtime!(128 * 8 * 1024, 1024 * 4);
+const ARENA_CAP: usize = 128 * 16 * 1024;
+wasm_rt::decl_runtime!(ARENA_CAP, 1024 * 4);
 
 const MAX_INPUT_SIZE: usize = 32 * 4 * 1024;
 wasm_rt::decl_buffer!(MAX_INPUT_SIZE, MAX_INPUT, INPUT, INPUT_LEN);
@@ -25,6 +26,8 @@ unsafe fn compile_and_run(mut fuel: usize) {
         path: &'a str,
         code: &'a mut str,
     }
+
+    let mut root = 0;
 
     let files = {
         let mut input_bytes =
@@ -42,7 +45,10 @@ unsafe fn compile_and_run(mut fuel: usize) {
             input_bytes = rest;
         }
 
+        let root_path = files[root].path;
         hblang::quad_sort(&mut files, |a, b| a.path.cmp(b.path));
+        root = files.binary_search_by_key(&root_path, |p| p.path).unwrap();
+
         files
     };
 
@@ -67,7 +73,7 @@ unsafe fn compile_and_run(mut fuel: usize) {
     let mut ct = {
         let mut c = Codegen::default();
         c.files = files;
-        c.generate();
+        c.generate(root as FileId);
         c.assemble_comptime()
     };
 
@@ -94,4 +100,6 @@ unsafe fn compile_and_run(mut fuel: usize) {
             }
         }
     }
+
+    log::error!("memory consumption: {}b / {}b", ALLOCATOR.used(), ARENA_CAP);
 }

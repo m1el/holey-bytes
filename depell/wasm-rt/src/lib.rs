@@ -116,6 +116,10 @@ impl<const SIZE: usize> ArenaAllocator<SIZE> {
     pub unsafe fn reset(&self) {
         (*self.head.get()) = self.arena.get().cast::<u8>().add(SIZE);
     }
+
+    pub fn used(&self) -> usize {
+        unsafe { self.arena.get() as usize + SIZE - (*self.head.get()) as usize }
+    }
 }
 
 unsafe impl<const SIZE: usize> Sync for ArenaAllocator<SIZE> {}

@@ -18,32 +18,90 @@ function compileCode(instance, code, fuel) {
 	let {
 		INPUT, INPUT_LEN,
 		LOG_MESSAGES, LOG_MESSAGES_LEN,
-		PANIC_MESSAGE, PANIC_MESSAGE_LEN,
 		memory, compile_and_run,
 	} = instance.exports;
 
 	if (!(true
+		&& memory instanceof WebAssembly.Memory
 		&& INPUT instanceof WebAssembly.Global
 		&& INPUT_LEN instanceof WebAssembly.Global
 		&& LOG_MESSAGES instanceof WebAssembly.Global
 		&& LOG_MESSAGES_LEN instanceof WebAssembly.Global
-		&& memory instanceof WebAssembly.Memory
 		&& typeof compile_and_run === "function"
-	)) console.log(instance.exports), never();
+	)) never();
 
 	const dw = new DataView(memory.buffer);
 	dw.setUint32(INPUT_LEN.value, code.length, true);
 	new Uint8Array(memory.buffer, INPUT.value).set(code);
 
+	runWasmFunction(instance, compile_and_run, fuel);
+	return bufToString(memory, LOG_MESSAGES, LOG_MESSAGES_LEN);
+}
+
+/**@type{WebAssembly.Instance}*/ let fmtInstance;
+/**@type{Promise<WebAssembly.WebAssemblyInstantiatedSource>}*/ let fmtInstaceFuture;
+/** @param {string} code @param {"fmt" | "minify"} action
+ * @returns {Promise<string>} */
+async function modifyCode(code, action) {
+	fmtInstaceFuture ??= WebAssembly.instantiateStreaming(fetch("/hbfmt.wasm"), {});
+	fmtInstance ??= (await fmtInstaceFuture).instance;
+
+	let {
+		INPUT, INPUT_LEN,
+		OUTPUT, OUTPUT_LEN,
+		memory, fmt, minify
+	} = fmtInstance.exports;
+
+	if (!(true
+		&& memory instanceof WebAssembly.Memory
+		&& INPUT instanceof WebAssembly.Global
+		&& INPUT_LEN instanceof WebAssembly.Global
+		&& OUTPUT instanceof WebAssembly.Global
+		&& OUTPUT_LEN instanceof WebAssembly.Global
+		&& typeof fmt === "function"
+		&& typeof minify === "function"
+	)) never();
+
+	if (action !== "fmt") {
+		INPUT = OUTPUT;
+		INPUT_LEN = OUTPUT_LEN;
+	}
+
+	let dw = new DataView(memory.buffer);
+	dw.setUint32(INPUT_LEN.value, code.length, true);
+	new Uint8Array(memory.buffer, INPUT.value).set(new TextEncoder().encode(code));
+
+	return runWasmFunction(fmtInstance, action === "fmt" ? fmt : minify) ?
+		bufToString(memory, OUTPUT, OUTPUT_LEN) : "invalid code";
+}
+
+
+/** @param {WebAssembly.Instance} instance @param {CallableFunction} func @param {any[]} args
+ * @returns {boolean} */
+function runWasmFunction(instance, func, ...args) {
+	const prev = performance.now();
+	const { PANIC_MESSAGE, PANIC_MESSAGE_LEN, memory, stack_pointer } = instance.exports;
+	if (!(true
+		&& memory instanceof WebAssembly.Memory
+		&& stack_pointer instanceof WebAssembly.Global
+	)) never();
+	const ptr = stack_pointer.value;
 	try {
-		compile_and_run(fuel);
-		return bufToString(memory, LOG_MESSAGES, LOG_MESSAGES_LEN);
-	} catch (e) {
-		if (PANIC_MESSAGE instanceof WebAssembly.Global
-			&& PANIC_MESSAGE_LEN instanceof WebAssembly.Global) {
-			console.error(e, bufToString(memory, PANIC_MESSAGE, PANIC_MESSAGE_LEN));
+		func(...args);
+		return true;
+	} catch (error) {
+		if (error instanceof WebAssembly.RuntimeError && error.message == "unreachable") {
+			if (PANIC_MESSAGE instanceof WebAssembly.Global
+				&& PANIC_MESSAGE_LEN instanceof WebAssembly.Global) {
+				console.error(bufToString(memory, PANIC_MESSAGE, PANIC_MESSAGE_LEN), error);
+			}
+		} else {
+			console.error(error);
 		}
-		return bufToString(memory, LOG_MESSAGES, LOG_MESSAGES_LEN);
+		stack_pointer.value = ptr;
+		return false;
+	} finally {
+		console.log("compiletion took:", performance.now() - prev);
 	}
 }
 
@@ -78,61 +136,6 @@ function bufToString(mem, ptr, len) {
 	return res;
 }
 
-/**@type{WebAssembly.Instance}*/ let fmtInstance;
-/**@type{Promise<WebAssembly.WebAssemblyInstantiatedSource>}*/ let fmtInstaceFuture;
-/** @param {string} code @param {"fmt" | "minify"} action
- * @returns {Promise<string | undefined>} */
-async function modifyCode(code, action) {
-	fmtInstaceFuture ??= WebAssembly.instantiateStreaming(fetch("/hbfmt.wasm"), {});
-	fmtInstance ??= (await fmtInstaceFuture).instance;
-
-	let {
-		INPUT, INPUT_LEN,
-		OUTPUT, OUTPUT_LEN,
-		PANIC_MESSAGE, PANIC_MESSAGE_LEN,
-		memory, fmt, minify
-	} = fmtInstance.exports;
-
-	if (!(true
-		&& INPUT instanceof WebAssembly.Global
-		&& INPUT_LEN instanceof WebAssembly.Global
-		&& OUTPUT instanceof WebAssembly.Global
-		&& OUTPUT_LEN instanceof WebAssembly.Global
-		&& memory instanceof WebAssembly.Memory
-		&& typeof fmt === "function"
-		&& typeof minify === "function"
-	)) never();
-
-	if (action !== "fmt") {
-		INPUT = OUTPUT;
-		INPUT_LEN = OUTPUT_LEN;
-	}
-
-	let dw = new DataView(memory.buffer);
-	dw.setUint32(INPUT_LEN.value, code.length, true);
-	new Uint8Array(memory.buffer, INPUT.value)
-		.set(new TextEncoder().encode(code));
-
-	try {
-		if (action === "fmt") fmt(); else minify();
-		let result = new TextDecoder()
-			.decode(new Uint8Array(memory.buffer, OUTPUT.value,
-				dw.getUint32(OUTPUT_LEN.value, true)));
-		return result;
-	} catch (e) {
-		if (PANIC_MESSAGE instanceof WebAssembly.Global
-			&& PANIC_MESSAGE_LEN instanceof WebAssembly.Global) {
-			let message = new TextDecoder()
-				.decode(new Uint8Array(memory.buffer, PANIC_MESSAGE.value,
-					dw.getUint32(PANIC_MESSAGE_LEN.value, true)));
-			console.error(message, e);
-		} else {
-			console.error(e);
-		}
-		return undefined;
-	}
-}
-
 /** @param {HTMLElement} target */
 function wireUp(target) {
 	execApply(target);
@@ -144,7 +147,7 @@ function wireUp(target) {
 /** @type {{ [key: string]: (content: string) => Promise<string> | string }} */
 const applyFns = {
 	timestamp: (content) => new Date(parseInt(content) * 1000).toLocaleString(),
-	fmt: (content) => modifyCode(content, "fmt").then(c => c ?? "post has invalid code"),
+	fmt: (content) => modifyCode(content, "fmt").then(c => c),
 };
 
 /** @param {HTMLElement} target */
@@ -156,16 +159,20 @@ async function bindCodeEdit(target) {
 
 	const hbc = await getHbcInstance();
 
-	const debounce = 0;
+	const debounce = 100;
 	let timeout = 0;
 	edit.addEventListener("input", () => {
 		if (timeout) clearTimeout(timeout);
 		timeout = setTimeout(() => {
-			const buf = packPosts([{ path: "local.hb", code: edit.value }]);
+			const buf = packPosts([
+				{ path: "local.hb", code: edit.value },
+				{ path: "lam.hb", code: "foo:=10" },
+			]);
 			errors.textContent = compileCode(hbc, buf, 1);
 			timeout = 0;
 		}, debounce);
 	});
+	edit.dispatchEvent(new InputEvent("input"));
 }
 
 /** @param {HTMLElement} target */
@@ -191,8 +198,10 @@ function bindTextareaAutoResize(target) {
 		textarea.style.height = (textarea.scrollHeight - padding) + "px";
 		textarea.style.overflowY = "hidden";
 		textarea.addEventListener("input", function() {
+			let top = window.scrollY;
 			textarea.style.height = "auto";
 			textarea.style.height = (textarea.scrollHeight - padding) + "px";
+			window.scrollTo({ top });
 		});
 
 		textarea.onkeydown = (ev) => {
