@@ -12,7 +12,7 @@ use {
         TypedReloc, Types, HEADER_SIZE,
     },
     alloc::{boxed::Box, string::String, vec::Vec},
-    core::fmt::Display,
+    core::{fmt::Display, u16},
 };
 
 type Offset = u32;
@@ -2329,7 +2329,7 @@ impl Codegen {
         self.store_sized_low(src.into(), dst.into(), size);
     }
 
-    fn store_sized_low(&mut self, src: LocCow, dst: LocCow, size: Size) {
+    fn store_sized_low(&mut self, src: LocCow, dst: LocCow, mut size: Size) {
         macro_rules! lpat {
             ($der:literal, $reg:ident, $off:pat, $sta:pat) => {
                 &Loc::Rt { derefed: $der, reg: ref $reg, offset: $off, stack: $sta }
@@ -2372,7 +2372,20 @@ impl Codegen {
                 let dst_off = if dst.is_ref() { self.ci.regs.allocate() } else { dst.as_ref() };
                 self.stack_offset(src_off.get(), src.get(), ssta.as_ref(), soff);
                 self.stack_offset(dst_off.get(), dst.get(), dsta.as_ref(), doff);
-                self.ci.emit(bmc(src_off.get(), dst_off.get(), size as _));
+                loop {
+                    match u16::try_from(size) {
+                        Ok(o) => {
+                            self.ci.emit(bmc(src_off.get(), dst_off.get(), o));
+                            break;
+                        }
+                        Err(_) => {
+                            self.ci.emit(bmc(src_off.get(), dst_off.get(), u16::MAX));
+                            self.ci.emit(addi64(src_off.get(), src_off.get(), u16::MAX as _));
+                            self.ci.emit(addi64(dst_off.get(), dst_off.get(), u16::MAX as _));
+                            size -= u16::MAX as u32;
+                        }
+                    }
+                }
                 self.ci.regs.free(src_off);
                 self.ci.regs.free(dst_off);
             }
