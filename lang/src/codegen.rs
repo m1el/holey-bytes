@@ -727,7 +727,6 @@ mod trap {
 #[derive(Default)]
 pub struct Codegen {
     pub files: Vec<parser::Ast>,
-    pub embeds: Vec<Vec<u8>>,
     tasks: Vec<Option<FTask>>,
 
     tys: Types,
@@ -737,6 +736,17 @@ pub struct Codegen {
 }
 
 impl Codegen {
+    pub fn push_embeds(&mut self, embeds: Vec<Vec<u8>>) {
+        self.tys.ins.globals = embeds
+            .into_iter()
+            .map(|data| Global {
+                ty: self.tys.make_array(ty::Id::U8, data.len() as _),
+                data,
+                ..Default::default()
+            })
+            .collect();
+    }
+
     pub fn generate(&mut self, root: FileId) {
         self.ci.emit_entry_prelude();
         self.find_or_declare(0, root, Err("main"), "");
@@ -791,6 +801,7 @@ impl Codegen {
         use {Expr as E, TokenKind as T};
         let value = match *expr {
             E::Mod { id, .. } => Some(Value::ty(ty::Kind::Module(id).compress())),
+            E::Embed { id, .. } => Some(Value::ty(ty::Kind::Global(id).compress())),
             E::Struct { captured, packed, fields, pos, .. } => {
                 if captured.is_empty() {
                     Some(Value::ty(

@@ -10,9 +10,7 @@ use {
         collections::VecDeque,
         eprintln,
         ffi::OsStr,
-        io::{
-            Write as _, {self},
-        },
+        io::{self, Write as _},
         path::{Path, PathBuf},
         string::ToString,
         sync::Mutex,
@@ -90,7 +88,7 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
     } else {
         let mut codegen = codegen::Codegen::default();
         codegen.files = parsed.ast;
-        codegen.embeds = parsed.embeds;
+        codegen.push_embeds(parsed.embeds);
 
         codegen.generate(0);
         if options.dump_asm {

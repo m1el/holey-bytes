@@ -667,6 +667,7 @@ struct TypedReloc {
     reloc: Reloc,
 }
 
+#[derive(Clone)]
 struct Global {
     file: FileId,
     name: Ident,
