@@ -4,10 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+argon2 = "0.5.3"
 axum = "0.7.7"
 getrandom = "0.2.15"
+hblang.workspace = true
 htmlm = "0.5.0"
 log = "0.4.22"
+rand_core = { version = "0.6.4", features = ["getrandom"] }
 rusqlite = { version = "0.32.1", features = ["bundled"] }
 serde = { version = "1.0.210", features = ["derive"] }
 time = "0.3.36"

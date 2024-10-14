@@ -80,7 +80,6 @@ function modifyCode(instance, code, action) {
 /** @param {WebAssembly.Instance} instance @param {CallableFunction} func @param {any[]} args
  * @returns {boolean} */
 function runWasmFunction(instance, func, ...args) {
-	//const prev = performance.now();
 	const { PANIC_MESSAGE, PANIC_MESSAGE_LEN, memory, stack_pointer } = instance.exports;
 	if (!(true
 		&& memory instanceof WebAssembly.Memory
@@ -91,18 +90,16 @@ function runWasmFunction(instance, func, ...args) {
 		func(...args);
 		return true;
 	} catch (error) {
-		if (error instanceof WebAssembly.RuntimeError && error.message == "unreachable") {
-			if (PANIC_MESSAGE instanceof WebAssembly.Global
-				&& PANIC_MESSAGE_LEN instanceof WebAssembly.Global) {
-				console.error(bufToString(memory, PANIC_MESSAGE, PANIC_MESSAGE_LEN), error);
-			}
+		if (error instanceof WebAssembly.RuntimeError
+			&& error.message == "unreachable"
+			&& PANIC_MESSAGE instanceof WebAssembly.Global
+			&& PANIC_MESSAGE_LEN instanceof WebAssembly.Global) {
+			console.error(bufToString(memory, PANIC_MESSAGE, PANIC_MESSAGE_LEN), error);
 		} else {
 			console.error(error);
 		}
 		stack_pointer.value = ptr;
 		return false;
-	} finally {
-		//console.log("compiletion took:", performance.now() - prev);
 	}
 }
 
@@ -143,26 +140,30 @@ function wireUp(target) {
 }
 
 const importRe = /@use\s*\(\s*"(([^"]|\\")+)"\s*\)/g;
-/** @param {string} code @param {string[]} matches @returns {string[]} */
-function findImports(code, matches) {
-	matches.length = 0;
+const prevRoots = new Set();
+/** @param {string} code @param {string[]} roots @param {Post[]} buf @returns {void} */
+function loadCachedPackages(code, roots, buf) {
+	buf[0].code = code;
+
+	roots.length = 0;
+	let changed = false;
 	for (const match of code.matchAll(importRe)) {
-		matches.push(match[1]);
+		changed ||= !prevRoots.has(match[1]);
+		roots.push(match[1]);
 	}
 
-	matches.sort();
+	if (!changed) return;
+	buf.length = 1;
+	prevRoots.clear();
 
-	let c = 0;
-	for (let i = 1; i < matches.length; i++) {
-		if (matches[c] != matches[i]) {
-			matches[++c] = matches[i];
+	for (let imp = roots.pop(); imp !== undefined; imp = roots.pop()) {
+		if (prevRoots.has(imp)) continue; prevRoots.add(imp);
+		buf.push({ path: imp, code: localStorage.getItem("package-" + imp) ?? never() });
+		for (const match of buf[buf.length - 1].code.matchAll(importRe)) {
+			roots.push(match[1]);
 		}
 	}
-	matches.length = Math.min(matches.length, c + 1);
-
-	return matches;
 }
-
 
 /** @param {HTMLElement} target */
 async function bindCodeEdit(target) {
@@ -180,8 +181,8 @@ async function bindCodeEdit(target) {
 	if (Number.isNaN(MAX_CODE_SIZE)) never();
 
 	const hbc = await getHbcInstance(), fmt = await getFmtInstance();
-	const prevImports = [];
-	const matches = [];
+	let importDiff = new Set();
+	const keyBuf = [];
 	/**@type{Post[]}*/
 	const packages = [{ path: "local.hb", code: "" }];
 	const debounce = 100;
@@ -189,59 +190,67 @@ async function bindCodeEdit(target) {
 	let cancelation = undefined;
 	let timeout = 0;
 
-	edit.addEventListener("input", () => {
-		if (timeout) clearTimeout(timeout);
-		timeout = setTimeout(() => {
-			prevImports.length = 0; prevImports.push(...matches);
-			const imports = findImports(edit.value, matches);
-			let changed = imports.length !== prevImports.length;
-			for (let i = 0; i < imports.length && !changed; i++) {
-				changed ||= imports[i] !== prevImports[i];
-			}
+	const onInput = () => {
+		importDiff.clear();
+		for (const match of edit.value.matchAll(importRe)) {
+			if (localStorage["package-" + match[1]]) continue;
+			importDiff.add(match[1]);
+		}
 
-			if (changed && imports.length !== 0) {
-				if (cancelation) cancelation.abort();
-				cancelation = new AbortController();
-				errors.textContent = "fetching: " + imports.join(", ");
-				fetch(`/code`, {
-					method: "POST",
-					signal: cancelation.signal,
-					headers: { "Content-Type": "application/json" },
-					body: JSON.stringify(imports),
-				}).then(async e => {
-					try {
-						const json = await e.json();
-						if (e.status == 200) {
-							packages.length = 1;
-							packages.push(...json);
+		if (importDiff.size !== 0) {
+			if (cancelation) cancelation.abort();
+			cancelation = new AbortController();
+
+			keyBuf.length = 0;
+			keyBuf.push(...importDiff.keys());
+
+			errors.textContent = "fetching: " + keyBuf.join(", ");
+
+			fetch(`/code`, {
+				method: "POST",
+				signal: cancelation.signal,
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(keyBuf),
+			}).then(async e => {
+				try {
+					const json = await e.json();
+					if (e.status == 200) {
+						for (const key in json) localStorage["package-" + key] = json[key];
+						const missing = keyBuf.filter(i => json[i] === undefined);
+						if (missing.length !== 0) {
+							errors.textContent = "failed to fetch: " + missing.join(", ");
+						} else {
 							cancelation = undefined;
 							edit.dispatchEvent(new InputEvent("input"));
-						} else {
-							errors.textContent = "failed to fetch: " + json.join(", ");
 						}
-					} catch (er) {
-						errors.textContent = "completely failed to fetch ("
-							+ e.status + "): " + imports.join(", ");
-						console.error(e);
 					}
-				});
-			}
+				} catch (er) {
+					errors.textContent = "completely failed to fetch ("
+						+ e.status + "): " + keyBuf.join(", ");
+					console.error(e, er);
+				}
+			});
+		}
 
-			if (cancelation && imports.length !== 0) {
-				return;
-			}
+		if (cancelation && importDiff.size !== 0) {
+			return;
+		}
 
-			packages[0].code = edit.value;
+		loadCachedPackages(edit.value, keyBuf, packages);
 
-			errors.textContent = compileCode(hbc, packages, 1);
-			const minified_size = modifyCode(fmt, edit.value, "minify")?.length;
-			if (minified_size) {
-				codeSize.textContent = (MAX_CODE_SIZE - minified_size) + "";
-				const perc = Math.min(100, Math.floor(100 * (minified_size / MAX_CODE_SIZE)));
-				codeSize.style.color = `color-mix(in srgb, white, var(--error) ${perc}%)`;
-			}
-			timeout = 0;
-		}, debounce);
+		errors.textContent = compileCode(hbc, packages, 1);
+		const minified_size = modifyCode(fmt, edit.value, "minify")?.length;
+		if (minified_size) {
+			codeSize.textContent = (MAX_CODE_SIZE - minified_size) + "";
+			const perc = Math.min(100, Math.floor(100 * (minified_size / MAX_CODE_SIZE)));
+			codeSize.style.color = `color-mix(in srgb, white, var(--error) ${perc}%)`;
+		}
+		timeout = 0;
+	};
+
+	edit.addEventListener("input", () => {
+		if (timeout) clearTimeout(timeout);
+		timeout = setTimeout(onInput, debounce)
 	});
 	edit.dispatchEvent(new InputEvent("input"));
 }
@@ -339,9 +348,19 @@ if (window.location.hostname === 'localhost') {
 	})()
 }
 
-document.body.addEventListener('htmx:afterSwap', (ev) => {
+document.body.addEventListener('htmx:afterSettle', (ev) => {
 	if (!(ev.target instanceof HTMLElement)) never();
 	wireUp(ev.target);
 });
+
+getFmtInstance().then(inst => {
+	document.body.addEventListener('htmx:configRequest', (ev) => {
+		const details = ev['detail'];
+		if (details.path === "/post" && details.verb === "post") {
+			details.parameters['code'] = modifyCode(inst, details.parameters['code'], "minify");
+		}
+	});
+});
+
 
 wireUp(document.body);

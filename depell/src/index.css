@@ -109,6 +109,10 @@ div#code-editor {
 	display: flex;
 	position: relative;
 
+	textarea {
+		flex: 1;
+	}
+
 	span#code-size {
 		position: absolute;
 		right: 2px;

@@ -49,3 +49,4 @@ CREATE TABLE IF NOT EXISTS run(
 	FOREIGN KEY (runner) REFERENCES user(name),
 	PRIMARY KEY (code_name, code_author, runner)
 );
+

@@ -1,4 +1,6 @@
+#![feature(iter_collect_into)]
 use {
+    argon2::{password_hash::SaltString, PasswordVerifier},
     axum::{
         body::Bytes,
         http::{header::COOKIE, request::Parts},
@@ -6,8 +8,13 @@ use {
     },
     core::fmt,
     htmlm::{html, write_html},
+    rand_core::OsRng,
     serde::{Deserialize, Serialize},
-    std::{fmt::Write, net::Ipv4Addr},
+    std::{
+        collections::{HashMap, HashSet},
+        fmt::Write,
+        net::Ipv4Addr,
+    },
 };
 
 const MAX_NAME_LENGTH: usize = 32;
@@ -54,6 +61,7 @@ async fn amain() {
         .route("/post", get(Post::page))
         .route("/post-view", get(Post::get))
         .route("/post", post(Post::post))
+        .route("/code", post(fetch_code))
         .route("/login", get(Login::page))
         .route("/login-view", get(Login::get))
         .route("/login", post(Login::post))
@@ -82,7 +90,7 @@ trait PublicPage: Default {
 
     fn render(self) -> String {
         let mut str = String::new();
-        Self::default().render_to_buf(&mut str);
+        self.render_to_buf(&mut str);
         str
     }
 
@@ -100,7 +108,7 @@ trait Page: Default {
 
     fn render(self, session: &Session) -> String {
         let mut str = String::new();
-        Self::default().render_to_buf(session, &mut str);
+        self.render_to_buf(session, &mut str);
         str
     }
 
@@ -116,6 +124,30 @@ trait Page: Default {
             None => Err(axum::response::Redirect::permanent("/login")),
         }
     }
+}
+
+async fn fetch_code(
+    axum::Json(paths): axum::Json<Vec<String>>,
+) -> axum::Json<HashMap<String, String>> {
+    let mut deps = HashMap::<String, String>::new();
+    db::with(|db| {
+        for path in &paths {
+            let Some((author, name)) = path.split_once('/') else { continue };
+            db.fetch_deps
+                .query_map((name, author), |r| {
+                    Ok((
+                        r.get::<_, String>(1)? + "/" + r.get_ref(0)?.as_str()?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })
+                .inspect_err(|e| log::error!("{e}"))
+                .into_iter()
+                .flatten()
+                .filter_map(|r| r.inspect_err(|e| log::error!("{e}")).ok())
+                .collect_into(&mut deps);
+        }
+    });
+    axum::Json(deps)
 }
 
 #[derive(Default)]
@@ -148,14 +180,14 @@ impl Page for Post {
     fn render_to_buf(self, session: &Session, buf: &mut String) {
         let Self { name, code, error, .. } = self;
         write_html! { (buf)
-            <form id="postForm" "hx-post"="/post" "hx-swap"="outherHTML">
+            <form id="postForm" "hx-post"="/post" "hx-swap"="outerHTML">
                 if let Some(e) = error { <div class="error">e</div> }
                 <input name="author" type="text" value={session.name} hidden>
                 <input name="name" type="text" placeholder="name" value=name
                     required maxlength=MAX_POSTNAME_LENGTH>
                 <div id="code-editor">
-                    <textarea id="code-edit" name="code" placeholder="code" rows=1 required
-                        style="flex: 1">code</textarea>
+                    <textarea id="code-edit" name="code" placeholder="code" rows=1
+                        required>code</textarea>
                     <span id="code-size">MAX_CODE_LENGTH</span>
                 </div>
                 <input type="submit" value="submit">
@@ -182,6 +214,18 @@ impl Post {
                     log::error!("{e}");
                     Some("internal server error")
                 });
+                return;
+            }
+
+            for (author, name) in hblang::lexer::Lexer::uses(&data.code)
+                .filter_map(|v| v.split_once('/'))
+                .collect::<HashSet<_>>()
+            {
+                if let Err(e) = db.create_import.insert((author, name, &session.name, &data.name)) {
+                    log::error!("{e}");
+                    data.error = Some("internal server error");
+                    return;
+                };
             }
         });
 
@@ -211,7 +255,7 @@ impl fmt::Display for Post {
             </div>
             <pre apply="fmt">code</pre>
             if *timestamp == 0 {
-                <button "hx-get"="/post" "hx-swap"="outherHTML"
+                <button "hx-get"="/post" "hx-swap"="outerHTML"
                     "hx-target"="[preview]">"edit"</button>
             }
         </div> }
@@ -252,7 +296,20 @@ impl Page for Profile {
     }
 }
 
-#[derive(Serialize, Deserialize, Default)]
+fn hash_password(password: &str) -> String {
+    use argon2::PasswordHasher;
+    argon2::Argon2::default()
+        .hash_password(password.as_bytes(), &SaltString::generate(&mut OsRng))
+        .unwrap()
+        .to_string()
+}
+
+fn verify_password(hash: &str, password: &str) -> Result<(), argon2::password_hash::Error> {
+    argon2::Argon2::default()
+        .verify_password(password.as_bytes(), &argon2::PasswordHash::new(hash)?)
+}
+
+#[derive(Serialize, Deserialize, Default, Debug)]
 struct Login {
     name: String,
     password: String,
@@ -264,7 +321,7 @@ impl PublicPage for Login {
     fn render_to_buf(self, buf: &mut String) {
         let Login { name, password, error } = self;
         write_html! { (buf)
-            <form "hx-post"="/login" "hx-swap"="outherHTML">
+            <form "hx-post"="/login" "hx-swap"="outerHTML">
                 if let Some(e) = error { <div class="error">e</div> }
                 <input name="name" type="text" autocomplete="name" placeholder="name" value=name
                     required maxlength=MAX_NAME_LENGTH>
@@ -282,9 +339,9 @@ impl Login {
     ) -> Result<AppendHeaders<[(&'static str, String); 2]>, Html<String>> {
         // TODO: hash password
         let mut id = [0u8; 32];
-        db::with(|db| match db.authenticate.query((&data.name, &data.password)) {
-            Ok(mut r) => {
-                if r.next().map_or(true, |v| v.is_none()) {
+        db::with(|db| match db.authenticate.query_row((&data.name,), |r| r.get::<_, String>(1)) {
+            Ok(hash) => {
+                if verify_password(&hash, &data.password).is_err() {
                     data.error = Some("invalid credentials");
                 } else {
                     getrandom::getrandom(&mut id).unwrap();
@@ -294,13 +351,17 @@ impl Login {
                     }
                 }
             }
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                data.error = Some("invalid credentials");
+            }
             Err(e) => {
-                log::error!("{e}");
+                log::error!("foo {e}");
                 data.error = Some("internal server error");
             }
         });
 
         if data.error.is_some() {
+            log::error!("what {:?}", data);
             Err(Html(data.render()))
         } else {
             Ok(AppendHeaders([
@@ -335,7 +396,7 @@ impl PublicPage for Signup {
     fn render_to_buf(self, buf: &mut String) {
         let Signup { name, new_password, confirm_password, error } = self;
         write_html! { (buf)
-            <form "hx-post"="/signup" "hx-swap"="outherHTML">
+            <form "hx-post"="/signup" "hx-swap"="outerHTML">
                 if let Some(e) = error { <div class="error">e</div> }
                 <input name="name" type="text" autocomplete="name" placeholder="name" value=name
                     maxlength=MAX_NAME_LENGTH required>
@@ -353,7 +414,7 @@ impl Signup {
     async fn post(axum::Form(mut data): axum::Form<Self>) -> Result<Redirect, Html<String>> {
         db::with(|db| {
             // TODO: hash passwords
-            match db.register.insert((&data.name, &data.new_password)) {
+            match db.register.insert((&data.name, hash_password(&data.new_password))) {
                 Ok(_) => {}
                 Err(rusqlite::Error::SqliteFailure(e, _))
                     if e.code == rusqlite::ErrorCode::ConstraintViolation =>
@@ -498,7 +559,7 @@ mod db {
 
     macro_rules! gen_queries {
         ($vis:vis struct $name:ident {
-            $($qname:ident: $code:literal,)*
+            $($qname:ident: $code:expr,)*
         }) => {
             #[allow(dead_code)]
             $vis struct $name<'a> {
@@ -518,12 +579,25 @@ mod db {
     gen_queries! {
         pub struct Queries {
             register: "INSERT INTO user (name, password_hash) VALUES(?, ?)",
-            authenticate: "SELECT name, password_hash FROM user WHERE name = ? AND password_hash = ?",
+            authenticate: "SELECT name, password_hash FROM user WHERE name = ?",
             login: "INSERT OR REPLACE INTO session (id, username, expiration) VALUES(?, ?, ?)",
             logout: "DELETE FROM session WHERE id = ?",
             get_session: "SELECT username, expiration FROM session WHERE id = ?",
             get_user_posts: "SELECT author, name, timestamp, code FROM post WHERE author = ?",
             create_post: "INSERT INTO post (name, author, timestamp, code) VALUES(?, ?, ?, ?)",
+            fetch_deps: "
+                WITH RECURSIVE roots(name, author, code) AS (
+                    SELECT name, author, code FROM post WHERE name = ? AND author = ?
+                    UNION ALL
+                    SELECT post.name, post.author, post.code FROM
+                        post JOIN import ON post.name = import.to_name
+                            AND post.author = import.to_author
+                        JOIN roots ON import.from_name = roots.name
+                            AND import.from_author = roots.author
+                ) SELECT * FROM roots;
+            ",
+            create_import: "INSERT INTO import(to_author, to_name, from_author, from_name)
+                VALUES(?, ?, ?, ?)",
         }
     }
 
@@ -569,7 +643,12 @@ impl log::Log for Logger {
 
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
-            eprintln!("{} - {}", record.module_path().unwrap_or("=="), record.args());
+            eprintln!(
+                "{} {:?} - {}",
+                record.module_path().unwrap_or("=="),
+                record.line(),
+                record.args()
+            );
         }
     }
 

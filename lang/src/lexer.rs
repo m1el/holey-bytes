@@ -376,7 +376,7 @@ impl<'a> Lexer<'a> {
         Self::restore(input, 0)
     }
 
-    pub fn imports(input: &'a str) -> impl Iterator<Item = &'a str> {
+    pub fn uses(input: &'a str) -> impl Iterator<Item = &'a str> {
         let mut s = Self::new(input);
         core::iter::from_fn(move || loop {
             let t = s.eat();

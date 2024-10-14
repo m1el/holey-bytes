@@ -749,6 +749,7 @@ impl Codegen {
 
     pub fn generate(&mut self, root: FileId) {
         self.ci.emit_entry_prelude();
+        self.ci.file = root;
         self.find_or_declare(0, root, Err("main"), "");
         self.make_func_reachable(0);
         self.complete_call_graph();
