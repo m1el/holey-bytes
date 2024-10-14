@@ -3,16 +3,18 @@ use {
     argon2::{password_hash::SaltString, PasswordVerifier},
     axum::{
         body::Bytes,
+        extract::Path,
         http::{header::COOKIE, request::Parts},
         response::{AppendHeaders, Html},
     },
+    const_format::formatcp,
     core::fmt,
     htmlm::{html, write_html},
     rand_core::OsRng,
     serde::{Deserialize, Serialize},
     std::{
         collections::{HashMap, HashSet},
-        fmt::Write,
+        fmt::{Display, Write},
         net::Ipv4Addr,
     },
 };
@@ -21,6 +23,7 @@ const MAX_NAME_LENGTH: usize = 32;
 const MAX_POSTNAME_LENGTH: usize = 64;
 const MAX_CODE_LENGTH: usize = 1024 * 4;
 const SESSION_DURATION_SECS: u64 = 60 * 60;
+const MAX_FEED_SIZE: usize = 8 * 1024;
 
 type Redirect<const COUNT: usize = 1> = AppendHeaders<[(&'static str, &'static str); COUNT]>;
 
@@ -55,9 +58,13 @@ async fn amain() {
         .route("/hbfmt.wasm", static_asset!("application/wasm", "hbfmt.wasm"))
         .route("/hbc.wasm", static_asset!("application/wasm", "hbc.wasm"))
         .route("/index-view", get(Index::get))
-        .route("/feed", get(Index::page))
+        .route("/feed", get(Feed::page))
+        .route("/feed-view", get(Feed::get))
+        .route("/feed-more", post(Feed::more))
         .route("/profile", get(Profile::page))
         .route("/profile-view", get(Profile::get))
+        .route("/profile/:name", get(Profile::get_other_page))
+        .route("/profile-view/:name", get(Profile::get_other))
         .route("/post", get(Post::page))
         .route("/post-view", get(Post::get))
         .route("/post", post(Post::post))
@@ -80,49 +87,27 @@ async fn amain() {
             }),
         );
 
-    let socket = tokio::net::TcpListener::bind((Ipv4Addr::UNSPECIFIED, 8080)).await.unwrap();
+    #[cfg(feature = "tls")]
+    {
+        let addr =
+            (Ipv4Addr::UNSPECIFIED, std::env::var("DEPELL_PORT").unwrap().parse::<u16>().unwrap());
+        let config = axum_server::tls_rustls::RustlsConfig::from_pem_file(
+            std::env::var("DEPELL_CERT_PATH").unwrap(),
+            std::env::var("DEPELL_KEY_PATH").unwrap(),
+        )
+        .await
+        .unwrap();
 
-    axum::serve(socket, router).await.unwrap();
-}
-
-trait PublicPage: Default {
-    fn render_to_buf(self, buf: &mut String);
-
-    fn render(self) -> String {
-        let mut str = String::new();
-        self.render_to_buf(&mut str);
-        str
+        axum_server::bind_rustls(addr.into(), config)
+            .serve(router.into_make_service())
+            .await
+            .unwrap();
     }
-
-    async fn get() -> Html<String> {
-        Html(Self::default().render())
-    }
-
-    async fn page(session: Option<Session>) -> Html<String> {
-        base(|s| Self::default().render_to_buf(s), session.as_ref()).await
-    }
-}
-
-trait Page: Default {
-    fn render_to_buf(self, session: &Session, buf: &mut String);
-
-    fn render(self, session: &Session) -> String {
-        let mut str = String::new();
-        self.render_to_buf(session, &mut str);
-        str
-    }
-
-    async fn get(session: Session) -> Html<String> {
-        Html(Self::default().render(&session))
-    }
-
-    async fn page(session: Option<Session>) -> Result<Html<String>, axum::response::Redirect> {
-        match session {
-            Some(session) => {
-                Ok(base(|f| Self::default().render_to_buf(&session, f), Some(&session)).await)
-            }
-            None => Err(axum::response::Redirect::permanent("/login")),
-        }
+    #[cfg(not(feature = "tls"))]
+    {
+        let addr = (Ipv4Addr::UNSPECIFIED, 8080);
+        let socket = tokio::net::TcpListener::bind(addr).await.unwrap();
+        axum::serve(socket, router).await.unwrap();
     }
 }
 
@@ -140,14 +125,75 @@ async fn fetch_code(
                         r.get::<_, String>(2)?,
                     ))
                 })
-                .inspect_err(|e| log::error!("{e}"))
+                .log("fetch deps query")
                 .into_iter()
                 .flatten()
-                .filter_map(|r| r.inspect_err(|e| log::error!("{e}")).ok())
+                .filter_map(|r| r.log("deps row"))
                 .collect_into(&mut deps);
         }
     });
     axum::Json(deps)
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Feed {
+    Before { before_timestamp: u64 },
+}
+
+#[derive(Deserialize)]
+struct Before {
+    before_timestamp: u64,
+}
+
+impl Feed {
+    async fn more(session: Session, axum::Form(data): axum::Form<Before>) -> Html<String> {
+        Self::Before { before_timestamp: data.before_timestamp }.render(&session)
+    }
+}
+
+impl Default for Feed {
+    fn default() -> Self {
+        Self::Before { before_timestamp: now() + 3600 }
+    }
+}
+
+impl Page for Feed {
+    fn render_to_buf(self, _: &Session, buf: &mut String) {
+        db::with(|db| {
+            let cursor = match self {
+                Feed::Before { before_timestamp } => db
+                    .get_pots_before
+                    .query_map((before_timestamp,), Post::from_row)
+                    .log("fetch before posts query")
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|r| r.log("fetch before posts row")),
+            };
+
+            let base_len = buf.len();
+            let mut last_timestamp = None;
+            for post in cursor {
+                write!(buf, "{}", post).unwrap();
+                last_timestamp = Some(post.timestamp);
+                if buf.len() - base_len > MAX_FEED_SIZE {
+                    break;
+                }
+            }
+
+            write_html!((*buf)
+                if let Some(last_timestamp) = last_timestamp {
+                    <div "hx-post"="/feed-more"
+                        "hx-trigger"="intersect once"
+                        "hx-swap"="outerHTML"
+                        "hx-vals"={format_args!("{{\"before_timestamp\":{last_timestamp}}}")}
+                    >"there might be more"</div>
+                } else {
+                    "no more stuff"
+                }
+            );
+        });
+    }
 }
 
 #[derive(Default)]
@@ -199,10 +245,30 @@ impl Page for Post {
 }
 
 impl Post {
+    pub fn from_row(r: &rusqlite::Row) -> rusqlite::Result<Self> {
+        Ok(Post {
+            author: r.get(0)?,
+            name: r.get(1)?,
+            timestamp: r.get(2)?,
+            code: r.get(3)?,
+            ..Default::default()
+        })
+    }
+
     async fn post(
         session: Session,
         axum::Form(mut data): axum::Form<Self>,
     ) -> Result<Redirect, Html<String>> {
+        if data.name.len() > MAX_POSTNAME_LENGTH {
+            data.error = Some(formatcp!("name too long, max length is {MAX_POSTNAME_LENGTH}"));
+            return Err(data.render(&session));
+        }
+
+        if data.code.len() > MAX_CODE_LENGTH {
+            data.error = Some(formatcp!("code too long, max length is {MAX_CODE_LENGTH}"));
+            return Err(data.render(&session));
+        }
+
         db::with(|db| {
             if let Err(e) = db.create_post.insert((&data.name, &session.name, now(), &data.code)) {
                 if let rusqlite::Error::SqliteFailure(e, _) = e {
@@ -211,7 +277,7 @@ impl Post {
                     }
                 }
                 data.error = data.error.or_else(|| {
-                    log::error!("{e}");
+                    log::error!("create post error: {e}");
                     Some("internal server error")
                 });
                 return;
@@ -221,8 +287,12 @@ impl Post {
                 .filter_map(|v| v.split_once('/'))
                 .collect::<HashSet<_>>()
             {
-                if let Err(e) = db.create_import.insert((author, name, &session.name, &data.name)) {
-                    log::error!("{e}");
+                if db
+                    .create_import
+                    .insert((author, name, &session.name, &data.name))
+                    .log("create import query")
+                    .is_none()
+                {
                     data.error = Some("internal server error");
                     return;
                 };
@@ -230,7 +300,7 @@ impl Post {
         });
 
         if data.error.is_some() {
-            Err(Html(data.render(&session)))
+            Err(data.render(&session))
         } else {
             Ok(redirect("/profile"))
         }
@@ -242,7 +312,13 @@ impl fmt::Display for Post {
         let Self { author, name, timestamp, imports, runs, dependencies, code, .. } = self;
         write_html! { f <div class="preview">
             <div class="info">
-                <span>author "/" name</span>
+                <span>
+                    <a "hx-get"={format_args!("/profile-view/{author}")} href="" "hx-target"="main"
+                        "hx-push-url"={format_args!("/profile/{author}")}
+                        "hx-swam"="innerHTML">author</a>
+                    "/"
+                    name
+                </span>
                 <span apply="timestamp">timestamp</span>
             </div>
             <div class="stats">
@@ -264,26 +340,30 @@ impl fmt::Display for Post {
 }
 
 #[derive(Default)]
-struct Profile;
+struct Profile {
+    other: Option<String>,
+}
+
+impl Profile {
+    async fn get_other(session: Session, Path(name): Path<String>) -> Html<String> {
+        Profile { other: Some(name) }.render(&session)
+    }
+
+    async fn get_other_page(session: Session, Path(name): Path<String>) -> Html<String> {
+        base(|b| Profile { other: Some(name) }.render_to_buf(&session, b), Some(&session))
+    }
+}
 
 impl Page for Profile {
     fn render_to_buf(self, session: &Session, buf: &mut String) {
         db::with(|db| {
             let iter = db
                 .get_user_posts
-                .query_map((&session.name,), |r| {
-                    Ok(Post {
-                        author: r.get(0)?,
-                        name: r.get(1)?,
-                        timestamp: r.get(2)?,
-                        code: r.get(3)?,
-                        ..Default::default()
-                    })
-                })
-                .inspect_err(|e| log::error!("{e}"))
+                .query_map((self.other.as_ref().unwrap_or(&session.name),), Post::from_row)
+                .log("get user posts query")
                 .into_iter()
                 .flatten()
-                .filter_map(|p| p.inspect_err(|e| log::error!("{e}")).ok());
+                .filter_map(|p| p.log("user post row"));
             write_html! { (buf)
                 for post in iter {
                     !{post}
@@ -345,9 +425,13 @@ impl Login {
                     data.error = Some("invalid credentials");
                 } else {
                     getrandom::getrandom(&mut id).unwrap();
-                    if let Err(e) = db.login.insert((id, &data.name, now() + SESSION_DURATION_SECS))
+                    if db
+                        .login
+                        .insert((id, &data.name, now() + SESSION_DURATION_SECS))
+                        .log("create session query")
+                        .is_none()
                     {
-                        log::error!("{e}");
+                        data.error = Some("internal server error");
                     }
                 }
             }
@@ -362,7 +446,7 @@ impl Login {
 
         if data.error.is_some() {
             log::error!("what {:?}", data);
-            Err(Html(data.render()))
+            Err(data.render())
         } else {
             Ok(AppendHeaders([
                 ("hx-location", "/feed".into()),
@@ -378,7 +462,7 @@ impl Login {
     }
 
     async fn delete(session: Session) -> Redirect {
-        _ = db::with(|q| q.logout.execute((session.id,)).inspect_err(|e| log::error!("{e}")));
+        _ = db::with(|q| q.logout.execute((session.id,)).log("delete session query"));
         redirect("/login")
     }
 }
@@ -388,15 +472,18 @@ struct Signup {
     name: String,
     new_password: String,
     confirm_password: String,
+    #[serde(default)]
+    confirm_no_password: bool,
     #[serde(skip)]
     error: Option<&'static str>,
 }
 
 impl PublicPage for Signup {
     fn render_to_buf(self, buf: &mut String) {
-        let Signup { name, new_password, confirm_password, error } = self;
+        let Signup { name, new_password, confirm_password, confirm_no_password, error } = self;
+        let vals = if confirm_no_password { "{\"confirm_no_password\":true}" } else { "{}" };
         write_html! { (buf)
-            <form "hx-post"="/signup" "hx-swap"="outerHTML">
+            <form "hx-post"="/signup" "hx-swap"="outerHTML" "hx-vals"=vals>
                 if let Some(e) = error { <div class="error">e</div> }
                 <input name="name" type="text" autocomplete="name" placeholder="name" value=name
                     maxlength=MAX_NAME_LENGTH required>
@@ -412,6 +499,17 @@ impl PublicPage for Signup {
 
 impl Signup {
     async fn post(axum::Form(mut data): axum::Form<Self>) -> Result<Redirect, Html<String>> {
+        if data.name.len() > MAX_NAME_LENGTH {
+            data.error = Some(formatcp!("name too long, max length is {MAX_NAME_LENGTH}"));
+            return Err(data.render());
+        }
+
+        if !data.confirm_no_password && data.new_password.is_empty() {
+            data.confirm_no_password = true;
+            data.error = Some("Are you sure you don't want to use a password? (then submit again)");
+            return Err(data.render());
+        }
+
         db::with(|db| {
             // TODO: hash passwords
             match db.register.insert((&data.name, hash_password(&data.new_password))) {
@@ -422,22 +520,31 @@ impl Signup {
                     data.error = Some("username already taken");
                 }
                 Err(e) => {
-                    log::error!("{e}");
+                    log::error!("create user query: {e}");
                     data.error = Some("internal server error");
                 }
             };
         });
 
         if data.error.is_some() {
-            Err(Html(data.render()))
+            Err(data.render())
         } else {
             Ok(redirect("/login"))
         }
     }
 }
 
-async fn base(body: impl FnOnce(&mut String), session: Option<&Session>) -> Html<String> {
+fn base(body: impl FnOnce(&mut String), session: Option<&Session>) -> Html<String> {
     let username = session.map(|s| &s.name);
+
+    let nav_button = |f: &mut String, name: &str| {
+        write_html! {(f)
+            <button "hx-push-url"={format_args!("/{name}")}
+                "hx-get"={format_args!("/{name}-view")}
+                "hx-target"="main"
+                "hx-swap"="innerHTML">name</button>
+        }
+    };
 
     Html(html! {
         "<!DOCTYPE html>"
@@ -452,21 +559,17 @@ async fn base(body: impl FnOnce(&mut String), session: Option<&Session>) -> Html
                         if let Some(username) = username {
                             <button "hx-push-url"="/profile" "hx-get"="/profile-view" "hx-target"="main"
                                 "hx-swap"="innerHTML">username</button>
-                            <button "hx-push-url"="/post" "hx-get"="/post-view" "hx-target"="main"
-                                "hx-swap"="innerHTML">"post"</button>
+                            |f|{nav_button(f, "feed"); nav_button(f, "post")}
                             <button "hx-delete"="/login">"logout"</button>
                         } else {
-                            <button "hx-push-url"="/login" "hx-get"="/login-view" "hx-target"="main"
-                                "hx-swap"="innerHTML">"login"</button>
-                            <button "hx-push-url"="/signup" "hx-get"="/signup-view" "hx-target"="main"
-                                "hx-swap"="innerHTML">"signup"</button>
+                            |f|{nav_button(f, "login"); nav_button(f, "signup")}
                         }
                     </section>
                 </nav>
                 <section id="post-form"></section>
                 <main>|f|{body(f)}</main>
             </body>
-            <script src="https://unpkg.com/htmx.org@2.0.3" integrity="sha384-0895/pl2MU10Hqc6jd4RvrthNlDiE9U1tWmX7WRESftEDRosgxNsQG/Ze9YMRzHq" crossorigin="anonymous"></script>
+            <script src="https://unpkg.com/htmx.org@2.0.3/dist/htmx.min.js" integrity="sha384-0895/pl2MU10Hqc6jd4RvrthNlDiE9U1tWmX7WRESftEDRosgxNsQG/Ze9YMRzHq" crossorigin="anonymous"></script>
             <script type="module" src="/index.js"></script>
         </html>
     })
@@ -500,12 +603,11 @@ impl<S> axum::extract::FromRequestParts<S> for Session {
         let (name, expiration) = db::with(|db| {
             db.get_session
                 .query_row((id,), |r| Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?)))
-                .inspect_err(|e| log::error!("{e}"))
-                .map_err(|_| err)
+                .log("fetching session")
+                .ok_or(err)
         })?;
 
         if expiration < now() {
-            log::error!("expired");
             return Err(err);
         }
 
@@ -551,7 +653,7 @@ fn to_hex(src: &[u8]) -> String {
 }
 
 fn main() {
-    tokio::runtime::Builder::new_current_thread().enable_io().build().unwrap().block_on(amain());
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(amain());
 }
 
 mod db {
@@ -583,7 +685,9 @@ mod db {
             login: "INSERT OR REPLACE INTO session (id, username, expiration) VALUES(?, ?, ?)",
             logout: "DELETE FROM session WHERE id = ?",
             get_session: "SELECT username, expiration FROM session WHERE id = ?",
-            get_user_posts: "SELECT author, name, timestamp, code FROM post WHERE author = ?",
+            get_user_posts: "SELECT author, name, timestamp, code FROM post WHERE author = ?
+                ORDER BY timestamp DESC",
+            get_pots_before: "SELECT author, name, timestamp, code FROM post WHERE timestamp < ?",
             create_post: "INSERT INTO post (name, author, timestamp, code) VALUES(?, ?, ?, ?)",
             fetch_deps: "
                 WITH RECURSIVE roots(name, author, code) AS (
@@ -634,6 +738,63 @@ fn redirect(to: &'static str) -> Redirect {
     AppendHeaders([("hx-location", to)])
 }
 
+trait PublicPage: Default {
+    fn render_to_buf(self, buf: &mut String);
+
+    fn render(self) -> Html<String> {
+        let mut str = String::new();
+        self.render_to_buf(&mut str);
+        Html(str)
+    }
+
+    async fn get() -> Html<String> {
+        Self::default().render()
+    }
+
+    async fn page(session: Option<Session>) -> Html<String> {
+        base(|s| Self::default().render_to_buf(s), session.as_ref())
+    }
+}
+
+trait Page: Default {
+    fn render_to_buf(self, session: &Session, buf: &mut String);
+
+    fn render(self, session: &Session) -> Html<String> {
+        let mut str = String::new();
+        self.render_to_buf(session, &mut str);
+        Html(str)
+    }
+
+    async fn get(session: Session) -> Html<String> {
+        Self::default().render(&session)
+    }
+
+    async fn page(session: Option<Session>) -> Result<Html<String>, axum::response::Redirect> {
+        match session {
+            Some(session) => {
+                Ok(base(|f| Self::default().render_to_buf(&session, f), Some(&session)))
+            }
+            None => Err(axum::response::Redirect::permanent("/login")),
+        }
+    }
+}
+
+trait ResultExt<O, E> {
+    fn log(self, prefix: impl Display) -> Option<O>;
+}
+
+impl<O, E: Display> ResultExt<O, E> for Result<O, E> {
+    fn log(self, prefix: impl Display) -> Option<O> {
+        match self {
+            Ok(v) => Some(v),
+            Err(e) => {
+                log::error!("{prefix}: {e}");
+                None
+            }
+        }
+    }
+}
+
 struct Logger;
 
 impl log::Log for Logger {
@@ -643,12 +804,7 @@ impl log::Log for Logger {
 
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
-            eprintln!(
-                "{} {:?} - {}",
-                record.module_path().unwrap_or("=="),
-                record.line(),
-                record.args()
-            );
+            eprintln!("{} - {}", record.module_path().unwrap_or("=="), record.args());
         }
     }
 

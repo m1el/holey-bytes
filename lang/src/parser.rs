@@ -570,12 +570,14 @@ impl<'a, 'b> Parser<'a, 'b> {
         end: TokenKind,
         mut f: impl FnMut(&mut Self) -> T,
     ) -> &'a [T] {
+        let mut trailing_sep = false;
         let mut view = self.ctx.stack.view();
         while !self.advance_if(end) {
             let val = f(self);
-            self.trailing_sep = self.advance_if(delim);
+            trailing_sep = self.advance_if(delim);
             unsafe { self.ctx.stack.push(&mut view, val) };
         }
+        self.trailing_sep = trailing_sep;
         self.arena.alloc_slice(unsafe { self.ctx.stack.finalize(view) })
     }
 

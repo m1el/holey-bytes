@@ -28,6 +28,9 @@ body {
 
 	main {
 		margin-top: var(--small-gap);
+		display: flex;
+		flex-direction: column;
+		gap: var(--small-gap);
 	}
 }
 
@@ -45,8 +48,6 @@ div.preview {
 		display: flex;
 		gap: var(--small-gap);
 	}
-
-	margin: var(--small-gap) 0px;
 }
 
 form {
@@ -117,5 +118,24 @@ div#code-editor {
 		position: absolute;
 		right: 2px;
 		font-size: 12px;
+	}
+}
+
+div#dep-list {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	gap: var(--small-gap);
+
+	section {
+		width: 100%;
+		display: flex;
+		flex-direction: column;
+		text-align: center;
+		gap: var(--small-gap);
+
+		div {
+			text-align: left;
+		}
 	}
 }

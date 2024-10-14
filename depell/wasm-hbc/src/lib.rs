@@ -83,7 +83,7 @@ unsafe fn compile_and_run(mut fuel: usize) {
     while fuel != 0 {
         match ct.vm.run() {
             Ok(hbvm::VmRunOk::End) => {
-                log::error!("exit code: {}", ct.vm.read_reg(1).0);
+                log::error!("exit code: {}", ct.vm.read_reg(1).0 as i64);
                 break;
             }
             Ok(hbvm::VmRunOk::Ecall) => {

@@ -83,15 +83,23 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         "watch-depell-debug" => {
-            let mut c = build_cmd("cargo watch --why");
-            c.arg("--exec=xtask build-depell-debug").arg("--exec=run -p depell");
+            let mut c = build_cmd("cargo watch");
+            c.args(["--exec=xtask build-depell-debug", "--exec=run -p depell"]);
             exec(c)?;
             Ok(())
         }
         "watch-depell" => {
-            let mut c = build_cmd("cargo watch --why");
-            c.arg("--exec=xtask build-depell").arg("--exec=run -p depell");
+            let mut c = build_cmd("cargo watch");
+            c.args(["--exec=xtask build-depell", "--exec=run -p depell --release"]);
             exec(c)?;
+            Ok(())
+        }
+        "release-depell" => {
+            exec(build_cmd("cargo xtask build-depell"))?;
+            exec(build_cmd(
+                "cargo build -p depell --release --features tls
+                --target x86_64-unknown-linux-musl",
+            ))?;
             Ok(())
         }
         _ => Ok(()),

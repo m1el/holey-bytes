@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 argon2 = "0.5.3"
 axum = "0.7.7"
+axum-server = { version = "0.7.1", optional = true, features = ["rustls", "tls-rustls"] }
+const_format = "0.2.33"
 getrandom = "0.2.15"
 hblang.workspace = true
 htmlm = "0.5.0"
@@ -15,3 +17,7 @@ rusqlite = { version = "0.32.1", features = ["bundled"] }
 serde = { version = "1.0.210", features = ["derive"] }
 time = "0.3.36"
 tokio = { version = "1.40.0", features = ["rt"] }
+
+[features]
+#default = ["tls"]
+tls = ["dep:axum-server"]

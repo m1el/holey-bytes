@@ -135,14 +135,18 @@ function bufToString(mem, ptr, len) {
 function wireUp(target) {
 	execApply(target);
 	cacheInputs(target);
-	bindTextareaAutoResize(target);
 	bindCodeEdit(target);
+	bindTextareaAutoResize(target);
 }
 
 const importRe = /@use\s*\(\s*"(([^"]|\\")+)"\s*\)/g;
-const prevRoots = new Set();
-/** @param {string} code @param {string[]} roots @param {Post[]} buf @returns {void} */
-function loadCachedPackages(code, roots, buf) {
+
+/** @param {string} code
+ * @param {string[]} roots
+ * @param {Post[]} buf
+ * @param {Set<string>} prevRoots
+ * @returns {void} */
+function loadCachedPackages(code, roots, buf, prevRoots) {
 	buf[0].code = code;
 
 	roots.length = 0;
@@ -164,6 +168,8 @@ function loadCachedPackages(code, roots, buf) {
 		}
 	}
 }
+
+/**@type{Set<string>}*/ const prevRoots = new Set();
 
 /** @param {HTMLElement} target */
 async function bindCodeEdit(target) {
@@ -190,6 +196,8 @@ async function bindCodeEdit(target) {
 	let cancelation = undefined;
 	let timeout = 0;
 
+	prevRoots.clear();
+
 	const onInput = () => {
 		importDiff.clear();
 		for (const match of edit.value.matchAll(importRe)) {
@@ -215,10 +223,12 @@ async function bindCodeEdit(target) {
 				try {
 					const json = await e.json();
 					if (e.status == 200) {
-						for (const key in json) localStorage["package-" + key] = json[key];
+						for (const [key, value] of Object.entries(json)) {
+							localStorage["package-" + key] = value;
+						}
 						const missing = keyBuf.filter(i => json[i] === undefined);
 						if (missing.length !== 0) {
-							errors.textContent = "failed to fetch: " + missing.join(", ");
+							errors.textContent = "deps not found: " + missing.join(", ");
 						} else {
 							cancelation = undefined;
 							edit.dispatchEvent(new InputEvent("input"));
@@ -236,7 +246,7 @@ async function bindCodeEdit(target) {
 			return;
 		}
 
-		loadCachedPackages(edit.value, keyBuf, packages);
+		loadCachedPackages(edit.value, keyBuf, packages, prevRoots);
 
 		errors.textContent = compileCode(hbc, packages, 1);
 		const minified_size = modifyCode(fmt, edit.value, "minify")?.length;
@@ -348,7 +358,7 @@ if (window.location.hostname === 'localhost') {
 	})()
 }
 
-document.body.addEventListener('htmx:afterSettle', (ev) => {
+document.body.addEventListener('htmx:afterSwap', (ev) => {
 	if (!(ev.target instanceof HTMLElement)) never();
 	wireUp(ev.target);
 });
@@ -360,7 +370,47 @@ getFmtInstance().then(inst => {
 			details.parameters['code'] = modifyCode(inst, details.parameters['code'], "minify");
 		}
 	});
+
+	/** @param {string} query @param {string} target @returns {number} */
+	function fuzzyCost(query, target) {
+		let qi = 0, bi = 0, cost = 0, matched = false;
+		while (qi < query.length) {
+			if (query.charAt(qi) === target.charAt(bi++)) {
+				matched = true;
+				qi++;
+			} else {
+				cost++;
+			}
+			if (bi === target.length) (bi = 0, qi++);
+		}
+		return cost + (matched ? 0 : 100 * target.length);
+	}
+
+	let deps = undefined;
+	/** @param {HTMLInputElement} input @returns {void} */
+	function filterCodeDeps(input) {
+		deps ??= document.getElementById("deps");
+		if (!(deps instanceof HTMLElement)) never();
+		if (input.value === "") {
+			deps.textContent = "results show here...";
+			return;
+		}
+		deps.innerHTML = "";
+		for (const root of [...prevRoots.keys()]
+			.sort((a, b) => fuzzyCost(input.value, a) - fuzzyCost(input.value, b))) {
+			const pane = document.createElement("div");
+			const code = modifyCode(inst, localStorage["package-" + root], "fmt");
+			pane.innerHTML = `<div>${root}</div><pre>${code}</pre>`;
+			deps.appendChild(pane);
+		}
+		if (deps.innerHTML === "") {
+			deps.textContent = "no results";
+		}
+	}
+
+	Object.assign(window, { filterCodeDeps });
 });
 
 
 wireUp(document.body);
+

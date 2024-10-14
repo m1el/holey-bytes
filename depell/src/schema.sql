@@ -22,17 +22,20 @@ CREATE TABLE IF NOT EXISTS post(
 	author TEXT,
 	timestamp INTEGER,
 	code TEXT NOT NULL,
-	FOREIGN KEY (author) REFERENCES user (name) ON DELETE SET NULL,
+	FOREIGN KEY (author) REFERENCES user(name) ON DELETE SET NULL,
 	PRIMARY KEY (author, name)
 );
+
+CREATE INDEX IF NOT EXISTS
+	post_timestamp ON post(timestamp DESC);
 
 CREATE TABLE IF NOT EXISTS import(
 	from_name TEXT NOT NULL,
 	from_author TEXT,
 	to_name TEXT NOT NULL,
 	to_author TEXT,
-	FOREIGN KEY (from_name, from_author) REFERENCES post (name, author),
-	FOREIGN KEY (to_name, to_author) REFERENCES post (name, author)
+	FOREIGN KEY (from_name, from_author) REFERENCES post(name, author),
+	FOREIGN KEY (to_name, to_author) REFERENCES post(name, author)
 );
 
 CREATE INDEX IF NOT EXISTS
@@ -45,7 +48,7 @@ CREATE TABLE IF NOT EXISTS run(
 	code_name TEXT NOT NULL,
 	code_author TEXT NOT NULL,
 	runner TEXT NOT NULL,
-	FOREIGN KEY (code_name, code_author) REFERENCES post (name, author),
+	FOREIGN KEY (code_name, code_author) REFERENCES post(name, author),
 	FOREIGN KEY (runner) REFERENCES user(name),
 	PRIMARY KEY (code_name, code_author, runner)
 );
