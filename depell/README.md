@@ -1,6 +1,6 @@
 # Depell
 
-Depell is a website that allows users to import/post/run hblang code and create huge dependency graphs.
+Depell is a website that allows users to import/post/run hblang code and create huge dependency graphs. Its currently hosted at https://depell.mlokis.tech.
 
 ## Local Development
 
