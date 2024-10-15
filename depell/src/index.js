@@ -331,6 +331,13 @@ function cacheInputs(target) {
 	}
 }
 
+function updaetTab() {
+	for (const elem of document.querySelectorAll("button[hx-push-url]")) {
+		if (elem instanceof HTMLButtonElement)
+			elem.disabled = elem.getAttribute("hx-push-url") === window.location.pathname;
+	}
+}
+
 if (window.location.hostname === 'localhost') {
 	let id; setInterval(async () => {
 		let new_id = await fetch('/hot-reload').then(reps => reps.text());
@@ -361,7 +368,16 @@ if (window.location.hostname === 'localhost') {
 document.body.addEventListener('htmx:afterSwap', (ev) => {
 	if (!(ev.target instanceof HTMLElement)) never();
 	wireUp(ev.target);
+	if (ev.target.tagName == "MAIN") updaetTab();
 });
+
+//document.body.addEventListener('htmx:beforeSend', (ev) => {
+//	const target = ev.target;
+//	if (target instanceof HTMLButtonElement && target.hasAttribute("hx-push-url")) {
+//
+//		document.getElementById("extra-style").textContent = `[hx-push-url="${target.getAttribute("hx-push-url")}"]{background: var(--primary)}`
+//	}
+//});
 
 getFmtInstance().then(inst => {
 	document.body.addEventListener('htmx:configRequest', (ev) => {
@@ -411,6 +427,6 @@ getFmtInstance().then(inst => {
 	Object.assign(window, { filterCodeDeps });
 });
 
-
+updaetTab();
 wireUp(document.body);
 
