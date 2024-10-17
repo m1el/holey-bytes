@@ -175,8 +175,8 @@ impl Page for Feed {
             let mut last_timestamp = None;
             for post in cursor {
                 write!(buf, "{}", post).unwrap();
-                last_timestamp = Some(post.timestamp);
                 if buf.len() - base_len > MAX_FEED_SIZE {
+                    last_timestamp = Some(post.timestamp);
                     break;
                 }
             }
@@ -561,9 +561,6 @@ fn base(body: impl FnOnce(&mut String), path: &str, session: Option<&Session>) -
                 <meta name="charset" content="UTF-8">
                 <meta name="viewport" content="width=device-width, initial-scale=1">
                 <link rel="stylesheet" href="/index.css">
-                //<style id="extra-style">
-                //   "[hx-push-url='" !path "']{background:var(--primary)}"
-                //</style>
             </head>
             <body>
                 <nav>

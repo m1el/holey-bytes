@@ -75,8 +75,8 @@ new:
     ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
 push:
-    ADDI64 r254, r254, -72d
-    ST r31, r254, 0a, 72h
+    ADDI64 r254, r254, -80d
+    ST r31, r254, 0a, 80h
     CP r32, r2
     CP r33, r3
     LD r34, r32, 8a, 8h
@@ -111,7 +111,8 @@ push:
     JMP :6
  5: CP r38, r36
     CP r39, r35
-    BMC r39, r38, 8h
+    LD r40, r39, 0a, 8h
+    ST r40, r38, 0a, 8h
     ADDI64 r35, r35, 8d
     ADDI64 r36, r36, 8d
     JMP :7
@@ -135,9 +136,9 @@ push:
     ADDI64 r38, r38, 1d
     ST r38, r32, 8a, 8h
     CP r1, r39
- 4: LD r31, r254, 0a, 72h
-    ADDI64 r254, r254, 72d
+ 4: LD r31, r254, 0a, 80h
+    ADDI64 r254, r254, 80d
     JALA r0, r31, 0a
-code size: 1204
+code size: 1225
 ret: 69
 status: Ok(())

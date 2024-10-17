@@ -1,6 +1,6 @@
 main:
-    ADDI64 r254, r254, -80d
-    ST r31, r254, 32a, 48h
+    ADDI64 r254, r254, -76d
+    ST r31, r254, 28a, 48h
     LI64 r32, 511d
     LI64 r33, 0d
     ST r33, r254, 0a, 1h
@@ -13,29 +13,26 @@ main:
     SRUI16 r33, r33, 8b
     ANDI r33, r33, 255d
     ST r33, r254, 3a, 1h
-    CP r33, r0
-    LD r33, r254, 0a, 4h
-    ST r33, r254, 4a, 4h
-    ADDI64 r33, r254, 4d
+    ADDI64 r33, r254, 0d
     LI64 r34, 1d
-    ST r34, r254, 8a, 8h
+    ST r34, r254, 4a, 8h
     LI64 r34, 2d
-    ST r34, r254, 16a, 8h
+    ST r34, r254, 12a, 8h
     LI64 r34, 4d
-    ST r34, r254, 24a, 8h
-    ADDI64 r34, r254, 8d
+    ST r34, r254, 20a, 8h
+    ADDI64 r34, r254, 4d
     CP r2, r34
     JAL r31, r0, :pass
     CP r34, r1
-    ADDI64 r35, r254, 4d
+    ADDI64 r35, r254, 0d
     LI64 r36, 3d
     ADD64 r35, r35, r36
     CP r36, r0
-    LD r36, r35, 4a, 1h
+    LD r36, r35, 0a, 1h
     SXT8 r36, r36
     ADD64 r1, r34, r36
-    LD r31, r254, 32a, 48h
-    ADDI64 r254, r254, 80d
+    LD r31, r254, 28a, 48h
+    ADDI64 r254, r254, 76d
     JALA r0, r31, 0a
 pass:
     ADDI64 r254, r254, -48d
@@ -65,6 +62,6 @@ pass:
     LD r31, r254, 0a, 48h
     ADDI64 r254, r254, 48d
     JALA r0, r31, 0a
-code size: 586
-ret: 7
+code size: 557
+ret: 8
 status: Ok(())

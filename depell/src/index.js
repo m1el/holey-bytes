@@ -331,10 +331,11 @@ function cacheInputs(target) {
 	}
 }
 
-function updaetTab() {
+/** @param {string} [path]  */
+function updaetTab(path) {
 	for (const elem of document.querySelectorAll("button[hx-push-url]")) {
 		if (elem instanceof HTMLButtonElement)
-			elem.disabled = elem.getAttribute("hx-push-url") === window.location.pathname;
+			elem.disabled = elem.getAttribute("hx-push-url") === (path ?? window.location.pathname);
 	}
 }
 
@@ -368,16 +369,10 @@ if (window.location.hostname === 'localhost') {
 document.body.addEventListener('htmx:afterSwap', (ev) => {
 	if (!(ev.target instanceof HTMLElement)) never();
 	wireUp(ev.target);
-	if (ev.target.tagName == "MAIN") updaetTab();
+	if (ev.target.tagName == "MAIN" || ev.target.tagName == "BODY")
+		updaetTab(ev['detail'].pathInfo.finalRequestPath);
+	console.log(ev);
 });
-
-//document.body.addEventListener('htmx:beforeSend', (ev) => {
-//	const target = ev.target;
-//	if (target instanceof HTMLButtonElement && target.hasAttribute("hx-push-url")) {
-//
-//		document.getElementById("extra-style").textContent = `[hx-push-url="${target.getAttribute("hx-push-url")}"]{background: var(--primary)}`
-//	}
-//});
 
 getFmtInstance().then(inst => {
 	document.body.addEventListener('htmx:configRequest', (ev) => {

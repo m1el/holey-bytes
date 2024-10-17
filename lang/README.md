@@ -204,7 +204,15 @@ Rect := struct {
 	b: Point,
 }
 
+Color := packed struct {b: u8, g: u8, r: u8, a: u8}
+
 main := fn(): int {
+	i := Color.(0, 0, 0, 0)
+	i += .(1, 1, 1, 1)
+	if i.r + i.g + i.b + i.a != 4 {
+		return 1008
+	}
+
 	a := Point.(1, 2)
 	b := Point.(3, 4)
 

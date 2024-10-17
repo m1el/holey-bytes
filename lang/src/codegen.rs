@@ -13,6 +13,7 @@ use {
     },
     alloc::{boxed::Box, string::String, vec::Vec},
     core::fmt::Display,
+    std::assert_matches::debug_assert_matches,
 };
 
 type Offset = u32;
@@ -409,7 +410,7 @@ impl Loc {
     }
 
     fn is_reg(&self) -> bool {
-        matches!(self, Self::Rt { derefed: false, reg: _, stack: None, offset: 0 })
+        matches!(self, Self::Rt { derefed: false, reg: _, stack, offset } if ({ debug_assert_eq!(*offset,  0); debug_assert_matches!(stack, None); true }))
     }
 }
 
@@ -2126,7 +2127,7 @@ impl Codegen {
         let size = self.tys.size_of(ty);
         match size {
             0 => Loc::default(),
-            1..=8 => Loc::reg(self.loc_to_reg(loc, size)),
+            1..=8 if !loc.is_stack() => Loc::reg(self.loc_to_reg(loc, size)),
             _ if loc.is_ref() => {
                 let new_loc = Loc::stack(self.ci.stack.allocate(size));
                 self.store_sized(loc, &new_loc, size);
@@ -2367,7 +2368,17 @@ impl Codegen {
                 let value = ensure_loaded(value, derefed, size) << (8 * (off % 8));
                 self.ci.emit(ori(freg, freg, value));
             }
-            (lpat!(true, src, soff, ref ssta), lpat!(true, dst, doff, ref dsta)) => {
+            (lpat!(true, src, soff, ref ssta), lpat!(true, dst, doff, ref dsta)) => 'a: {
+                if size <= 8 {
+                    let tmp = self.ci.regs.allocate();
+                    let off = self.opt_stack_reloc(ssta.as_ref(), soff, 3);
+                    self.ci.emit(ld(tmp.get(), src.get(), off, size as _));
+                    let off = self.opt_stack_reloc(dsta.as_ref(), soff, 3);
+                    self.ci.emit(st(tmp.get(), dst.get(), off, size as _));
+                    self.ci.regs.free(tmp);
+                    break 'a;
+                }
+
                 // TODO: some oportuinies to ellit more optimal code
                 let src_off = if src.is_ref() { self.ci.regs.allocate() } else { src.as_ref() };
                 let dst_off = if dst.is_ref() { self.ci.regs.allocate() } else { dst.as_ref() };
