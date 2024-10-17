@@ -845,6 +845,21 @@ impl Types {
         start..end
     }
 
+    fn pack_args(&mut self, arg_base: usize) -> Option<ty::Tuple> {
+        let base = self.ins.args.len();
+        self.ins.args.extend(self.tmp.args.drain(arg_base..));
+        let needle = &self.ins.args[base..];
+        if needle.is_empty() {
+            return Some(ty::Tuple::empty());
+        }
+        let len = needle.len();
+        // FIXME: maybe later when this becomes a bottleneck we use more
+        // efficient search (SIMD?, indexing?)
+        let sp = self.ins.args.windows(needle.len()).position(|val| val == needle).unwrap();
+        self.ins.args.truncate((sp + needle.len()).max(base));
+        ty::Tuple::new(sp, len)
+    }
+
     fn struct_fields(&self, strct: ty::Struct) -> &[Field] {
         &self.ins.fields[self.struct_field_range(strct)]
     }
@@ -1199,6 +1214,7 @@ impl Types {
     }
 
     #[cfg_attr(not(feature = "opts"), expect(dead_code))]
+    #[expect(dead_code)]
     fn find_struct_field(&self, s: ty::Struct, name: &str) -> Option<usize> {
         let name = self.names.project(name)?;
         self.struct_fields(s).iter().position(|f| f.name == name)

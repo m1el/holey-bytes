@@ -1825,7 +1825,10 @@ impl Codegen {
                 self.ci.vars.push(Variable { id: carg.id, value: Value { ty, loc } });
             }
 
-            let args = self.pack_args(pos, arg_base);
+            let args = self
+                .tys
+                .pack_args(arg_base)
+                .unwrap_or_else(|| self.report(pos, "function instance has too many arguments"));
             let ret = self.ty(ret);
 
             let sym = SymKey::FuncInst(*func, args);
@@ -2373,7 +2376,7 @@ impl Codegen {
                     let tmp = self.ci.regs.allocate();
                     let off = self.opt_stack_reloc(ssta.as_ref(), soff, 3);
                     self.ci.emit(ld(tmp.get(), src.get(), off, size as _));
-                    let off = self.opt_stack_reloc(dsta.as_ref(), soff, 3);
+                    let off = self.opt_stack_reloc(dsta.as_ref(), doff, 3);
                     self.ci.emit(st(tmp.get(), dst.get(), off, size as _));
                     self.ci.regs.free(tmp);
                     break 'a;
@@ -2583,7 +2586,10 @@ impl Codegen {
                             self.tys.tmp.args.push(ty);
                         }
 
-                        let args = self.pack_args(pos, arg_base);
+                        let args = self
+                            .tys
+                            .pack_args(arg_base)
+                            .unwrap_or_else(|| self.report(pos, "function has too many argumnets"));
                         let ret = self.ty(ret);
 
                         Some(Sig { args, ret })
@@ -2807,22 +2813,6 @@ impl Codegen {
 
     fn cfile(&self) -> &parser::Ast {
         &self.files[self.ci.file as usize]
-    }
-
-    fn pack_args(&mut self, pos: Pos, arg_base: usize) -> ty::Tuple {
-        let base = self.tys.ins.args.len();
-        self.tys.ins.args.extend(self.tys.tmp.args.drain(arg_base..));
-        let needle = &self.tys.ins.args[base..];
-        if needle.is_empty() {
-            return ty::Tuple::empty();
-        }
-        let len = needle.len();
-        // FIXME: maybe later when this becomes a bottleneck we use more
-        // efficient search (SIMD?, indexing?)
-        let sp = self.tys.ins.args.windows(needle.len()).position(|val| val == needle).unwrap();
-        self.tys.ins.args.truncate((sp + needle.len()).max(base));
-        ty::Tuple::new(sp, len)
-            .unwrap_or_else(|| self.report(pos, "amount of arguments not supported"))
     }
 
     fn cow_reg(&mut self, rhs: reg::Id) -> reg::Id {
