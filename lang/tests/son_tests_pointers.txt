@@ -1,23 +1,26 @@
 drop:
     JALA r0, r31, 0a
 main:
-    ADDI64 r254, r254, -32d
-    ST r31, r254, 8a, 24h
+    ADDI64 r254, r254, -56d
+    ST r31, r254, 8a, 48h
     LI64 r32, 1d
-    ADDI64 r2, r254, 0d
+    ADDI64 r33, r254, 0d
+    ADDI64 r34, r33, 1000d
+    ADDI64 r35, r34, -1000d
     ST r32, r254, 0a, 8h
+    CP r2, r35
     JAL r31, r0, :modify
     CP r2, r32
     JAL r31, r0, :drop
-    LD r33, r254, 0a, 8h
-    ADDI64 r1, r33, -2d
-    LD r31, r254, 8a, 24h
-    ADDI64 r254, r254, 32d
+    LD r36, r35, 0a, 8h
+    ADDI64 r1, r36, -2d
+    LD r31, r254, 8a, 48h
+    ADDI64 r254, r254, 56d
     JALA r0, r31, 0a
 modify:
     LI64 r3, 2d
     ST r3, r2, 0a, 8h
     JALA r0, r31, 0a
-code size: 187
+code size: 212
 ret: 0
 status: Ok(())

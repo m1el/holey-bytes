@@ -12,7 +12,7 @@ use {
         reg, task,
         ty::{self},
         vc::{BitSet, Vc},
-        Func, HashMap, Offset, Reloc, Sig, Size, SymKey, TypedReloc, Types,
+        Func, HashMap, Offset, OffsetIter, Reloc, Sig, SymKey, TypedReloc, Types,
     },
     alloc::{borrow::ToOwned, string::String, vec::Vec},
     core::{
@@ -567,30 +567,28 @@ impl Nodes {
         target
     }
 
-    fn load_loop_value(&mut self, index: usize, value: &mut Nid, loops: &mut [Loop]) {
-        if *value != 0 {
+    fn load_loop_value(&mut self, index: usize, value: &mut Value, loops: &mut [Loop]) {
+        if value.id != 0 {
+            debug_assert!(!value.var);
             return;
         }
 
         let [loob, loops @ ..] = loops else { unreachable!() };
         let lvalue = &mut loob.scope[index].value;
 
-        self.load_loop_value(index, &mut lvalue.id, loops);
+        self.load_loop_value(index, lvalue, loops);
 
         if !self[lvalue.id].is_lazy_phi() {
-            self.unlock(*value);
+            self.unlock(value.id);
             let inps = [loob.node, lvalue.id, VOID];
-            self.unlock(inps[1]);
-            let ty = self[inps[1]].ty;
-            let phi = self.new_node_nop(ty, Kind::Phi, inps);
-            self[phi].lock_rc += 2;
-            *value = phi;
-            lvalue.id = phi;
+            self.unlock(lvalue.id);
+            lvalue.id = self.new_node_nop(lvalue.ty, Kind::Phi, inps);
+            self[lvalue.id].lock_rc += 2;
         } else {
             self.lock(lvalue.id);
-            self.unlock(*value);
-            *value = lvalue.id;
+            self.unlock(value.id);
         }
+        *value = *lvalue;
     }
 
     fn check_dominance(&mut self, nd: Nid, min: Nid, check_outputs: bool) {
@@ -789,13 +787,6 @@ struct Variable {
     value: Value,
 }
 
-#[derive(PartialEq, Eq, Clone, Copy, Debug)]
-struct MemKey {
-    region: Nid,
-    offset: u32,
-    node: Nid,
-}
-
 #[derive(Default)]
 struct ItemCtx {
     file: FileId,
@@ -813,7 +804,8 @@ struct ItemCtx {
 
     loops: Vec<Loop>,
     vars: Vec<Variable>,
-    memories: Vec<MemKey>,
+    store: Option<Nid>,
+    loads: Vec<Nid>,
     clobbered: Vec<Nid>,
     ret_relocs: Vec<Reloc>,
     relocs: Vec<TypedReloc>,
@@ -899,7 +891,11 @@ impl Value {
     }
 
     pub fn var(id: usize) -> Self {
-        Self { id: id as Nid, var: true, ..Default::default() }
+        Self { id: u16::MAX - (id as Nid), var: true, ..Default::default() }
+    }
+
+    pub fn ptr(id: Nid) -> Self {
+        Self { id, ptr: true, ..Default::default() }
     }
 
     #[inline(always)]
@@ -908,7 +904,6 @@ impl Value {
     }
 
     #[inline(always)]
-    #[expect(dead_code)]
     pub fn off(self, off: Offset) -> Self {
         Self { off, ..self }
     }
@@ -964,56 +959,36 @@ impl Codegen {
         log::info!("{out}");
     }
 
-    fn region_range(&self, region: Nid, offset: Offset, size: Size) -> core::ops::Range<usize> {
-        let start = self
-            .ci
-            .memories
-            .binary_search_by_key(&(region, offset), |k| (k.region, k.offset))
-            .unwrap_or_else(core::convert::identity);
-        let end = self
-            .ci
-            .memories
-            .binary_search_by(|k| (k.region, k.offset).cmp(&(region, offset + size)))
-            .unwrap_or_else(core::convert::identity);
-
-        start..end
-    }
-
-    fn mem_op(&mut self, region: Nid, offset: Offset, kind: Kind, ty: ty::Id, mut inps: Vc) -> Nid {
-        let size = self.tys.size_of(ty);
-        let range = self.region_range(region, offset, size);
-
-        for mk in &self.ci.memories[range.clone()] {
-            debug_assert_eq!(mk.region, region);
-            debug_assert!(mk.offset >= offset);
-            debug_assert!(mk.offset < offset + size);
-            inps.push(mk.node);
-        }
-
-        if range.is_empty() {
-            inps.push(region);
-        }
-
-        let (new_op, peeped) = self.ci.nodes.new_node_low(ty, kind, inps);
-        if !peeped {
-            for mk in &self.ci.memories[range.clone()] {
-                self.ci.nodes.unlock(mk.node);
-            }
-
-            self.ci
-                .memories
-                .splice(range, core::iter::once(MemKey { node: new_op, region, offset }));
-            self.ci.nodes.lock(new_op);
-        }
-        new_op
-    }
-
     fn store_mem(&mut self, region: Nid, offset: Offset, value: Nid) -> Nid {
-        self.mem_op(region, offset, Kind::Stre { offset }, self.tof(value), [VOID, value].into())
+        let mut vc = Vc::from([VOID, value, region]);
+        if let Some(str) = self.ci.store {
+            self.ci.nodes.unlock(str);
+            vc.push(str);
+        }
+        for load in self.ci.loads.drain(..) {
+            if load == value {
+                self.ci.nodes.unlock(load);
+                continue;
+            }
+            if !self.ci.nodes.unlock_remove(load) {
+                vc.push(load);
+            }
+        }
+        let store = self.ci.nodes.new_node(self.tof(value), Kind::Stre { offset }, vc);
+        self.ci.nodes.lock(store);
+        self.ci.store = Some(store);
+        store
     }
 
     fn load_mem(&mut self, region: Nid, offset: Offset, ty: ty::Id) -> Nid {
-        self.mem_op(region, offset, Kind::Load { offset }, ty, [VOID].into())
+        let mut vc = Vc::from([VOID, region]);
+        if let Some(str) = self.ci.store {
+            vc.push(str);
+        }
+        let load = self.ci.nodes.new_node(ty, Kind::Load { offset }, vc);
+        self.ci.nodes.lock(load);
+        self.ci.loads.push(load);
+        load
     }
 
     pub fn generate(&mut self) {
@@ -1046,11 +1021,13 @@ impl Codegen {
                     return Value::NEVER;
                 };
 
+                log::info!("{}", self.ty_display(self.ci.nodes[self.ci.vars[index].value.id].ty));
                 self.ci.nodes.load_loop_value(
                     index,
-                    &mut self.ci.vars[index].value.id,
+                    &mut self.ci.vars[index].value,
                     &mut self.ci.loops,
                 );
+                debug_assert_ne!(self.ci.vars[index].value.ty, ty::Id::VOID);
 
                 Some(Value::var(index).ty(self.ci.vars[index].value.ty))
             }
@@ -1067,8 +1044,8 @@ impl Codegen {
                 };
 
                 let mut inps = Vc::from([self.ci.ctrl, value.id]);
-                for m in self.ci.memories.iter() {
-                    inps.push(m.node);
+                for &m in self.ci.store.iter() {
+                    inps.push(m);
                 }
 
                 self.ci.ctrl = self.ci.nodes.new_node(ty::Id::VOID, Kind::Return, inps);
@@ -1081,44 +1058,44 @@ impl Codegen {
 
                 None
             }
-            //Expr::Field { target, name, pos } => {
-            //    let vtarget = self.raw_expr(target)?;
-            //    let tty = vtarget.ty;
+            Expr::Field { target, name, pos } => {
+                let mut vtarget = self.raw_expr(target)?;
+                self.strip_var(&mut vtarget);
+                let tty = vtarget.ty;
 
-            //    let ty::Kind::Struct(s) = self.tys.base_of(tty).unwrap_or(tty).expand() else {
-            //        self.report(
-            //            pos,
-            //            fa!(
-            //                "the '{}' is not a struct, or pointer to one, \
-            //                but accessing fields is only possible on structs",
-            //                self.ty_display(tty)
-            //            ),
-            //        );
-            //        return Value::NEVER;
-            //    };
+                let ty::Kind::Struct(s) = self.tys.base_of(tty).unwrap_or(tty).expand() else {
+                    self.report(
+                        pos,
+                        fa!(
+                            "the '{}' is not a struct, or pointer to one, \
+                            but accessing fields is only possible on structs",
+                            self.ty_display(tty)
+                        ),
+                    );
+                    return Value::NEVER;
+                };
 
-            //    let Some((offset, ty)) = OffsetIter::offset_of(&self.tys, s, name) else {
-            //        let field_list = self
-            //            .tys
-            //            .struct_fields(s)
-            //            .iter()
-            //            .map(|f| self.tys.names.ident_str(f.name))
-            //            .intersperse("', '")
-            //            .collect::<String>();
-            //        self.report(
-            //            pos,
-            //            fa!(
-            //                "the '{}' does not have this field, \
-            //                but it does have '{field_list}'",
-            //                self.ty_display(tty)
-            //            ),
-            //        );
-            //        return Value::NEVER;
-            //    };
+                let Some((offset, ty)) = OffsetIter::offset_of(&self.tys, s, name) else {
+                    let field_list = self
+                        .tys
+                        .struct_fields(s)
+                        .iter()
+                        .map(|f| self.tys.names.ident_str(f.name))
+                        .intersperse("', '")
+                        .collect::<String>();
+                    self.report(
+                        pos,
+                        fa!(
+                            "the '{}' does not have this field, \
+                            but it does have '{field_list}'",
+                            self.ty_display(tty)
+                        ),
+                    );
+                    return Value::NEVER;
+                };
 
-            //    todo!()
-            //    //Some(self.ptr_mem(vtarget, offset, ty, true))
-            //}
+                Some(Value::ptr(vtarget.id).off(offset).ty(ty))
+            }
             Expr::UnOp { op: TokenKind::Band, val, .. } => {
                 let ctx = Ctx { ty: ctx.ty.and_then(|ty| self.tys.base_of(ty)) };
 
@@ -1177,12 +1154,12 @@ impl Codegen {
             Expr::BinOp { left, op: TokenKind::Assign, right } => {
                 let dest = self.raw_expr(left)?;
                 let value = self.expr(right)?;
-                self.ci.nodes.lock(value.id);
 
                 _ = self.assert_ty(left.pos(), value.ty, dest.ty, true, "assignment dest");
 
                 if dest.var {
-                    let var = &mut self.ci.vars[dest.id as usize];
+                    self.ci.nodes.lock(value.id);
+                    let var = &mut self.ci.vars[(u16::MAX - dest.id) as usize];
                     let prev = core::mem::replace(&mut var.value, value);
                     self.ci.nodes.unlock_remove(prev.id);
                 } else if dest.ptr {
@@ -1282,6 +1259,22 @@ impl Codegen {
 
                     inps.push(value.id);
                 }
+
+                if let Some(str) = self.ci.store {
+                    inps.push(str);
+                }
+                for load in self.ci.loads.drain(..) {
+                    if !self.ci.nodes.unlock_remove(load) {
+                        inps.push(load);
+                    }
+                }
+
+                self.store_mem(VOID, 0, VOID);
+                for load in self.ci.loads.drain(..) {
+                    if !self.ci.nodes.unlock_remove(load) {
+                        inps.push(load);
+                    }
+                }
                 self.ci.ctrl = self.ci.nodes.new_node(sig.ret, Kind::Call { func }, inps);
                 for c in self.ci.clobbered.drain(..) {
                     self.ci.nodes[self.ci.ctrl].inputs.push(c);
@@ -1290,74 +1283,73 @@ impl Codegen {
 
                 Some(Value::new(self.ci.ctrl).ty(sig.ret))
             }
-            //Expr::Ctor { pos, ty, fields, .. } => {
-            //    //let Some(sty) = ty.map(|ty| self.ty(ty)).or(ctx.ty) else {
-            //    //    self.report(
-            //    //        pos,
-            //    //        "the type of struct cannot be inferred from context, \
-            //    //        use an explicit type instead: <type>.{ ... }",
-            //    //    );
-            //    //    return Value::NEVER;
-            //    //};
+            Expr::Ctor { pos, ty, fields, .. } => {
+                let Some(sty) = ty.map(|ty| self.ty(ty)).or(ctx.ty) else {
+                    self.report(
+                        pos,
+                        "the type of struct cannot be inferred from context, \
+                        use an explicit type instead: <type>.{ ... }",
+                    );
+                    return Value::NEVER;
+                };
 
-            //    //let ty::Kind::Struct(s) = sty.expand() else {
-            //    //    let inferred = if ty.is_some() { "" } else { "inferred " };
-            //    //    self.report(
-            //    //        pos,
-            //    //        fa!(
-            //    //            "the {inferred}type of the constructor is `{}`, \
-            //    //            but thats not a struct",
-            //    //            self.ty_display(sty)
-            //    //        ),
-            //    //    );
-            //    //    return Value::NEVER;
-            //    //};
+                let ty::Kind::Struct(s) = sty.expand() else {
+                    let inferred = if ty.is_some() { "" } else { "inferred " };
+                    self.report(
+                        pos,
+                        fa!(
+                            "the {inferred}type of the constructor is `{}`, \
+                            but thats not a struct",
+                            self.ty_display(sty)
+                        ),
+                    );
+                    return Value::NEVER;
+                };
 
-            //    //// TODO: dont allocate
-            //    //let mut offs = OffsetIter::new(s, &self.tys)
-            //    //    .into_iter(&self.tys)
-            //    //    .map(|(f, o)| (f.ty, o))
-            //    //    .collect::<Vec<_>>();
-            //    //let mem = self.ci.nodes.new_node(sty, Kind::Stck, [VOID, MEM]);
-            //    //for field in fields {
-            //    //    let Some(index) = self.tys.find_struct_field(s, field.name) else {
-            //    //        self.report(
-            //    //            field.pos,
-            //    //            fa!("struct '{}' does not have this field", self.ty_display(sty)),
-            //    //        );
-            //    //        continue;
-            //    //    };
+                // TODO: dont allocate
+                let mut offs = OffsetIter::new(s, &self.tys)
+                    .into_iter(&self.tys)
+                    .map(|(f, o)| (f.ty, o))
+                    .collect::<Vec<_>>();
+                let mem = self.ci.nodes.new_node(sty, Kind::Stck, [VOID, MEM]);
+                for field in fields {
+                    let Some(index) = self.tys.find_struct_field(s, field.name) else {
+                        self.report(
+                            field.pos,
+                            fa!("struct '{}' does not have this field", self.ty_display(sty)),
+                        );
+                        continue;
+                    };
 
-            //    //    let (ty, offset) =
-            //    //        core::mem::replace(&mut offs[index], (ty::Id::UNDECLARED, field.pos));
+                    let (ty, offset) =
+                        core::mem::replace(&mut offs[index], (ty::Id::UNDECLARED, field.pos));
 
-            //    //    if ty == ty::Id::UNDECLARED {
-            //    //        self.report(field.pos, "the struct field is already initialized");
-            //    //        self.report(offset, "previous initialization is here");
-            //    //        continue;
-            //    //    }
+                    if ty == ty::Id::UNDECLARED {
+                        self.report(field.pos, "the struct field is already initialized");
+                        self.report(offset, "previous initialization is here");
+                        continue;
+                    }
 
-            //    //    let value = self.expr_ctx(&field.value, Ctx::default().with_ty(ty))?;
-            //    //    self.store_mem(mem, offset, value);
-            //    //}
+                    let value = self.expr_ctx(&field.value, Ctx::default().with_ty(ty))?;
+                    self.store_mem(mem, offset, value.id);
+                }
 
-            //    //let field_list = self
-            //    //    .tys
-            //    //    .struct_fields(s)
-            //    //    .iter()
-            //    //    .zip(offs)
-            //    //    .filter(|&(_, (ty, _))| ty != ty::Id::UNDECLARED)
-            //    //    .map(|(f, _)| self.tys.names.ident_str(f.name))
-            //    //    .intersperse(", ")
-            //    //    .collect::<String>();
+                let field_list = self
+                    .tys
+                    .struct_fields(s)
+                    .iter()
+                    .zip(offs)
+                    .filter(|&(_, (ty, _))| ty != ty::Id::UNDECLARED)
+                    .map(|(f, _)| self.tys.names.ident_str(f.name))
+                    .intersperse(", ")
+                    .collect::<String>();
 
-            //    //if !field_list.is_empty() {
-            //    //    self.report(pos, fa!("the struct initializer is missing {field_list}"));
-            //    //}
+                if !field_list.is_empty() {
+                    self.report(pos, fa!("the struct initializer is missing {field_list}"));
+                }
 
-            //    //Some(mem)
-            //    todo!()
-            //}
+                Some(Value::ptr(mem).ty(sty))
+            }
             Expr::Block { stmts, .. } => {
                 let base = self.ci.vars.len();
 
@@ -1453,6 +1445,7 @@ impl Codegen {
                             let phi = &self.ci.nodes[scope_var.value.id];
                             debug_assert_eq!(phi.kind, Kind::Phi);
                             debug_assert_eq!(phi.inputs[2], VOID);
+                            debug_assert_eq!(phi.ty, scope_var.value.ty);
                             let prev = phi.inputs[1];
                             self.ci.nodes.replace(scope_var.value.id, prev);
                             scope_var.value.id = prev;
@@ -1462,7 +1455,7 @@ impl Codegen {
 
                     if dest_var.value.id == VOID {
                         self.ci.nodes.unlock(dest_var.value.id);
-                        dest_var.value.id = scope_var.value.id;
+                        dest_var.value = scope_var.value;
                         self.ci.nodes.lock(dest_var.value.id);
                     }
 
@@ -1574,9 +1567,9 @@ impl Codegen {
 
     fn strip_var(&mut self, n: &mut Value) {
         if core::mem::take(&mut n.var) {
-            let mut id = self.ci.vars[n.id as usize].value.id;
-            self.ci.nodes.load_loop_value(n.id as usize, &mut id, &mut self.ci.loops);
-            n.id = id;
+            let id = (u16::MAX - n.id) as usize;
+            self.ci.nodes.load_loop_value(id, &mut self.ci.vars[id].value, &mut self.ci.loops);
+            *n = self.ci.vars[id].value;
         }
     }
 
@@ -1629,8 +1622,8 @@ impl Codegen {
     ) {
         for (i, (else_var, then_var)) in to.iter_mut().zip(from).enumerate() {
             if else_var.value.id != then_var.value.id {
-                nodes.load_loop_value(i, &mut then_var.value.id, loops);
-                nodes.load_loop_value(i, &mut else_var.value.id, loops);
+                nodes.load_loop_value(i, &mut then_var.value, loops);
+                nodes.load_loop_value(i, &mut else_var.value, loops);
                 if else_var.value.id != then_var.value.id {
                     let ty = nodes[else_var.value.id].ty;
                     debug_assert_eq!(ty, nodes[then_var.value.id].ty, "TODO: typecheck properly");
@@ -1716,21 +1709,11 @@ impl Codegen {
 
         self.ci.nodes.unlock(end);
 
-        for mem in self.ci.memories.drain(..) {
-            if self.ci.nodes[mem.region].kind == Kind::Stck
-                && self.ci.nodes[mem.node]
-                    .outputs
-                    .iter()
-                    .all(|&n| self.ci.nodes[n].kind == Kind::Return)
-            {
-                let outs = core::mem::take(&mut self.ci.nodes[mem.node].outputs);
-                for out in outs {
-                    let index =
-                        self.ci.nodes[out].inputs.iter().rposition(|&o| o == mem.node).unwrap();
-                    self.ci.nodes[out].inputs.swap_remove(index);
-                }
-            }
-            self.ci.nodes.unlock_remove(mem.node);
+        if let Some(mem) = self.ci.store.take() {
+            self.ci.nodes.unlock_remove(mem);
+        }
+        for load in self.ci.loads.drain(..) {
+            self.ci.nodes.unlock_remove(load);
         }
         self.ci.nodes.unlock(mem);
 
@@ -1837,6 +1820,7 @@ impl Codegen {
         let mut nodes = core::mem::take(&mut self.ci.nodes);
 
         let func = Function::new(&mut nodes, &self.tys, sig);
+        log::info!("{:?}", func);
         if self.ci.call_count != 0 {
             core::mem::swap(
                 &mut self.ralloc.env.preferred_regs_by_class,
@@ -1958,23 +1942,29 @@ impl Codegen {
                     Kind::Load { offset } => {
                         let region = node.inputs[1];
                         let size = self.tys.size_of(node.ty);
-                        debug_assert_eq!(size, 8, "TODO");
-                        let (base, offset) = match func.nodes[region].kind {
-                            Kind::Stck => (reg::STACK_PTR, func.nodes[region].offset + offset),
-                            _ => (atr(allocs[1]), func.nodes[region].offset + offset),
-                        };
-                        self.ci.emit(instrs::ld(atr(allocs[0]), base, offset as _, size as _));
+                        if size <= 8 {
+                            let (base, offset) = match func.nodes[region].kind {
+                                Kind::Stck => (reg::STACK_PTR, func.nodes[region].offset + offset),
+                                _ => (atr(allocs[1]), func.nodes[region].offset + offset),
+                            };
+                            self.ci.emit(instrs::ld(atr(allocs[0]), base, offset as _, size as _));
+                        }
                     }
                     Kind::Stre { offset } => {
                         let region = node.inputs[2];
-                        let size = self.tys.size_of(node.ty);
-                        debug_assert_eq!(size, 8, "TODO");
-                        let nd = &func.nodes[region];
-                        let (base, offset, src) = match nd.kind {
-                            Kind::Stck => (reg::STACK_PTR, nd.offset + offset, allocs[0]),
-                            _ => (atr(allocs[0]), offset, allocs[1]),
-                        };
-                        self.ci.emit(instrs::st(atr(src), base, offset as _, size as _));
+                        if region != VOID {
+                            let size = u16::try_from(self.tys.size_of(node.ty)).expect("TODO");
+                            let nd = &func.nodes[region];
+                            let (base, offset, src) = match nd.kind {
+                                Kind::Stck => (reg::STACK_PTR, nd.offset + offset, allocs[0]),
+                                _ => (atr(allocs[0]), offset, allocs[1]),
+                            };
+                            if size > 8 {
+                                self.ci.emit(instrs::bmc(base, atr(src), size));
+                            } else {
+                                self.ci.emit(instrs::st(atr(src), base, offset as _, size));
+                            }
+                        }
                     }
                     _ => unreachable!(),
                 }
@@ -2393,7 +2383,14 @@ impl<'a> Function<'a> {
                                 regalloc2::PReg::new(parama.next() as _, regalloc2::RegClass::Int),
                             )]);
                         }
-                        _ => todo!(),
+                        9..=16 => todo!(),
+                        _ => {
+                            self.def_nid(arg);
+                            self.add_instr(NEVER, vec![regalloc2::Operand::reg_fixed_def(
+                                self.rg(arg),
+                                regalloc2::PReg::new(parama.next() as _, regalloc2::RegClass::Int),
+                            )]);
+                        }
                     }
                 }
 
@@ -2459,7 +2456,13 @@ impl<'a> Function<'a> {
                                 regalloc2::PReg::new(parama.next() as _, regalloc2::RegClass::Int),
                             ));
                         }
-                        _ => todo!(),
+                        9..=16 => todo!("pass in two register"),
+                        _ => {
+                            ops.push(regalloc2::Operand::reg_fixed_use(
+                                self.rg(i),
+                                regalloc2::PReg::new(parama.next() as _, regalloc2::RegClass::Int),
+                            ));
+                        }
                     }
                 }
 
@@ -2478,19 +2481,26 @@ impl<'a> Function<'a> {
             Kind::Phi | Kind::Arg { .. } | Kind::Mem => {}
             Kind::Load { .. } => {
                 let region = node.inputs[1];
-                let ops = match self.nodes[region].kind {
-                    Kind::Stck => vec![self.drg(nid)],
-                    _ => vec![self.drg(nid), self.urg(region)],
-                };
-                self.add_instr(nid, ops);
+                if self.tys.size_of(node.ty) <= 8 {
+                    let ops = match self.nodes[region].kind {
+                        Kind::Stck => vec![self.drg(nid)],
+                        _ => vec![self.drg(nid), self.urg(region)],
+                    };
+                    self.add_instr(nid, ops);
+                }
             }
             Kind::Stre { .. } => {
                 let region = node.inputs[2];
-                let ops = match self.nodes[region].kind {
-                    Kind::Stck => vec![self.urg(node.inputs[1])],
-                    _ => vec![self.urg(region), self.urg(node.inputs[1])],
-                };
-                self.add_instr(nid, ops);
+                if region != VOID {
+                    let ops = match self.nodes[region].kind {
+                        _ if self.tys.size_of(node.ty) > 8 => {
+                            vec![self.urg(region), self.urg(self.nodes[node.inputs[1]].inputs[1])]
+                        }
+                        Kind::Stck => vec![self.urg(node.inputs[1])],
+                        _ => vec![self.urg(region), self.urg(node.inputs[1])],
+                    };
+                    self.add_instr(nid, ops);
+                }
             }
         }
     }

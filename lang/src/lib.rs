@@ -1214,7 +1214,6 @@ impl Types {
     }
 
     #[cfg_attr(not(feature = "opts"), expect(dead_code))]
-    #[expect(dead_code)]
     fn find_struct_field(&self, s: ty::Struct, name: &str) -> Option<usize> {
         let name = self.names.project(name)?;
         self.struct_fields(s).iter().position(|f| f.name == name)
