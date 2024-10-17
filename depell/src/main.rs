@@ -3,7 +3,7 @@ use {
     argon2::{password_hash::SaltString, PasswordVerifier},
     axum::{
         body::Bytes,
-        extract::{OriginalUri, Path},
+        extract::Path,
         http::{header::COOKIE, request::Parts},
         response::{AppendHeaders, Html},
     },
@@ -349,16 +349,8 @@ impl Profile {
         Profile { other: Some(name) }.render(&session)
     }
 
-    async fn get_other_page(
-        session: Session,
-        path: axum::extract::OriginalUri,
-        Path(name): Path<String>,
-    ) -> Html<String> {
-        base(
-            |b| Profile { other: Some(name) }.render_to_buf(&session, b),
-            path.path(),
-            Some(&session),
-        )
+    async fn get_other_page(session: Session, Path(name): Path<String>) -> Html<String> {
+        base(|b| Profile { other: Some(name) }.render_to_buf(&session, b), Some(&session))
     }
 }
 
@@ -542,7 +534,7 @@ impl Signup {
     }
 }
 
-fn base(body: impl FnOnce(&mut String), path: &str, session: Option<&Session>) -> Html<String> {
+fn base(body: impl FnOnce(&mut String), session: Option<&Session>) -> Html<String> {
     let username = session.map(|s| &s.name);
 
     let nav_button = |f: &mut String, name: &str| {
@@ -761,8 +753,8 @@ trait PublicPage: Default {
         Self::default().render()
     }
 
-    async fn page(uri: OriginalUri, session: Option<Session>) -> Html<String> {
-        base(|s| Self::default().render_to_buf(s), uri.path(), session.as_ref())
+    async fn page(session: Option<Session>) -> Html<String> {
+        base(|s| Self::default().render_to_buf(s), session.as_ref())
     }
 }
 
@@ -779,13 +771,10 @@ trait Page: Default {
         Self::default().render(&session)
     }
 
-    async fn page(
-        uri: OriginalUri,
-        session: Option<Session>,
-    ) -> Result<Html<String>, axum::response::Redirect> {
+    async fn page(session: Option<Session>) -> Result<Html<String>, axum::response::Redirect> {
         match session {
             Some(session) => {
-                Ok(base(|f| Self::default().render_to_buf(&session, f), uri.path(), Some(&session)))
+                Ok(base(|f| Self::default().render_to_buf(&session, f), Some(&session)))
             }
             None => Err(axum::response::Redirect::permanent("/login")),
         }
