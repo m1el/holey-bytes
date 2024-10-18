@@ -692,30 +692,6 @@ min := fn(a: int, b: int): int {
 }
 ```
 
-### Just Testing Optimizations
-
-#### const_folding_with_arg
-```hb
-main := fn(arg: int): int {
-	// reduces to 0
-	return arg + 0 - arg * 1 + arg + 1 + arg + 2 + arg + 3 - arg * 3 - 6
-}
-```
-
-#### branch_assignments
-```hb
-main := fn(arg: int): int {
-	if arg == 1 {
-		arg = 1
-	} else if arg == 0 {
-		arg = 2
-	} else {
-		arg = 3
-	}
-	return arg
-}
-```
-
 #### inline_test
 ```hb
 Point := struct {x: int, y: int}
@@ -844,71 +820,6 @@ integer_range := fn(min: uint, max: int): uint {
 }
 ```
 
-#### exhaustive_loop_testing
-```hb
-main := fn(): int {
-	if multiple_breaks(0) != 3 {
-		return 1
-	}
-
-	if multiple_breaks(4) != 10 {
-		return 2
-	}
-
-	if state_change_in_break(0) != 0 {
-		return 3
-	}
-
-	if state_change_in_break(4) != 10 {
-		return 4
-	}
-
-	if continue_and_state_change(10) != 10 {
-		return 5
-	}
-
-	if continue_and_state_change(3) != 0 {
-		return 6
-	}
-
-	return 0
-}
-
-multiple_breaks := fn(arg: int): int {
-	loop if arg < 10 {
-		arg += 1
-		if arg == 3 break
-	} else break
-	return arg
-}
-
-state_change_in_break := fn(arg: int): int {
-	loop if arg < 10 {
-		if arg == 3 {
-			arg = 0
-			break
-		}
-		arg += 1
-	} else break
-	return arg
-}
-
-continue_and_state_change := fn(arg: int): int {
-	loop if arg < 10 {
-		if arg == 2 {
-			arg = 4
-			continue
-		}
-		if arg == 3 {
-			arg = 0
-			break
-		}
-		arg += 1
-	} else break
-	return arg
-}
-```
-
 #### writing_into_string
 ```hb
 outl := fn(): void {
@@ -977,6 +888,95 @@ main := fn(): int {
 		n += 1
 	}
 	return back_buffer[1024 * 2]
+}
+```
+
+### Just Testing Optimizations
+
+#### const_folding_with_arg
+```hb
+main := fn(arg: int): int {
+	// reduces to 0
+	return arg + 0 - arg * 1 + arg + 1 + arg + 2 + arg + 3 - arg * 3 - 6
+}
+```
+
+#### branch_assignments
+```hb
+main := fn(arg: int): int {
+	if arg == 1 {
+		arg = 1
+	} else if arg == 0 {
+		arg = 2
+	} else {
+		arg = 3
+	}
+	return arg
+}
+```
+
+#### exhaustive_loop_testing
+```hb
+main := fn(): int {
+	if multiple_breaks(0) != 3 {
+		return 1
+	}
+
+	if multiple_breaks(4) != 10 {
+		return 2
+	}
+
+	if state_change_in_break(0) != 0 {
+		return 3
+	}
+
+	if state_change_in_break(4) != 10 {
+		return 4
+	}
+
+	if continue_and_state_change(10) != 10 {
+		return 5
+	}
+
+	if continue_and_state_change(3) != 0 {
+		return 6
+	}
+
+	return 0
+}
+
+multiple_breaks := fn(arg: int): int {
+	loop if arg < 10 {
+		arg += 1
+		if arg == 3 break
+	} else break
+	return arg
+}
+
+state_change_in_break := fn(arg: int): int {
+	loop if arg < 10 {
+		if arg == 3 {
+			arg = 0
+			break
+		}
+		arg += 1
+	} else break
+	return arg
+}
+
+continue_and_state_change := fn(arg: int): int {
+	loop if arg < 10 {
+		if arg == 2 {
+			arg = 4
+			continue
+		}
+		if arg == 3 {
+			arg = 0
+			break
+		}
+		arg += 1
+	} else break
+	return arg
 }
 ```
 
