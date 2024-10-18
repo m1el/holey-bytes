@@ -6,12 +6,12 @@ fib:
     JGTU r2, r32, :0
     JMP :1
  0: CP r33, r2
-    ADDI64 r2, r33, -1d
+    SUB64 r2, r33, r1
     CP r34, r33
     JAL r31, r0, :fib
     CP r2, r34
     CP r35, r1
-    ADDI64 r2, r2, -2d
+    SUB64 r2, r2, r32
     JAL r31, r0, :fib
     ADD64 r1, r1, r35
  1: LD r31, r254, 0a, 40h
@@ -25,6 +25,6 @@ main:
     LD r31, r254, 0a, 8h
     ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
-code size: 225
+code size: 211
 ret: 55
 status: Ok(())

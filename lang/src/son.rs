@@ -14,7 +14,7 @@ use {
         vc::{BitSet, Vc},
         Func, HashMap, Offset, OffsetIter, Reloc, Sig, SymKey, TypedReloc, Types,
     },
-    alloc::{borrow::ToOwned, string::String, vec::Vec},
+    alloc::{string::String, vec::Vec},
     core::{
         assert_matches::debug_assert_matches,
         cell::RefCell,
@@ -279,8 +279,53 @@ impl Nodes {
                 }
             }
             K::Phi => {
-                if self[target].inputs[1] == self[target].inputs[2] {
-                    return Some(self[target].inputs[1]);
+                let &[ctrl, lhs, rhs] = self[target].inputs.as_slice() else { unreachable!() };
+
+                if lhs == rhs {
+                    return Some(lhs);
+                }
+
+                if self[lhs].kind == Kind::Stre
+                    && self[rhs].kind == Kind::Stre
+                    && self[lhs].ty == self[rhs].ty
+                    && self[lhs].inputs[2] == self[rhs].inputs[2]
+                    && self[lhs].inputs.get(3) == self[rhs].inputs.get(3)
+                {
+                    let pick_value = self.new_node(self[lhs].ty, Kind::Phi, [
+                        ctrl,
+                        self[lhs].inputs[1],
+                        self[rhs].inputs[1],
+                    ]);
+                    let mut vc = Vc::from([VOID, pick_value, self[lhs].inputs[2]]);
+                    for &rest in &self[lhs].inputs[3..] {
+                        vc.push(rest);
+                    }
+                    for &rest in &self[rhs].inputs[4..] {
+                        vc.push(rest);
+                    }
+                    return Some(self.new_node(self[lhs].ty, Kind::Stre, vc));
+                }
+            }
+            K::Stre => {
+                if self[target].inputs[2] != VOID
+                    && self[target].inputs.len() == 4
+                    && self[self[target].inputs[3]].kind == Kind::Stre
+                    && self[self[target].inputs[3]].inputs[2] == self[target].inputs[2]
+                {
+                    return Some(self.modify_input(
+                        self[target].inputs[3],
+                        1,
+                        self[target].inputs[1],
+                    ));
+                }
+            }
+            K::Load => {
+                if self[target].inputs.len() == 3
+                    && self[self[target].inputs[2]].kind == Kind::Stre
+                    && self[self[target].inputs[2]].inputs[2] == self[target].inputs[1]
+                    && self[self[target].inputs[2]].ty == self[target].ty
+                {
+                    return Some(self[self[target].inputs[2]].inputs[1]);
                 }
             }
             _ => {}
@@ -574,7 +619,7 @@ impl Nodes {
         }
 
         let [loob, loops @ ..] = loops else { unreachable!() };
-        let lvalue = &mut loob.scope[index].value;
+        let lvalue = &mut loob.scope.vars[index].value;
 
         self.load_loop_value(index, lvalue, loops);
 
@@ -630,6 +675,30 @@ impl Nodes {
     #[expect(dead_code)]
     fn iter_mut(&mut self) -> impl Iterator<Item = &mut Node> {
         self.values.iter_mut().flat_map(Result::as_mut)
+    }
+
+    fn lock_scope(&mut self, scope: &Scope) {
+        if let Some(str) = scope.store {
+            self.lock(str);
+        }
+        for &load in &scope.loads {
+            self.lock(load);
+        }
+        for var in &scope.vars {
+            self.lock(var.value.id);
+        }
+    }
+
+    fn unlock_remove_scope(&mut self, scope: &Scope) {
+        if let Some(str) = scope.store {
+            self.unlock_remove(str);
+        }
+        for &load in &scope.loads {
+            self.unlock_remove(load);
+        }
+        for var in &scope.vars {
+            self.unlock_remove(var.value.id);
+        }
     }
 }
 
@@ -773,14 +842,21 @@ type IDomDepth = u16;
 struct Loop {
     node: Nid,
     ctrl: [Nid; 2],
-    ctrl_scope: [Vec<Variable>; 2],
-    scope: Vec<Variable>,
+    ctrl_scope: [Scope; 2],
+    scope: Scope,
 }
 
 #[derive(Clone, Copy)]
 struct Variable {
     id: Ident,
     value: Value,
+}
+
+#[derive(Default, Clone)]
+struct Scope {
+    vars: Vec<Variable>,
+    loads: Vec<Nid>,
+    store: Option<Nid>,
 }
 
 #[derive(Default)]
@@ -799,9 +875,7 @@ struct ItemCtx {
     filled: Vec<Nid>,
 
     loops: Vec<Loop>,
-    vars: Vec<Variable>,
-    store: Option<Nid>,
-    loads: Vec<Nid>,
+    scope: Scope,
     clobbered: Vec<Nid>,
     ret_relocs: Vec<Reloc>,
     relocs: Vec<TypedReloc>,
@@ -871,7 +945,6 @@ impl Default for Regalloc {
 #[derive(Default, Clone, Copy)]
 struct Value {
     ty: ty::Id,
-    off: Offset,
     var: bool,
     ptr: bool,
     id: Nid,
@@ -879,8 +952,8 @@ struct Value {
 
 impl Value {
     const NEVER: Option<Value> =
-        Some(Self { ty: ty::Id::NEVER, off: 0, var: false, ptr: false, id: NEVER });
-    const VOID: Value = Self { ty: ty::Id::VOID, off: 0, var: false, ptr: false, id: VOID };
+        Some(Self { ty: ty::Id::NEVER, var: false, ptr: false, id: NEVER });
+    const VOID: Value = Self { ty: ty::Id::VOID, var: false, ptr: false, id: VOID };
 
     pub fn new(id: Nid) -> Self {
         Self { id, ..Default::default() }
@@ -897,11 +970,6 @@ impl Value {
     #[inline(always)]
     pub fn ty(self, ty: impl Into<ty::Id>) -> Self {
         Self { ty: ty.into(), ..self }
-    }
-
-    #[inline(always)]
-    pub fn off(self, off: Offset) -> Self {
-        Self { off, ..self }
     }
 }
 
@@ -957,11 +1025,11 @@ impl Codegen {
 
     fn store_mem(&mut self, region: Nid, value: Nid) -> Nid {
         let mut vc = Vc::from([VOID, value, region]);
-        if let Some(str) = self.ci.store {
+        if let Some(str) = self.ci.scope.store {
             self.ci.nodes.unlock(str);
             vc.push(str);
         }
-        for load in self.ci.loads.drain(..) {
+        for load in self.ci.scope.loads.drain(..) {
             if load == value {
                 self.ci.nodes.unlock(load);
                 continue;
@@ -972,18 +1040,18 @@ impl Codegen {
         }
         let store = self.ci.nodes.new_node(self.tof(value), Kind::Stre, vc);
         self.ci.nodes.lock(store);
-        self.ci.store = Some(store);
+        self.ci.scope.store = Some(store);
         store
     }
 
     fn load_mem(&mut self, region: Nid, ty: ty::Id) -> Nid {
         let mut vc = Vc::from([VOID, region]);
-        if let Some(str) = self.ci.store {
+        if let Some(str) = self.ci.scope.store {
             vc.push(str);
         }
         let load = self.ci.nodes.new_node(ty, Kind::Load, vc);
         self.ci.nodes.lock(load);
-        self.ci.loads.push(load);
+        self.ci.scope.loads.push(load);
         load
     }
 
@@ -1012,20 +1080,19 @@ impl Codegen {
         match *expr {
             Expr::Comment { .. } => Some(Value::VOID),
             Expr::Ident { pos, id, .. } => {
-                let Some(index) = self.ci.vars.iter().position(|v| v.id == id) else {
+                let Some(index) = self.ci.scope.vars.iter().position(|v| v.id == id) else {
                     self.report(pos, msg);
                     return Value::NEVER;
                 };
 
-                log::info!("{}", self.ty_display(self.ci.nodes[self.ci.vars[index].value.id].ty));
                 self.ci.nodes.load_loop_value(
                     index,
-                    &mut self.ci.vars[index].value,
+                    &mut self.ci.scope.vars[index].value,
                     &mut self.ci.loops,
                 );
-                debug_assert_ne!(self.ci.vars[index].value.ty, ty::Id::VOID);
+                debug_assert_ne!(self.ci.scope.vars[index].value.ty, ty::Id::VOID);
 
-                Some(Value::var(index).ty(self.ci.vars[index].value.ty))
+                Some(Value::var(index).ty(self.ci.scope.vars[index].value.ty))
             }
             Expr::Number { value, .. } => Some(self.ci.nodes.new_node_lit(
                 ctx.ty.filter(|ty| ty.is_integer() || ty.is_pointer()).unwrap_or(ty::Id::INT),
@@ -1040,7 +1107,7 @@ impl Codegen {
                 };
 
                 let mut inps = Vc::from([self.ci.ctrl, value.id]);
-                for &m in self.ci.store.iter() {
+                for &m in self.ci.scope.store.iter() {
                     inps.push(m);
                 }
 
@@ -1090,7 +1157,7 @@ impl Codegen {
                     return Value::NEVER;
                 };
 
-                Some(Value::ptr(vtarget.id).off(offset).ty(ty))
+                Some(Value::ptr(self.offset(vtarget.id, ty, offset)).ty(ty))
             }
             Expr::UnOp { op: TokenKind::Band, val, .. } => {
                 let ctx = Ctx { ty: ctx.ty.and_then(|ty| self.tys.base_of(ty)) };
@@ -1101,7 +1168,6 @@ impl Codegen {
                 if val.ptr {
                     val.ptr = false;
                     val.ty = self.tys.make_ptr(val.ty);
-                    self.offset(&mut val);
                     return Some(val);
                 }
 
@@ -1135,22 +1201,21 @@ impl Codegen {
             Expr::BinOp { left: &Expr::Ident { id, .. }, op: TokenKind::Decl, right } => {
                 let value = self.expr(right)?;
                 self.ci.nodes.lock(value.id);
-                self.ci.vars.push(Variable { id, value });
+                self.ci.scope.vars.push(Variable { id, value });
                 Some(Value::VOID)
             }
             Expr::BinOp { left, op: TokenKind::Assign, right } => {
-                let mut dest = self.raw_expr(left)?;
+                let dest = self.raw_expr(left)?;
                 let value = self.expr(right)?;
 
                 _ = self.assert_ty(left.pos(), value.ty, dest.ty, true, "assignment dest");
 
                 if dest.var {
                     self.ci.nodes.lock(value.id);
-                    let var = &mut self.ci.vars[(u16::MAX - dest.id) as usize];
+                    let var = &mut self.ci.scope.vars[(u16::MAX - dest.id) as usize];
                     let prev = core::mem::replace(&mut var.value, value);
                     self.ci.nodes.unlock_remove(prev.id);
                 } else if dest.ptr {
-                    self.offset(&mut dest);
                     self.store_mem(dest.id, value.id);
                 } else {
                     self.report(left.pos(), "cannot assign to this expression");
@@ -1158,26 +1223,6 @@ impl Codegen {
 
                 Some(Value::VOID)
             }
-            //Expr::BinOp {
-            //    left: &Expr::UnOp { pos, op: TokenKind::Mul, val },
-            //    op: TokenKind::Assign,
-            //    right,
-            //} => {
-            //    //let ctx = Ctx { ty: ctx.ty.map(|ty| self.tys.make_ptr(ty)) };
-            //    //let val = self.expr_ctx(val, ctx)?;
-            //    //let base = self.get_load_type(val).unwrap_or_else(|| {
-            //    //    self.report(
-            //    //        pos,
-            //    //        fa!("the '{}' can not be dereferneced", self.ty_display(self.tof(val))),
-            //    //    );
-            //    //    ty::Id::NEVER
-            //    //});
-            //    //let value = self.expr_ctx(right, Ctx::default().with_ty(base))?;
-            //    //_ = self.assert_ty(right.pos(), self.tof(value), base, true, "stored value");
-            //    //self.store_mem(val, 0, value);
-            //    //Some(Value::VOID)
-            //    todo!()
-            //}
             Expr::BinOp { left, op, right } if op != TokenKind::Assign => {
                 let lhs = self.expr_ctx(left, ctx)?;
                 self.ci.nodes.lock(lhs.id);
@@ -1248,17 +1293,17 @@ impl Codegen {
                     inps.push(value.id);
                 }
 
-                if let Some(str) = self.ci.store {
+                if let Some(str) = self.ci.scope.store {
                     inps.push(str);
                 }
-                for load in self.ci.loads.drain(..) {
+                for load in self.ci.scope.loads.drain(..) {
                     if !self.ci.nodes.unlock_remove(load) {
                         inps.push(load);
                     }
                 }
 
                 self.store_mem(VOID, VOID);
-                for load in self.ci.loads.drain(..) {
+                for load in self.ci.scope.loads.drain(..) {
                     if !self.ci.nodes.unlock_remove(load) {
                         inps.push(load);
                     }
@@ -1319,9 +1364,8 @@ impl Codegen {
                     }
 
                     let value = self.expr_ctx(&field.value, Ctx::default().with_ty(ty))?;
-                    let mut mem = Value::ptr(mem).ty(ty).off(offset);
-                    self.offset(&mut mem);
-                    self.store_mem(mem.id, value.id);
+                    let mem = self.offset(mem, ty, offset);
+                    self.store_mem(mem, value.id);
                 }
 
                 let field_list = self
@@ -1341,7 +1385,7 @@ impl Codegen {
                 Some(Value::ptr(mem).ty(sty))
             }
             Expr::Block { stmts, .. } => {
-                let base = self.ci.vars.len();
+                let base = self.ci.scope.vars.len();
 
                 let mut ret = Some(Value::VOID);
                 for stmt in stmts {
@@ -1354,7 +1398,7 @@ impl Codegen {
                 }
 
                 self.ci.nodes.lock(self.ci.ctrl);
-                for var in self.ci.vars.drain(base..) {
+                for var in self.ci.scope.vars.drain(base..) {
                     self.ci.nodes.unlock_remove(var.value.id);
                 }
                 self.ci.nodes.unlock(self.ci.ctrl);
@@ -1366,19 +1410,23 @@ impl Codegen {
                 self.ci.loops.push(Loop {
                     node: self.ci.ctrl,
                     ctrl: [Nid::MAX; 2],
-                    ctrl_scope: core::array::from_fn(|_| vec![]),
-                    scope: self.ci.vars.clone(),
+                    ctrl_scope: core::array::from_fn(|_| Default::default()),
+                    scope: self.ci.scope.clone(),
                 });
 
-                for var in &mut self.ci.vars {
+                for var in &mut self.ci.scope.vars {
                     var.value = Value::VOID;
                 }
-                self.ci.nodes[VOID].lock_rc += self.ci.vars.len() as LockRc;
+                self.ci.nodes.lock_scope(&self.ci.scope);
 
                 self.expr(body);
 
-                let Loop { node, ctrl: [mut con, bre], ctrl_scope: [mut cons, mut bres], scope } =
-                    self.ci.loops.pop().unwrap();
+                let Loop {
+                    node,
+                    ctrl: [mut con, bre],
+                    ctrl_scope: [mut cons, mut bres],
+                    mut scope,
+                } = self.ci.loops.pop().unwrap();
 
                 if con != Nid::MAX {
                     con = self.ci.nodes.new_node(ty::Id::VOID, Kind::Region, [con, self.ci.ctrl]);
@@ -1386,7 +1434,7 @@ impl Codegen {
                         &mut self.ci.nodes,
                         &mut self.ci.loops,
                         con,
-                        &mut self.ci.vars,
+                        &mut self.ci.scope,
                         &mut cons,
                         true,
                     );
@@ -1410,10 +1458,10 @@ impl Codegen {
 
                 self.ci.nodes.lock(self.ci.ctrl);
 
-                core::mem::swap(&mut self.ci.vars, &mut bres);
+                core::mem::swap(&mut self.ci.scope, &mut bres);
 
                 for ((dest_var, mut scope_var), loop_var) in
-                    self.ci.vars.iter_mut().zip(scope).zip(bres)
+                    self.ci.scope.vars.iter_mut().zip(scope.vars.drain(..)).zip(bres.vars.drain(..))
                 {
                     self.ci.nodes.unlock(loop_var.value.id);
 
@@ -1457,6 +1505,9 @@ impl Codegen {
                     self.ci.nodes.unlock_remove(scope_var.value.id);
                 }
 
+                self.ci.nodes.unlock_remove_scope(&scope);
+                self.ci.nodes.unlock_remove_scope(&bres);
+
                 self.ci.nodes.unlock(self.ci.ctrl);
 
                 Some(Value::VOID)
@@ -1487,15 +1538,13 @@ impl Codegen {
                     }
                 }
 
-                let mut else_scope = self.ci.vars.clone();
-                for &el in &self.ci.vars {
-                    self.ci.nodes.lock(el.value.id);
-                }
+                let mut else_scope = self.ci.scope.clone();
+                self.ci.nodes.lock_scope(&else_scope);
 
                 self.ci.ctrl = self.ci.nodes.new_node(ty::Id::VOID, Kind::Then, [if_node]);
                 let lcntrl = self.expr(then).map_or(Nid::MAX, |_| self.ci.ctrl);
 
-                let mut then_scope = core::mem::replace(&mut self.ci.vars, else_scope);
+                let mut then_scope = core::mem::replace(&mut self.ci.scope, else_scope);
                 self.ci.ctrl = self.ci.nodes.new_node(ty::Id::VOID, Kind::Else, [if_node]);
                 let rcntrl = if let Some(else_) = else_ {
                     self.expr(else_).map_or(Nid::MAX, |_| self.ci.ctrl)
@@ -1504,27 +1553,21 @@ impl Codegen {
                 };
 
                 if lcntrl == Nid::MAX && rcntrl == Nid::MAX {
-                    for then_var in then_scope {
-                        self.ci.nodes.unlock_remove(then_var.value.id);
-                    }
+                    self.ci.nodes.unlock_remove_scope(&then_scope);
                     return None;
                 } else if lcntrl == Nid::MAX {
-                    for then_var in then_scope {
-                        self.ci.nodes.unlock_remove(then_var.value.id);
-                    }
+                    self.ci.nodes.unlock_remove_scope(&then_scope);
                     return Some(Value::VOID);
                 } else if rcntrl == Nid::MAX {
-                    for else_var in &self.ci.vars {
-                        self.ci.nodes.unlock_remove(else_var.value.id);
-                    }
-                    self.ci.vars = then_scope;
+                    self.ci.nodes.unlock_remove_scope(&self.ci.scope);
+                    self.ci.scope = then_scope;
                     self.ci.ctrl = lcntrl;
                     return Some(Value::VOID);
                 }
 
                 self.ci.ctrl = self.ci.nodes.new_node(ty::Id::VOID, Kind::Region, [lcntrl, rcntrl]);
 
-                else_scope = core::mem::take(&mut self.ci.vars);
+                else_scope = core::mem::take(&mut self.ci.scope);
 
                 Self::merge_scopes(
                     &mut self.ci.nodes,
@@ -1535,7 +1578,7 @@ impl Codegen {
                     true,
                 );
 
-                self.ci.vars = else_scope;
+                self.ci.scope = else_scope;
 
                 Some(Value::VOID)
             }
@@ -1550,31 +1593,30 @@ impl Codegen {
         let mut n = self.raw_expr_ctx(expr, ctx)?;
         self.strip_var(&mut n);
         if core::mem::take(&mut n.ptr) {
-            self.offset(&mut n);
             n.id = self.load_mem(n.id, n.ty);
         }
         Some(n)
     }
 
-    fn offset(&mut self, val: &mut Value) {
-        if val.off == 0 {
-            return;
+    fn offset(&mut self, val: Nid, ty: ty::Id, off: Offset) -> Nid {
+        if off == 0 {
+            return val;
         }
 
-        let off = self.ci.nodes.new_node_nop(
-            ty::Id::INT,
-            Kind::CInt { value: core::mem::take(&mut val.off) as i64 },
-            [VOID],
-        );
-        let inps = [VOID, val.id, off];
-        val.id = self.ci.nodes.new_node(val.ty, Kind::BinOp { op: TokenKind::Add }, inps)
+        let off = self.ci.nodes.new_node_nop(ty::Id::INT, Kind::CInt { value: off as i64 }, [VOID]);
+        let inps = [VOID, val, off];
+        self.ci.nodes.new_node(ty, Kind::BinOp { op: TokenKind::Add }, inps)
     }
 
     fn strip_var(&mut self, n: &mut Value) {
         if core::mem::take(&mut n.var) {
             let id = (u16::MAX - n.id) as usize;
-            self.ci.nodes.load_loop_value(id, &mut self.ci.vars[id].value, &mut self.ci.loops);
-            *n = self.ci.vars[id].value;
+            self.ci.nodes.load_loop_value(
+                id,
+                &mut self.ci.scope.vars[id].value,
+                &mut self.ci.loops,
+            );
+            *n = self.ci.scope.vars[id].value;
         }
     }
 
@@ -1590,10 +1632,9 @@ impl Codegen {
 
         if loob.ctrl[id] == Nid::MAX {
             loob.ctrl[id] = self.ci.ctrl;
-            loob.ctrl_scope[id] = self.ci.vars[..loob.scope.len()].to_owned();
-            for v in &loob.ctrl_scope[id] {
-                self.ci.nodes.lock(v.value.id)
-            }
+            loob.ctrl_scope[id] = self.ci.scope.clone();
+            loob.ctrl_scope[id].vars.truncate(loob.scope.vars.len());
+            self.ci.nodes.lock_scope(&loob.ctrl_scope[id]);
         } else {
             let reg =
                 self.ci.nodes.new_node(ty::Id::VOID, Kind::Region, [self.ci.ctrl, loob.ctrl[id]]);
@@ -1604,7 +1645,7 @@ impl Codegen {
                 &mut self.ci.loops,
                 reg,
                 &mut scope,
-                &mut self.ci.vars,
+                &mut self.ci.scope,
                 false,
             );
 
@@ -1621,28 +1662,40 @@ impl Codegen {
         nodes: &mut Nodes,
         loops: &mut [Loop],
         ctrl: Nid,
-        to: &mut [Variable],
-        from: &mut [Variable],
+        to: &mut Scope,
+        from: &mut Scope,
         drop_from: bool,
     ) {
-        for (i, (else_var, then_var)) in to.iter_mut().zip(from).enumerate() {
-            if else_var.value.id != then_var.value.id {
-                nodes.load_loop_value(i, &mut then_var.value, loops);
-                nodes.load_loop_value(i, &mut else_var.value, loops);
-                if else_var.value.id != then_var.value.id {
-                    let ty = nodes[else_var.value.id].ty;
-                    debug_assert_eq!(ty, nodes[then_var.value.id].ty, "TODO: typecheck properly");
+        for (i, (to_var, from_var)) in to.vars.iter_mut().zip(&mut from.vars).enumerate() {
+            if to_var.value.id != from_var.value.id {
+                nodes.load_loop_value(i, &mut from_var.value, loops);
+                nodes.load_loop_value(i, &mut to_var.value, loops);
+                if to_var.value.id != from_var.value.id {
+                    let ty = nodes[to_var.value.id].ty;
+                    debug_assert_eq!(ty, nodes[from_var.value.id].ty, "TODO: typecheck properly");
 
-                    let inps = [ctrl, then_var.value.id, else_var.value.id];
-                    nodes.unlock(else_var.value.id);
-                    else_var.value.id = nodes.new_node(ty, Kind::Phi, inps);
-                    nodes.lock(else_var.value.id);
+                    let inps = [ctrl, from_var.value.id, to_var.value.id];
+                    nodes.unlock(to_var.value.id);
+                    to_var.value.id = nodes.new_node(ty, Kind::Phi, inps);
+                    nodes.lock(to_var.value.id);
                 }
             }
+        }
 
-            if drop_from {
-                nodes.unlock_remove(then_var.value.id);
-            }
+        if to.store != from.store {
+            let (to_store, from_store) = (to.store.unwrap(), from.store.unwrap());
+            nodes.unlock(to_store);
+            to.store = Some(nodes.new_node(ty::Id::VOID, Kind::Phi, [ctrl, from_store, to_store]));
+            nodes.lock(to.store.unwrap());
+        }
+
+        to.loads.extend(&from.loads);
+        for &load in &from.loads {
+            nodes.lock(load);
+        }
+
+        if drop_from {
+            nodes.unlock_remove_scope(from);
         }
     }
 
@@ -1703,10 +1756,10 @@ impl Codegen {
             self.ci.nodes.lock(value);
             let sym = parser::find_symbol(&ast.symbols, arg.id);
             assert!(sym.flags & idfl::COMPTIME == 0, "TODO");
-            self.ci.vars.push(Variable { id: arg.id, value: Value::new(value).ty(ty) });
+            self.ci.scope.vars.push(Variable { id: arg.id, value: Value::new(value).ty(ty) });
         }
 
-        let orig_vars = self.ci.vars.clone();
+        let orig_vars = self.ci.scope.vars.clone();
 
         if self.expr(body).is_some() {
             self.report(body.pos(), "expected all paths in the fucntion to return");
@@ -1714,17 +1767,8 @@ impl Codegen {
 
         self.ci.nodes.unlock(end);
 
-        if let Some(mem) = self.ci.store.take() {
-            self.ci.nodes.unlock_remove(mem);
-        }
-        for load in self.ci.loads.drain(..) {
-            self.ci.nodes.unlock_remove(load);
-        }
+        self.ci.nodes.unlock_remove_scope(&core::mem::take(&mut self.ci.scope));
         self.ci.nodes.unlock(mem);
-
-        for var in self.ci.vars.drain(..) {
-            self.ci.nodes.unlock(var.value.id);
-        }
 
         if self.errors.borrow().is_empty() {
             self.graphviz();
@@ -1756,10 +1800,10 @@ impl Codegen {
                 self.ci.nodes[mem].outputs = mems;
             }
 
-            self.ci.vars = orig_vars;
+            self.ci.scope.vars = orig_vars;
             self.ci.nodes.visited.clear(self.ci.nodes.values.len());
             let saved = self.emit_body(sig);
-            self.ci.vars.clear();
+            self.ci.scope.vars.clear();
 
             if let Some(last_ret) = self.ci.ret_relocs.last()
                 && last_ret.offset as usize == self.ci.code.len() - 5
@@ -1917,6 +1961,7 @@ impl Codegen {
                         let &[.., rhs] = node.inputs.as_slice() else { unreachable!() };
 
                         if let Kind::CInt { value } = func.nodes[rhs].kind
+                            && func.nodes[rhs].lock_rc != 0
                             && let Some(op) =
                                 op.imm_binop(node.ty.is_signed(), func.tys.size_of(node.ty))
                         {
@@ -1945,30 +1990,45 @@ impl Codegen {
                         self.ci.emit(instrs::addi64(atr(allocs[0]), base, offset as _));
                     }
                     Kind::Load => {
-                        let region = node.inputs[1];
+                        let mut region = node.inputs[1];
+                        let mut offset = 0;
+                        if func.nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
+                            && let Kind::CInt { value } =
+                                func.nodes[func.nodes[region].inputs[2]].kind
+                        {
+                            region = func.nodes[region].inputs[1];
+                            offset = value as Offset;
+                        }
                         let size = self.tys.size_of(node.ty);
                         if size <= 8 {
                             let (base, offset) = match func.nodes[region].kind {
-                                Kind::Stck => (reg::STACK_PTR, func.nodes[region].offset),
-                                _ => (atr(allocs[1]), func.nodes[region].offset),
+                                Kind::Stck => (reg::STACK_PTR, func.nodes[region].offset + offset),
+                                _ => (atr(allocs[1]), offset),
                             };
                             self.ci.emit(instrs::ld(atr(allocs[0]), base, offset as _, size as _));
                         }
                     }
+                    Kind::Stre if node.inputs[2] == VOID => {}
                     Kind::Stre => {
-                        let region = node.inputs[2];
-                        if region != VOID {
-                            let size = u16::try_from(self.tys.size_of(node.ty)).expect("TODO");
-                            let nd = &func.nodes[region];
-                            let (base, offset, src) = match nd.kind {
-                                Kind::Stck => (reg::STACK_PTR, nd.offset, allocs[0]),
-                                _ => (atr(allocs[0]), 0, allocs[1]),
-                            };
-                            if size > 8 {
-                                self.ci.emit(instrs::bmc(base, atr(src), size));
-                            } else {
-                                self.ci.emit(instrs::st(atr(src), base, offset as _, size));
-                            }
+                        let mut region = node.inputs[2];
+                        let mut offset = 0;
+                        if func.nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
+                            && let Kind::CInt { value } =
+                                func.nodes[func.nodes[region].inputs[2]].kind
+                        {
+                            region = func.nodes[region].inputs[1];
+                            offset = value as Offset;
+                        }
+                        let size = u16::try_from(self.tys.size_of(node.ty)).expect("TODO");
+                        let nd = &func.nodes[region];
+                        let (base, offset, src) = match nd.kind {
+                            Kind::Stck => (reg::STACK_PTR, nd.offset + offset, allocs[0]),
+                            _ => (atr(allocs[0]), offset, allocs[1]),
+                        };
+                        if size > 8 {
+                            self.ci.emit(instrs::bmc(base, atr(src), size));
+                        } else {
+                            self.ci.emit(instrs::st(atr(src), base, offset as _, size));
                         }
                     }
                     _ => unreachable!(),
@@ -2158,16 +2218,6 @@ impl Codegen {
         self.ci.nodes.visited.clear(self.ci.nodes.values.len());
         push_down(&mut self.ci.nodes, VOID);
     }
-
-    //fn get_load_type(&self, val: Nid) -> Option<ty::Id> {
-    //    Some(match self.ci.nodes[val].kind {
-    //        Kind::Stre { .. } | Kind::Load { .. } | Kind::Stck | Kind::Arg { .. } => {
-    //            self.ci.nodes[val].ty
-    //        }
-    //        Kind::Ptr { .. } => self.tys.base_of(self.ci.nodes[val].ty).unwrap(),
-    //        _ => return None,
-    //    })
-    //}
 }
 
 // FIXME: make this more efficient (allocated with arena)
@@ -2272,7 +2322,7 @@ impl<'a> Function<'a> {
             let idx = 1 + node.inputs.iter().position(|&i| i == prev).unwrap();
 
             for ph in node.outputs {
-                if self.nodes[ph].kind != Kind::Phi {
+                if self.nodes[ph].kind != Kind::Phi || self.nodes[ph].ty == ty::Id::VOID {
                     continue;
                 }
 
@@ -2334,7 +2384,7 @@ impl<'a> Function<'a> {
                 }
                 let mut block = vec![];
                 for ph in node.outputs.clone() {
-                    if self.nodes[ph].kind != Kind::Phi {
+                    if self.nodes[ph].kind != Kind::Phi || self.nodes[ph].ty == ty::Id::VOID {
                         continue;
                     }
                     self.def_nid(ph);
@@ -2357,19 +2407,20 @@ impl<'a> Function<'a> {
                 self.add_instr(nid, ops);
                 self.emit_node(node.outputs[0], nid);
             }
-            Kind::CInt { .. } => {
-                let unused = node.outputs.into_iter().all(|o| {
+            Kind::CInt { .. }
+                if node.outputs.iter().all(|&o| {
                     let ond = &self.nodes[o];
                     matches!(ond.kind, Kind::BinOp { op }
                         if op.imm_binop(ond.ty.is_signed(), 8).is_some()
                             && self.nodes.is_const(ond.inputs[2])
                             && op.cond_op(ond.ty.is_signed()).is_none())
-                });
-
-                if !unused {
-                    let ops = vec![self.drg(nid)];
-                    self.add_instr(nid, ops);
-                }
+                }) =>
+            {
+                self.nodes.lock(nid)
+            }
+            Kind::CInt { .. } => {
+                let ops = vec![self.drg(nid)];
+                self.add_instr(nid, ops);
             }
             Kind::Entry => {
                 self.nodes[nid].ralloc_backref = self.add_block(nid);
@@ -2410,11 +2461,20 @@ impl<'a> Function<'a> {
                     self.emit_node(o, nid);
                 }
             }
+            Kind::BinOp { op: TokenKind::Add }
+                if self.nodes.is_const(node.inputs[2])
+                    && node
+                        .outputs
+                        .iter()
+                        .all(|&n| matches!(self.nodes[n].kind, Kind::Stre | Kind::Load)) =>
+            {
+                self.nodes.lock(nid)
+            }
             Kind::BinOp { op } => {
                 let &[_, lhs, rhs] = node.inputs.as_slice() else { unreachable!() };
 
                 let ops = if let Kind::CInt { .. } = self.nodes[rhs].kind
-                    && op.imm_binop(node.ty.is_signed(), 8).is_some()
+                    && self.nodes[rhs].lock_rc != 0
                 {
                     vec![self.drg(nid), self.urg(lhs)]
                 } else if op.binop(node.ty.is_signed(), 8).is_some() {
@@ -2479,13 +2539,28 @@ impl<'a> Function<'a> {
                     }
                 }
             }
+            //Kind::Stck
+            //    if node.outputs.iter().all(|&n| {
+            //        matches!(self.nodes[n].kind, Kind::Stre | Kind::Load)
+            //            || matches!(self.nodes[n].kind, Kind::BinOp { op: TokenKind::Add }
+            //    if self.nodes.is_const(self.nodes[n].inputs[2])
+            //        && self.nodes[n]
+            //            .outputs
+            //            .iter()
+            //            .all(|&n| matches!(self.nodes[n].kind, Kind::Stre | Kind::Load)))
+            //    }) => {}
             Kind::Stck => {
                 let ops = vec![self.drg(nid)];
                 self.add_instr(nid, ops);
             }
             Kind::Phi | Kind::Arg { .. } | Kind::Mem => {}
             Kind::Load { .. } => {
-                let region = node.inputs[1];
+                let mut region = node.inputs[1];
+                if self.nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
+                    && self.nodes.is_const(self.nodes[region].inputs[2])
+                {
+                    region = self.nodes[region].inputs[1]
+                }
                 if self.tys.size_of(node.ty) <= 8 {
                     let ops = match self.nodes[region].kind {
                         Kind::Stck => vec![self.drg(nid)],
@@ -2494,18 +2569,22 @@ impl<'a> Function<'a> {
                     self.add_instr(nid, ops);
                 }
             }
+            Kind::Stre { .. } if node.inputs[2] == VOID => self.nodes.lock(nid),
             Kind::Stre { .. } => {
-                let region = node.inputs[2];
-                if region != VOID {
-                    let ops = match self.nodes[region].kind {
-                        _ if self.tys.size_of(node.ty) > 8 => {
-                            vec![self.urg(region), self.urg(self.nodes[node.inputs[1]].inputs[1])]
-                        }
-                        Kind::Stck => vec![self.urg(node.inputs[1])],
-                        _ => vec![self.urg(region), self.urg(node.inputs[1])],
-                    };
-                    self.add_instr(nid, ops);
+                let mut region = node.inputs[2];
+                if self.nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
+                    && self.nodes.is_const(self.nodes[region].inputs[2])
+                {
+                    region = self.nodes[region].inputs[1]
                 }
+                let ops = match self.nodes[region].kind {
+                    _ if self.tys.size_of(node.ty) > 8 => {
+                        vec![self.urg(region), self.urg(self.nodes[node.inputs[1]].inputs[1])]
+                    }
+                    Kind::Stck => vec![self.urg(node.inputs[1])],
+                    _ => vec![self.urg(region), self.urg(node.inputs[1])],
+                };
+                self.add_instr(nid, ops);
             }
         }
     }
@@ -2849,8 +2928,6 @@ mod tests {
             return;
         }
 
-        //println!("{output}");
-
         crate::test_run_vm(&out, output);
     }
 
@@ -2894,5 +2971,6 @@ mod tests {
         //tests_ptr_to_ptr_copy;
         //wide_ret;
         pointer_opts;
+        conditional_stores;
     }
 }

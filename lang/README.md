@@ -999,3 +999,20 @@ clobber := fn(cb: ^int): void {
 	return
 }
 ```
+
+#### conditional_stores
+```hb
+main := fn(): int {
+	mem := &1
+
+	if cond() == 0 {
+		*mem = 0
+	} else {
+		*mem = 2
+	}
+
+	return *mem
+}
+
+cond := fn(): int return 0
+```
