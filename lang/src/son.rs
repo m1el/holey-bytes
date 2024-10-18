@@ -1509,12 +1509,12 @@ impl Codegen {
                 if bres.store != scope.store {
                     let (to_store, from_store) = (bres.store.unwrap(), scope.store.unwrap());
                     self.ci.nodes.unlock(to_store);
-                    bres.store = Some(
+                    self.ci.scope.store = Some(
                         self.ci
                             .nodes
                             .new_node(ty::Id::VOID, Kind::Phi, [node, from_store, to_store]),
                     );
-                    self.ci.nodes.lock(bres.store.unwrap());
+                    self.ci.nodes.lock(self.ci.scope.store.unwrap());
                 }
 
                 self.ci.nodes.unlock_remove_scope(&scope);
