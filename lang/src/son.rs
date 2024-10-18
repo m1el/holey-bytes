@@ -1507,8 +1507,9 @@ impl Codegen {
                 }
 
                 if bres.store != scope.store {
-                    let (to_store, from_store) = (bres.store.unwrap(), scope.store.unwrap());
-                    self.ci.nodes.unlock(to_store);
+                    let (to_store, from_store, prev) =
+                        (bres.store.unwrap(), scope.store.unwrap(), self.ci.scope.store.unwrap());
+                    self.ci.nodes.unlock_remove(prev);
                     self.ci.scope.store = Some(
                         self.ci
                             .nodes
