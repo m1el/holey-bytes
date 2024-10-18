@@ -2,23 +2,21 @@ cond:
     LI64 r1, 0d
     JALA r0, r31, 0a
 main:
-    ADDI64 r254, r254, -48d
-    ST r31, r254, 8a, 40h
-    LI64 r32, 1d
-    ADDI64 r33, r254, 0d
-    ST r32, r254, 0a, 8h
+    ADDI64 r254, r254, -32d
+    ST r31, r254, 8a, 24h
     JAL r31, r0, :cond
-    LI64 r34, 0d
-    CP r35, r34
-    JNE r1, r35, :0
-    CP r34, r35
-    CP r1, r34
+    LI64 r32, 0d
+    CP r33, r32
+    JNE r1, r33, :0
+    CP r32, r33
+    CP r1, r32
     JMP :1
  0: LI64 r1, 2d
- 1: ST r1, r254, 0a, 8h
-    LD r31, r254, 8a, 40h
-    ADDI64 r254, r254, 48d
+ 1: ADDI64 r33, r254, 0d
+    ST r1, r254, 0a, 8h
+    LD r31, r254, 8a, 24h
+    ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
-code size: 181
+code size: 158
 ret: 0
 status: Ok(())

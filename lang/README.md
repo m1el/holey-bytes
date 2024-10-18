@@ -1003,9 +1003,10 @@ clobber := fn(cb: ^int): void {
 #### conditional_stores
 ```hb
 main := fn(): int {
+	cnd := cond()
 	mem := &1
 
-	if cond() == 0 {
+	if cnd == 0 {
 		*mem = 0
 	} else {
 		*mem = 2
@@ -1015,4 +1016,17 @@ main := fn(): int {
 }
 
 cond := fn(): int return 0
+```
+
+#### loop_stores
+```hb
+main := fn(): int {
+	mem := &10
+
+	loop if *mem == 0 break else {
+		*mem -= 1
+	}
+
+	return *mem
+}
 ```

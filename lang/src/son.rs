@@ -310,6 +310,7 @@ impl Nodes {
                 if self[target].inputs[2] != VOID
                     && self[target].inputs.len() == 4
                     && self[self[target].inputs[3]].kind == Kind::Stre
+                    && self[self[target].inputs[3]].lock_rc == 0
                     && self[self[target].inputs[3]].inputs[2] == self[target].inputs[2]
                 {
                     return Some(self.modify_input(
@@ -1505,6 +1506,17 @@ impl Codegen {
                     self.ci.nodes.unlock_remove(scope_var.value.id);
                 }
 
+                if bres.store != scope.store {
+                    let (to_store, from_store) = (bres.store.unwrap(), scope.store.unwrap());
+                    self.ci.nodes.unlock(to_store);
+                    bres.store = Some(
+                        self.ci
+                            .nodes
+                            .new_node(ty::Id::VOID, Kind::Phi, [node, from_store, to_store]),
+                    );
+                    self.ci.nodes.lock(bres.store.unwrap());
+                }
+
                 self.ci.nodes.unlock_remove_scope(&scope);
                 self.ci.nodes.unlock_remove_scope(&bres);
 
@@ -1538,7 +1550,11 @@ impl Codegen {
                     }
                 }
 
-                let mut else_scope = self.ci.scope.clone();
+                let orig_store = self.ci.scope.store;
+                if let Some(str) = orig_store {
+                    self.ci.nodes.lock(str);
+                }
+                let else_scope = self.ci.scope.clone();
                 self.ci.nodes.lock_scope(&else_scope);
 
                 self.ci.ctrl = self.ci.nodes.new_node(ty::Id::VOID, Kind::Then, [if_node]);
@@ -1551,6 +1567,10 @@ impl Codegen {
                 } else {
                     self.ci.ctrl
                 };
+
+                if let Some(str) = orig_store {
+                    self.ci.nodes.unlock_remove(str);
+                }
 
                 if lcntrl == Nid::MAX && rcntrl == Nid::MAX {
                     self.ci.nodes.unlock_remove_scope(&then_scope);
@@ -1567,18 +1587,14 @@ impl Codegen {
 
                 self.ci.ctrl = self.ci.nodes.new_node(ty::Id::VOID, Kind::Region, [lcntrl, rcntrl]);
 
-                else_scope = core::mem::take(&mut self.ci.scope);
-
                 Self::merge_scopes(
                     &mut self.ci.nodes,
                     &mut self.ci.loops,
                     self.ci.ctrl,
-                    &mut else_scope,
+                    &mut self.ci.scope,
                     &mut then_scope,
                     true,
                 );
-
-                self.ci.scope = else_scope;
 
                 Some(Value::VOID)
             }
@@ -2972,5 +2988,6 @@ mod tests {
         //wide_ret;
         pointer_opts;
         conditional_stores;
+        loop_stores;
     }
 }
