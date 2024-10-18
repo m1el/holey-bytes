@@ -17,6 +17,7 @@ log = "0.4.22"
 git = "https://github.com/jakubDoka/regalloc2"
 branch = "reuse-allocations"
 optional = true
+features = ["trace-log"]
 
 [features]
 default = ["std", "opts"]

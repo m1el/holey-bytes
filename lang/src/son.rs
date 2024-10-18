@@ -368,8 +368,8 @@ impl Nodes {
             Kind::Then => write!(out, "ctrl: {:<5}", "then"),
             Kind::Else => write!(out, "ctrl: {:<5}", "else"),
             Kind::Stck => write!(out, "stck:      "),
-            Kind::Load { offset } => write!(out, "load: {offset:<5}"),
-            Kind::Stre { offset } => write!(out, "stre: {offset:<5}"),
+            Kind::Load => write!(out, "load: "),
+            Kind::Stre => write!(out, "stre:      "),
             _ => unreachable!(),
         }?;
 
@@ -691,13 +691,9 @@ pub enum Kind {
     // [ctrl]
     Stck,
     // [ctrl, memory]
-    Load {
-        offset: Offset,
-    },
+    Load,
     // [ctrl, value, memory]
-    Stre {
-        offset: Offset,
-    },
+    Stre,
 }
 
 impl Kind {
@@ -959,7 +955,7 @@ impl Codegen {
         log::info!("{out}");
     }
 
-    fn store_mem(&mut self, region: Nid, offset: Offset, value: Nid) -> Nid {
+    fn store_mem(&mut self, region: Nid, value: Nid) -> Nid {
         let mut vc = Vc::from([VOID, value, region]);
         if let Some(str) = self.ci.store {
             self.ci.nodes.unlock(str);
@@ -974,18 +970,18 @@ impl Codegen {
                 vc.push(load);
             }
         }
-        let store = self.ci.nodes.new_node(self.tof(value), Kind::Stre { offset }, vc);
+        let store = self.ci.nodes.new_node(self.tof(value), Kind::Stre, vc);
         self.ci.nodes.lock(store);
         self.ci.store = Some(store);
         store
     }
 
-    fn load_mem(&mut self, region: Nid, offset: Offset, ty: ty::Id) -> Nid {
+    fn load_mem(&mut self, region: Nid, ty: ty::Id) -> Nid {
         let mut vc = Vc::from([VOID, region]);
         if let Some(str) = self.ci.store {
             vc.push(str);
         }
-        let load = self.ci.nodes.new_node(ty, Kind::Load { offset }, vc);
+        let load = self.ci.nodes.new_node(ty, Kind::Load, vc);
         self.ci.nodes.lock(load);
         self.ci.loads.push(load);
         load
@@ -1105,21 +1101,12 @@ impl Codegen {
                 if val.ptr {
                     val.ptr = false;
                     val.ty = self.tys.make_ptr(val.ty);
-                    if val.off != 0 {
-                        let off = self.ci.nodes.new_node_nop(
-                            ty::Id::INT,
-                            Kind::CInt { value: val.off as i64 },
-                            [VOID],
-                        );
-                        let inps = [VOID, val.id, off];
-                        val.id =
-                            self.ci.nodes.new_node(val.ty, Kind::UnOp { op: TokenKind::Add }, inps)
-                    }
+                    self.offset(&mut val);
                     return Some(val);
                 }
 
                 let stack = self.ci.nodes.new_node_nop(val.ty, Kind::Stck, [VOID, MEM]);
-                self.store_mem(stack, 0, val.id);
+                self.store_mem(stack, val.id);
 
                 Some(Value::new(stack).ty(self.tys.make_ptr(val.ty)))
             }
@@ -1152,7 +1139,7 @@ impl Codegen {
                 Some(Value::VOID)
             }
             Expr::BinOp { left, op: TokenKind::Assign, right } => {
-                let dest = self.raw_expr(left)?;
+                let mut dest = self.raw_expr(left)?;
                 let value = self.expr(right)?;
 
                 _ = self.assert_ty(left.pos(), value.ty, dest.ty, true, "assignment dest");
@@ -1163,7 +1150,8 @@ impl Codegen {
                     let prev = core::mem::replace(&mut var.value, value);
                     self.ci.nodes.unlock_remove(prev.id);
                 } else if dest.ptr {
-                    self.store_mem(dest.id, dest.off, value.id);
+                    self.offset(&mut dest);
+                    self.store_mem(dest.id, value.id);
                 } else {
                     self.report(left.pos(), "cannot assign to this expression");
                 }
@@ -1269,7 +1257,7 @@ impl Codegen {
                     }
                 }
 
-                self.store_mem(VOID, 0, VOID);
+                self.store_mem(VOID, VOID);
                 for load in self.ci.loads.drain(..) {
                     if !self.ci.nodes.unlock_remove(load) {
                         inps.push(load);
@@ -1331,7 +1319,9 @@ impl Codegen {
                     }
 
                     let value = self.expr_ctx(&field.value, Ctx::default().with_ty(ty))?;
-                    self.store_mem(mem, offset, value.id);
+                    let mut mem = Value::ptr(mem).ty(ty).off(offset);
+                    self.offset(&mut mem);
+                    self.store_mem(mem.id, value.id);
                 }
 
                 let field_list = self
@@ -1560,9 +1550,24 @@ impl Codegen {
         let mut n = self.raw_expr_ctx(expr, ctx)?;
         self.strip_var(&mut n);
         if core::mem::take(&mut n.ptr) {
-            n.id = self.load_mem(n.id, n.off, n.ty);
+            self.offset(&mut n);
+            n.id = self.load_mem(n.id, n.ty);
         }
         Some(n)
+    }
+
+    fn offset(&mut self, val: &mut Value) {
+        if val.off == 0 {
+            return;
+        }
+
+        let off = self.ci.nodes.new_node_nop(
+            ty::Id::INT,
+            Kind::CInt { value: core::mem::take(&mut val.off) as i64 },
+            [VOID],
+        );
+        let inps = [VOID, val.id, off];
+        val.id = self.ci.nodes.new_node(val.ty, Kind::BinOp { op: TokenKind::Add }, inps)
     }
 
     fn strip_var(&mut self, n: &mut Value) {
@@ -1939,25 +1944,25 @@ impl Codegen {
                         let offset = func.nodes[nid].offset;
                         self.ci.emit(instrs::addi64(atr(allocs[0]), base, offset as _));
                     }
-                    Kind::Load { offset } => {
+                    Kind::Load => {
                         let region = node.inputs[1];
                         let size = self.tys.size_of(node.ty);
                         if size <= 8 {
                             let (base, offset) = match func.nodes[region].kind {
-                                Kind::Stck => (reg::STACK_PTR, func.nodes[region].offset + offset),
-                                _ => (atr(allocs[1]), func.nodes[region].offset + offset),
+                                Kind::Stck => (reg::STACK_PTR, func.nodes[region].offset),
+                                _ => (atr(allocs[1]), func.nodes[region].offset),
                             };
                             self.ci.emit(instrs::ld(atr(allocs[0]), base, offset as _, size as _));
                         }
                     }
-                    Kind::Stre { offset } => {
+                    Kind::Stre => {
                         let region = node.inputs[2];
                         if region != VOID {
                             let size = u16::try_from(self.tys.size_of(node.ty)).expect("TODO");
                             let nd = &func.nodes[region];
                             let (base, offset, src) = match nd.kind {
-                                Kind::Stck => (reg::STACK_PTR, nd.offset + offset, allocs[0]),
-                                _ => (atr(allocs[0]), offset, allocs[1]),
+                                Kind::Stck => (reg::STACK_PTR, nd.offset, allocs[0]),
+                                _ => (atr(allocs[0]), 0, allocs[1]),
                             };
                             if size > 8 {
                                 self.ci.emit(instrs::bmc(base, atr(src), size));
@@ -2769,13 +2774,11 @@ fn push_down(nodes: &mut Nodes, node: Nid) {
         }
 
         let prev = nodes[node].inputs[0];
-        if min != prev {
-            debug_assert!(idepth(nodes, min) > idepth(nodes, prev));
-            let index = nodes[prev].outputs.iter().position(|&p| p == node).unwrap();
-            nodes[prev].outputs.remove(index);
-            nodes[node].inputs[0] = min;
-            nodes[min].outputs.push(node);
-        }
+        debug_assert!(idepth(nodes, min) >= idepth(nodes, prev));
+        let index = nodes[prev].outputs.iter().position(|&p| p == node).unwrap();
+        nodes[prev].outputs.remove(index);
+        nodes[node].inputs[0] = min;
+        nodes[min].outputs.push(node);
     }
 }
 
