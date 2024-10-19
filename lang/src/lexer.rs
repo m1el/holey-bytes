@@ -280,6 +280,7 @@ impl TokenKind {
             Self::Eq => (a == b) as i64,
             Self::Ne => (a != b) as i64,
             Self::Band => a & b,
+            Self::Shr => a >> b,
             s => todo!("{s}"),
         }
     }

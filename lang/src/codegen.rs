@@ -874,7 +874,7 @@ impl Codegen {
 
                 match base_val.ty.expand() {
                     ty::Kind::Slice(arr) => {
-                        let ty = self.tys.ins.arrays[arr as usize].ty;
+                        let ty = self.tys.ins.slices[arr as usize].elem;
                         let item_size = self.tys.size_of(ty);
 
                         let Loc::Rt { derefed: true, ref mut reg, ref stack, offset } =
@@ -1209,12 +1209,12 @@ impl Codegen {
                         }
                     }
                     ty::Kind::Slice(arr) => {
-                        let arr = self.tys.ins.arrays[arr as usize];
-                        let item_size = self.tys.size_of(arr.ty);
+                        let arr = self.tys.ins.slices[arr as usize];
+                        let item_size = self.tys.size_of(arr.elem);
                         for (i, value) in fields.iter().enumerate() {
                             let loc = loc.as_ref().offset(i as u32 * item_size);
-                            let value =
-                                self.expr_ctx(value, Ctx::default().with_loc(loc).with_ty(arr.ty))?;
+                            let value = self
+                                .expr_ctx(value, Ctx::default().with_loc(loc).with_ty(arr.elem))?;
                             self.ci.free_loc(value.loc);
                         }
                     }
@@ -2014,9 +2014,9 @@ impl Codegen {
                 }
             }
             ty::Kind::Slice(arr) => {
-                let arr = &self.tys.ins.arrays[arr as usize];
+                let arr = &self.tys.ins.slices[arr as usize];
                 if arr.len == ArrayLen::MAX {
-                    ty = self.tys.make_array(arr.ty, field_len as _);
+                    ty = self.tys.make_array(arr.elem, field_len as _);
                 } else if arr.len != field_len as u32 {
                     self.report(
                         pos,

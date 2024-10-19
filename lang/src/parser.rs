@@ -622,6 +622,7 @@ fn find_ident(idents: &mut [ScopeIdent], id: Ident) -> &mut ScopeIdent {
 }
 
 pub fn find_symbol(symbols: &[Symbol], id: Ident) -> &Symbol {
+    // TODO: we can turn this to direct index
     symbols.binary_search_by_key(&id, |s| s.name).map(|i| &symbols[i]).unwrap()
 }
 

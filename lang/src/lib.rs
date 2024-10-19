@@ -318,7 +318,7 @@ mod ty {
                     let gb = &ctx.globals[g as usize];
                     crate::SymKey::Decl(gb.file, gb.name)
                 }
-                Kind::Slice(s) => crate::SymKey::Array(&ctx.arrays[s as usize]),
+                Kind::Slice(s) => crate::SymKey::Array(&ctx.slices[s as usize]),
                 Kind::Module(_) | Kind::Builtin(_) => crate::SymKey::Decl(u32::MAX, u32::MAX),
             }
         }
@@ -351,7 +351,7 @@ mod ty {
         }
 
         pub fn is_pointer(self) -> bool {
-            matches!(Kind::from_ty(self), Kind::Ptr(_))
+            matches!(self.expand(), Kind::Ptr(_))
         }
 
         pub fn try_upcast(self, ob: Self, kind: TyCheck) -> Option<Self> {
@@ -587,9 +587,9 @@ mod ty {
                     idx.fmt(f)
                 }
                 TK::Slice(idx) => {
-                    let array = self.tys.ins.arrays[idx as usize];
+                    let array = self.tys.ins.slices[idx as usize];
                     f.write_str("[")?;
-                    self.rety(array.ty).fmt(f)?;
+                    self.rety(array.elem).fmt(f)?;
                     if array.len != ArrayLen::MAX {
                         f.write_str("; ")?;
                         array.len.fmt(f)?;
@@ -738,8 +738,13 @@ pub struct Ptr {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Array {
-    ty: ty::Id,
+    elem: ty::Id,
     len: ArrayLen,
+}
+impl Array {
+    fn len(&self) -> Option<usize> {
+        (self.len != ArrayLen::MAX).then_some(self.len as usize)
+    }
 }
 
 struct ParamAlloc(Range<u8>);
@@ -822,7 +827,7 @@ pub struct TypeIns {
     structs: Vec<Struct>,
     fields: Vec<Field>,
     ptrs: Vec<Ptr>,
-    arrays: Vec<Array>,
+    slices: Vec<Array>,
 }
 
 #[derive(Default)]
@@ -1118,9 +1123,9 @@ impl Types {
 
     fn make_array_low(&mut self, ty: ty::Id, len: ArrayLen) -> ty::Slice {
         self.syms
-            .get_or_insert(SymKey::Array(&Array { ty, len }), &mut self.ins, |ins| {
-                ins.arrays.push(Array { ty, len });
-                ty::Kind::Slice(ins.arrays.len() as u32 - 1).compress()
+            .get_or_insert(SymKey::Array(&Array { elem: ty, len }), &mut self.ins, |ins| {
+                ins.slices.push(Array { elem: ty, len });
+                ty::Kind::Slice(ins.slices.len() as u32 - 1).compress()
             })
             .expand()
             .inner()
@@ -1156,11 +1161,11 @@ impl Types {
             ty::Kind::Builtin(ty::I16 | ty::U16) => 2,
             ty::Kind::Builtin(ty::I8 | ty::U8 | ty::BOOL) => 1,
             ty::Kind::Slice(arr) => {
-                let arr = &self.ins.arrays[arr as usize];
+                let arr = &self.ins.slices[arr as usize];
                 match arr.len {
                     0 => 0,
                     ArrayLen::MAX => 16,
-                    len => self.size_of(arr.ty) * len,
+                    len => self.size_of(arr.elem) * len,
                 }
             }
             ty::Kind::Struct(stru) => {
@@ -1197,10 +1202,10 @@ impl Types {
                 align
             }
             ty::Kind::Slice(arr) => {
-                let arr = &self.ins.arrays[arr as usize];
+                let arr = &self.ins.slices[arr as usize];
                 match arr.len {
                     ArrayLen::MAX => 8,
-                    _ => self.align_of(arr.ty),
+                    _ => self.align_of(arr.elem),
                 }
             }
             _ => self.size_of(ty).max(1),

@@ -342,7 +342,7 @@ fib_iter := fn(n: int): int {
 ```hb
 main := fn(): int {
 	addr := @as(u16, 0x1FF)
-	msg := [u8].(0, 0, @as(u8, addr & 0xFF), @as(u8, addr >> 8 & 0xFF))
+	msg := [u8].(0, 0, @trunc(addr), @trunc(addr >> 8))
 	_force_stack := &msg
 
 	arr := [int].(1, 2, 4)
