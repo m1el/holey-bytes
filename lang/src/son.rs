@@ -9,8 +9,7 @@ use {
             idfl::{self},
             Expr, ExprRef, FileId, Pos,
         },
-        reg, task,
-        ty::{self},
+        reg, task, ty,
         vc::{BitSet, Vc},
         Func, HashMap, Offset, OffsetIter, Reloc, Sig, SymKey, TypedReloc, Types,
     },
@@ -34,6 +33,16 @@ const MEM: Nid = 3;
 type Nid = u16;
 
 type Lookup = crate::ctx_map::CtxMap<Nid>;
+
+trait StoreId: Sized {
+    fn to_store(self) -> Option<Self>;
+}
+
+impl StoreId for Nid {
+    fn to_store(self) -> Option<Self> {
+        (self != NEVER).then_some(self)
+    }
+}
 
 impl crate::ctx_map::CtxEntry for Nid {
     type Ctx = [Result<Node, Nid>];
@@ -414,9 +423,9 @@ impl Nodes {
             Kind::Then => write!(out, "ctrl: {:<5}", "then"),
             Kind::Else => write!(out, "ctrl: {:<5}", "else"),
             Kind::Stck => write!(out, "stck:      "),
-            Kind::Load => write!(out, "load: "),
+            Kind::Load => write!(out, "load:      "),
             Kind::Stre => write!(out, "stre:      "),
-            _ => unreachable!(),
+            Kind::Mem => write!(out, " mem:      "),
         }?;
 
         if self[node].kind != Kind::Loop && self[node].kind != Kind::Region {
@@ -613,26 +622,48 @@ impl Nodes {
         target
     }
 
-    fn load_loop_value(&mut self, index: usize, value: &mut Value, loops: &mut [Loop]) {
-        if value.id != 0 {
-            debug_assert!(!value.var);
+    fn load_loop_var(&mut self, index: usize, value: &mut Nid, loops: &mut [Loop]) {
+        self.load_loop_value(
+            &mut |l| {
+                l.scope
+                    .vars
+                    .get_mut(index)
+                    .map_or((ty::Id::VOID, &mut l.scope.store), |v| (v.ty, &mut v.value))
+            },
+            value,
+            loops,
+        );
+    }
+
+    fn load_loop_store(&mut self, value: &mut Nid, loops: &mut [Loop]) {
+        self.load_loop_value(&mut |l| (ty::Id::VOID, &mut l.scope.store), value, loops);
+    }
+
+    fn load_loop_value(
+        &mut self,
+        get_lvalue: &mut impl FnMut(&mut Loop) -> (ty::Id, &mut Nid),
+        value: &mut Nid,
+        loops: &mut [Loop],
+    ) {
+        if *value != VOID {
             return;
         }
 
         let [loob, loops @ ..] = loops else { unreachable!() };
-        let lvalue = &mut loob.scope.vars[index].value;
+        let node = loob.node;
+        let (ty, lvalue) = get_lvalue(loob);
 
-        self.load_loop_value(index, lvalue, loops);
+        self.load_loop_value(get_lvalue, lvalue, loops);
 
-        if !self[lvalue.id].is_lazy_phi() {
-            self.unlock(value.id);
-            let inps = [loob.node, lvalue.id, VOID];
-            self.unlock(lvalue.id);
-            lvalue.id = self.new_node_nop(lvalue.ty, Kind::Phi, inps);
-            self[lvalue.id].lock_rc += 2;
+        if !self[*lvalue].is_lazy_phi() {
+            self.unlock(*value);
+            let inps = [node, *lvalue, VOID];
+            self.unlock(*lvalue);
+            *lvalue = self.new_node_nop(ty, Kind::Phi, inps);
+            self[*lvalue].lock_rc += 2;
         } else {
-            self.lock(lvalue.id);
-            self.unlock(value.id);
+            self.lock(*lvalue);
+            self.unlock(*value);
         }
         *value = *lvalue;
     }
@@ -679,26 +710,26 @@ impl Nodes {
     }
 
     fn lock_scope(&mut self, scope: &Scope) {
-        if let Some(str) = scope.store {
+        if let Some(str) = scope.store.to_store() {
             self.lock(str);
         }
         for &load in &scope.loads {
             self.lock(load);
         }
         for var in &scope.vars {
-            self.lock(var.value.id);
+            self.lock(var.value);
         }
     }
 
     fn unlock_remove_scope(&mut self, scope: &Scope) {
-        if let Some(str) = scope.store {
+        if let Some(str) = scope.store.to_store() {
             self.unlock_remove(str);
         }
         for &load in &scope.loads {
             self.unlock_remove(load);
         }
         for var in &scope.vars {
-            self.unlock_remove(var.value.id);
+            self.unlock_remove(var.value);
         }
     }
 }
@@ -768,7 +799,7 @@ pub enum Kind {
 
 impl Kind {
     fn is_pinned(&self) -> bool {
-        self.is_cfg() || matches!(self, Self::Phi | Self::Mem)
+        self.is_cfg() || matches!(self, Self::Phi | Self::Mem | Self::Arg { .. })
     }
 
     fn is_cfg(&self) -> bool {
@@ -780,7 +811,6 @@ impl Kind {
                 | Self::Entry
                 | Self::Then
                 | Self::Else
-                | Self::Arg { .. }
                 | Self::Call { .. }
                 | Self::If
                 | Self::Region
@@ -850,14 +880,24 @@ struct Loop {
 #[derive(Clone, Copy)]
 struct Variable {
     id: Ident,
-    value: Value,
+    ty: ty::Id,
+    value: Nid,
 }
 
 #[derive(Default, Clone)]
 struct Scope {
     vars: Vec<Variable>,
     loads: Vec<Nid>,
-    store: Option<Nid>,
+    store: Nid,
+}
+
+impl Scope {
+    pub fn iter_elems_mut(&mut self) -> impl Iterator<Item = (ty::Id, &mut Nid)> {
+        self.vars
+            .iter_mut()
+            .map(|v| (v.ty, &mut v.value))
+            .chain(core::iter::once((ty::Id::VOID, &mut self.store)))
+    }
 }
 
 #[derive(Default)]
@@ -943,7 +983,7 @@ impl Default for Regalloc {
     }
 }
 
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
 struct Value {
     ty: ty::Id,
     var: bool,
@@ -1025,8 +1065,13 @@ impl Codegen {
     }
 
     fn store_mem(&mut self, region: Nid, value: Nid) -> Nid {
+        if value == NEVER {
+            return NEVER;
+        }
+
         let mut vc = Vc::from([VOID, value, region]);
-        if let Some(str) = self.ci.scope.store {
+        self.ci.nodes.load_loop_store(&mut self.ci.scope.store, &mut self.ci.loops);
+        if let Some(str) = self.ci.scope.store.to_store() {
             self.ci.nodes.unlock(str);
             vc.push(str);
         }
@@ -1041,13 +1086,15 @@ impl Codegen {
         }
         let store = self.ci.nodes.new_node(self.tof(value), Kind::Stre, vc);
         self.ci.nodes.lock(store);
-        self.ci.scope.store = Some(store);
+        self.ci.scope.store = store;
         store
     }
 
     fn load_mem(&mut self, region: Nid, ty: ty::Id) -> Nid {
+        debug_assert_ne!(region, VOID);
         let mut vc = Vc::from([VOID, region]);
-        if let Some(str) = self.ci.scope.store {
+        self.ci.nodes.load_loop_store(&mut self.ci.scope.store, &mut self.ci.loops);
+        if let Some(str) = self.ci.scope.store.to_store() {
             vc.push(str);
         }
         let load = self.ci.nodes.new_node(ty, Kind::Load, vc);
@@ -1086,14 +1133,13 @@ impl Codegen {
                     return Value::NEVER;
                 };
 
-                self.ci.nodes.load_loop_value(
+                self.ci.nodes.load_loop_var(
                     index,
                     &mut self.ci.scope.vars[index].value,
                     &mut self.ci.loops,
                 );
-                debug_assert_ne!(self.ci.scope.vars[index].value.ty, ty::Id::VOID);
 
-                Some(Value::var(index).ty(self.ci.scope.vars[index].value.ty))
+                Some(Value::var(index).ty(self.ci.scope.vars[index].ty))
             }
             Expr::Number { value, .. } => Some(self.ci.nodes.new_node_lit(
                 ctx.ty.filter(|ty| ty.is_integer() || ty.is_pointer()).unwrap_or(ty::Id::INT),
@@ -1108,8 +1154,9 @@ impl Codegen {
                 };
 
                 let mut inps = Vc::from([self.ci.ctrl, value.id]);
-                for &m in self.ci.scope.store.iter() {
-                    inps.push(m);
+                self.ci.nodes.load_loop_store(&mut self.ci.scope.store, &mut self.ci.loops);
+                if let Some(str) = self.ci.scope.store.to_store() {
+                    inps.push(str);
                 }
 
                 self.ci.ctrl = self.ci.nodes.new_node(ty::Id::VOID, Kind::Return, inps);
@@ -1202,7 +1249,7 @@ impl Codegen {
             Expr::BinOp { left: &Expr::Ident { id, .. }, op: TokenKind::Decl, right } => {
                 let value = self.expr(right)?;
                 self.ci.nodes.lock(value.id);
-                self.ci.scope.vars.push(Variable { id, value });
+                self.ci.scope.vars.push(Variable { id, value: value.id, ty: value.ty });
                 Some(Value::VOID)
             }
             Expr::BinOp { left, op: TokenKind::Assign, right } => {
@@ -1214,8 +1261,8 @@ impl Codegen {
                 if dest.var {
                     self.ci.nodes.lock(value.id);
                     let var = &mut self.ci.scope.vars[(u16::MAX - dest.id) as usize];
-                    let prev = core::mem::replace(&mut var.value, value);
-                    self.ci.nodes.unlock_remove(prev.id);
+                    let prev = core::mem::replace(&mut var.value, value.id);
+                    self.ci.nodes.unlock_remove(prev);
                 } else if dest.ptr {
                     self.store_mem(dest.id, value.id);
                 } else {
@@ -1241,6 +1288,10 @@ impl Codegen {
                     Kind::CInt { value: self.tys.size_of(ty) as _ },
                     [VOID],
                 ))
+            }
+            Expr::Directive { name: "as", args: [ty, expr], .. } => {
+                let ctx = Ctx::default().with_ty(self.ty(ty));
+                self.expr_ctx(expr, ctx)
             }
             Expr::Call { func: &Expr::Ident { pos, id, .. }, args, .. } => {
                 self.ci.call_count += 1;
@@ -1294,7 +1345,7 @@ impl Codegen {
                     inps.push(value.id);
                 }
 
-                if let Some(str) = self.ci.scope.store {
+                if let Some(str) = self.ci.scope.store.to_store() {
                     inps.push(str);
                 }
                 for load in self.ci.scope.loads.drain(..) {
@@ -1316,6 +1367,59 @@ impl Codegen {
                 }
 
                 Some(Value::new(self.ci.ctrl).ty(sig.ret))
+            }
+            Expr::Tupl { pos, ty, fields, .. } => {
+                let Some(sty) = ty.map(|ty| self.ty(ty)).or(ctx.ty) else {
+                    self.report(
+                        pos,
+                        "the type of struct cannot be inferred from context, \
+                        use an explicit type instead: <type>.{ ... }",
+                    );
+                    return Value::NEVER;
+                };
+
+                let ty::Kind::Struct(s) = sty.expand() else {
+                    let inferred = if ty.is_some() { "" } else { "inferred " };
+                    self.report(
+                        pos,
+                        fa!(
+                            "the {inferred}type of the constructor is `{}`, \
+                            but thats not a struct",
+                            self.ty_display(sty)
+                        ),
+                    );
+                    return Value::NEVER;
+                };
+
+                // TODO: dont allocate
+                let mut offs = OffsetIter::new(s, &self.tys);
+                let mem = self.ci.nodes.new_node(sty, Kind::Stck, [VOID, MEM]);
+                for field in fields {
+                    let Some((ty, offset)) = offs.next_ty(&self.tys) else {
+                        self.report(field.pos(), "this init argumen overflows the field count");
+                        break;
+                    };
+
+                    let value = self.expr_ctx(field, Ctx::default().with_ty(ty))?;
+                    let mem = self.offset(mem, ty, offset);
+                    self.store_mem(mem, value.id);
+                }
+
+                let field_list = offs
+                    .into_iter(&self.tys)
+                    .map(|(f, ..)| self.tys.names.ident_str(f.name))
+                    .intersperse(", ")
+                    .collect::<String>();
+
+                if !field_list.is_empty() {
+                    self.report(
+                        pos,
+                        fa!("the struct initializer is missing {field_list} \
+                        (append them to the end of the constructor)"),
+                    );
+                }
+
+                Some(Value::ptr(mem).ty(sty))
             }
             Expr::Ctor { pos, ty, fields, .. } => {
                 let Some(sty) = ty.map(|ty| self.ty(ty)).or(ctx.ty) else {
@@ -1400,7 +1504,7 @@ impl Codegen {
 
                 self.ci.nodes.lock(self.ci.ctrl);
                 for var in self.ci.scope.vars.drain(base..) {
-                    self.ci.nodes.unlock_remove(var.value.id);
+                    self.ci.nodes.unlock_remove(var.value);
                 }
                 self.ci.nodes.unlock(self.ci.ctrl);
 
@@ -1415,8 +1519,8 @@ impl Codegen {
                     scope: self.ci.scope.clone(),
                 });
 
-                for var in &mut self.ci.scope.vars {
-                    var.value = Value::VOID;
+                for (_, var) in &mut self.ci.scope.iter_elems_mut() {
+                    *var = VOID;
                 }
                 self.ci.nodes.lock_scope(&self.ci.scope);
 
@@ -1461,65 +1565,49 @@ impl Codegen {
 
                 core::mem::swap(&mut self.ci.scope, &mut bres);
 
-                for ((dest_var, mut scope_var), loop_var) in
-                    self.ci.scope.vars.iter_mut().zip(scope.vars.drain(..)).zip(bres.vars.drain(..))
+                for (((_, dest_value), (_, &mut mut scope_value)), (_, &mut loop_value)) in self
+                    .ci
+                    .scope
+                    .iter_elems_mut()
+                    .zip(scope.iter_elems_mut())
+                    .zip(bres.iter_elems_mut())
                 {
-                    self.ci.nodes.unlock(loop_var.value.id);
+                    self.ci.nodes.unlock(loop_value);
 
-                    if loop_var.value.id != VOID {
-                        self.ci.nodes.unlock(scope_var.value.id);
-                        if loop_var.value.id != scope_var.value.id {
-                            scope_var.value.id = self.ci.nodes.modify_input(
-                                scope_var.value.id,
-                                2,
-                                loop_var.value.id,
-                            );
-                            self.ci.nodes.lock(scope_var.value.id);
+                    if loop_value != VOID {
+                        self.ci.nodes.unlock(scope_value);
+                        if loop_value != scope_value {
+                            scope_value = self.ci.nodes.modify_input(scope_value, 2, loop_value);
+                            self.ci.nodes.lock(scope_value);
                         } else {
-                            if dest_var.value.id == scope_var.value.id {
-                                self.ci.nodes.unlock(dest_var.value.id);
-                                dest_var.value.id = VOID;
-                                self.ci.nodes.lock(dest_var.value.id);
+                            if *dest_value == scope_value {
+                                self.ci.nodes.unlock(*dest_value);
+                                *dest_value = VOID;
+                                self.ci.nodes.lock(*dest_value);
                             }
-                            let phi = &self.ci.nodes[scope_var.value.id];
+                            let phi = &self.ci.nodes[scope_value];
                             debug_assert_eq!(phi.kind, Kind::Phi);
                             debug_assert_eq!(phi.inputs[2], VOID);
-                            debug_assert_eq!(phi.ty, scope_var.value.ty);
                             let prev = phi.inputs[1];
-                            self.ci.nodes.replace(scope_var.value.id, prev);
-                            scope_var.value.id = prev;
+                            self.ci.nodes.replace(scope_value, prev);
+                            scope_value = prev;
                             self.ci.nodes.lock(prev);
                         }
                     }
 
-                    if dest_var.value.id == VOID {
-                        self.ci.nodes.unlock(dest_var.value.id);
-                        dest_var.value = scope_var.value;
-                        self.ci.nodes.lock(dest_var.value.id);
+                    if *dest_value == VOID {
+                        self.ci.nodes.unlock(*dest_value);
+                        *dest_value = scope_value;
+                        self.ci.nodes.lock(*dest_value);
                     }
 
                     debug_assert!(
-                        self.ci.nodes[dest_var.value.id].kind != Kind::Phi
-                            || self.ci.nodes[dest_var.value.id].inputs[2] != 0
+                        self.ci.nodes[*dest_value].kind != Kind::Phi
+                            || self.ci.nodes[*dest_value].inputs[2] != 0
                     );
 
-                    self.ci.nodes.unlock_remove(scope_var.value.id);
+                    self.ci.nodes.unlock_remove(scope_value);
                 }
-
-                if bres.store != scope.store {
-                    let (to_store, from_store, prev) =
-                        (bres.store.unwrap(), scope.store.unwrap(), self.ci.scope.store.unwrap());
-                    self.ci.nodes.unlock_remove(prev);
-                    self.ci.scope.store = Some(
-                        self.ci
-                            .nodes
-                            .new_node(ty::Id::VOID, Kind::Phi, [node, from_store, to_store]),
-                    );
-                    self.ci.nodes.lock(self.ci.scope.store.unwrap());
-                }
-
-                self.ci.nodes.unlock_remove_scope(&scope);
-                self.ci.nodes.unlock_remove_scope(&bres);
 
                 self.ci.nodes.unlock(self.ci.ctrl);
 
@@ -1551,8 +1639,9 @@ impl Codegen {
                     }
                 }
 
+                self.ci.nodes.load_loop_store(&mut self.ci.scope.store, &mut self.ci.loops);
                 let orig_store = self.ci.scope.store;
-                if let Some(str) = orig_store {
+                if let Some(str) = orig_store.to_store() {
                     self.ci.nodes.lock(str);
                 }
                 let else_scope = self.ci.scope.clone();
@@ -1569,7 +1658,7 @@ impl Codegen {
                     self.ci.ctrl
                 };
 
-                if let Some(str) = orig_store {
+                if let Some(str) = orig_store.to_store() {
                     self.ci.nodes.unlock_remove(str);
                 }
 
@@ -1628,12 +1717,8 @@ impl Codegen {
     fn strip_var(&mut self, n: &mut Value) {
         if core::mem::take(&mut n.var) {
             let id = (u16::MAX - n.id) as usize;
-            self.ci.nodes.load_loop_value(
-                id,
-                &mut self.ci.scope.vars[id].value,
-                &mut self.ci.loops,
-            );
-            *n = self.ci.scope.vars[id].value;
+            self.ci.nodes.load_loop_var(id, &mut self.ci.scope.vars[id].value, &mut self.ci.loops);
+            n.id = self.ci.scope.vars[id].value;
         }
     }
 
@@ -1683,32 +1768,26 @@ impl Codegen {
         from: &mut Scope,
         drop_from: bool,
     ) {
-        for (i, (to_var, from_var)) in to.vars.iter_mut().zip(&mut from.vars).enumerate() {
-            if to_var.value.id != from_var.value.id {
-                nodes.load_loop_value(i, &mut from_var.value, loops);
-                nodes.load_loop_value(i, &mut to_var.value, loops);
-                if to_var.value.id != from_var.value.id {
-                    let ty = nodes[to_var.value.id].ty;
-                    debug_assert_eq!(ty, nodes[from_var.value.id].ty, "TODO: typecheck properly");
-
-                    let inps = [ctrl, from_var.value.id, to_var.value.id];
-                    nodes.unlock(to_var.value.id);
-                    to_var.value.id = nodes.new_node(ty, Kind::Phi, inps);
-                    nodes.lock(to_var.value.id);
+        for (i, ((ty, to_value), (_, from_value))) in
+            to.iter_elems_mut().zip(from.iter_elems_mut()).enumerate()
+        {
+            if to_value != from_value {
+                nodes.load_loop_var(i, from_value, loops);
+                nodes.load_loop_var(i, to_value, loops);
+                if to_value != from_value {
+                    let inps = [ctrl, *from_value, *to_value];
+                    nodes.unlock(*to_value);
+                    *to_value = nodes.new_node(ty, Kind::Phi, inps);
+                    nodes.lock(*to_value);
                 }
             }
         }
 
-        if to.store != from.store {
-            let (to_store, from_store) = (to.store.unwrap(), from.store.unwrap());
-            nodes.unlock(to_store);
-            to.store = Some(nodes.new_node(ty::Id::VOID, Kind::Phi, [ctrl, from_store, to_store]));
-            nodes.lock(to.store.unwrap());
+        for load in to.loads.drain(..) {
+            nodes.unlock_remove(load);
         }
-
-        to.loads.extend(&from.loads);
-        for &load in &from.loads {
-            nodes.lock(load);
+        for load in from.loads.drain(..) {
+            nodes.unlock_remove(load);
         }
 
         if drop_from {
@@ -1756,6 +1835,8 @@ impl Codegen {
         let mem = self.ci.nodes.new_node(ty::Id::VOID, Kind::Mem, [VOID]);
         debug_assert_eq!(mem, MEM);
         self.ci.nodes.lock(mem);
+        self.ci.nodes.lock(end);
+        self.ci.scope.store = end;
 
         let Expr::BinOp {
             left: Expr::Ident { .. },
@@ -1773,7 +1854,7 @@ impl Codegen {
             self.ci.nodes.lock(value);
             let sym = parser::find_symbol(&ast.symbols, arg.id);
             assert!(sym.flags & idfl::COMPTIME == 0, "TODO");
-            self.ci.scope.vars.push(Variable { id: arg.id, value: Value::new(value).ty(ty) });
+            self.ci.scope.vars.push(Variable { id: arg.id, value, ty });
         }
 
         let orig_vars = self.ci.scope.vars.clone();
@@ -1782,6 +1863,7 @@ impl Codegen {
             self.report(body.pos(), "expected all paths in the fucntion to return");
         }
 
+        self.ci.nodes.unlock(end);
         self.ci.nodes.unlock(end);
 
         self.ci.nodes.unlock_remove_scope(&core::mem::take(&mut self.ci.scope));
@@ -2207,16 +2289,13 @@ impl Codegen {
     #[track_caller]
     fn report(&self, pos: Pos, msg: impl core::fmt::Display) {
         let mut buf = self.errors.borrow_mut();
-        writeln!(buf, "{}", self.cfile().report(pos, msg)).unwrap();
+        write!(buf, "{}", self.cfile().report(pos, msg)).unwrap();
     }
 
     #[track_caller]
     fn report_unhandled_ast(&self, ast: &Expr, hint: &str) {
         log::debug!("{ast:#?}");
-        self.fatal_report(
-            ast.pos(),
-            fa!("compiler does not (yet) know how to handle ({hint}):\n{}", self.ast_display(ast)),
-        );
+        self.fatal_report(ast.pos(), fa!("compiler does not (yet) know how to handle ({hint})"));
     }
 
     fn cfile(&self) -> &parser::Ast {
@@ -2230,7 +2309,7 @@ impl Codegen {
 
     fn gcm(&mut self) {
         self.ci.nodes.visited.clear(self.ci.nodes.values.len());
-        push_up(&mut self.ci.nodes, NEVER);
+        push_up(&mut self.ci.nodes);
         // TODO: handle infinte loops
         self.ci.nodes.visited.clear(self.ci.nodes.values.len());
         push_down(&mut self.ci.nodes, VOID);
@@ -2586,8 +2665,8 @@ impl<'a> Function<'a> {
                     self.add_instr(nid, ops);
                 }
             }
-            Kind::Stre { .. } if node.inputs[2] == VOID => self.nodes.lock(nid),
-            Kind::Stre { .. } => {
+            Kind::Stre if node.inputs[2] == VOID => self.nodes.lock(nid),
+            Kind::Stre => {
                 let mut region = node.inputs[2];
                 if self.nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
                     && self.nodes.is_const(self.nodes[region].inputs[2])
@@ -2751,16 +2830,10 @@ fn loop_depth(target: Nid, nodes: &mut Nodes) -> LoopDepth {
             depth
         }
         Kind::Start | Kind::End => 1,
-        _ => unreachable!(),
+        u => unreachable!("{u:?}"),
     };
 
     nodes[target].loop_depth
-}
-
-fn better(nodes: &mut Nodes, is: Nid, then: Nid) -> bool {
-    loop_depth(is, nodes) < loop_depth(then, nodes)
-        || idepth(nodes, is) > idepth(nodes, then)
-        || nodes[then].kind == Kind::If
 }
 
 fn idepth(nodes: &mut Nodes, target: Nid) -> IDomDepth {
@@ -2779,103 +2852,147 @@ fn idepth(nodes: &mut Nodes, target: Nid) -> IDomDepth {
     nodes[target].depth
 }
 
-fn push_up(nodes: &mut Nodes, node: Nid) {
-    if !nodes.visited.set(node) {
-        return;
+fn push_up(nodes: &mut Nodes) {
+    fn collect_rpo(node: Nid, nodes: &mut Nodes, rpo: &mut Vec<Nid>) {
+        if !nodes.is_cfg(node) || !nodes.visited.set(node) {
+            return;
+        }
+
+        for i in 0..nodes[node].outputs.len() {
+            collect_rpo(nodes[node].outputs[i], nodes, rpo);
+        }
+        rpo.push(node);
     }
 
-    if nodes[node].kind.is_pinned() {
-        for i in 0..nodes[node].inputs.len() {
-            let i = nodes[node].inputs[i];
-            push_up(nodes, i);
+    fn push_up_impl(node: Nid, nodes: &mut Nodes) {
+        if !nodes.visited.set(node) {
+            return;
         }
-    } else {
-        let mut max = VOID;
+
         for i in 0..nodes[node].inputs.len() {
-            let i = nodes[node].inputs[i];
-            let is_call = matches!(nodes[i].kind, Kind::Call { .. });
-            if nodes.is_cfg(i) && !is_call {
-                continue;
-            }
-            push_up(nodes, i);
-            if idepth(nodes, i) > idepth(nodes, max) {
-                max = if is_call { i } else { idom(nodes, i) };
+            let inp = nodes[node].inputs[i];
+            if !nodes[inp].kind.is_pinned() {
+                push_up_impl(inp, nodes);
             }
         }
 
-        #[cfg(debug_assertions)]
-        {
-            nodes.check_dominance(node, max, false);
+        if nodes[node].kind.is_pinned() {
+            return;
         }
 
-        if max == VOID {
+        let mut deepest = VOID;
+        for i in 1..nodes[node].inputs.len() {
+            let inp = nodes[node].inputs[i];
+            if idepth(nodes, inp) > idepth(nodes, deepest) {
+                deepest = idom(nodes, inp);
+            }
+        }
+
+        if deepest == VOID {
             return;
         }
 
         let index = nodes[0].outputs.iter().position(|&p| p == node).unwrap();
         nodes[0].outputs.remove(index);
-        nodes[node].inputs[0] = max;
+        nodes[node].inputs[0] = deepest;
         debug_assert!(
-            !nodes[max].outputs.contains(&node) || matches!(nodes[max].kind, Kind::Call { .. }),
-            "{node} {:?} {max} {:?}",
+            !nodes[deepest].outputs.contains(&node)
+                || matches!(nodes[deepest].kind, Kind::Call { .. }),
+            "{node} {:?} {deepest} {:?}",
             nodes[node],
-            nodes[max]
+            nodes[deepest]
         );
-        nodes[max].outputs.push(node);
+        nodes[deepest].outputs.push(node);
+    }
+
+    let mut rpo = vec![];
+
+    collect_rpo(VOID, nodes, &mut rpo);
+
+    for node in rpo.into_iter().rev() {
+        loop_depth(node, nodes);
+        for i in 0..nodes[node].inputs.len() {
+            push_up_impl(nodes[node].inputs[i], nodes);
+        }
+
+        if matches!(nodes[node].kind, Kind::Loop | Kind::Region) {
+            for i in 0..nodes[node].outputs.len() {
+                let usage = nodes[node].outputs[i];
+                if nodes[usage].kind == Kind::Phi {
+                    push_up_impl(usage, nodes);
+                }
+            }
+        }
     }
 }
 
 fn push_down(nodes: &mut Nodes, node: Nid) {
+    fn is_forward_edge(usage: Nid, def: Nid, nodes: &mut Nodes) -> bool {
+        match nodes[usage].kind {
+            Kind::Phi => {
+                nodes[usage].inputs[2] != def || nodes[nodes[usage].inputs[0]].kind != Kind::Loop
+            }
+            Kind::Loop => nodes[usage].inputs[1] != def,
+            _ => true,
+        }
+    }
+
+    fn better(nodes: &mut Nodes, is: Nid, then: Nid) -> bool {
+        loop_depth(is, nodes) < loop_depth(then, nodes)
+            || idepth(nodes, is) > idepth(nodes, then)
+            || nodes[then].kind == Kind::If
+    }
+
     if !nodes.visited.set(node) {
         return;
     }
 
-    // TODO: handle memory nodes first
+    for usage in nodes[node].outputs.clone() {
+        if is_forward_edge(usage, node, nodes) {
+            push_down(nodes, usage);
+        }
+    }
 
     if nodes[node].kind.is_pinned() {
-        // TODO: use buffer to avoid allocation or better yet queue the location changes
-        for i in nodes[node].outputs.clone() {
-            push_down(nodes, i);
-        }
-    } else {
-        let mut min = None::<Nid>;
-        for i in 0..nodes[node].outputs.len() {
-            let i = nodes[node].outputs[i];
-            push_down(nodes, i);
-            let i = use_block(node, i, nodes);
-            min = min.map(|m| common_dom(i, m, nodes)).or(Some(i));
-        }
-        let mut min = min.unwrap();
-
-        debug_assert!(nodes.dominates(nodes[node].inputs[0], min));
-
-        let mut cursor = min;
-        loop {
-            if better(nodes, cursor, min) {
-                min = cursor;
-            }
-            if cursor == nodes[node].inputs[0] {
-                break;
-            }
-            cursor = idom(nodes, cursor);
-        }
-
-        if nodes[min].kind.ends_basic_block() {
-            min = idom(nodes, min);
-        }
-
-        #[cfg(debug_assertions)]
-        {
-            nodes.check_dominance(node, min, true);
-        }
-
-        let prev = nodes[node].inputs[0];
-        debug_assert!(idepth(nodes, min) >= idepth(nodes, prev));
-        let index = nodes[prev].outputs.iter().position(|&p| p == node).unwrap();
-        nodes[prev].outputs.remove(index);
-        nodes[node].inputs[0] = min;
-        nodes[min].outputs.push(node);
+        return;
     }
+
+    let mut min = None::<Nid>;
+    for i in 0..nodes[node].outputs.len() {
+        let usage = nodes[node].outputs[i];
+        let ub = use_block(node, usage, nodes);
+        min = min.map(|m| common_dom(ub, m, nodes)).or(Some(ub));
+    }
+    let mut min = min.unwrap();
+
+    debug_assert!(nodes.dominates(nodes[node].inputs[0], min));
+
+    let mut cursor = min;
+    loop {
+        if better(nodes, cursor, min) {
+            min = cursor;
+        }
+        if cursor == nodes[node].inputs[0] {
+            break;
+        }
+        cursor = idom(nodes, cursor);
+    }
+
+    if nodes[min].kind.ends_basic_block() {
+        min = idom(nodes, min);
+    }
+
+    #[cfg(debug_assertions)]
+    {
+        nodes.check_dominance(node, min, true);
+    }
+
+    let prev = nodes[node].inputs[0];
+    debug_assert!(idepth(nodes, min) >= idepth(nodes, prev));
+    let index = nodes[prev].outputs.iter().position(|&p| p == node).unwrap();
+    nodes[prev].outputs.remove(index);
+    nodes[node].inputs[0] = min;
+    nodes[min].outputs.push(node);
 }
 
 fn use_block(target: Nid, from: Nid, nodes: &mut Nodes) -> Nid {
@@ -2966,7 +3083,7 @@ mod tests {
         //generic_functions;
         //c_strings;
         //struct_patterns;
-        //arrays;
+        arrays;
         //struct_return_from_module_function;
         ////comptime_pointers;
         //sort_something_viredly;

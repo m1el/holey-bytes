@@ -452,6 +452,8 @@ mod ty {
 
     builtin_type! {
         UNDECLARED;
+        LEFT_UNREACHABLE;
+        RIGHT_UNREACHABLE;
         NEVER;
         VOID;
         TYPE;
@@ -464,8 +466,7 @@ mod ty {
         I16;
         I32;
         INT;
-        LEFT_UNREACHABLE;
-        RIGHT_UNREACHABLE;
+
     }
 
     macro_rules! type_kind {

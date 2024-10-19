@@ -210,7 +210,9 @@ impl<'a, 'b> Parser<'a, 'b> {
             );
         }
 
-        let index = self.ctx.idents.binary_search_by_key(&id, |s| s.ident).expect("fck up");
+        let Ok(index) = self.ctx.idents.binary_search_by_key(&id, |s| s.ident) else {
+            self.report(pos, "the identifier is rezerved for a builtin (proably)");
+        };
         if core::mem::replace(&mut self.ctx.idents[index].declared, true) {
             self.report(
                 pos,
