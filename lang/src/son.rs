@@ -990,6 +990,7 @@ impl ItemCtx {
 
     fn emit_body_code(&mut self, sig: Sig, tys: &Types) -> usize {
         let mut nodes = core::mem::take(&mut self.nodes);
+        nodes.visited.clear(nodes.values.len());
 
         let func = Function::new(&mut nodes, tys, sig);
         let mut ralloc = Regalloc::default(); // TODO: reuse
@@ -1165,7 +1166,7 @@ impl ItemCtx {
         saved_regs.len()
     }
 
-    fn emit_body(&mut self, id: ty::Func, tys: &mut Types, sig: Sig) {
+    fn emit_body(&mut self, tys: &mut Types, sig: Sig) {
         '_open_function: {
             self.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, 0));
             self.emit(instrs::st(reg::RET_ADDR, reg::STACK_PTR, 0, 0));
@@ -1184,7 +1185,6 @@ impl ItemCtx {
             self.nodes[MEM].outputs = mems;
         }
 
-        self.nodes.visited.clear(self.nodes.values.len());
         let saved = self.emit_body_code(sig, tys);
 
         if let Some(last_ret) = self.ret_relocs.last()
@@ -1237,6 +1237,7 @@ impl ItemCtx {
         self.relocs.iter_mut().for_each(|r| r.reloc.offset -= stripped_prelude_size as u32);
         self.emit(instrs::jala(reg::ZERO, reg::RET_ADDR, 0));
 
+        let ty::Kind::Func(id) = self.id.expand() else { unreachable!() };
         tys.ins.funcs[id as usize].code.append(&mut self.code);
         tys.ins.funcs[id as usize].relocs.append(&mut self.relocs);
     }
@@ -1266,6 +1267,32 @@ impl Ctx {
 #[derive(Default)]
 struct Pool {
     cis: Vec<ItemCtx>,
+    used_cis: usize,
+}
+
+impl Pool {
+    pub fn push_ci(
+        &mut self,
+        target: &mut ItemCtx,
+        file: FileId,
+        id: ty::Id,
+        ret: Option<ty::Id>,
+        task_base: usize,
+    ) {
+        if let Some(slot) = self.cis.get_mut(self.used_cis) {
+            core::mem::swap(slot, target);
+        } else {
+            self.cis.push(ItemCtx::default());
+            core::mem::swap(self.cis.last_mut().unwrap(), target);
+        }
+        target.init(file, id, ret, task_base);
+        self.used_cis += 1;
+    }
+
+    pub fn pop_ci(&mut self, target: &mut ItemCtx) {
+        self.used_cis -= 1;
+        core::mem::swap(&mut self.cis[self.used_cis], target);
+    }
 }
 
 struct Regalloc {
@@ -2227,22 +2254,15 @@ impl<'a> Codegen<'a> {
 
     fn emit_func(&mut self, FTask { file, id }: FTask) {
         let func = &mut self.tys.ins.funcs[id as usize];
-        debug_assert!(func.file == file);
+        debug_assert_eq!(func.file, file);
         func.offset = u32::MAX - 1;
         let sig = func.sig.expect("to emmit only concrete functions");
         let ast = &self.files[file as usize];
         let expr = func.expr.get(ast).unwrap();
 
-        let mut prev_ci = self.pool.cis.pop().unwrap_or_default();
-        prev_ci.init(file, ty::Kind::Func(id).compress(), Some(sig.ret), 0);
-        core::mem::swap(&mut self.ci, &mut prev_ci);
+        self.pool.push_ci(&mut self.ci, file, ty::Kind::Func(id).compress(), Some(sig.ret), 0);
 
-        let Expr::BinOp {
-            left: Expr::Ident { .. },
-            op: TokenKind::Decl,
-            right: &Expr::Closure { body, args, .. },
-        } = expr
-        else {
+        let Expr::BinOp { right: &Expr::Closure { body, args, .. }, .. } = expr else {
             unreachable!("{}", self.ast_display(expr))
         };
 
@@ -2257,7 +2277,11 @@ impl<'a> Codegen<'a> {
         }
 
         if self.expr(body).is_some() && self.tys.size_of(sig.ret) != 0 {
-            self.report(body.pos(), "expected all paths in the fucntion to return");
+            self.report(
+                body.pos(),
+                "expected all paths in the fucntion to return \
+                or the return type to be zero sized",
+            );
         }
 
         self.ci.finalize();
@@ -2271,10 +2295,10 @@ impl<'a> Codegen<'a> {
 
             self.graphviz();
 
-            self.ci.emit_body(id, &mut self.tys, sig);
+            self.ci.emit_body(&mut self.tys, sig);
         }
 
-        self.pool.cis.push(core::mem::replace(&mut self.ci, prev_ci));
+        self.pool.pop_ci(&mut self.ci);
     }
 
     fn ty(&mut self, expr: &Expr) -> ty::Id {

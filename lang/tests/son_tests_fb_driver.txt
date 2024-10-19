@@ -42,8 +42,8 @@ main:
     ADDI64 r254, r254, 64d
     JALA r0, r31, 0a
 set_pixel:
-    MUL64 r8, r4, r3
-    ADD64 r1, r8, r2
+    MUL64 r7, r3, r4
+    ADD64 r1, r7, r2
     JALA r0, r31, 0a
 x86_fb_ptr:
     LI64 r1, 100d
