@@ -1422,6 +1422,16 @@ impl TypeParser for Codegen<'_> {
         &mut self.tys
     }
 
+    #[expect(unused)]
+    fn eval_const(&mut self, file: FileId, expr: &Expr, ty: ty::Id) -> u64 {
+        todo!()
+    }
+
+    #[expect(unused)]
+    fn infer_type(&mut self, expr: &Expr) -> ty::Id {
+        todo!()
+    }
+
     fn on_reuse(&mut self, existing: ty::Id) {
         if let ty::Kind::Func(id) = existing.expand()
             && let func = &mut self.tys.ins.funcs[id as usize]
@@ -1434,94 +1444,81 @@ impl TypeParser for Codegen<'_> {
         }
     }
 
-    #[expect(unused)]
-    fn eval_ty(
-        &mut self,
-        file: FileId,
-        name: Option<Ident>,
-        expr: &Expr,
-        files: &[parser::Ast],
-    ) -> ty::Id {
-        let sym = match expr {
-            right if let Some(name) = name => {
-                let gid = self.tys.ins.globals.len() as ty::Global;
-                self.tys.ins.globals.push(Global { file, name, ..Default::default() });
+    fn eval_global(&mut self, file: FileId, name: Ident, expr: &Expr) -> ty::Id {
+        let gid = self.tys.ins.globals.len() as ty::Global;
+        self.tys.ins.globals.push(Global { file, name, ..Default::default() });
 
-                let ty = ty::Kind::Global(gid);
-                self.pool.push_ci(file, None, self.tasks.len(), &mut self.ci);
+        let ty = ty::Kind::Global(gid);
+        self.pool.push_ci(file, None, self.tasks.len(), &mut self.ci);
 
-                let ret = Expr::Return { pos: right.pos(), val: Some(right) };
-                self.expr(&ret);
+        let ret = Expr::Return { pos: expr.pos(), val: Some(expr) };
+        self.expr(&ret);
 
-                self.ci.finalize();
+        self.ci.finalize();
 
-                let ret = self.ci.ret.expect("for return type to be infered");
-                if self.errors.borrow().is_empty() {
-                    self.ci.emit_body(&mut self.tys, self.files, Sig { args: Tuple::empty(), ret });
-                    self.ci.code.truncate(self.ci.code.len() - instrs::jala(0, 0, 0).0);
-                    self.ci.emit(instrs::tx());
+        let ret = self.ci.ret.expect("for return type to be infered");
+        if self.errors.borrow().is_empty() {
+            self.ci.emit_body(&mut self.tys, self.files, Sig { args: Tuple::empty(), ret });
+            self.ci.code.truncate(self.ci.code.len() - instrs::jala(0, 0, 0).0);
+            self.ci.emit(instrs::tx());
 
-                    let func = Func {
-                        file,
-                        name,
-                        expr: ExprRef::new(expr),
-                        relocs: core::mem::take(&mut self.ci.relocs),
-                        code: core::mem::take(&mut self.ci.code),
-                        ..Default::default()
-                    };
-                    self.pool.pop_ci(&mut self.ci);
-                    self.complete_call_graph();
+            let func = Func {
+                file,
+                name,
+                expr: ExprRef::new(expr),
+                relocs: core::mem::take(&mut self.ci.relocs),
+                code: core::mem::take(&mut self.ci.code),
+                ..Default::default()
+            };
+            self.pool.pop_ci(&mut self.ci);
+            self.complete_call_graph();
 
-                    let mut mem = vec![0u8; self.tys.size_of(ret) as usize];
+            let mut mem = vec![0u8; self.tys.size_of(ret) as usize];
 
-                    // TODO: return them back
-                    let fuc = self.tys.ins.funcs.len() as ty::Func;
-                    self.tys.ins.funcs.push(func);
+            // TODO: return them back
+            let fuc = self.tys.ins.funcs.len() as ty::Func;
+            self.tys.ins.funcs.push(func);
 
-                    self.tys.dump_reachable(fuc, &mut self.ct.code);
+            self.tys.dump_reachable(fuc, &mut self.ct.code);
 
-                    #[cfg(debug_assertions)]
-                    {
-                        let mut vc = String::new();
-                        if let Err(e) = self.tys.disasm(&self.ct.code, self.files, &mut vc, |_| {})
-                        {
-                            panic!("{e} {}", vc);
-                        } else {
-                            log::trace!("{}", vc);
-                        }
-                    }
-
-                    self.ct.vm.write_reg(reg::RET, mem.as_mut_ptr() as u64);
-                    let prev_pc = self.ct.push_pc(self.tys.ins.funcs[fuc as usize].offset);
-                    loop {
-                        match self.ct.vm.run().expect("TODO") {
-                            hbvm::VmRunOk::End => break,
-                            hbvm::VmRunOk::Timer => todo!(),
-                            hbvm::VmRunOk::Ecall => todo!(),
-                            hbvm::VmRunOk::Breakpoint => todo!(),
-                        }
-                    }
-                    self.ct.pop_pc(prev_pc);
-
-                    match mem.len() {
-                        0 => unreachable!(),
-                        len @ 1..=8 => mem
-                            .copy_from_slice(&self.ct.vm.read_reg(reg::RET).0.to_ne_bytes()[..len]),
-                        9..=16 => todo!(),
-                        _ => {}
-                    }
-
-                    self.tys.ins.globals[gid as usize].data = mem;
+            #[cfg(debug_assertions)]
+            {
+                let mut vc = String::new();
+                if let Err(e) = self.tys.disasm(&self.ct.code, self.files, &mut vc, |_| {}) {
+                    panic!("{e} {}", vc);
                 } else {
-                    self.pool.pop_ci(&mut self.ci);
+                    log::trace!("{}", vc);
                 }
-                self.tys.ins.globals[gid as usize].ty = ret;
-
-                ty
             }
-            e => self.report_unhandled_ast(expr, "type"),
-        };
-        sym.compress()
+
+            self.ct.vm.write_reg(reg::RET, mem.as_mut_ptr() as u64);
+            let prev_pc = self.ct.push_pc(self.tys.ins.funcs[fuc as usize].offset);
+            loop {
+                match self.ct.vm.run().expect("TODO") {
+                    hbvm::VmRunOk::End => break,
+                    hbvm::VmRunOk::Timer => todo!(),
+                    hbvm::VmRunOk::Ecall => todo!(),
+                    hbvm::VmRunOk::Breakpoint => todo!(),
+                }
+            }
+            self.ct.pop_pc(prev_pc);
+
+            match mem.len() {
+                0 => unreachable!(),
+                len @ 1..=8 => {
+                    mem.copy_from_slice(&self.ct.vm.read_reg(reg::RET).0.to_ne_bytes()[..len])
+                }
+                9..=16 => todo!(),
+                _ => {}
+            }
+
+            self.tys.ins.globals[gid as usize].data = mem;
+        } else {
+            self.pool.pop_ci(&mut self.ci);
+        }
+        self.tys.ins.globals[gid as usize].ty = ret;
+
+        ty.compress()
     }
 
     fn report(&self, pos: Pos, msg: impl Display) -> ty::Id {

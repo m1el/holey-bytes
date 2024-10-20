@@ -708,6 +708,44 @@ impl TypeParser for Codegen {
         &mut self.tys
     }
 
+    fn infer_type(&mut self, expr: &Expr) -> ty::Id {
+        let mut ci = ItemCtx {
+            file: self.ci.file,
+            ret: self.ci.ret,
+            task_base: self.ci.task_base,
+            ..self.pool.cis.pop().unwrap_or_default()
+        };
+        ci.loops.extend(self.ci.loops.iter());
+        ci.vars.extend(self.ci.vars.iter().map(|v| Variable {
+            id: v.id,
+            value: Value { ty: v.value.ty, loc: v.value.loc.as_ref() },
+        }));
+        ci.stack_relocs.extend(self.ci.stack_relocs.iter());
+        ci.ret_relocs.extend(self.ci.ret_relocs.iter());
+        ci.loop_relocs.extend(self.ci.loop_relocs.iter());
+        ci.regs.init();
+
+        core::mem::swap(&mut self.ci, &mut ci);
+        let value = self.expr(expr).unwrap();
+        self.ci.free_loc(value.loc);
+        core::mem::swap(&mut self.ci, &mut ci);
+
+        ci.loops.clear();
+        ci.vars.clear();
+        ci.stack_relocs.clear();
+        ci.ret_relocs.clear();
+        ci.loop_relocs.clear();
+        ci.code.clear();
+        ci.relocs.clear();
+        self.pool.cis.push(ci);
+
+        value.ty
+    }
+
+    fn eval_const(&mut self, file: FileId, expr: &Expr, ty: ty::Id) -> u64 {
+        self.eval_const_low(file, expr, Some(ty)).0
+    }
+
     fn on_reuse(&mut self, existing: ty::Id) {
         if let ty::Kind::Func(id) = existing.expand()
             && let func = &mut self.tys.ins.funcs[id as usize]
@@ -720,39 +758,16 @@ impl TypeParser for Codegen {
         }
     }
 
-    fn eval_ty(
-        &mut self,
-        file: FileId,
-        name: Option<Ident>,
-        expr: &Expr,
-        _: &[parser::Ast],
-    ) -> ty::Id {
-        let prev_file = core::mem::replace(&mut self.ci.file, file);
-        let sym = match *expr {
-            Expr::Slice { size, item, .. } => {
-                let ty = self.ty(item);
-                let len = size.map_or(ArrayLen::MAX, |expr| {
-                    self.eval_const(self.ci.file, expr, ty::U32) as _
-                });
-                self.tys.make_array(ty, len).expand()
-            }
-            Expr::Directive { name: "TypeOf", args: [expr], .. } => self.infer_type(expr).expand(),
-            _ if let Some(name) = name => {
-                let gid = self.tys.ins.globals.len() as ty::Global;
-                self.tys.ins.globals.push(Global { file, name, ..Default::default() });
+    fn eval_global(&mut self, file: FileId, name: Ident, expr: &Expr) -> ty::Id {
+        let gid = self.tys.ins.globals.len() as ty::Global;
+        self.tys.ins.globals.push(Global { file, name, ..Default::default() });
 
-                let ci = ItemCtx { file, ..self.pool.cis.pop().unwrap_or_default() };
+        let ci = ItemCtx { file, ..self.pool.cis.pop().unwrap_or_default() };
 
-                self.tys.ins.globals[gid as usize] = self
-                    .ct_eval(ci, |s, _| Ok::<_, !>(s.generate_global(expr, file, name)))
-                    .into_ok();
+        self.tys.ins.globals[gid as usize] =
+            self.ct_eval(ci, |s, _| Ok::<_, !>(s.generate_global(expr, file, name))).into_ok();
 
-                ty::Kind::Global(gid)
-            }
-            _ => ty::Id::from(self.eval_const(file, expr, ty::Id::TYPE)).expand(),
-        };
-        self.ci.file = prev_file;
-        sym.compress()
+        ty::Kind::Global(gid).compress()
     }
 
     fn report(&self, pos: Pos, msg: impl Display) -> ty::Id {
@@ -882,7 +897,7 @@ impl Codegen {
             E::Slice { size, item, .. } => {
                 let ty = self.ty(item);
                 let len = size.map_or(ArrayLen::MAX, |expr| {
-                    self.eval_const(self.ci.file, expr, ty::U32) as _
+                    self.eval_const(self.ci.file, expr, ty::Id::U32) as _
                 });
                 Some(Value::ty(self.tys.make_array(ty, len)))
             }
@@ -1851,45 +1866,6 @@ impl Codegen {
 
     fn has_ct(&self, expr: &Expr) -> bool {
         expr.has_ct(&self.cfile().symbols)
-    }
-
-    fn infer_type(&mut self, expr: &Expr) -> ty::Id {
-        // FIXME: very inneficient
-        let mut ci = ItemCtx {
-            file: self.ci.file,
-            ret: self.ci.ret,
-            task_base: self.ci.task_base,
-            ..self.pool.cis.pop().unwrap_or_default()
-        };
-        ci.loops.extend(self.ci.loops.iter());
-        ci.vars.extend(self.ci.vars.iter().map(|v| Variable {
-            id: v.id,
-            value: Value { ty: v.value.ty, loc: v.value.loc.as_ref() },
-        }));
-        ci.stack_relocs.extend(self.ci.stack_relocs.iter());
-        ci.ret_relocs.extend(self.ci.ret_relocs.iter());
-        ci.loop_relocs.extend(self.ci.loop_relocs.iter());
-        ci.regs.init();
-
-        core::mem::swap(&mut self.ci, &mut ci);
-        let value = self.expr(expr).unwrap();
-        self.ci.free_loc(value.loc);
-        core::mem::swap(&mut self.ci, &mut ci);
-
-        ci.loops.clear();
-        ci.vars.clear();
-        ci.stack_relocs.clear();
-        ci.ret_relocs.clear();
-        ci.loop_relocs.clear();
-        ci.code.clear();
-        ci.relocs.clear();
-        self.pool.cis.push(ci);
-
-        value.ty
-    }
-
-    fn eval_const(&mut self, file: FileId, expr: &Expr, ty: impl Into<ty::Id>) -> u64 {
-        self.eval_const_low(file, expr, Some(ty.into())).0
     }
 
     fn eval_const_low(

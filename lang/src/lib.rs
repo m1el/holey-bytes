@@ -844,14 +844,10 @@ trait TypeParser {
     fn tys(&mut self) -> &mut Types;
     fn on_reuse(&mut self, existing: ty::Id);
     fn find_local_ty(&mut self, name: Ident) -> Option<ty::Id>;
+    fn eval_const(&mut self, file: FileId, expr: &Expr, ty: ty::Id) -> u64;
+    fn eval_global(&mut self, file: FileId, name: Ident, expr: &Expr) -> ty::Id;
+    fn infer_type(&mut self, expr: &Expr) -> ty::Id;
     fn report(&self, pos: Pos, msg: impl Display) -> ty::Id;
-    fn eval_ty(
-        &mut self,
-        file: FileId,
-        name: Option<Ident>,
-        expr: &Expr,
-        files: &[parser::Ast],
-    ) -> ty::Id;
 
     fn find_type(
         &mut self,
@@ -943,14 +939,13 @@ trait TypeParser {
             }
             Expr::Ident { id, .. } if ident::is_null(id) => id.into(),
             Expr::Ident { id, pos, .. } => self.find_type(pos, file, Ok(id), files),
-            Expr::Field { target, pos, name } => {
-                let ty::Kind::Module(file) = self.parse_ty(file, target, None, files).expand()
-                else {
-                    return self.eval_ty(file, None, expr, files);
-                };
-
+            Expr::Field { target, pos, name }
+                if let ty::Kind::Module(file) =
+                    self.parse_ty(file, target, None, files).expand() =>
+            {
                 self.find_type(pos, file, Err(name), files)
             }
+            Expr::Directive { name: "TypeOf", args: [expr], .. } => self.infer_type(expr),
             Expr::Slice { size: None, item, .. } => {
                 let ty = self.parse_ty(file, item, None, files);
                 self.tys().make_array(ty, ArrayLen::MAX)
@@ -958,6 +953,12 @@ trait TypeParser {
             Expr::Slice { size: Some(&Expr::Number { value, .. }), item, .. } => {
                 let ty = self.parse_ty(file, item, None, files);
                 self.tys().make_array(ty, value as _)
+            }
+            Expr::Slice { size, item, .. } => {
+                let ty = self.parse_ty(file, item, None, files);
+                let len = size
+                    .map_or(ArrayLen::MAX, |expr| self.eval_const(file, expr, ty::Id::U32) as _);
+                self.tys().make_array(ty, len)
             }
             Expr::Struct { pos, fields, packed, .. } => {
                 let sym = SymKey::Struct(file, pos);
@@ -1021,7 +1022,8 @@ trait TypeParser {
 
                 ty::Kind::Func(id).compress()
             }
-            _ => self.eval_ty(file, name, expr, files),
+            _ if let Some(name) = name => self.eval_global(file, name, expr),
+            _ => ty::Id::from(self.eval_const(file, expr, ty::Id::TYPE)),
         }
     }
 }
