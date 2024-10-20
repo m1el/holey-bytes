@@ -1,33 +1,35 @@
 main:
-    ADDI64 r254, r254, -88d
-    ST r31, r254, 40a, 48h
+    ADDI64 r254, r254, -120d
+    ST r31, r254, 64a, 56h
     LI64 r32, 3d
     LI64 r33, 1d
     LI64 r34, 4d
     ADDI64 r35, r254, 0d
-    ST r34, r254, 0a, 8h
-    ST r33, r254, 8a, 8h
-    ADDI64 r2, r254, 16d
-    BMC r254, r2, 16h
-    ST r32, r254, 32a, 8h
+    ADDI64 r36, r254, 24d
+    ST r34, r254, 24a, 8h
+    ST r33, r254, 32a, 8h
+    ADDI64 r2, r254, 40d
+    BMC r36, r2, 16h
+    ST r32, r254, 56a, 8h
+    CP r1, r35
     JAL r31, r0, :odher_pass
-    LD r36, r1, 16a, 8h
-    JNE r36, r32, :0
-    CP r2, r1
+    LD r37, r254, 16a, 8h
+    JNE r37, r32, :0
+    CP r2, r35
     JAL r31, r0, :pass
     JMP :1
  0: LI64 r1, 0d
- 1: LD r31, r254, 40a, 48h
-    ADDI64 r254, r254, 88d
+ 1: LD r31, r254, 64a, 56h
+    ADDI64 r254, r254, 120d
     JALA r0, r31, 0a
 odher_pass:
-    CP r1, r2
+    BMC r2, r1, 24h
     JALA r0, r31, 0a
 pass:
     LD r4, r2, 8a, 8h
     LD r5, r2, 0a, 8h
     SUB64 r1, r5, r4
     JALA r0, r31, 0a
-code size: 268
+code size: 284
 ret: 3
 status: Ok(())
