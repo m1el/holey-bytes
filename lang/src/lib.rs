@@ -247,6 +247,7 @@ mod ty {
             ident,
             lexer::TokenKind,
             parser::{self, Pos},
+            Size,
         },
         core::{num::NonZeroU32, ops::Range},
     };
@@ -380,6 +381,19 @@ mod ty {
         #[allow(unused)]
         pub fn is_struct(&self) -> bool {
             matches!(self.expand(), Kind::Struct(_))
+        }
+
+        pub(crate) fn simple_size(&self) -> Option<Size> {
+            Some(match self.expand() {
+                Kind::Ptr(_) => 8,
+                Kind::Builtin(VOID) => 0,
+                Kind::Builtin(NEVER) => 0,
+                Kind::Builtin(INT | UINT) => 8,
+                Kind::Builtin(I32 | U32 | TYPE) => 4,
+                Kind::Builtin(I16 | U16) => 2,
+                Kind::Builtin(I8 | U8 | BOOL) => 1,
+                _ => return None,
+            })
         }
     }
 
@@ -1244,13 +1258,6 @@ impl Types {
 
     fn size_of(&self, ty: ty::Id) -> Size {
         match ty.expand() {
-            ty::Kind::Ptr(_) => 8,
-            ty::Kind::Builtin(ty::VOID) => 0,
-            ty::Kind::Builtin(ty::NEVER) => 0,
-            ty::Kind::Builtin(ty::INT | ty::UINT) => 8,
-            ty::Kind::Builtin(ty::I32 | ty::U32 | ty::TYPE) => 4,
-            ty::Kind::Builtin(ty::I16 | ty::U16) => 2,
-            ty::Kind::Builtin(ty::I8 | ty::U8 | ty::BOOL) => 1,
             ty::Kind::Slice(arr) => {
                 let arr = &self.ins.slices[arr as usize];
                 match arr.len {
@@ -1269,6 +1276,7 @@ impl Types {
                 self.ins.structs[stru as usize].size.set(oiter.offset);
                 oiter.offset
             }
+            _ if let Some(size) = ty.simple_size() => size,
             ty => unimplemented!("size_of: {:?}", ty),
         }
     }

@@ -389,6 +389,11 @@ impl Nodes {
                     return Some(self[self[target].inputs[2]].inputs[1]);
                 }
             }
+            K::Extend => {
+                if self[target].ty.simple_size() == self[self[target].inputs[1]].ty.simple_size() {
+                    return Some(self[target].inputs[1]);
+                }
+            }
             _ => {}
         }
 
@@ -1094,9 +1099,22 @@ impl ItemCtx {
                         if let Kind::BinOp { op } = fuc.nodes[cond].kind
                             && let Some((op, swapped)) = op.cond_op(node.ty.is_signed())
                         {
+                            let &[lhs, rhs] = allocs else { unreachable!() };
+                            let &[_, lhsn, rhsn] = fuc.nodes[cond].inputs.as_slice() else {
+                                unreachable!()
+                            };
+                            let lhsn_size = fuc.nodes[lhsn].ty.simple_size().unwrap() as u64;
+                            if lhsn_size < 8 {
+                                let mask = (1u64 << (lhsn_size * 8)) - 1;
+                                self.emit(instrs::andi(atr(lhs), atr(lhs), mask));
+                            }
+                            let rhsn_size = fuc.nodes[rhsn].ty.simple_size().unwrap() as u64;
+                            if rhsn_size < 8 {
+                                let mask = (1u64 << (rhsn_size * 8)) - 1;
+                                self.emit(instrs::andi(atr(rhs), atr(rhs), mask));
+                            }
                             let rel = Reloc::new(self.code.len(), 3, 2);
                             self.jump_relocs.push((node.outputs[!swapped as usize], rel));
-                            let &[lhs, rhs] = allocs else { unreachable!() };
                             self.emit(op(atr(lhs), atr(rhs), 0));
                         } else {
                             todo!()
@@ -1656,7 +1674,7 @@ impl<'a> Codegen<'a> {
                 }
             }
             Expr::Number { value, .. } => Some(self.ci.nodes.new_node_lit(
-                ctx.ty.filter(|ty| ty.is_integer() || ty.is_pointer()).unwrap_or(ty::Id::INT),
+                ctx.ty.filter(|ty| ty.is_integer()).unwrap_or(ty::Id::INT),
                 Kind::CInt { value },
                 [VOID],
             )),
@@ -2560,13 +2578,36 @@ impl<'a> Codegen<'a> {
     #[track_caller]
     fn binop_ty(&mut self, pos: Pos, lhs: &mut Value, rhs: &mut Value, op: TokenKind) -> ty::Id {
         if let Some(upcasted) = lhs.ty.try_upcast(rhs.ty, ty::TyCheck::BinOp) {
-            if lhs.ty != upcasted {
-                lhs.ty = upcasted;
-                lhs.id = self.ci.nodes.new_node(upcasted, Kind::Extend, [VOID, lhs.id]);
+            log::info!(
+                "{} {} {}",
+                self.ty_display(lhs.ty),
+                self.ty_display(rhs.ty),
+                self.ty_display(upcasted)
+            );
+            let to_correct = if lhs.ty != upcasted {
+                Some(lhs)
             } else if rhs.ty != upcasted {
-                rhs.ty = upcasted;
-                rhs.id = self.ci.nodes.new_node(upcasted, Kind::Extend, [VOID, rhs.id]);
+                Some(rhs)
+            } else {
+                None
+            };
+
+            if let Some(oper) = to_correct {
+                oper.ty = upcasted;
+                oper.id = self.ci.nodes.new_node(upcasted, Kind::Extend, [VOID, oper.id]);
+                if matches!(op, TokenKind::Add | TokenKind::Sub)
+                    && let Some(elem) = self.tys.base_of(upcasted)
+                {
+                    let value = self.tys.size_of(elem) as i64;
+                    let cnst =
+                        self.ci.nodes.new_node_nop(ty::Id::INT, Kind::CInt { value }, [VOID]);
+                    oper.id =
+                        self.ci.nodes.new_node(upcasted, Kind::BinOp { op: TokenKind::Mul }, [
+                            VOID, oper.id, cnst,
+                        ]);
+                }
             }
+
             upcasted
         } else {
             let ty = self.ty_display(lhs.ty);
@@ -2588,6 +2629,8 @@ impl<'a> Codegen<'a> {
             && upcasted == expected
         {
             if src.ty != upcasted {
+                debug_assert!(src.ty.is_integer());
+                debug_assert!(upcasted.is_integer());
                 src.ty = upcasted;
                 src.id = self.ci.nodes.new_node(upcasted, Kind::Extend, [VOID, src.id]);
             }
@@ -3437,7 +3480,7 @@ mod tests {
         // Purely Testing Examples;
         wide_ret;
         comptime_min_reg_leak;
-        //different_types;
+        different_types;
         //struct_return_from_module_function;
         sort_something_viredly;
         //structs_in_registers;

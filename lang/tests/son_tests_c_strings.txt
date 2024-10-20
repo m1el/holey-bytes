@@ -14,12 +14,14 @@ str_len:
     LI64 r6, 0d
     LI64 r1, 0d
  2: LD r8, r2, 0a, 1h
+    ANDI r8, r8, 255d
+    ANDI r6, r6, 255d
     JNE r8, r6, :0
     JMP :1
  0: ADDI64 r2, r2, 1d
     ADDI64 r1, r1, 1d
     JMP :2
  1: JALA r0, r31, 0a
-code size: 201
+code size: 223
 ret: 16
 status: Ok(())
