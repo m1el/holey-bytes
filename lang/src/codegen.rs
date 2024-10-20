@@ -1159,10 +1159,6 @@ impl Codegen {
             E::String { pos, literal } => {
                 let literal = &literal[1..literal.len() - 1];
 
-                if !literal.ends_with("\\0") {
-                    self.report(pos, "string literal must end with null byte (for now)");
-                }
-
                 let report = |bytes: &core::str::Bytes, message: &str| {
                     self.report(pos + (literal.len() - bytes.len()) as u32 - 1, message)
                 };

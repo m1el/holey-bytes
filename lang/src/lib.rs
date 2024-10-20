@@ -1762,6 +1762,10 @@ fn endoce_string(
         str.push(b);
     }
 
+    if str.last() != Some(&0) {
+        report(&bytes, "string literal must end with null byte (for now)");
+    }
+
     Some(())
 }
 

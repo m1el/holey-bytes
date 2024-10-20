@@ -14,12 +14,13 @@ main:
     ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
 outl:
-    ADDI64 r254, r254, -16d
-    ST r31, r254, 0a, 16h
+    ADDI64 r254, r254, -24d
+    ST r31, r254, 0a, 24h
     LRA r32, r0, :"whahaha\0"
-    LD r31, r254, 0a, 16h
-    ADDI64 r254, r254, 16d
+    LI64 r33, 0d
+    LD r31, r254, 0a, 24h
+    ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
-code size: 229
+code size: 239
 ret: 0
 status: Ok(())

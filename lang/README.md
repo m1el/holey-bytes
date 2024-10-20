@@ -634,7 +634,7 @@ Foo := struct {x: int, y: u32, z: u32}
 #### sort_something_viredly
 ```hb
 main := fn(): int {
-	return sqrt(1)
+	return sqrt(100)
 }
 
 sqrt := fn(x: int): int {

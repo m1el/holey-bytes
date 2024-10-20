@@ -140,7 +140,7 @@ impl Nodes {
             Node { ralloc_backref: u16::MAX, inputs: inps.into(), kind, ty, ..Default::default() };
 
         let mut lookup_meta = None;
-        if !node.is_gvnd() {
+        if !node.is_not_gvnd() {
             let (raw_entry, hash) = self.lookup.entry(node.key(), &self.values);
 
             let entry = match raw_entry {
@@ -170,7 +170,7 @@ impl Nodes {
     }
 
     fn remove_node_lookup(&mut self, target: Nid) {
-        if !self[target].is_gvnd() {
+        if !self[target].is_not_gvnd() {
             self.lookup.remove(&target, &self.values).unwrap();
         }
     }
@@ -482,6 +482,7 @@ impl Nodes {
             Kind::Load => write!(out, "load:      "),
             Kind::Stre => write!(out, "stre:      "),
             Kind::Mem => write!(out, " mem:      "),
+            Kind::Idk => write!(out, " idk:      "),
         }?;
 
         if self[node].kind != Kind::Loop && self[node].kind != Kind::Region {
@@ -774,9 +775,7 @@ impl Nodes {
     }
 
     fn lock_scope(&mut self, scope: &Scope) {
-        if let Some(str) = scope.store.to_store() {
-            self.lock(str);
-        }
+        self.lock(scope.store);
         for &load in &scope.loads {
             self.lock(load);
         }
@@ -786,9 +785,7 @@ impl Nodes {
     }
 
     fn unlock_remove_scope(&mut self, scope: &Scope) {
-        if let Some(str) = scope.store.to_store() {
-            self.unlock_remove(str);
-        }
+        self.unlock_remove(scope.store);
         for &load in &scope.loads {
             self.unlock_remove(load);
         }
@@ -855,6 +852,8 @@ pub enum Kind {
     Call {
         func: ty::Func,
     },
+    // [ctrl]
+    Idk,
     // [ctrl]
     Stck,
     // [ctrl, memory]
@@ -930,8 +929,8 @@ impl Node {
         self.kind == Kind::Phi && self.inputs[2] == 0
     }
 
-    fn is_gvnd(&self) -> bool {
-        self.is_lazy_phi() || matches!(self.kind, Kind::Arg)
+    fn is_not_gvnd(&self) -> bool {
+        self.is_lazy_phi() || matches!(self.kind, Kind::Arg | Kind::Stck)
     }
 }
 
@@ -1019,7 +1018,6 @@ impl ItemCtx {
     }
 
     fn finalize(&mut self) {
-        self.nodes.unlock(ENTRY);
         self.nodes.unlock(NEVER);
         self.nodes.unlock_remove_scope(&core::mem::take(&mut self.scope));
         self.nodes.unlock(MEM);
@@ -1109,6 +1107,14 @@ impl ItemCtx {
                         }
                     }
                     Kind::Return => {
+                        match tys.size_of(sig.ret) {
+                            0..=8 => {}
+                            9..=16 => todo!(),
+                            size @ 17.. => {
+                                self.emit(instrs::bmc(atr(allocs[0]), 1, size.try_into().unwrap()));
+                            }
+                        }
+
                         if i != func.blocks.len() - 1 {
                             let rel = Reloc::new(self.code.len(), 1, 4);
                             self.ret_relocs.push(rel);
@@ -1163,6 +1169,7 @@ impl ItemCtx {
                         let offset = func.nodes[nid].offset;
                         self.emit(instrs::addi64(atr(allocs[0]), base, offset as _));
                     }
+                    Kind::Idk => {}
                     Kind::Load => {
                         let mut region = node.inputs[1];
                         let mut offset = 0;
@@ -1186,21 +1193,24 @@ impl ItemCtx {
                     Kind::Stre => {
                         let mut region = node.inputs[2];
                         let mut offset = 0;
+                        let size = u16::try_from(tys.size_of(node.ty)).expect("TODO");
                         if func.nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
                             && let Kind::CInt { value } =
                                 func.nodes[func.nodes[region].inputs[2]].kind
+                            && size <= 8
                         {
                             region = func.nodes[region].inputs[1];
                             offset = value as Offset;
                         }
-                        let size = u16::try_from(tys.size_of(node.ty)).expect("TODO");
                         let nd = &func.nodes[region];
                         let (base, offset, src) = match nd.kind {
-                            Kind::Stck => (reg::STACK_PTR, nd.offset + offset, allocs[0]),
+                            Kind::Stck if size <= 8 => {
+                                (reg::STACK_PTR, nd.offset + offset, allocs[0])
+                            }
                             _ => (atr(allocs[0]), offset, allocs[1]),
                         };
                         if size > 8 {
-                            self.emit(instrs::bmc(base, atr(src), size));
+                            self.emit(instrs::bmc(atr(src), base, size));
                         } else {
                             self.emit(instrs::st(atr(src), base, offset as _, size));
                         }
@@ -1539,8 +1549,8 @@ impl<'a> Codegen<'a> {
 
         let mut vc = Vc::from([VOID, value, region]);
         self.ci.nodes.load_loop_store(&mut self.ci.scope.store, &mut self.ci.loops);
+        self.ci.nodes.unlock(self.ci.scope.store);
         if let Some(str) = self.ci.scope.store.to_store() {
-            self.ci.nodes.unlock(str);
             vc.push(str);
         }
         for load in self.ci.scope.loads.drain(..) {
@@ -1592,6 +1602,23 @@ impl<'a> Codegen<'a> {
     fn raw_expr_ctx(&mut self, expr: &Expr, ctx: Ctx) -> Option<Value> {
         // ordered by complexity of the expression
         match *expr {
+            Expr::Idk { pos } => {
+                let Some(ty) = ctx.ty else {
+                    self.report(
+                        pos,
+                        "resulting value cannot be inferred from context, \
+                        consider using `@as(<ty>, idk)` to hint the type",
+                    );
+                    return Value::NEVER;
+                };
+
+                if matches!(ty.expand(), ty::Kind::Struct(_) | ty::Kind::Slice(_)) {
+                    let stck = self.ci.nodes.new_node(ty, Kind::Stck, [VOID, MEM]);
+                    Some(Value::ptr(stck).ty(ty))
+                } else {
+                    Some(self.ci.nodes.new_node_lit(ty, Kind::Idk, [VOID]))
+                }
+            }
             Expr::Number { value, .. } => Some(self.ci.nodes.new_node_lit(
                 ctx.ty.filter(|ty| ty.is_integer() || ty.is_pointer()).unwrap_or(ty::Id::INT),
                 Kind::CInt { value },
@@ -1619,10 +1646,6 @@ impl<'a> Codegen<'a> {
             Expr::Comment { .. } => Some(Value::VOID),
             Expr::String { pos, literal } => {
                 let literal = &literal[1..literal.len() - 1];
-
-                if !literal.ends_with("\\0") {
-                    self.report(pos, "string literal must end with null byte (for now)");
-                }
 
                 let report = |bytes: &core::str::Bytes, message: &str| {
                     self.report(pos + (literal.len() - bytes.len()) as u32 - 1, message)
@@ -1696,7 +1719,7 @@ impl<'a> Codegen<'a> {
                     return Value::NEVER;
                 };
 
-                Some(Value::ptr(self.offset(vtarget.id, ty, offset)).ty(ty))
+                Some(Value::ptr(self.offset(vtarget.id, offset)).ty(ty))
             }
             Expr::UnOp { op: TokenKind::Band, val, .. } => {
                 let ctx = Ctx { ty: ctx.ty.and_then(|ty| self.tys.base_of(ty)) };
@@ -1751,9 +1774,9 @@ impl<'a> Codegen<'a> {
             }
             Expr::BinOp { left, op: TokenKind::Assign, right } => {
                 let dest = self.raw_expr(left)?;
-                let value = self.expr(right)?;
+                let value = self.expr_ctx(right, Ctx::default().with_ty(dest.ty))?;
 
-                self.assert_ty(left.pos(), value.ty, dest.ty, "assignment dest");
+                self.assert_ty(left.pos(), value.ty, dest.ty, "assignment source");
 
                 if dest.var {
                     self.ci.nodes.lock(value.id);
@@ -1805,7 +1828,8 @@ impl<'a> Codegen<'a> {
                 let offset =
                     self.ci.nodes.new_node(ty::Id::INT, Kind::BinOp { op: TokenKind::Mul }, inps);
                 let inps = [VOID, bs.id, offset];
-                let ptr = self.ci.nodes.new_node(elem, Kind::BinOp { op: TokenKind::Add }, inps);
+                let ptr =
+                    self.ci.nodes.new_node(ty::Id::INT, Kind::BinOp { op: TokenKind::Add }, inps);
                 Some(Value::ptr(ptr).ty(elem))
             }
             Expr::Directive { name: "sizeof", args: [ty], .. } => {
@@ -1857,7 +1881,7 @@ impl<'a> Codegen<'a> {
             }
             Expr::Directive { name: "as", args: [ty, expr], .. } => {
                 let ctx = Ctx::default().with_ty(self.ty(ty));
-                self.expr_ctx(expr, ctx)
+                self.raw_expr_ctx(expr, ctx)
             }
             Expr::Call { func, args, .. } => {
                 self.ci.call_count += 1;
@@ -1918,11 +1942,22 @@ impl<'a> Codegen<'a> {
 
                     false
                 });
+
+                let alt_value = match self.tys.size_of(sig.ret) {
+                    0..=8 => None,
+                    9..=16 => todo!(),
+                    17.. => {
+                        let stck = self.ci.nodes.new_node_nop(sig.ret, Kind::Stck, [VOID, MEM]);
+                        inps.push(stck);
+                        Some(Value::ptr(stck).ty(sig.ret))
+                    }
+                };
+
                 self.ci.ctrl = self.ci.nodes.new_node(sig.ret, Kind::Call { func: fnc }, inps);
 
                 self.store_mem(VOID, VOID);
 
-                Some(Value::new(self.ci.ctrl).ty(sig.ret))
+                alt_value.or(Some(Value::new(self.ci.ctrl).ty(sig.ret)))
             }
             Expr::Tupl { pos, ty, fields, .. } => {
                 let Some(sty) = ty.map(|ty| self.ty(ty)).or(ctx.ty) else {
@@ -1948,7 +1983,7 @@ impl<'a> Codegen<'a> {
                             };
 
                             let value = self.expr_ctx(field, Ctx::default().with_ty(ty))?;
-                            let mem = self.offset(mem, ty, offset);
+                            let mem = self.offset(mem, offset);
                             self.store_mem(mem, value.id);
                         }
 
@@ -1995,7 +2030,7 @@ impl<'a> Codegen<'a> {
                         {
                             let value = self.expr_ctx(field, Ctx::default().with_ty(elem))?;
                             _ = self.assert_ty(field.pos(), value.ty, elem, "array value");
-                            let mem = self.offset(mem, elem, offset);
+                            let mem = self.offset(mem, offset);
                             self.store_mem(mem, value.id);
                         }
 
@@ -2063,7 +2098,7 @@ impl<'a> Codegen<'a> {
                     }
 
                     let value = self.expr_ctx(&field.value, Ctx::default().with_ty(ty))?;
-                    let mem = self.offset(mem, ty, offset);
+                    let mem = self.offset(mem, offset);
                     self.store_mem(mem, value.id);
                 }
 
@@ -2238,9 +2273,7 @@ impl<'a> Codegen<'a> {
 
                 self.ci.nodes.load_loop_store(&mut self.ci.scope.store, &mut self.ci.loops);
                 let orig_store = self.ci.scope.store;
-                if let Some(str) = orig_store.to_store() {
-                    self.ci.nodes.lock(str);
-                }
+                self.ci.nodes.lock(orig_store);
                 let else_scope = self.ci.scope.clone();
                 self.ci.nodes.lock_scope(&else_scope);
 
@@ -2255,9 +2288,7 @@ impl<'a> Codegen<'a> {
                     self.ci.ctrl
                 };
 
-                if let Some(str) = orig_store.to_store() {
-                    self.ci.nodes.unlock_remove(str);
-                }
+                self.ci.nodes.unlock_remove(orig_store);
 
                 if lcntrl == Nid::MAX && rcntrl == Nid::MAX {
                     self.ci.nodes.unlock_remove_scope(&then_scope);
@@ -2298,14 +2329,14 @@ impl<'a> Codegen<'a> {
         Some(n)
     }
 
-    fn offset(&mut self, val: Nid, ty: ty::Id, off: Offset) -> Nid {
+    fn offset(&mut self, val: Nid, off: Offset) -> Nid {
         if off == 0 {
             return val;
         }
 
         let off = self.ci.nodes.new_node_nop(ty::Id::INT, Kind::CInt { value: off as i64 }, [VOID]);
         let inps = [VOID, val, off];
-        self.ci.nodes.new_node(ty, Kind::BinOp { op: TokenKind::Add }, inps)
+        self.ci.nodes.new_node(ty::Id::INT, Kind::BinOp { op: TokenKind::Add }, inps)
     }
 
     fn strip_var(&mut self, n: &mut Value) {
@@ -2688,14 +2719,20 @@ impl<'a> Function<'a> {
                 }
             }
             Kind::Return => {
-                let ops = if node.inputs[1] != VOID {
-                    vec![regalloc2::Operand::reg_fixed_use(
-                        self.rg(node.inputs[1]),
-                        regalloc2::PReg::new(1, regalloc2::RegClass::Int),
-                    )]
-                } else {
-                    vec![]
+                let ops = match self.tys.size_of(self.sig.ret) {
+                    0 => vec![],
+                    1..=8 => {
+                        vec![regalloc2::Operand::reg_fixed_use(
+                            self.rg(node.inputs[1]),
+                            regalloc2::PReg::new(1, regalloc2::RegClass::Int),
+                        )]
+                    }
+                    9..=16 => todo!(),
+                    17.. => {
+                        vec![self.urg(node.inputs[1])]
+                    }
                 };
+
                 self.add_instr(nid, ops);
                 self.emit_node(node.outputs[0], nid);
             }
@@ -2755,10 +2792,10 @@ impl<'a> Function<'a> {
             }
             Kind::BinOp { op: TokenKind::Add }
                 if self.nodes.is_const(node.inputs[2])
-                    && node
-                        .outputs
-                        .iter()
-                        .all(|&n| matches!(self.nodes[n].kind, Kind::Stre | Kind::Load)) =>
+                    && node.outputs.iter().all(|&n| {
+                        matches!(self.nodes[n].kind, Kind::Stre | Kind::Load)
+                            && self.tys.size_of(self.nodes[n].ty) <= 8
+                    }) =>
             {
                 self.nodes.lock(nid)
             }
@@ -2825,6 +2862,17 @@ impl<'a> Function<'a> {
                     }
                 }
 
+                match self.tys.size_of(fuc.ret) {
+                    0..=8 => {}
+                    9..=16 => todo!(),
+                    17.. => {
+                        ops.push(regalloc2::Operand::reg_fixed_use(
+                            self.rg(*node.inputs.last().unwrap()),
+                            regalloc2::PReg::new(1, regalloc2::RegClass::Int),
+                        ));
+                    }
+                }
+
                 self.add_instr(nid, ops);
 
                 for o in node.outputs.into_iter().rev() {
@@ -2848,6 +2896,10 @@ impl<'a> Function<'a> {
             //            .all(|&n| matches!(self.nodes[n].kind, Kind::Stre | Kind::Load)))
             //    }) => {}
             Kind::Stck => {
+                let ops = vec![self.drg(nid)];
+                self.add_instr(nid, ops);
+            }
+            Kind::Idk => {
                 let ops = vec![self.drg(nid)];
                 self.add_instr(nid, ops);
             }
@@ -3283,7 +3335,7 @@ mod tests {
         //struct_patterns;
         arrays;
         //inline;
-        //idk;
+        idk;
         //wide_ret;
 
         // Incomplete Examples;
