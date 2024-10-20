@@ -7,7 +7,7 @@ use {
         parser::{
             self,
             idfl::{self},
-            Expr, ExprRef, FileId, Pos,
+            CtorField, Expr, ExprRef, FileId, Pos,
         },
         reg, task,
         ty::{self, ArrayLen, Tuple},
@@ -483,6 +483,7 @@ impl Nodes {
             Kind::Stre => write!(out, "stre:      "),
             Kind::Mem => write!(out, " mem:      "),
             Kind::Idk => write!(out, " idk:      "),
+            Kind::Extend => write!(out, " ext:      "),
         }?;
 
         if self[node].kind != Kind::Loop && self[node].kind != Kind::Region {
@@ -837,6 +838,8 @@ pub enum Kind {
     Phi,
     Arg,
     // [ctrl, oper]
+    Extend,
+    // [ctrl, oper]
     UnOp {
         op: lexer::TokenKind,
     },
@@ -1031,9 +1034,9 @@ impl ItemCtx {
         let mut nodes = core::mem::take(&mut self.nodes);
         nodes.visited.clear(nodes.values.len());
 
-        let func = Function::new(&mut nodes, tys, sig);
+        let fuc = Function::new(&mut nodes, tys, sig);
         let mut ralloc = Regalloc::default(); // TODO: reuse
-        log::info!("{:?}", func);
+        log::info!("{:?}", fuc);
         if self.call_count != 0 {
             core::mem::swap(
                 &mut ralloc.env.preferred_regs_by_class,
@@ -1046,7 +1049,7 @@ impl ItemCtx {
             validate_ssa: false,
             algorithm: regalloc2::Algorithm::Ion,
         };
-        regalloc2::run_with_ctx(&func, &ralloc.env, &options, &mut ralloc.ctx)
+        regalloc2::run_with_ctx(&fuc, &ralloc.env, &options, &mut ralloc.ctx)
             .unwrap_or_else(|err| panic!("{err}"));
 
         if self.call_count != 0 {
@@ -1067,10 +1070,10 @@ impl ItemCtx {
             *saved_regs.entry(hvenc).or_insert(would_insert)
         };
 
-        for (i, block) in func.blocks.iter().enumerate() {
+        for (i, block) in fuc.blocks.iter().enumerate() {
             let blk = regalloc2::Block(i as _);
-            func.nodes[block.nid].offset = self.code.len() as _;
-            for instr_or_edit in ralloc.ctx.output.block_insts_and_edits(&func, blk) {
+            fuc.nodes[block.nid].offset = self.code.len() as _;
+            for instr_or_edit in ralloc.ctx.output.block_insts_and_edits(&fuc, blk) {
                 let inst = match instr_or_edit {
                     regalloc2::InstOrEdit::Inst(inst) => inst,
                     regalloc2::InstOrEdit::Edit(&regalloc2::Edit::Move { from, to }) => {
@@ -1079,16 +1082,16 @@ impl ItemCtx {
                     }
                 };
 
-                let nid = func.instrs[inst.index()].nid;
+                let nid = fuc.instrs[inst.index()].nid;
                 if nid == NEVER {
                     continue;
                 };
                 let allocs = ralloc.ctx.output.inst_allocs(inst);
-                let node = &func.nodes[nid];
+                let node = &fuc.nodes[nid];
                 match node.kind {
                     Kind::If => {
                         let &[_, cond] = node.inputs.as_slice() else { unreachable!() };
-                        if let Kind::BinOp { op } = func.nodes[cond].kind
+                        if let Kind::BinOp { op } = fuc.nodes[cond].kind
                             && let Some((op, swapped)) = op.cond_op(node.ty.is_signed())
                         {
                             let rel = Reloc::new(self.code.len(), 3, 2);
@@ -1109,13 +1112,19 @@ impl ItemCtx {
                     Kind::Return => {
                         match tys.size_of(sig.ret) {
                             0..=8 => {}
-                            9..=16 => todo!(),
+                            size @ 9..=16 => {
+                                self.emit(instrs::ld(reg::RET, atr(allocs[0]), 0, size as _));
+                            }
                             size @ 17.. => {
-                                self.emit(instrs::bmc(atr(allocs[0]), 1, size.try_into().unwrap()));
+                                self.emit(instrs::bmc(
+                                    atr(allocs[0]),
+                                    reg::RET,
+                                    size.try_into().unwrap(),
+                                ));
                             }
                         }
 
-                        if i != func.blocks.len() - 1 {
+                        if i != fuc.blocks.len() - 1 {
                             let rel = Reloc::new(self.code.len(), 1, 4);
                             self.ret_relocs.push(rel);
                             self.emit(instrs::jmp(0));
@@ -1123,6 +1132,22 @@ impl ItemCtx {
                     }
                     Kind::CInt { value } => {
                         self.emit(instrs::li64(atr(allocs[0]), value as _));
+                    }
+                    Kind::Extend => {
+                        let base = fuc.nodes[node.inputs[1]].ty;
+                        let dest = node.ty;
+
+                        match (base.is_signed(), dest.is_signed()) {
+                            (true, true) => {
+                                let op = [instrs::sxt8, instrs::sxt16, instrs::sxt32]
+                                    [tys.size_of(base).ilog2() as usize];
+                                self.emit(op(atr(allocs[0]), atr(allocs[1])))
+                            }
+                            _ => {
+                                let mask = (1u64 << (tys.size_of(base) * 8)) - 1;
+                                self.emit(instrs::andi(atr(allocs[0]), atr(allocs[1]), mask));
+                            }
+                        }
                     }
                     Kind::UnOp { op } => {
                         let op = op.unop().expect("TODO: unary operator not supported");
@@ -1132,15 +1157,15 @@ impl ItemCtx {
                     Kind::BinOp { op } => {
                         let &[.., rhs] = node.inputs.as_slice() else { unreachable!() };
 
-                        if let Kind::CInt { value } = func.nodes[rhs].kind
-                            && func.nodes[rhs].lock_rc != 0
+                        if let Kind::CInt { value } = fuc.nodes[rhs].kind
+                            && fuc.nodes[rhs].lock_rc != 0
                             && let Some(op) =
-                                op.imm_binop(node.ty.is_signed(), func.tys.size_of(node.ty))
+                                op.imm_binop(node.ty.is_signed(), fuc.tys.size_of(node.ty))
                         {
                             let &[dst, lhs] = allocs else { unreachable!() };
                             self.emit(op(atr(dst), atr(lhs), value as _));
                         } else if let Some(op) =
-                            op.binop(node.ty.is_signed(), func.tys.size_of(node.ty))
+                            op.binop(node.ty.is_signed(), fuc.tys.size_of(node.ty))
                         {
                             let &[dst, lhs, rhs] = allocs else { unreachable!() };
                             self.emit(op(atr(dst), atr(lhs), atr(rhs)));
@@ -1155,6 +1180,10 @@ impl ItemCtx {
                             reloc: Reloc::new(self.code.len(), 3, 4),
                         });
                         self.emit(instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
+                        if let size @ 9..=16 = tys.size_of(node.ty) {
+                            let stck = fuc.nodes[*node.inputs.last().unwrap()].offset;
+                            self.emit(instrs::st(reg::RET, reg::STACK_PTR, stck as _, size as _));
+                        }
                     }
                     Kind::Global { global } => {
                         let reloc = Reloc::new(self.code.len(), 3, 4);
@@ -1166,24 +1195,24 @@ impl ItemCtx {
                     }
                     Kind::Stck => {
                         let base = reg::STACK_PTR;
-                        let offset = func.nodes[nid].offset;
+                        let offset = fuc.nodes[nid].offset;
                         self.emit(instrs::addi64(atr(allocs[0]), base, offset as _));
                     }
                     Kind::Idk => {}
                     Kind::Load => {
                         let mut region = node.inputs[1];
                         let mut offset = 0;
-                        if func.nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
+                        if fuc.nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
                             && let Kind::CInt { value } =
-                                func.nodes[func.nodes[region].inputs[2]].kind
+                                fuc.nodes[fuc.nodes[region].inputs[2]].kind
                         {
-                            region = func.nodes[region].inputs[1];
+                            region = fuc.nodes[region].inputs[1];
                             offset = value as Offset;
                         }
                         let size = tys.size_of(node.ty);
                         if size <= 8 {
-                            let (base, offset) = match func.nodes[region].kind {
-                                Kind::Stck => (reg::STACK_PTR, func.nodes[region].offset + offset),
+                            let (base, offset) = match fuc.nodes[region].kind {
+                                Kind::Stck => (reg::STACK_PTR, fuc.nodes[region].offset + offset),
                                 _ => (atr(allocs[1]), offset),
                             };
                             self.emit(instrs::ld(atr(allocs[0]), base, offset as _, size as _));
@@ -1194,15 +1223,15 @@ impl ItemCtx {
                         let mut region = node.inputs[2];
                         let mut offset = 0;
                         let size = u16::try_from(tys.size_of(node.ty)).expect("TODO");
-                        if func.nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
+                        if fuc.nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
                             && let Kind::CInt { value } =
-                                func.nodes[func.nodes[region].inputs[2]].kind
+                                fuc.nodes[fuc.nodes[region].inputs[2]].kind
                             && size <= 8
                         {
-                            region = func.nodes[region].inputs[1];
+                            region = fuc.nodes[region].inputs[1];
                             offset = value as Offset;
                         }
-                        let nd = &func.nodes[region];
+                        let nd = &fuc.nodes[region];
                         let (base, offset, src) = match nd.kind {
                             Kind::Stck if size <= 8 => {
                                 (reg::STACK_PTR, nd.offset + offset, allocs[0])
@@ -1215,7 +1244,14 @@ impl ItemCtx {
                             self.emit(instrs::st(atr(src), base, offset as _, size));
                         }
                     }
-                    _ => unreachable!(),
+                    Kind::Start
+                    | Kind::Entry
+                    | Kind::Mem
+                    | Kind::End
+                    | Kind::Then
+                    | Kind::Else
+                    | Kind::Phi
+                    | Kind::Arg => unreachable!(),
                 }
             }
         }
@@ -1635,12 +1671,16 @@ impl<'a> Codegen<'a> {
             Expr::Ident { id, pos, .. } => {
                 let decl = self.find_type(pos, self.ci.file, Ok(id), self.files);
                 match decl.expand() {
+                    ty::Kind::Builtin(ty::NEVER) => Value::NEVER,
                     ty::Kind::Global(global) => {
                         let gl = &self.tys.ins.globals[global as usize];
                         let value = self.ci.nodes.new_node(gl.ty, Kind::Global { global }, [VOID]);
                         Some(Value::ptr(value).ty(gl.ty))
                     }
-                    _ => todo!("{decl:?}"),
+                    _ => self.report_unhandled_ast(
+                        expr,
+                        format_args!("identifier evaluated to '{}'", self.ty_display(decl)),
+                    ),
                 }
             }
             Expr::Comment { .. } => Some(Value::VOID),
@@ -1661,11 +1701,14 @@ impl<'a> Codegen<'a> {
                 Some(Value::new(global).ty(ty))
             }
             Expr::Return { pos, val } => {
-                let value = if let Some(val) = val {
+                let mut value = if let Some(val) = val {
                     self.expr_ctx(val, Ctx { ty: self.ci.ret })?
                 } else {
                     Value { ty: ty::Id::VOID, ..Default::default() }
                 };
+
+                let expected = *self.ci.ret.get_or_insert(value.ty);
+                self.assert_ty(pos, &mut value, expected, "return value");
 
                 let mut inps = Vc::from([self.ci.ctrl, value.id]);
                 self.ci.nodes.load_loop_store(&mut self.ci.scope.store, &mut self.ci.loops);
@@ -1677,9 +1720,6 @@ impl<'a> Codegen<'a> {
 
                 self.ci.nodes[NEVER].inputs.push(self.ci.ctrl);
                 self.ci.nodes[self.ci.ctrl].outputs.push(NEVER);
-
-                let expected = *self.ci.ret.get_or_insert(value.ty);
-                self.assert_ty(pos, value.ty, expected, "return value");
 
                 None
             }
@@ -1760,23 +1800,16 @@ impl<'a> Codegen<'a> {
                 }
                 Some(self.ci.nodes.new_node_lit(val.ty, Kind::UnOp { op }, [VOID, val.id]))
             }
-            Expr::BinOp { left: &Expr::Ident { id, .. }, op: TokenKind::Decl, right } => {
-                let mut value = self.raw_expr(right)?;
-                self.strip_var(&mut value);
-                self.ci.nodes.lock(value.id);
-                self.ci.scope.vars.push(Variable {
-                    id,
-                    value: value.id,
-                    ptr: value.ptr,
-                    ty: value.ty,
-                });
+            Expr::BinOp { left, op: TokenKind::Decl, right } => {
+                let right = self.raw_expr(right)?;
+                self.assign_pattern(left, right);
                 Some(Value::VOID)
             }
             Expr::BinOp { left, op: TokenKind::Assign, right } => {
                 let dest = self.raw_expr(left)?;
-                let value = self.expr_ctx(right, Ctx::default().with_ty(dest.ty))?;
+                let mut value = self.expr_ctx(right, Ctx::default().with_ty(dest.ty))?;
 
-                self.assert_ty(left.pos(), value.ty, dest.ty, "assignment source");
+                self.assert_ty(left.pos(), &mut value, dest.ty, "assignment source");
 
                 if dest.var {
                     self.ci.nodes.lock(value.id);
@@ -1791,13 +1824,16 @@ impl<'a> Codegen<'a> {
 
                 Some(Value::VOID)
             }
-            Expr::BinOp { left, op, right } if op != TokenKind::Assign => {
-                let lhs = self.expr_ctx(left, ctx)?;
+            Expr::BinOp { left, op, right }
+                if !matches!(op, TokenKind::Assign | TokenKind::Decl) =>
+            {
+                let mut lhs = self.expr_ctx(left, ctx)?;
                 self.ci.nodes.lock(lhs.id);
                 let rhs = self.expr_ctx(right, Ctx::default().with_ty(lhs.ty));
                 self.ci.nodes.unlock(lhs.id);
-                let ty = self.binop_ty(left.pos(), rhs?.ty, lhs.ty, op);
-                let inps = [VOID, lhs.id, rhs?.id];
+                let mut rhs = rhs?;
+                let ty = self.binop_ty(left.pos(), &mut rhs, &mut lhs, op);
+                let inps = [VOID, lhs.id, rhs.id];
                 Some(self.ci.nodes.new_node_lit(ty::bin_ret(ty, op), Kind::BinOp { op }, inps))
             }
             Expr::Index { base, index } => {
@@ -1886,7 +1922,7 @@ impl<'a> Codegen<'a> {
             Expr::Call { func, args, .. } => {
                 self.ci.call_count += 1;
                 let ty = self.ty(func);
-                let ty::Kind::Func(fnc) = ty.expand() else {
+                let ty::Kind::Func(fu) = ty.expand() else {
                     self.report(
                         func.pos(),
                         fa!("compiler cant (yet) call '{}'", self.ty_display(ty)),
@@ -1894,9 +1930,9 @@ impl<'a> Codegen<'a> {
                     return Value::NEVER;
                 };
 
-                self.make_func_reachable(fnc);
+                self.make_func_reachable(fu);
 
-                let fuc = &self.tys.ins.funcs[fnc as usize];
+                let fuc = &self.tys.ins.funcs[fu as usize];
                 let sig = fuc.sig.expect("TODO: generic functions");
                 let ast = &self.files[fuc.file as usize];
                 let &Expr::Closure { args: cargs, .. } = fuc.expr.get(ast).unwrap() else {
@@ -1920,10 +1956,10 @@ impl<'a> Codegen<'a> {
                     if self.tys.size_of(ty) == 0 {
                         continue;
                     }
-                    let value = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
+                    let mut value = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
                     debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
                     debug_assert_ne!(value.id, 0);
-                    self.assert_ty(arg.pos(), value.ty, ty, fa!("argument {}", carg.name));
+                    self.assert_ty(arg.pos(), &mut value, ty, fa!("argument {}", carg.name));
 
                     inps.push(value.id);
                 }
@@ -1945,15 +1981,14 @@ impl<'a> Codegen<'a> {
 
                 let alt_value = match self.tys.size_of(sig.ret) {
                     0..=8 => None,
-                    9..=16 => todo!(),
-                    17.. => {
+                    9.. => {
                         let stck = self.ci.nodes.new_node_nop(sig.ret, Kind::Stck, [VOID, MEM]);
                         inps.push(stck);
                         Some(Value::ptr(stck).ty(sig.ret))
                     }
                 };
 
-                self.ci.ctrl = self.ci.nodes.new_node(sig.ret, Kind::Call { func: fnc }, inps);
+                self.ci.ctrl = self.ci.nodes.new_node(sig.ret, Kind::Call { func: fu }, inps);
 
                 self.store_mem(VOID, VOID);
 
@@ -2028,8 +2063,8 @@ impl<'a> Codegen<'a> {
                         for (field, offset) in
                             fields.iter().zip((0u32..).step_by(elem_size as usize))
                         {
-                            let value = self.expr_ctx(field, Ctx::default().with_ty(elem))?;
-                            _ = self.assert_ty(field.pos(), value.ty, elem, "array value");
+                            let mut value = self.expr_ctx(field, Ctx::default().with_ty(elem))?;
+                            _ = self.assert_ty(field.pos(), &mut value, elem, "array value");
                             let mem = self.offset(mem, offset);
                             self.store_mem(mem, value.id);
                         }
@@ -2124,8 +2159,8 @@ impl<'a> Codegen<'a> {
                 let mut ret = Some(Value::VOID);
                 for stmt in stmts {
                     ret = ret.and(self.expr(stmt));
-                    if let Some(id) = ret {
-                        self.assert_ty(stmt.pos(), id.ty, ty::Id::VOID, "statement");
+                    if let Some(mut id) = ret {
+                        self.assert_ty(stmt.pos(), &mut id, ty::Id::VOID, "statement");
                     } else {
                         break;
                     }
@@ -2320,6 +2355,37 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    fn assign_pattern(&mut self, pat: &Expr, mut right: Value) {
+        match *pat {
+            Expr::Ident { id, .. } => {
+                self.strip_var(&mut right);
+                self.ci.nodes.lock(right.id);
+                self.ci.scope.vars.push(Variable {
+                    id,
+                    value: right.id,
+                    ptr: right.ptr,
+                    ty: right.ty,
+                });
+            }
+            Expr::Ctor { pos, fields, .. } => {
+                let ty::Kind::Struct(idx) = right.ty.expand() else {
+                    self.report(pos, "can't use struct destruct on non struct value (TODO: shold work with modules)");
+                    return;
+                };
+
+                for &CtorField { pos, name, ref value } in fields {
+                    let Some((offset, ty)) = OffsetIter::offset_of(&self.tys, idx, name) else {
+                        self.report(pos, format_args!("field not found: {name:?}"));
+                        continue;
+                    };
+                    let off = self.offset(right.id, offset);
+                    self.assign_pattern(value, Value::ptr(off).ty(ty));
+                }
+            }
+            ref pat => self.report_unhandled_ast(pat, "pattern"),
+        }
+    }
+
     fn expr_ctx(&mut self, expr: &Expr, ctx: Ctx) -> Option<Value> {
         let mut n = self.raw_expr_ctx(expr, ctx)?;
         self.strip_var(&mut n);
@@ -2492,26 +2558,46 @@ impl<'a> Codegen<'a> {
 
     #[must_use]
     #[track_caller]
-    fn binop_ty(&self, pos: Pos, lhs: ty::Id, rhs: ty::Id, op: TokenKind) -> ty::Id {
-        if let Some(res) = lhs.try_upcast(rhs, ty::TyCheck::BinOp) {
-            res
+    fn binop_ty(&mut self, pos: Pos, lhs: &mut Value, rhs: &mut Value, op: TokenKind) -> ty::Id {
+        if let Some(upcasted) = lhs.ty.try_upcast(rhs.ty, ty::TyCheck::BinOp) {
+            if lhs.ty != upcasted {
+                lhs.ty = upcasted;
+                lhs.id = self.ci.nodes.new_node(upcasted, Kind::Extend, [VOID, lhs.id]);
+            } else if rhs.ty != upcasted {
+                rhs.ty = upcasted;
+                rhs.id = self.ci.nodes.new_node(upcasted, Kind::Extend, [VOID, rhs.id]);
+            }
+            upcasted
         } else {
-            let ty = self.ty_display(lhs);
-            let expected = self.ty_display(rhs);
+            let ty = self.ty_display(lhs.ty);
+            let expected = self.ty_display(rhs.ty);
             self.report(pos, fa!("'{ty} {op} {expected}' is not supported"));
             ty::Id::NEVER
         }
     }
 
     #[track_caller]
-    fn assert_ty(&self, pos: Pos, ty: ty::Id, expected: ty::Id, hint: impl fmt::Display) -> bool {
-        if ty.try_upcast(expected, ty::TyCheck::BinOp) != Some(expected) {
-            let ty = self.ty_display(ty);
+    fn assert_ty(
+        &mut self,
+        pos: Pos,
+        src: &mut Value,
+        expected: ty::Id,
+        hint: impl fmt::Display,
+    ) -> bool {
+        if let Some(upcasted) = src.ty.try_upcast(expected, ty::TyCheck::BinOp)
+            && upcasted == expected
+        {
+            if src.ty != upcasted {
+                src.ty = upcasted;
+                src.id = self.ci.nodes.new_node(upcasted, Kind::Extend, [VOID, src.id]);
+            }
+            true
+        } else {
+            let ty = self.ty_display(src.ty);
             let expected = self.ty_display(expected);
             self.report(pos, fa!("expected {hint} to be of type {expected}, got {ty}"));
-            return false;
+            false
         }
-        true
     }
 
     #[track_caller]
@@ -2528,7 +2614,7 @@ impl<'a> Codegen<'a> {
     }
 
     #[track_caller]
-    fn report_unhandled_ast(&self, ast: &Expr, hint: &str) -> ! {
+    fn report_unhandled_ast(&self, ast: &Expr, hint: impl Display) -> ! {
         log::info!("{ast:#?}");
         self.fatal_report(ast.pos(), fa!("compiler does not (yet) know how to handle ({hint})"));
     }
@@ -2727,7 +2813,9 @@ impl<'a> Function<'a> {
                             regalloc2::PReg::new(1, regalloc2::RegClass::Int),
                         )]
                     }
-                    9..=16 => todo!(),
+                    9..=16 => {
+                        vec![self.urg(self.nodes[node.inputs[1]].inputs[1])]
+                    }
                     17.. => {
                         vec![self.urg(node.inputs[1])]
                     }
@@ -2749,6 +2837,10 @@ impl<'a> Function<'a> {
             }
             Kind::CInt { .. } => {
                 let ops = vec![self.drg(nid)];
+                self.add_instr(nid, ops);
+            }
+            Kind::Extend => {
+                let ops = vec![self.drg(nid), self.urg(node.inputs[1])];
                 self.add_instr(nid, ops);
             }
             Kind::Entry => {
@@ -2863,8 +2955,7 @@ impl<'a> Function<'a> {
                 }
 
                 match self.tys.size_of(fuc.ret) {
-                    0..=8 => {}
-                    9..=16 => todo!(),
+                    0..=16 => {}
                     17.. => {
                         ops.push(regalloc2::Operand::reg_fixed_use(
                             self.rg(*node.inputs.last().unwrap()),
@@ -3332,11 +3423,10 @@ mod tests {
         global_variables;
         //directives;
         c_strings;
-        //struct_patterns;
+        struct_patterns;
         arrays;
         //inline;
         idk;
-        //wide_ret;
 
         // Incomplete Examples;
         //comptime_pointers;
@@ -3345,6 +3435,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        wide_ret;
         comptime_min_reg_leak;
         //different_types;
         //struct_return_from_module_function;

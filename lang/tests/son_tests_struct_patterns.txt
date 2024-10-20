@@ -1,0 +1,51 @@
+fib:
+    ADDI64 r254, r254, -32d
+    ST r31, r254, 0a, 32h
+    CP r32, r2
+    LI64 r33, 2d
+    JLTU r2, r33, :0
+    CP r34, r32
+    ADDI64 r2, r34, -1d
+    JAL r31, r0, :fib
+    CP r2, r32
+    CP r34, r1
+    SUB64 r2, r2, r33
+    JAL r31, r0, :fib
+    ADD64 r1, r1, r34
+    JMP :1
+ 0: CP r1, r32
+ 1: LD r31, r254, 0a, 32h
+    ADDI64 r254, r254, 32d
+    JALA r0, r31, 0a
+fib_iter:
+    LI64 r4, 1d
+    LI64 r5, 0d
+    CP r1, r5
+    CP r10, r4
+ 2: JNE r2, r5, :0
+    JMP :1
+ 0: ADD64 r3, r10, r1
+    SUB64 r2, r2, r4
+    CP r1, r10
+    CP r10, r3
+    JMP :2
+ 1: JALA r0, r31, 0a
+main:
+    ADDI64 r254, r254, -34d
+    ST r31, r254, 2a, 32h
+    LI64 r32, 10d
+    ADDI64 r33, r254, 0d
+    ST r32, r254, 0a, 1h
+    ST r32, r254, 1a, 1h
+    LD r2, r254, 0a, 1h
+    JAL r31, r0, :fib
+    CP r34, r1
+    LD r2, r254, 1a, 1h
+    JAL r31, r0, :fib_iter
+    SUB64 r1, r34, r1
+    LD r31, r254, 2a, 32h
+    ADDI64 r254, r254, 34d
+    JALA r0, r31, 0a
+code size: 354
+ret: 0
+status: Ok(())

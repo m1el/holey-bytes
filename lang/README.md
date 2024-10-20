@@ -395,29 +395,6 @@ main := fn(): int {
 }
 ```
 
-#### wide_ret
-```hb
-OemIdent := struct {
-	dos_version: [u8; 8],
-	dos_version_name: [u8; 8],
-}
-
-Stru := struct {
-	a: u16,
-	b: u16,
-}
-
-small_struct := fn(): Stru {
-	return .{a: 0, b: 0}
-}
-
-main := fn(major: int, minor: int): OemIdent {
-	small_struct()
-	ver := [u8].(0, 0, 0, 0, 0, 0, 0, 0)
-	return OemIdent.(ver, ver)
-}
-```
-
 ### Incomplete Examples
 
 #### comptime_pointers
@@ -547,6 +524,34 @@ main := fn(): int {
 ```
 
 ### Purely Testing Examples
+
+#### wide_ret
+```hb
+OemIdent := struct {
+	dos_version: [u8; 8],
+	dos_version_name: [u8; 8],
+}
+
+Stru := struct {
+	a: u16,
+	b: u16,
+}
+
+small_struct := fn(): Stru {
+	return .{a: 0, b: 0}
+}
+
+maina := fn(major: int, minor: int): OemIdent {
+	_f := small_struct()
+	ver := [u8].(0, 0, 0, 3, 1, 0, 0, 0)
+	return OemIdent.(ver, ver)
+}
+
+main := fn(): int {
+	m := maina(0, 0)
+	return m.dos_version[3] - m.dos_version_name[4]
+}
+```
 
 #### comptime_min_reg_leak
 ```hb
