@@ -1,0 +1,7 @@
+main:
+    LRA r1, r0, :a
+    LD r1, r1, 0a, 8h
+    JALA r0, r31, 0a
+code size: 47
+ret: 50
+status: Ok(())

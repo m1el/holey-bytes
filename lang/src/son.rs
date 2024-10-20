@@ -12,7 +12,8 @@ use {
         reg, task,
         ty::{self, ArrayLen, Tuple},
         vc::{BitSet, Vc},
-        Comptime, Func, Global, HashMap, Offset, OffsetIter, Reloc, Sig, SymKey, TypedReloc, Types,
+        Comptime, Func, Global, HashMap, Offset, OffsetIter, Reloc, Sig, TypeParser, TypedReloc,
+        Types,
     },
     alloc::{string::String, vec::Vec},
     core::{
@@ -1416,6 +1417,123 @@ pub struct Codegen<'a> {
     errors: RefCell<String>,
 }
 
+impl TypeParser for Codegen<'_> {
+    fn tys(&mut self) -> &mut Types {
+        &mut self.tys
+    }
+
+    fn on_reuse(&mut self, existing: ty::Id) {
+        if let ty::Kind::Func(id) = existing.expand()
+            && let func = &mut self.tys.ins.funcs[id as usize]
+            && let Err(idx) = task::unpack(func.offset)
+            && idx < self.tasks.len()
+        {
+            func.offset = task::id(self.tasks.len());
+            let task = self.tasks[idx].take();
+            self.tasks.push(task);
+        }
+    }
+
+    #[expect(unused)]
+    fn eval_ty(
+        &mut self,
+        file: FileId,
+        name: Option<Ident>,
+        expr: &Expr,
+        files: &[parser::Ast],
+    ) -> ty::Id {
+        let sym = match expr {
+            right if let Some(name) = name => {
+                let gid = self.tys.ins.globals.len() as ty::Global;
+                self.tys.ins.globals.push(Global { file, name, ..Default::default() });
+
+                let ty = ty::Kind::Global(gid);
+                self.pool.push_ci(file, None, self.tasks.len(), &mut self.ci);
+
+                let ret = Expr::Return { pos: right.pos(), val: Some(right) };
+                self.expr(&ret);
+
+                self.ci.finalize();
+
+                let ret = self.ci.ret.expect("for return type to be infered");
+                if self.errors.borrow().is_empty() {
+                    self.ci.emit_body(&mut self.tys, self.files, Sig { args: Tuple::empty(), ret });
+                    self.ci.code.truncate(self.ci.code.len() - instrs::jala(0, 0, 0).0);
+                    self.ci.emit(instrs::tx());
+
+                    let func = Func {
+                        file,
+                        name,
+                        expr: ExprRef::new(expr),
+                        relocs: core::mem::take(&mut self.ci.relocs),
+                        code: core::mem::take(&mut self.ci.code),
+                        ..Default::default()
+                    };
+                    self.pool.pop_ci(&mut self.ci);
+                    self.complete_call_graph();
+
+                    let mut mem = vec![0u8; self.tys.size_of(ret) as usize];
+
+                    // TODO: return them back
+                    let fuc = self.tys.ins.funcs.len() as ty::Func;
+                    self.tys.ins.funcs.push(func);
+
+                    self.tys.dump_reachable(fuc, &mut self.ct.code);
+
+                    #[cfg(debug_assertions)]
+                    {
+                        let mut vc = String::new();
+                        if let Err(e) = self.tys.disasm(&self.ct.code, self.files, &mut vc, |_| {})
+                        {
+                            panic!("{e} {}", vc);
+                        } else {
+                            log::trace!("{}", vc);
+                        }
+                    }
+
+                    self.ct.vm.write_reg(reg::RET, mem.as_mut_ptr() as u64);
+                    let prev_pc = self.ct.push_pc(self.tys.ins.funcs[fuc as usize].offset);
+                    loop {
+                        match self.ct.vm.run().expect("TODO") {
+                            hbvm::VmRunOk::End => break,
+                            hbvm::VmRunOk::Timer => todo!(),
+                            hbvm::VmRunOk::Ecall => todo!(),
+                            hbvm::VmRunOk::Breakpoint => todo!(),
+                        }
+                    }
+                    self.ct.pop_pc(prev_pc);
+
+                    match mem.len() {
+                        0 => unreachable!(),
+                        len @ 1..=8 => mem
+                            .copy_from_slice(&self.ct.vm.read_reg(reg::RET).0.to_ne_bytes()[..len]),
+                        9..=16 => todo!(),
+                        _ => {}
+                    }
+
+                    self.tys.ins.globals[gid as usize].data = mem;
+                } else {
+                    self.pool.pop_ci(&mut self.ci);
+                }
+                self.tys.ins.globals[gid as usize].ty = ret;
+
+                ty
+            }
+            e => self.report_unhandled_ast(expr, "type"),
+        };
+        sym.compress()
+    }
+
+    fn report(&self, pos: Pos, msg: impl Display) -> ty::Id {
+        self.report(pos, msg);
+        ty::Id::NEVER
+    }
+
+    fn find_local_ty(&mut self, _: Ident) -> Option<ty::Id> {
+        None
+    }
+}
+
 impl<'a> Codegen<'a> {
     fn store_mem(&mut self, region: Nid, value: Nid) -> Nid {
         if value == NEVER {
@@ -1457,7 +1575,7 @@ impl<'a> Codegen<'a> {
     }
 
     pub fn generate(&mut self) {
-        self.find_or_declare(0, 0, Err("main"));
+        self.find_type(0, 0, Err("main"), self.files);
         self.make_func_reachable(0);
         self.complete_call_graph();
     }
@@ -1491,8 +1609,8 @@ impl<'a> Codegen<'a> {
                 Some(Value::var(index).ty(var.ty))
             }
             Expr::Ident { id, pos, .. } => {
-                let decl = self.find_or_declare(pos, self.ci.file, Ok(id));
-                match decl {
+                let decl = self.find_type(pos, self.ci.file, Ok(id), self.files);
+                match decl.expand() {
                     ty::Kind::Global(global) => {
                         let gl = &self.tys.ins.globals[global as usize];
                         let value = self.ci.nodes.new_node(gl.ty, Kind::Global { global }, [VOID]);
@@ -1744,31 +1862,29 @@ impl<'a> Codegen<'a> {
                 let ctx = Ctx::default().with_ty(self.ty(ty));
                 self.expr_ctx(expr, ctx)
             }
-            Expr::Call { func: &Expr::Ident { pos, id, .. }, args, .. } => {
+            Expr::Call { func, args, .. } => {
                 self.ci.call_count += 1;
-                let func = self.find_or_declare(pos, self.ci.file, Ok(id));
-                let ty::Kind::Func(func) = func else {
+                let ty = self.ty(func);
+                let ty::Kind::Func(fnc) = ty.expand() else {
                     self.report(
-                        pos,
-                        fa!("compiler cant (yet) call '{}'", self.ty_display(func.compress())),
+                        func.pos(),
+                        fa!("compiler cant (yet) call '{}'", self.ty_display(ty)),
                     );
                     return Value::NEVER;
                 };
 
-                self.make_func_reachable(func);
+                self.make_func_reachable(fnc);
 
-                let fuc = &self.tys.ins.funcs[func as usize];
+                let fuc = &self.tys.ins.funcs[fnc as usize];
                 let sig = fuc.sig.expect("TODO: generic functions");
                 let ast = &self.files[fuc.file as usize];
-                let Expr::BinOp { right: &Expr::Closure { args: cargs, .. }, .. } =
-                    fuc.expr.get(ast).unwrap()
-                else {
+                let &Expr::Closure { args: cargs, .. } = fuc.expr.get(ast).unwrap() else {
                     unreachable!()
                 };
 
                 self.assert_report(
                     args.len() == cargs.len(),
-                    pos,
+                    func.pos(),
                     fa!(
                         "expected {} function argumenr{}, got {}",
                         cargs.len(),
@@ -1805,7 +1921,7 @@ impl<'a> Codegen<'a> {
 
                     false
                 });
-                self.ci.ctrl = self.ci.nodes.new_node(sig.ret, Kind::Call { func }, inps);
+                self.ci.ctrl = self.ci.nodes.new_node(sig.ret, Kind::Call { func: fnc }, inps);
 
                 self.store_mem(VOID, VOID);
 
@@ -2301,7 +2417,7 @@ impl<'a> Codegen<'a> {
 
         self.pool.push_ci(file, Some(sig.ret), 0, &mut self.ci);
 
-        let Expr::BinOp { right: &Expr::Closure { body, args, .. }, .. } = expr else {
+        let &Expr::Closure { body, args, .. } = expr else {
             unreachable!("{}", self.ast_display(expr))
         };
 
@@ -2335,182 +2451,7 @@ impl<'a> Codegen<'a> {
     }
 
     fn ty(&mut self, expr: &Expr) -> ty::Id {
-        if let Some(ty) = self.tys.ty(self.ci.file, expr, self.files) {
-            return ty;
-        }
-
-        self.report_unhandled_ast(expr, "type")
-    }
-
-    fn find_or_declare(&mut self, pos: Pos, file: FileId, name: Result<Ident, &str>) -> ty::Kind {
-        let f = &self.files[file as usize];
-        let lit_name = name.map(|e| f.ident_str(e)).unwrap_or_else(core::convert::identity);
-        log::trace!("find_or_declare: {lit_name} {file}");
-        if let Some(ty) = self.tys.find_type(file, name, self.files) {
-            return ty.expand();
-        }
-
-        let Some((expr, ident)) = f.find_decl(name) else {
-            match name {
-                Ok(name) => {
-                    let name = self.cfile().ident_str(name);
-                    self.report(pos, fa!("idk indentifier: {name}"))
-                }
-                Err("main") => self.report(
-                    pos,
-                    fa!(
-                        "missing main function in '{}', compiler can't \
-                        emmit libraries since such concept is not defined",
-                        f.path
-                    ),
-                ),
-                Err(name) => self.report(pos, fa!("idk indentifier: {name}")),
-            }
-            return ty::Id::NEVER.expand();
-        };
-
-        let key = SymKey::Decl(file, ident);
-        if let Some(existing) = self.tys.syms.get(key, &self.tys.ins) {
-            if let ty::Kind::Func(id) = existing.expand()
-                && let func = &mut self.tys.ins.funcs[id as usize]
-                && let Err(idx) = task::unpack(func.offset)
-                && idx < self.tasks.len()
-            {
-                func.offset = task::id(self.tasks.len());
-                let task = self.tasks[idx].take();
-                self.tasks.push(task);
-            }
-            return existing.expand();
-        }
-
-        let prev_file = core::mem::replace(&mut self.ci.file, file);
-        let sym = match expr {
-            Expr::BinOp {
-                left: &Expr::Ident { id, .. },
-                op: TokenKind::Decl,
-                right: &Expr::Closure { pos, args, ret, .. },
-            } => {
-                let func = Func {
-                    file,
-                    name: id,
-                    sig: '_b: {
-                        let arg_base = self.tys.tmp.args.len();
-                        for arg in args {
-                            let sym = parser::find_symbol(&f.symbols, arg.id);
-                            assert!(sym.flags & idfl::COMPTIME == 0, "TODO");
-                            let ty = self.ty(&arg.ty);
-                            self.tys.tmp.args.push(ty);
-                        }
-
-                        let Some(args) = self.tys.pack_args(arg_base) else {
-                            self.fatal_report(
-                                pos,
-                                "you cant be serious, using more the 31 arguments in a function",
-                            );
-                        };
-                        let ret = self.ty(ret);
-
-                        Some(Sig { args, ret })
-                    },
-                    expr: {
-                        let refr = ExprRef::new(expr);
-                        debug_assert!(refr.get(f).is_some());
-                        refr
-                    },
-                    ..Default::default()
-                };
-
-                let id = self.tys.ins.funcs.len() as _;
-                self.tys.ins.funcs.push(func);
-
-                ty::Kind::Func(id)
-            }
-            Expr::BinOp {
-                left: Expr::Ident { .. },
-                op: TokenKind::Decl,
-                right: right @ (Expr::Struct { .. } | Expr::Mod { .. }),
-            } => self.ty(right).expand(),
-            Expr::BinOp { left: &Expr::Ident { id: name, .. }, op: TokenKind::Decl, right } => {
-                let gid = self.tys.ins.globals.len() as ty::Global;
-                self.tys.ins.globals.push(Global { file, name, ..Default::default() });
-
-                let ty = ty::Kind::Global(gid);
-                self.pool.push_ci(file, None, self.tasks.len(), &mut self.ci);
-
-                let ret = Expr::Return { pos: right.pos(), val: Some(right) };
-                self.expr(&ret);
-
-                self.ci.finalize();
-
-                let ret = self.ci.ret.expect("for return type to be infered");
-                if self.errors.borrow().is_empty() {
-                    self.ci.emit_body(&mut self.tys, self.files, Sig { args: Tuple::empty(), ret });
-                    self.ci.code.truncate(self.ci.code.len() - instrs::jala(0, 0, 0).0);
-                    self.ci.emit(instrs::tx());
-
-                    let func = Func {
-                        file,
-                        name,
-                        expr: ExprRef::new(expr),
-                        relocs: core::mem::take(&mut self.ci.relocs),
-                        code: core::mem::take(&mut self.ci.code),
-                        ..Default::default()
-                    };
-                    self.pool.pop_ci(&mut self.ci);
-                    self.complete_call_graph();
-
-                    let mut mem = vec![0u8; self.tys.size_of(ret) as usize];
-
-                    // TODO: return them back
-                    let fuc = self.tys.ins.funcs.len() as ty::Func;
-                    self.tys.ins.funcs.push(func);
-
-                    self.tys.dump_reachable(fuc, &mut self.ct.code);
-
-                    #[cfg(debug_assertions)]
-                    {
-                        let mut vc = String::new();
-                        if let Err(e) = self.tys.disasm(&self.ct.code, self.files, &mut vc, |_| {})
-                        {
-                            panic!("{e} {}", vc);
-                        } else {
-                            log::trace!("{}", vc);
-                        }
-                    }
-
-                    self.ct.vm.write_reg(reg::RET, mem.as_mut_ptr() as u64);
-                    let prev_pc = self.ct.push_pc(self.tys.ins.funcs[fuc as usize].offset);
-                    loop {
-                        match self.ct.vm.run().expect("TODO") {
-                            hbvm::VmRunOk::End => break,
-                            hbvm::VmRunOk::Timer => todo!(),
-                            hbvm::VmRunOk::Ecall => todo!(),
-                            hbvm::VmRunOk::Breakpoint => todo!(),
-                        }
-                    }
-                    self.ct.pop_pc(prev_pc);
-
-                    match mem.len() {
-                        0 => unreachable!(),
-                        len @ 1..=8 => mem
-                            .copy_from_slice(&self.ct.vm.read_reg(reg::RET).0.to_ne_bytes()[..len]),
-                        9..=16 => todo!(),
-                        _ => {}
-                    }
-
-                    self.tys.ins.globals[gid as usize].data = mem;
-                } else {
-                    self.pool.pop_ci(&mut self.ci);
-                }
-                self.tys.ins.globals[gid as usize].ty = ret;
-
-                ty
-            }
-            e => unimplemented!("{e:#?}"),
-        };
-        self.ci.file = prev_file;
-        self.tys.syms.insert(key, sym.compress(), &self.tys.ins);
-        sym
+        self.parse_ty(self.ci.file, expr, None, self.files)
     }
 
     fn ty_display(&self, ty: ty::Id) -> ty::Display {

@@ -34,11 +34,11 @@ use {
     self::{
         ident::Ident,
         lexer::TokenKind,
-        parser::{CommentOr, Expr, ExprRef, FileId, Pos},
+        parser::{idfl, CommentOr, Expr, ExprRef, FileId, Pos},
         ty::ArrayLen,
     },
     alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec},
-    core::{cell::Cell, ops::Range},
+    core::{cell::Cell, fmt::Display, ops::Range},
     hashbrown::hash_map,
     hbbytecode as instrs,
 };
@@ -683,7 +683,7 @@ impl Default for Global {
             offset: u32::MAX,
             data: Default::default(),
             file: u32::MAX,
-            name: u32::MAX,
+            name: 0,
         }
     }
 }
@@ -840,6 +840,192 @@ struct Types {
 
 const HEADER_SIZE: usize = core::mem::size_of::<AbleOsExecutableHeader>();
 
+trait TypeParser {
+    fn tys(&mut self) -> &mut Types;
+    fn on_reuse(&mut self, existing: ty::Id);
+    fn find_local_ty(&mut self, name: Ident) -> Option<ty::Id>;
+    fn report(&self, pos: Pos, msg: impl Display) -> ty::Id;
+    fn eval_ty(
+        &mut self,
+        file: FileId,
+        name: Option<Ident>,
+        expr: &Expr,
+        files: &[parser::Ast],
+    ) -> ty::Id;
+
+    fn find_type(
+        &mut self,
+        pos: Pos,
+        file: FileId,
+        id: Result<Ident, &str>,
+        files: &[parser::Ast],
+    ) -> ty::Id {
+        let ty = if let Ok(id) = id
+            && let Some(ty) = self.find_local_ty(id)
+        {
+            ty
+        } else if let Ok(id) = id
+            && let tys = self.tys()
+            && let Some(&ty) = tys.syms.get(SymKey::Decl(file, id), &tys.ins)
+        {
+            self.on_reuse(ty);
+            ty
+        } else {
+            let f = &files[file as usize];
+
+            let Some((Expr::BinOp { left, right, .. }, name)) = f.find_decl(id) else {
+                return match id {
+                    Ok(name) => {
+                        let name = f.ident_str(name);
+                        self.report(pos, format_args!("undefined indentifier: {name}"))
+                    }
+                    Err("main") => self.report(
+                        pos,
+                        format_args!(
+                            "missing main function in '{}', compiler can't \
+                        emmit libraries since such concept is not defined",
+                            f.path
+                        ),
+                    ),
+                    Err(name) => self.report(pos, format_args!("undefined indentifier: {name}")),
+                };
+            };
+
+            let tys = self.tys();
+            if let Some(&ty) = tys.syms.get(SymKey::Decl(file, name), &tys.ins) {
+                ty
+            } else {
+                let ty = left
+                    .find_pattern_path(name, right, |right| {
+                        self.parse_ty(file, right, Some(name), files)
+                    })
+                    .unwrap_or_else(|_| unreachable!());
+                let tys = self.tys();
+                let nm = match ty.expand() {
+                    ty::Kind::Struct(s) => &mut tys.ins.structs[s as usize].name,
+                    ty::Kind::Func(s) => &mut tys.ins.funcs[s as usize].name,
+                    ty::Kind::Global(s) => &mut tys.ins.globals[s as usize].name,
+                    _ => &mut 0,
+                };
+                if *nm == 0 {
+                    *nm = name;
+                }
+                tys.syms.insert(SymKey::Decl(file, name), ty, &tys.ins);
+                ty
+            }
+        };
+
+        let tys = self.tys();
+        if let ty::Kind::Global(g) = ty.expand() {
+            let g = &tys.ins.globals[g as usize];
+            if g.ty == ty::Id::TYPE {
+                return ty::Id::from(
+                    u32::from_ne_bytes(g.data.as_slice().try_into().unwrap()) as u64
+                );
+            }
+        }
+        ty
+    }
+
+    /// returns none if comptime eval is required
+    fn parse_ty(
+        &mut self,
+        file: FileId,
+        expr: &Expr,
+        name: Option<Ident>,
+        files: &[parser::Ast],
+    ) -> ty::Id {
+        match *expr {
+            Expr::Mod { id, .. } => ty::Kind::Module(id).compress(),
+            Expr::UnOp { op: TokenKind::Xor, val, .. } => {
+                let base = self.parse_ty(file, val, None, files);
+                self.tys().make_ptr(base)
+            }
+            Expr::Ident { id, .. } if ident::is_null(id) => id.into(),
+            Expr::Ident { id, pos, .. } => self.find_type(pos, file, Ok(id), files),
+            Expr::Field { target, pos, name } => {
+                let ty::Kind::Module(file) = self.parse_ty(file, target, None, files).expand()
+                else {
+                    return self.eval_ty(file, None, expr, files);
+                };
+
+                self.find_type(pos, file, Err(name), files)
+            }
+            Expr::Slice { size: None, item, .. } => {
+                let ty = self.parse_ty(file, item, None, files);
+                self.tys().make_array(ty, ArrayLen::MAX)
+            }
+            Expr::Slice { size: Some(&Expr::Number { value, .. }), item, .. } => {
+                let ty = self.parse_ty(file, item, None, files);
+                self.tys().make_array(ty, value as _)
+            }
+            Expr::Struct { pos, fields, packed, .. } => {
+                let sym = SymKey::Struct(file, pos);
+                let tys = self.tys();
+                if let Some(&ty) = tys.syms.get(sym, &tys.ins) {
+                    return ty;
+                }
+
+                let prev_tmp = self.tys().tmp.fields.len();
+                for field in fields.iter().filter_map(CommentOr::or) {
+                    let ty = self.parse_ty(file, &field.ty, None, files);
+                    let field = Field { name: self.tys().names.intern(field.name), ty };
+                    self.tys().tmp.fields.push(field);
+                }
+
+                let tys = self.tys();
+                tys.ins.structs.push(Struct {
+                    file,
+                    pos,
+                    name: name.unwrap_or(0),
+                    field_start: tys.ins.fields.len() as _,
+                    explicit_alignment: packed.then_some(1),
+                    ..Default::default()
+                });
+
+                tys.ins.fields.extend(tys.tmp.fields.drain(prev_tmp..));
+
+                let ty = ty::Kind::Struct(tys.ins.structs.len() as u32 - 1).compress();
+                tys.syms.insert(sym, ty, &tys.ins);
+                ty
+            }
+            Expr::Closure { pos, args, ret, .. } if let Some(name) = name => {
+                let func = Func {
+                    file,
+                    name,
+                    sig: 'b: {
+                        let arg_base = self.tys().tmp.args.len();
+                        for arg in args {
+                            let sym = parser::find_symbol(&files[file as usize].symbols, arg.id);
+                            if sym.flags & idfl::COMPTIME != 0 {
+                                self.tys().tmp.args.truncate(arg_base);
+                                break 'b None;
+                            }
+                            let ty = self.parse_ty(file, &arg.ty, None, files);
+                            self.tys().tmp.args.push(ty);
+                        }
+
+                        let Some(args) = self.tys().pack_args(arg_base) else {
+                            return self.report(pos, "function has too many argumnets");
+                        };
+                        let ret = self.parse_ty(file, ret, None, files);
+
+                        Some(Sig { args, ret })
+                    },
+                    expr: ExprRef::new(expr),
+                    ..Default::default()
+                };
+
+                let id = self.tys().ins.funcs.len() as _;
+                self.tys().ins.funcs.push(func);
+
+                ty::Kind::Func(id).compress()
+            }
+            _ => self.eval_ty(file, name, expr, files),
+        }
+    }
+}
+
 impl Types {
     fn struct_field_range(&self, strct: ty::Struct) -> Range<usize> {
         let start = self.ins.structs[strct as usize].field_start as usize;
@@ -868,98 +1054,6 @@ impl Types {
 
     fn struct_fields(&self, strct: ty::Struct) -> &[Field] {
         &self.ins.fields[self.struct_field_range(strct)]
-    }
-
-    fn find_type(
-        &mut self,
-        file: FileId,
-        id: Result<Ident, &str>,
-        files: &[parser::Ast],
-    ) -> Option<ty::Id> {
-        if let Ok(id) = id
-            && let Some(&ty) = self.syms.get(SymKey::Decl(file, id), &self.ins)
-        {
-            if let ty::Kind::Global(g) = ty.expand() {
-                let g = &self.ins.globals[g as usize];
-                if g.ty == ty::Id::TYPE {
-                    return Some(ty::Id::from(
-                        u32::from_ne_bytes(*g.data.first_chunk().unwrap()) as u64
-                    ));
-                }
-            }
-
-            return Some(ty);
-        }
-
-        let f = &files[file as usize];
-        let (Expr::BinOp { left, right, .. }, name) = f.find_decl(id)? else { unreachable!() };
-
-        let ty = left
-            .find_pattern_path(name, right, |right| self.ty(file, right, files))
-            .unwrap_or_else(|_| unreachable!())?;
-        if let ty::Kind::Struct(s) = ty.expand() {
-            self.ins.structs[s as usize].name = name;
-        }
-
-        self.syms.insert(SymKey::Decl(file, name), ty, &self.ins);
-        Some(ty)
-    }
-
-    /// returns none if comptime eval is required
-    fn ty(&mut self, file: FileId, expr: &Expr, files: &[parser::Ast]) -> Option<ty::Id> {
-        Some(match *expr {
-            Expr::Mod { id, .. } => ty::Kind::Module(id).compress(),
-            Expr::UnOp { op: TokenKind::Xor, val, .. } => {
-                let base = self.ty(file, val, files)?;
-                self.make_ptr(base)
-            }
-            Expr::Ident { id, .. } if ident::is_null(id) => id.into(),
-            Expr::Ident { id, .. } => self.find_type(file, Ok(id), files)?,
-            Expr::Field { target, name, .. } => {
-                let ty::Kind::Module(file) = self.ty(file, target, files)?.expand() else {
-                    return None;
-                };
-
-                self.find_type(file, Err(name), files)?
-            }
-            Expr::Slice { size: None, item, .. } => {
-                let ty = self.ty(file, item, files)?;
-                self.make_array(ty, ArrayLen::MAX)
-            }
-            Expr::Slice { size: Some(&Expr::Number { value, .. }), item, .. } => {
-                let ty = self.ty(file, item, files)?;
-                self.make_array(ty, value as _)
-            }
-            Expr::Struct { pos, fields, packed, .. } => {
-                let sym = SymKey::Struct(file, pos);
-                if let Some(&ty) = self.syms.get(sym, &self.ins) {
-                    return Some(ty);
-                }
-
-                let prev_tmp = self.tmp.fields.len();
-                for field in fields.iter().filter_map(CommentOr::or) {
-                    let Some(ty) = self.ty(file, &field.ty, files) else {
-                        self.tmp.fields.truncate(prev_tmp);
-                        return None;
-                    };
-                    self.tmp.fields.push(Field { name: self.names.intern(field.name), ty });
-                }
-
-                self.ins.structs.push(Struct {
-                    file,
-                    pos,
-                    field_start: self.ins.fields.len() as _,
-                    explicit_alignment: packed.then_some(1),
-                    ..Default::default()
-                });
-                self.ins.fields.extend(self.tmp.fields.drain(prev_tmp..));
-
-                let ty = ty::Kind::Struct(self.ins.structs.len() as u32 - 1).compress();
-                self.syms.insert(sym, ty, &self.ins);
-                ty
-            }
-            _ => return None,
-        })
     }
 
     fn reassemble(&mut self, buf: &mut Vec<u8>) {
@@ -1063,12 +1157,7 @@ impl Types {
             .map(|f| {
                 let name = if f.file != u32::MAX {
                     let file = &files[f.file as usize];
-                    let Expr::BinOp { left: &Expr::Ident { id, .. }, .. } =
-                        f.expr.get(file).unwrap()
-                    else {
-                        unreachable!()
-                    };
-                    file.ident_str(id)
+                    file.ident_str(f.name)
                 } else {
                     "target_fn"
                 };

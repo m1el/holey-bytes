@@ -9,7 +9,7 @@ use {
         reg,
         ty::{self, TyCheck},
         Comptime, Field, Func, Global, OffsetIter, ParamAlloc, Reloc, Sig, Struct, SymKey,
-        TypedReloc, Types,
+        TypeParser, TypedReloc, Types,
     },
     alloc::{string::String, vec::Vec},
     core::{assert_matches::debug_assert_matches, fmt::Display},
@@ -443,7 +443,6 @@ struct ItemCtxSnap {
 #[derive(Default)]
 struct ItemCtx {
     file: FileId,
-    id: ty::Kind,
     ret: Option<ty::Id>,
     ret_reg: rall::Id,
     inline_ret_loc: Loc,
@@ -704,6 +703,72 @@ pub struct Codegen {
     ct: Comptime,
 }
 
+impl TypeParser for Codegen {
+    fn tys(&mut self) -> &mut Types {
+        &mut self.tys
+    }
+
+    fn on_reuse(&mut self, existing: ty::Id) {
+        if let ty::Kind::Func(id) = existing.expand()
+            && let func = &mut self.tys.ins.funcs[id as usize]
+            && let Err(idx) = task::unpack(func.offset)
+            && idx < self.tasks.len()
+        {
+            func.offset = task::id(self.tasks.len());
+            let task = self.tasks[idx].take();
+            self.tasks.push(task);
+        }
+    }
+
+    fn eval_ty(
+        &mut self,
+        file: FileId,
+        name: Option<Ident>,
+        expr: &Expr,
+        _: &[parser::Ast],
+    ) -> ty::Id {
+        let prev_file = core::mem::replace(&mut self.ci.file, file);
+        let sym = match *expr {
+            Expr::Slice { size, item, .. } => {
+                let ty = self.ty(item);
+                let len = size.map_or(ArrayLen::MAX, |expr| {
+                    self.eval_const(self.ci.file, expr, ty::U32) as _
+                });
+                self.tys.make_array(ty, len).expand()
+            }
+            Expr::Directive { name: "TypeOf", args: [expr], .. } => self.infer_type(expr).expand(),
+            _ if let Some(name) = name => {
+                let gid = self.tys.ins.globals.len() as ty::Global;
+                self.tys.ins.globals.push(Global { file, name, ..Default::default() });
+
+                let ci = ItemCtx { file, ..self.pool.cis.pop().unwrap_or_default() };
+
+                self.tys.ins.globals[gid as usize] = self
+                    .ct_eval(ci, |s, _| Ok::<_, !>(s.generate_global(expr, file, name)))
+                    .into_ok();
+
+                ty::Kind::Global(gid)
+            }
+            _ => ty::Id::from(self.eval_const(file, expr, ty::Id::TYPE)).expand(),
+        };
+        self.ci.file = prev_file;
+        sym.compress()
+    }
+
+    fn report(&self, pos: Pos, msg: impl Display) -> ty::Id {
+        self.report(pos, msg)
+    }
+
+    fn find_local_ty(&mut self, name: Ident) -> Option<ty::Id> {
+        self.ci.vars.iter().rfind(|v| v.id == name && v.value.ty == ty::Id::TYPE).map(|v| {
+            match v.value.loc {
+                Loc::Rt { .. } => unreachable!(),
+                Loc::Ct { derefed, value } => ty::Id::from(ensure_loaded(value, derefed, 4)),
+            }
+        })
+    }
+}
+
 impl Codegen {
     pub fn push_embeds(&mut self, embeds: Vec<Vec<u8>>) {
         self.tys.ins.globals = embeds
@@ -719,7 +784,7 @@ impl Codegen {
     pub fn generate(&mut self, root: FileId) {
         self.ci.emit_entry_prelude();
         self.ci.file = root;
-        self.find_or_declare(0, root, Err("main"), "");
+        self.find_type(0, root, Err("main"), &self.files.clone());
         self.make_func_reachable(0);
         self.complete_call_graph();
     }
@@ -816,7 +881,9 @@ impl Codegen {
             }
             E::Slice { size, item, .. } => {
                 let ty = self.ty(item);
-                let len = size.map_or(ArrayLen::MAX, |expr| self.eval_const(expr, ty::U32) as _);
+                let len = size.map_or(ArrayLen::MAX, |expr| {
+                    self.eval_const(self.ci.file, expr, ty::U32) as _
+                });
                 Some(Value::ty(self.tys.make_array(ty, len)))
             }
             E::Index { base, index } => {
@@ -879,15 +946,20 @@ impl Codegen {
                 }
             }
             E::Directive { name: "inline", args: [func_ast, args @ ..], .. } => {
-                let ty::Kind::Func(mut func) = self.ty(func_ast).expand() else {
-                    self.report(func_ast.pos(), "first argument of inline needs to be a function");
+                let ty = self.ty(func_ast);
+                let ty::Kind::Func(mut func) = ty.expand() else {
+                    self.report(
+                        func_ast.pos(),
+                        format_args!(
+                            "first argument of inline needs to be a function, but its '{}'",
+                            self.ty_display(ty)
+                        ),
+                    );
                 };
 
                 let fuc = &self.tys.ins.funcs[func as usize];
                 let ast = self.files[fuc.file as usize].clone();
-                let E::BinOp { right: &E::Closure { args: cargs, body, .. }, .. } =
-                    fuc.expr.get(&ast).unwrap()
-                else {
+                let &E::Closure { args: cargs, body, .. } = fuc.expr.get(&ast).unwrap() else {
                     unreachable!();
                 };
 
@@ -1183,7 +1255,10 @@ impl Codegen {
                         self.ci.revert(checkpoint);
                         match self.ty(target).expand() {
                             ty::Kind::Module(idx) => {
-                                match self.find_or_declare(pos, idx, Err(field), "") {
+                                match self
+                                    .find_type(pos, idx, Err(field), &self.files.clone())
+                                    .expand()
+                                {
                                     ty::Kind::Global(idx) => self.handle_global(idx),
                                     e => Some(Value::ty(e.compress())),
                                 }
@@ -1282,7 +1357,7 @@ impl Codegen {
             }
             E::BinOp { left, op: T::Decl, right } if self.has_ct(left) => {
                 let slot_base = self.ct.vm.read_reg(reg::STACK_PTR).0;
-                let (cnt, ty) = self.eval_const_low(right, None);
+                let (cnt, ty) = self.eval_const_low(self.ci.file, right, None);
                 if self.assign_ct_pattern(left, ty, cnt as _) {
                     self.ct.vm.write_reg(reg::STACK_PTR, slot_base);
                 }
@@ -1296,7 +1371,13 @@ impl Codegen {
                 log::trace!("call {}", self.ast_display(fast));
                 let func_ty = self.ty(fast);
                 let ty::Kind::Func(mut func) = func_ty.expand() else {
-                    self.report(fast.pos(), "can't call this, maybe in the future");
+                    self.report(
+                        fast.pos(),
+                        format_args!(
+                            "can't '{}' this, maybe in the future",
+                            self.ty_display(func_ty)
+                        ),
+                    );
                 };
 
                 // TODO: this will be usefull but not now
@@ -1306,9 +1387,7 @@ impl Codegen {
 
                 let fuc = &self.tys.ins.funcs[func as usize];
                 let ast = self.files[fuc.file as usize].clone();
-                let E::BinOp { right: &E::Closure { args: cargs, .. }, .. } =
-                    fuc.expr.get(&ast).unwrap()
-                else {
+                let &E::Closure { args: cargs, .. } = fuc.expr.get(&ast).unwrap() else {
                     unreachable!();
                 };
 
@@ -1371,14 +1450,8 @@ impl Codegen {
                 let loc = var.value.loc.as_ref();
                 Some(Value { ty: self.ci.vars[var_index].value.ty, loc })
             }
-            E::Ident { id, .. } => {
-                let cfile = self.cfile().clone();
-                match self.find_or_declare(
-                    ident::pos(id),
-                    self.ci.file,
-                    Ok(id),
-                    cfile.ident_str(id),
-                ) {
+            E::Ident { id, pos, .. } => {
+                match self.find_type(pos, self.ci.file, Ok(id), &self.files.clone()).expand() {
                     ty::Kind::Global(id) => self.handle_global(id),
                     tk => Some(Value::ty(tk.compress())),
                 }
@@ -1719,9 +1792,7 @@ impl Codegen {
     fn compute_signature(&mut self, func: &mut ty::Func, pos: Pos, args: &[Expr]) -> Option<Sig> {
         let fuc = &self.tys.ins.funcs[*func as usize];
         let fast = self.files[fuc.file as usize].clone();
-        let Expr::BinOp { right: &Expr::Closure { args: cargs, ret, .. }, .. } =
-            fuc.expr.get(&fast).unwrap()
-        else {
+        let &Expr::Closure { args: cargs, ret, .. } = fuc.expr.get(&fast).unwrap() else {
             unreachable!();
         };
 
@@ -1786,7 +1857,6 @@ impl Codegen {
         // FIXME: very inneficient
         let mut ci = ItemCtx {
             file: self.ci.file,
-            id: self.ci.id,
             ret: self.ci.ret,
             task_base: self.ci.task_base,
             ..self.pool.cis.pop().unwrap_or_default()
@@ -1818,17 +1888,17 @@ impl Codegen {
         value.ty
     }
 
-    fn eval_const(&mut self, expr: &Expr, ty: impl Into<ty::Id>) -> u64 {
-        self.eval_const_low(expr, Some(ty.into())).0
+    fn eval_const(&mut self, file: FileId, expr: &Expr, ty: impl Into<ty::Id>) -> u64 {
+        self.eval_const_low(file, expr, Some(ty.into())).0
     }
 
-    fn eval_const_low(&mut self, expr: &Expr, mut ty: Option<ty::Id>) -> (u64, ty::Id) {
-        let mut ci = ItemCtx {
-            file: self.ci.file,
-            id: ty::Kind::Builtin(u32::MAX),
-            ret: ty,
-            ..self.pool.cis.pop().unwrap_or_default()
-        };
+    fn eval_const_low(
+        &mut self,
+        file: FileId,
+        expr: &Expr,
+        mut ty: Option<ty::Id>,
+    ) -> (u64, ty::Id) {
+        let mut ci = ItemCtx { file, ret: ty, ..self.pool.cis.pop().unwrap_or_default() };
         ci.vars.append(&mut self.ci.vars);
 
         let loc = self.ct_eval(ci, |s, prev| {
@@ -2083,21 +2153,11 @@ impl Codegen {
         let expr = func.expr.get(&ast).unwrap();
         let ct_stack_base = self.ct.vm.read_reg(reg::STACK_PTR).0;
 
-        let repl = ItemCtx {
-            file,
-            id: ty::Kind::Func(id),
-            ret: Some(sig.ret),
-            ..self.pool.cis.pop().unwrap_or_default()
-        };
+        let repl = ItemCtx { file, ret: Some(sig.ret), ..self.pool.cis.pop().unwrap_or_default() };
         let prev_ci = core::mem::replace(&mut self.ci, repl);
         self.ci.regs.init();
 
-        let Expr::BinOp {
-            left: Expr::Ident { .. },
-            op: TokenKind::Decl,
-            right: &Expr::Closure { body, args, .. },
-        } = expr
-        else {
+        let Expr::Closure { body, args, .. } = expr else {
             unreachable!("{}", self.ast_display(expr))
         };
 
@@ -2375,18 +2435,7 @@ impl Codegen {
     }
 
     fn ty(&mut self, expr: &Expr) -> ty::Id {
-        let ty = self.tys.ty(self.ci.file, expr, &self.files);
-        let evaled_ty = ty::Id::from(self.eval_const(expr, ty::TYPE));
-        if let Some(ty) = ty {
-            debug_assert_eq!(
-                ty,
-                evaled_ty,
-                "{} {}",
-                self.ty_display(ty),
-                self.ty_display(evaled_ty)
-            );
-        }
-        evaled_ty
+        self.parse_ty(self.ci.file, expr, None, &self.files.clone())
     }
 
     fn read_trap(addr: u64) -> Option<&'static trap::Trap> {
@@ -2455,118 +2504,6 @@ impl Codegen {
         self.ct.vm.pc = hbvm::mem::Address::new(offset as _);
     }
 
-    fn find_or_declare(
-        &mut self,
-        pos: Pos,
-        file: FileId,
-        name: Result<Ident, &str>,
-        lit_name: &str,
-    ) -> ty::Kind {
-        log::trace!("find_or_declare: {lit_name} {file}");
-        if let Some(ty) = self.tys.find_type(file, name, &self.files) {
-            return ty.expand();
-        }
-
-        let f = self.files[file as usize].clone();
-        let Some((expr, ident)) = f.find_decl(name) else {
-            match name {
-                Ok(_) => self.report(pos, format_args!("undefined identifier: {lit_name}")),
-                Err("main") => self.report(pos, format_args!("missing main function")),
-                Err(name) => self.report(pos, format_args!("undefined indentifier: {name}")),
-            }
-        };
-
-        let key = SymKey::Decl(file, ident);
-        if let Some(existing) = self.tys.syms.get(key, &self.tys.ins) {
-            if let ty::Kind::Func(id) = existing.expand()
-                && let func = &mut self.tys.ins.funcs[id as usize]
-                && let Err(idx) = task::unpack(func.offset)
-                && idx < self.tasks.len()
-            {
-                func.offset = task::id(self.tasks.len());
-                let task = self.tasks[idx].take();
-                self.tasks.push(task);
-            }
-            return existing.expand();
-        }
-
-        let prev_file = core::mem::replace(&mut self.ci.file, file);
-        let sym = match expr {
-            Expr::BinOp {
-                left: &Expr::Ident { id, .. },
-                op: TokenKind::Decl,
-                right: &Expr::Closure { pos, args, ret, .. },
-            } => {
-                let func = Func {
-                    file,
-                    name: id,
-                    sig: 'b: {
-                        let arg_base = self.tys.tmp.args.len();
-                        for arg in args {
-                            let sym = find_symbol(&self.files[file as usize].symbols, arg.id);
-                            if sym.flags & idfl::COMPTIME != 0 {
-                                self.tys.tmp.args.truncate(arg_base);
-                                break 'b None;
-                            }
-                            let ty = self.ty(&arg.ty);
-                            self.tys.tmp.args.push(ty);
-                        }
-
-                        let args = self
-                            .tys
-                            .pack_args(arg_base)
-                            .unwrap_or_else(|| self.report(pos, "function has too many argumnets"));
-                        let ret = self.ty(ret);
-
-                        Some(Sig { args, ret })
-                    },
-                    expr: {
-                        let refr = ExprRef::new(expr);
-                        debug_assert!(refr.get(&f).is_some());
-                        refr
-                    },
-                    ..Default::default()
-                };
-
-                let id = self.tys.ins.funcs.len() as _;
-                self.tys.ins.funcs.push(func);
-
-                ty::Kind::Func(id)
-            }
-            Expr::BinOp {
-                left: &Expr::Ident { id, .. },
-                op: TokenKind::Decl,
-                right: stru @ Expr::Struct { .. },
-            } => {
-                let str = self.ty(stru).expand().inner();
-                self.tys.ins.structs[str as usize].name = id;
-                ty::Kind::Struct(str)
-            }
-            Expr::BinOp { left, op: TokenKind::Decl, right } => {
-                let gid = self.tys.ins.globals.len() as ty::Global;
-                self.tys.ins.globals.push(Global { file, name: ident, ..Default::default() });
-
-                let ci = ItemCtx {
-                    file,
-                    id: ty::Kind::Builtin(u32::MAX),
-                    ..self.pool.cis.pop().unwrap_or_default()
-                };
-
-                _ = left.find_pattern_path(ident, right, |expr| {
-                    self.tys.ins.globals[gid as usize] = self
-                        .ct_eval(ci, |s, _| Ok::<_, !>(s.generate_global(expr, file, ident)))
-                        .into_ok();
-                });
-
-                ty::Kind::Global(gid)
-            }
-            e => unimplemented!("{e:#?}"),
-        };
-        self.ci.file = prev_file;
-        self.tys.syms.insert(key, sym.compress(), &self.tys.ins);
-        sym
-    }
-
     fn make_func_reachable(&mut self, func: ty::Func) {
         let fuc = &mut self.tys.ins.funcs[func as usize];
         if fuc.offset == u32::MAX {
@@ -2598,7 +2535,7 @@ impl Codegen {
 
         self.ci.free_loc(ret.loc);
 
-        Global { ty: ret.ty, file, name, data, ..Default::default() }
+        Global { ty: ret.ty, file, data, name, ..Default::default() }
     }
 
     fn ct_eval<T, E>(
