@@ -37,7 +37,7 @@ use {
         parser::{CommentOr, Expr, ExprRef, FileId, Pos},
         ty::ArrayLen,
     },
-    alloc::{collections::BTreeMap, string::String, vec::Vec},
+    alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec},
     core::{cell::Cell, ops::Range},
     hashbrown::hash_map,
     hbbytecode as instrs,
@@ -531,11 +531,11 @@ mod ty {
     }
 
     impl<'a> Display<'a> {
-        pub(super) fn new(tys: &'a super::Types, files: &'a [parser::Ast], ty: Id) -> Self {
+        pub fn new(tys: &'a super::Types, files: &'a [parser::Ast], ty: Id) -> Self {
             Self { tys, files, ty }
         }
 
-        fn rety(&self, ty: Id) -> Self {
+        pub fn rety(&self, ty: Id) -> Self {
             Self::new(self.tys, self.files, ty)
         }
     }
@@ -1039,7 +1039,7 @@ impl Types {
         AbleOsExecutableHeader {
             magic_number: [0x15, 0x91, 0xD2],
             executable_version: 0,
-            code_length: (code_length - HEADER_SIZE) as _,
+            code_length: code_length.saturating_sub(HEADER_SIZE) as _,
             data_length: data_length as _,
             debug_length: 0,
             config_length: 0,
@@ -1294,6 +1294,43 @@ impl Default for FnvHasher {
     }
 }
 
+const VM_STACK_SIZE: usize = 1024 * 64;
+
+pub struct Comptime {
+    pub vm: hbvm::Vm<LoggedMem, { 1024 * 10 }>,
+    stack: Box<[u8; VM_STACK_SIZE]>,
+    code: Vec<u8>,
+}
+
+impl Comptime {
+    fn reset(&mut self) {
+        let ptr = unsafe { self.stack.as_mut_ptr().cast::<u8>().add(VM_STACK_SIZE) as u64 };
+        self.vm.registers.fill(hbvm::value::Value(0));
+        self.vm.write_reg(reg::STACK_PTR, ptr);
+        self.vm.pc = hbvm::mem::Address::new(self.code.as_ptr() as u64 + HEADER_SIZE as u64);
+    }
+
+    fn push_pc(&mut self, offset: Offset) -> hbvm::mem::Address {
+        let entry = &mut self.code[offset as usize] as *mut _ as _;
+        core::mem::replace(&mut self.vm.pc, hbvm::mem::Address::new(entry))
+            - self.code.as_ptr() as usize
+    }
+
+    fn pop_pc(&mut self, prev_pc: hbvm::mem::Address) {
+        self.vm.pc = prev_pc + self.code.as_ptr() as usize;
+    }
+}
+
+impl Default for Comptime {
+    fn default() -> Self {
+        let mut stack = Box::<[u8; VM_STACK_SIZE]>::new_uninit();
+        let mut vm = hbvm::Vm::default();
+        let ptr = unsafe { stack.as_mut_ptr().cast::<u8>().add(VM_STACK_SIZE) as u64 };
+        vm.write_reg(reg::STACK_PTR, ptr);
+        Self { vm, stack: unsafe { stack.assume_init() }, code: Default::default() }
+    }
+}
+
 #[cfg(test)]
 pub fn run_test(
     name: &'static str,
@@ -1455,7 +1492,7 @@ fn test_run_vm(out: &[u8], output: &mut String) {
         )
     };
 
-    vm.write_reg(codegen::STACK_PTR, unsafe { stack.as_mut_ptr().add(stack.len()) } as u64);
+    vm.write_reg(reg::STACK_PTR, unsafe { stack.as_mut_ptr().add(stack.len()) } as u64);
 
     let stat = loop {
         match vm.run() {

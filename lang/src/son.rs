@@ -10,9 +10,9 @@ use {
             Expr, ExprRef, FileId, Pos,
         },
         reg, task,
-        ty::{self, ArrayLen},
+        ty::{self, ArrayLen, Tuple},
         vc::{BitSet, Vc},
-        Func, HashMap, Offset, OffsetIter, Reloc, Sig, SymKey, TypedReloc, Types,
+        Comptime, Func, Global, HashMap, Offset, OffsetIter, Reloc, Sig, SymKey, TypedReloc, Types,
     },
     alloc::{string::String, vec::Vec},
     core::{
@@ -73,6 +73,43 @@ impl Default for Nodes {
 }
 
 impl Nodes {
+    fn graphviz_low(
+        &self,
+        tys: &Types,
+        files: &[parser::Ast],
+        out: &mut String,
+    ) -> core::fmt::Result {
+        use core::fmt::Write;
+
+        for (i, node) in self.iter() {
+            let color = if self.is_cfg(i) { "yellow" } else { "white" };
+            writeln!(
+                out,
+                "node{i}[label=\"{} {}\" color={color}]",
+                node.kind,
+                ty::Display::new(tys, files, node.ty)
+            )?;
+            for (j, &o) in node.outputs.iter().enumerate() {
+                let color = if self.is_cfg(i) && self.is_cfg(o) { "red" } else { "lightgray" };
+                let index = self[o].inputs.iter().position(|&inp| i == inp).unwrap();
+                let style = if index == 0 && !self.is_cfg(o) { "style=dotted" } else { "" };
+                writeln!(
+                    out,
+                    "node{o} -> node{i}[color={color} taillabel={index} headlabel={j} {style}]",
+                )?;
+            }
+        }
+
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    fn graphviz(&self, tys: &Types, files: &[parser::Ast]) {
+        let out = &mut String::new();
+        _ = self.graphviz_low(tys, files, out);
+        log::info!("{out}");
+    }
+
     fn gcm(&mut self) {
         self.visited.clear(self.values.len());
         push_up(self);
@@ -436,6 +473,7 @@ impl Nodes {
             Kind::Call { func } => {
                 write!(out, "call: {func} {}  ", self[node].depth)
             }
+            Kind::Global { global } => write!(out, "glob: {global:<5}"),
             Kind::Entry => write!(out, "ctrl: {:<5}", "entry"),
             Kind::Then => write!(out, "ctrl: {:<5}", "then"),
             Kind::Else => write!(out, "ctrl: {:<5}", "else"),
@@ -808,6 +846,10 @@ pub enum Kind {
     BinOp {
         op: lexer::TokenKind,
     },
+    // [ctrl]
+    Global {
+        global: ty::Global,
+    },
     // [ctrl, ...args]
     Call {
         func: ty::Func,
@@ -931,7 +973,6 @@ impl Scope {
 #[derive(Default)]
 struct ItemCtx {
     file: FileId,
-    id: ty::Id,
     ret: Option<ty::Id>,
     task_base: usize,
     nodes: Nodes,
@@ -946,7 +987,7 @@ struct ItemCtx {
 }
 
 impl ItemCtx {
-    fn init(&mut self, file: FileId, id: ty::Id, ret: Option<ty::Id>, task_base: usize) {
+    fn init(&mut self, file: FileId, ret: Option<ty::Id>, task_base: usize) {
         debug_assert_eq!(self.loops.len(), 0);
         debug_assert_eq!(self.scope.vars.len(), 0);
         debug_assert_eq!(self.ret_relocs.len(), 0);
@@ -955,7 +996,6 @@ impl ItemCtx {
         debug_assert_eq!(self.code.len(), 0);
 
         self.file = file;
-        self.id = id;
         self.ret = ret;
         self.task_base = task_base;
 
@@ -1109,6 +1149,14 @@ impl ItemCtx {
                         });
                         self.emit(instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
                     }
+                    Kind::Global { global } => {
+                        let reloc = Reloc::new(self.code.len(), 3, 4);
+                        self.relocs.push(TypedReloc {
+                            target: ty::Kind::Global(global).compress(),
+                            reloc,
+                        });
+                        self.emit(instrs::lra(atr(allocs[0]), 0, 0));
+                    }
                     Kind::Stck => {
                         let base = reg::STACK_PTR;
                         let offset = func.nodes[nid].offset;
@@ -1166,7 +1214,13 @@ impl ItemCtx {
         saved_regs.len()
     }
 
-    fn emit_body(&mut self, tys: &mut Types, sig: Sig) {
+    fn emit_body(&mut self, tys: &mut Types, files: &[parser::Ast], sig: Sig) {
+        self.nodes.graphviz(tys, files);
+        self.nodes.gcm();
+        self.nodes.check_final_integrity();
+        self.nodes.basic_blocks();
+        self.nodes.graphviz(tys, files);
+
         '_open_function: {
             self.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, 0));
             self.emit(instrs::st(reg::RET_ADDR, reg::STACK_PTR, 0, 0));
@@ -1236,10 +1290,6 @@ impl ItemCtx {
         }
         self.relocs.iter_mut().for_each(|r| r.reloc.offset -= stripped_prelude_size as u32);
         self.emit(instrs::jala(reg::ZERO, reg::RET_ADDR, 0));
-
-        let ty::Kind::Func(id) = self.id.expand() else { unreachable!() };
-        tys.ins.funcs[id as usize].code.append(&mut self.code);
-        tys.ins.funcs[id as usize].relocs.append(&mut self.relocs);
     }
 }
 
@@ -1273,11 +1323,10 @@ struct Pool {
 impl Pool {
     pub fn push_ci(
         &mut self,
-        target: &mut ItemCtx,
         file: FileId,
-        id: ty::Id,
         ret: Option<ty::Id>,
         task_base: usize,
+        target: &mut ItemCtx,
     ) {
         if let Some(slot) = self.cis.get_mut(self.used_cis) {
             core::mem::swap(slot, target);
@@ -1285,7 +1334,7 @@ impl Pool {
             self.cis.push(ItemCtx::default());
             core::mem::swap(self.cis.last_mut().unwrap(), target);
         }
-        target.init(file, id, ret, task_base);
+        target.init(file, ret, task_base);
         self.used_cis += 1;
     }
 
@@ -1363,47 +1412,11 @@ pub struct Codegen<'a> {
     pool: Pool,
     #[expect(dead_code)]
     ralloc: Regalloc,
+    ct: Comptime,
     errors: RefCell<String>,
 }
 
 impl<'a> Codegen<'a> {
-    fn graphviz_low(&self, out: &mut String) -> core::fmt::Result {
-        use core::fmt::Write;
-
-        for (i, node) in self.ci.nodes.iter() {
-            let color = if self.ci.nodes.is_cfg(i) { "yellow" } else { "white" };
-            writeln!(
-                out,
-                "node{i}[label=\"{} {}\" color={color}]",
-                node.kind,
-                self.ty_display(node.ty)
-            )?;
-            for (j, &o) in node.outputs.iter().enumerate() {
-                let color = if self.ci.nodes.is_cfg(i) && self.ci.nodes.is_cfg(o) {
-                    "red"
-                } else {
-                    "lightgray"
-                };
-                let index = self.ci.nodes[o].inputs.iter().position(|&inp| i == inp).unwrap();
-                let style =
-                    if index == 0 && !self.ci.nodes.is_cfg(o) { "style=dotted" } else { "" };
-                writeln!(
-                    out,
-                    "node{o} -> node{i}[color={color} taillabel={index} headlabel={j} {style}]",
-                )?;
-            }
-        }
-
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    fn graphviz(&self) {
-        let out = &mut String::new();
-        _ = self.graphviz_low(out);
-        log::info!("{out}");
-    }
-
     fn store_mem(&mut self, region: Nid, value: Nid) -> Nid {
         if value == NEVER {
             return NEVER;
@@ -1475,8 +1488,20 @@ impl<'a> Codegen<'a> {
             }
             Expr::Ident { id, pos, .. } => {
                 let decl = self.find_or_declare(pos, self.ci.file, Ok(id));
-
-                todo!()
+                match decl {
+                    ty::Kind::Global(g) => {
+                        let gl = &self.tys.ins.globals[g as usize];
+                        Some(
+                            Value::ptr(self.ci.nodes.new_node(
+                                gl.ty,
+                                Kind::Global { global: g },
+                                [VOID],
+                            ))
+                            .ty(gl.ty),
+                        )
+                    }
+                    _ => todo!("{decl:?}"),
+                }
             }
             Expr::Number { value, .. } => Some(self.ci.nodes.new_node_lit(
                 ctx.ty.filter(|ty| ty.is_integer() || ty.is_pointer()).unwrap_or(ty::Id::INT),
@@ -2260,7 +2285,7 @@ impl<'a> Codegen<'a> {
         let ast = &self.files[file as usize];
         let expr = func.expr.get(ast).unwrap();
 
-        self.pool.push_ci(&mut self.ci, file, ty::Kind::Func(id).compress(), Some(sig.ret), 0);
+        self.pool.push_ci(file, Some(sig.ret), 0, &mut self.ci);
 
         let Expr::BinOp { right: &Expr::Closure { body, args, .. }, .. } = expr else {
             unreachable!("{}", self.ast_display(expr))
@@ -2276,26 +2301,20 @@ impl<'a> Codegen<'a> {
             self.ci.scope.vars.push(Variable { id: arg.id, value, ty, ptr: false });
         }
 
-        if self.expr(body).is_some() && self.tys.size_of(sig.ret) != 0 {
+        if self.expr(body).is_some() && sig.ret == ty::Id::VOID {
             self.report(
                 body.pos(),
                 "expected all paths in the fucntion to return \
-                or the return type to be zero sized",
+                or the return type to be 'void'",
             );
         }
 
         self.ci.finalize();
 
         if self.errors.borrow().is_empty() {
-            self.graphviz();
-
-            self.ci.nodes.gcm();
-            self.ci.nodes.check_final_integrity();
-            self.ci.nodes.basic_blocks();
-
-            self.graphviz();
-
-            self.ci.emit_body(&mut self.tys, sig);
+            self.ci.emit_body(&mut self.tys, self.files, sig);
+            self.tys.ins.funcs[id as usize].code.append(&mut self.ci.code);
+            self.tys.ins.funcs[id as usize].relocs.append(&mut self.ci.relocs);
         }
 
         self.pool.pop_ci(&mut self.ci);
@@ -2334,7 +2353,7 @@ impl<'a> Codegen<'a> {
                 ),
                 Err(name) => self.report(pos, fa!("idk indentifier: {name}")),
             }
-            return ty::Kind::Builtin(ty::NEVER);
+            return ty::Id::NEVER.expand();
         };
 
         let key = SymKey::Decl(file, ident);
@@ -2398,8 +2417,81 @@ impl<'a> Codegen<'a> {
                 op: TokenKind::Decl,
                 right: right @ (Expr::Struct { .. } | Expr::Mod { .. }),
             } => self.ty(right).expand(),
-            Expr::BinOp { left: Expr::Ident { .. }, op: TokenKind::Decl, right } => {
-                todo!("{right:#?}");
+            Expr::BinOp { left: &Expr::Ident { id: name, .. }, op: TokenKind::Decl, right } => {
+                let gid = self.tys.ins.globals.len() as ty::Global;
+                self.tys.ins.globals.push(Global { file, name, ..Default::default() });
+
+                let ty = ty::Kind::Global(gid);
+                self.pool.push_ci(file, None, self.tasks.len(), &mut self.ci);
+
+                let ret = Expr::Return { pos: right.pos(), val: Some(right) };
+                self.expr(&ret);
+
+                self.ci.finalize();
+
+                let ret = self.ci.ret.expect("for return type to be infered");
+                if self.errors.borrow().is_empty() {
+                    self.ci.emit_body(&mut self.tys, self.files, Sig { args: Tuple::empty(), ret });
+                    self.ci.code.truncate(self.ci.code.len() - instrs::jala(0, 0, 0).0);
+                    self.ci.emit(instrs::tx());
+
+                    let func = Func {
+                        file,
+                        name,
+                        expr: ExprRef::new(expr),
+                        relocs: core::mem::take(&mut self.ci.relocs),
+                        code: core::mem::take(&mut self.ci.code),
+                        ..Default::default()
+                    };
+                    self.pool.pop_ci(&mut self.ci);
+                    self.complete_call_graph();
+
+                    let mut mem = vec![0u8; self.tys.size_of(ret) as usize];
+
+                    // TODO: return them back
+                    let fuc = self.tys.ins.funcs.len() as ty::Func;
+                    self.tys.ins.funcs.push(func);
+
+                    self.tys.dump_reachable(fuc, &mut self.ct.code);
+
+                    #[cfg(debug_assertions)]
+                    {
+                        let mut vc = String::new();
+                        if let Err(e) = self.tys.disasm(&self.ct.code, self.files, &mut vc, |_| {})
+                        {
+                            panic!("{e} {}", vc);
+                        } else {
+                            log::trace!("{}", vc);
+                        }
+                    }
+
+                    self.ct.vm.write_reg(reg::RET, mem.as_mut_ptr() as u64);
+                    let prev_pc = self.ct.push_pc(self.tys.ins.funcs[fuc as usize].offset);
+                    loop {
+                        match self.ct.vm.run().expect("TODO") {
+                            hbvm::VmRunOk::End => break,
+                            hbvm::VmRunOk::Timer => todo!(),
+                            hbvm::VmRunOk::Ecall => todo!(),
+                            hbvm::VmRunOk::Breakpoint => todo!(),
+                        }
+                    }
+                    self.ct.pop_pc(prev_pc);
+
+                    match mem.len() {
+                        0 => unreachable!(),
+                        len @ 1..=8 => mem
+                            .copy_from_slice(&self.ct.vm.read_reg(reg::RET).0.to_ne_bytes()[..len]),
+                        9..=16 => todo!(),
+                        _ => {}
+                    }
+
+                    self.tys.ins.globals[gid as usize].data = mem;
+                } else {
+                    self.pool.pop_ci(&mut self.ci);
+                }
+                self.tys.ins.globals[gid as usize].ty = ret;
+
+                ty
             }
             e => unimplemented!("{e:#?}"),
         };
@@ -2755,14 +2847,6 @@ impl<'a> Function<'a> {
                 let mut parama = self.tys.parama(fuc.ret);
                 for (&(mut i), ti) in node.inputs[1..].iter().zip(fuc.args.range()) {
                     let ty = self.tys.ins.args[ti];
-                    loop {
-                        match self.nodes[i].kind {
-                            Kind::Stre { .. } => i = self.nodes[i].inputs[2],
-                            Kind::Load { .. } => i = self.nodes[i].inputs[1],
-                            _ => break,
-                        }
-                        debug_assert_ne!(i, 0);
-                    }
                     match self.tys.size_of(ty) {
                         0 => continue,
                         1..=8 => {
@@ -2773,6 +2857,14 @@ impl<'a> Function<'a> {
                         }
                         9..=16 => todo!("pass in two register"),
                         _ => {
+                            loop {
+                                match self.nodes[i].kind {
+                                    Kind::Stre { .. } => i = self.nodes[i].inputs[2],
+                                    Kind::Load { .. } => i = self.nodes[i].inputs[1],
+                                    _ => break,
+                                }
+                                debug_assert_ne!(i, 0);
+                            }
                             debug_assert!(i != 0);
                             ops.push(regalloc2::Operand::reg_fixed_use(
                                 self.rg(i),
@@ -2789,6 +2881,10 @@ impl<'a> Function<'a> {
                         self.emit_node(o, nid);
                     }
                 }
+            }
+            Kind::Global { .. } => {
+                let ops = vec![self.drg(nid)];
+                self.add_instr(nid, ops);
             }
             //Kind::Stck
             //    if node.outputs.iter().all(|&n| {
@@ -3206,7 +3302,7 @@ mod tests {
         }
 
         let mut out = Vec::new();
-        codegen.tys.assemble(&mut out);
+        codegen.tys.reassemble(&mut out);
 
         let err = codegen.tys.disasm(&out, codegen.files, output, |_| {});
         if let Err(e) = err {

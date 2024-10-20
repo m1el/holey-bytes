@@ -1,0 +1,9 @@
+main:
+    LRA r2, r0, :complex_global_var
+    LD r3, r2, 0a, 8h
+    ADDI64 r1, r3, 5d
+    ST r1, r2, 0a, 8h
+    JALA r0, r31, 0a
+code size: 71
+ret: 55
+status: Ok(())

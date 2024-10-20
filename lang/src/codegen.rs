@@ -1,4 +1,3 @@
-pub use self::reg::{RET_ADDR, STACK_PTR, ZERO};
 use {
     crate::{
         ident::{self, Ident},
@@ -7,13 +6,13 @@ use {
         parser::{
             self, find_symbol, idfl, CommentOr, CtorField, Expr, ExprRef, FileId, Pos, StructField,
         },
+        reg,
         ty::{self, TyCheck},
-        Field, Func, Global, LoggedMem, OffsetIter, ParamAlloc, Reloc, Sig, Struct, SymKey,
-        TypedReloc, Types, HEADER_SIZE,
+        Comptime, Field, Func, Global, OffsetIter, ParamAlloc, Reloc, Sig, Struct, SymKey,
+        TypedReloc, Types,
     },
-    alloc::{boxed::Box, string::String, vec::Vec},
-    core::fmt::Display,
-    std::assert_matches::debug_assert_matches,
+    alloc::{string::String, vec::Vec},
+    core::{assert_matches::debug_assert_matches, fmt::Display},
 };
 
 type Offset = u32;
@@ -163,13 +162,8 @@ mod stack {
     }
 }
 
-mod reg {
-    use alloc::vec::Vec;
-
-    pub const STACK_PTR: Reg = 254;
-    pub const ZERO: Reg = 0;
-    pub const RET: Reg = 1;
-    pub const RET_ADDR: Reg = 31;
+mod rall {
+    use {crate::reg::*, alloc::vec::Vec};
 
     type Reg = u8;
 
@@ -323,7 +317,7 @@ struct CtValue(u64);
 
 #[derive(Debug, PartialEq, Eq)]
 enum Loc {
-    Rt { derefed: bool, reg: reg::Id, stack: Option<stack::Id>, offset: Offset },
+    Rt { derefed: bool, reg: rall::Id, stack: Option<stack::Id>, offset: Offset },
     Ct { derefed: bool, value: CtValue },
 }
 
@@ -332,7 +326,7 @@ impl Loc {
         Self::Rt { stack: Some(stack), reg: reg::STACK_PTR.into(), derefed: true, offset: 0 }
     }
 
-    fn reg(reg: impl Into<reg::Id>) -> Self {
+    fn reg(reg: impl Into<rall::Id>) -> Self {
         let reg = reg.into();
         assert!(reg.get() != 0);
         Self::Rt { derefed: false, reg, stack: None, offset: 0 }
@@ -406,7 +400,7 @@ impl Loc {
     }
 
     fn is_stack(&self) -> bool {
-        matches!(self, Self::Rt { derefed: true, reg, stack: Some(_), offset: 0 } if reg.get() == STACK_PTR)
+        matches!(self, Self::Rt { derefed: true, reg, stack: Some(_), offset: 0 } if reg.get() == reg::STACK_PTR)
     }
 
     fn is_reg(&self) -> bool {
@@ -414,8 +408,8 @@ impl Loc {
     }
 }
 
-impl From<reg::Id> for Loc {
-    fn from(reg: reg::Id) -> Self {
+impl From<rall::Id> for Loc {
+    fn from(reg: rall::Id) -> Self {
         Loc::reg(reg)
     }
 }
@@ -451,13 +445,13 @@ struct ItemCtx {
     file: FileId,
     id: ty::Kind,
     ret: Option<ty::Id>,
-    ret_reg: reg::Id,
+    ret_reg: rall::Id,
     inline_ret_loc: Loc,
 
     task_base: usize,
 
     stack: stack::Alloc,
-    regs: reg::Alloc,
+    regs: rall::Alloc,
 
     loops: Vec<Loop>,
     vars: Vec<Variable>,
@@ -510,12 +504,12 @@ impl ItemCtx {
     }
 
     fn emit_prelude(&mut self) {
-        self.emit(instrs::addi64(STACK_PTR, STACK_PTR, 0));
-        self.emit(instrs::st(RET_ADDR, STACK_PTR, 0, 0));
+        self.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, 0));
+        self.emit(instrs::st(reg::RET_ADDR, reg::STACK_PTR, 0, 0));
     }
 
     fn emit_entry_prelude(&mut self) {
-        self.emit(jal(RET_ADDR, reg::ZERO, 0));
+        self.emit(jal(reg::RET_ADDR, reg::ZERO, 0));
         self.emit(tx());
     }
 
@@ -640,32 +634,6 @@ impl From<Value> for Ctx {
 struct Pool {
     cis: Vec<ItemCtx>,
     arg_locs: Vec<Loc>,
-}
-
-const VM_STACK_SIZE: usize = 1024 * 64;
-
-pub struct Comptime {
-    pub vm: hbvm::Vm<LoggedMem, { 1024 * 10 }>,
-    stack: Box<[u8; VM_STACK_SIZE]>,
-    code: Vec<u8>,
-}
-impl Comptime {
-    fn reset(&mut self) {
-        let ptr = unsafe { self.stack.as_mut_ptr().cast::<u8>().add(VM_STACK_SIZE) as u64 };
-        self.vm.registers.fill(hbvm::value::Value(0));
-        self.vm.write_reg(STACK_PTR, ptr);
-        self.vm.pc = hbvm::mem::Address::new(self.code.as_ptr() as u64 + HEADER_SIZE as u64);
-    }
-}
-
-impl Default for Comptime {
-    fn default() -> Self {
-        let mut stack = Box::<[u8; VM_STACK_SIZE]>::new_uninit();
-        let mut vm = hbvm::Vm::default();
-        let ptr = unsafe { stack.as_mut_ptr().cast::<u8>().add(VM_STACK_SIZE) as u64 };
-        vm.write_reg(STACK_PTR, ptr);
-        Self { vm, stack: unsafe { stack.assume_init() }, code: Default::default() }
-    }
 }
 
 mod trap {
@@ -834,7 +802,7 @@ impl Codegen {
                         ptr = ptr.offset(size);
                     }
 
-                    self.stack_offset(2, STACK_PTR, Some(&stack), 0);
+                    self.stack_offset(2, reg::STACK_PTR, Some(&stack), 0);
                     let val = self.eca(
                         trap::Trap::MakeStruct(trap::MakeStruct {
                             file: self.ci.file,
@@ -1427,7 +1395,7 @@ impl Codegen {
 
                 let reloc = Reloc::new(self.ci.code.len(), 3, 4);
                 self.ci.relocs.push(TypedReloc { target: ty::Kind::Func(func).compress(), reloc });
-                self.ci.emit(jal(RET_ADDR, ZERO, 0));
+                self.ci.emit(jal(reg::RET_ADDR, reg::ZERO, 0));
                 self.make_func_reachable(func);
 
                 if should_momize {
@@ -2194,7 +2162,7 @@ impl Codegen {
             self.ci.emit(instrs::cp(reg.get(), 1));
             self.ci.ret_reg = reg;
         } else {
-            self.ci.ret_reg = reg::Id::RET;
+            self.ci.ret_reg = rall::Id::RET;
         }
 
         if self.expr(body).is_some() {
@@ -2208,7 +2176,7 @@ impl Codegen {
         self.ci.vars = vars;
 
         self.ci.finalize();
-        self.ci.emit(jala(ZERO, RET_ADDR, 0));
+        self.ci.emit(jala(reg::ZERO, reg::RET_ADDR, 0));
         self.ci.regs.free(core::mem::take(&mut self.ci.ret_reg));
         self.tys.ins.funcs[id as usize].code.append(&mut self.ci.code);
         self.tys.ins.funcs[id as usize].relocs = self.ci.relocs.drain(..).collect();
@@ -2273,7 +2241,7 @@ impl Codegen {
         }
     }
 
-    fn loc_to_reg(&mut self, loc: impl Into<LocCow>, size: Size) -> reg::Id {
+    fn loc_to_reg(&mut self, loc: impl Into<LocCow>, size: Size) -> rall::Id {
         match loc.into() {
             LocCow::Owned(Loc::Rt { derefed: false, mut reg, offset, stack }) => {
                 debug_assert!(stack.is_none(), "TODO");
@@ -2711,10 +2679,7 @@ impl Codegen {
             }
 
             self.tys.dump_reachable(last_fn as _, &mut self.ct.code);
-            let entry =
-                &mut self.ct.code[self.tys.ins.funcs[last_fn].offset as usize] as *mut _ as _;
-            let prev_pc = core::mem::replace(&mut self.ct.vm.pc, hbvm::mem::Address::new(entry))
-                - self.ct.code.as_ptr() as usize;
+            let prev_pc = self.ct.push_pc(self.tys.ins.funcs[last_fn].offset);
 
             #[cfg(debug_assertions)]
             {
@@ -2731,7 +2696,7 @@ impl Codegen {
             }
 
             self.run_vm();
-            self.ct.vm.pc = prev_pc + self.ct.code.as_ptr() as usize;
+            self.ct.pop_pc(prev_pc);
 
             let func = self.tys.ins.funcs.pop().unwrap();
             self.ci.code = func.code;
@@ -2815,7 +2780,7 @@ impl Codegen {
         &self.files[self.ci.file as usize]
     }
 
-    fn cow_reg(&mut self, rhs: reg::Id) -> reg::Id {
+    fn cow_reg(&mut self, rhs: rall::Id) -> rall::Id {
         if rhs.is_ref() {
             let reg = self.ci.regs.allocate();
             self.ci.emit(cp(reg.get(), rhs.get()));
