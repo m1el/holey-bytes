@@ -3268,44 +3268,52 @@ mod tests {
     }
 
     crate::run_tests! { generate:
+        // Tour Examples
+        main_fn;
         arithmetic;
-        variables;
         functions;
         comments;
         if_statements;
+        variables;
         loops;
-        fb_driver;
         pointers;
         structs;
-        //different_types;
+        hex_octal_binary_literals;
         //struct_operators;
-        //directives;
         global_variables;
-        //generic_types;
-        //generic_functions;
+        //directives;
         c_strings;
         //struct_patterns;
         arrays;
-        //struct_return_from_module_function;
-        ////comptime_pointers;
-        //sort_something_viredly;
-        hex_octal_binary_literals;
-        //comptime_min_reg_leak;
-        ////structs_in_registers;
-        //comptime_function_from_another_file;
         //inline;
+        //idk;
+        //wide_ret;
+
+        // Incomplete Examples;
+        //comptime_pointers;
+        //generic_types;
+        //generic_functions;
+        fb_driver;
+
+        // Purely Testing Examples;
+        comptime_min_reg_leak;
+        //different_types;
+        //struct_return_from_module_function;
+        sort_something_viredly;
+        //structs_in_registers;
+        comptime_function_from_another_file;
         //inline_test;
+        //inlined_generic_functions;
+        //some_generic_code;
+        //integer_inference_issues;
+        writing_into_string;
+        //request_page;
+        //tests_ptr_to_ptr_copy;
+
+        // Just Testing Optimizations;
         const_folding_with_arg;
         branch_assignments;
         exhaustive_loop_testing;
-        //idk;
-        comptime_min_reg_leak;
-        //some_generic_code;
-        //integer_inference_issues;
-        //writing_into_string;
-        //request_page;
-        //tests_ptr_to_ptr_copy;
-        //wide_ret;
         pointer_opts;
         conditional_stores;
         loop_stores;

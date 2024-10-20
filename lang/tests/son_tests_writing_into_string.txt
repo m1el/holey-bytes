@@ -1,0 +1,15 @@
+inl:
+    JALA r0, r31, 0a
+main:
+    ADDI64 r254, r254, -8d
+    ST r31, r254, 0a, 8h
+    JAL r31, r0, :outl
+    JAL r31, r0, :inl
+    LD r31, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
+    JALA r0, r31, 0a
+outl:
+    JALA r0, r31, 0a
+code size: 103
+ret: 0
+status: Ok(())

@@ -41,7 +41,7 @@ Following examples incrementally introduce language features and syntax.
 #### main_fn
 ```hb
 main := fn(): int {
-	return 1;
+	return 1
 }
 ```
 
@@ -188,6 +188,21 @@ pass := fn(t: ^Ty): int {
 
 odher_pass := fn(t: Ty2): Ty2 {
 	return t
+}
+```
+
+#### hex_octal_binary_literals
+```hb
+main := fn(): int {
+	hex := 0xFF
+	decimal := 255
+	octal := 0o377
+	binary := 0b11111111
+
+	if hex == decimal & octal == decimal & binary == decimal {
+		return 0
+	}
+	return 1
 }
 ```
 
@@ -619,8 +634,7 @@ Foo := struct {x: int, y: u32, z: u32}
 #### sort_something_viredly
 ```hb
 main := fn(): int {
-	foo := sqrt
-	return 0
+	return sqrt(1)
 }
 
 sqrt := fn(x: int): int {
@@ -639,21 +653,6 @@ sqrt := fn(x: int): int {
 		b >>= 1
 	}
 	return g
-}
-```
-
-#### hex_octal_binary_literals
-```hb
-main := fn(): int {
-	hex := 0xFF
-	decimal := 255
-	octal := 0o377
-	binary := 0b11111111
-
-	if hex == decimal & octal == decimal & binary == decimal {
-		return 0
-	}
-	return 1
 }
 ```
 
@@ -824,7 +823,7 @@ integer_range := fn(min: uint, max: int): uint {
 ```hb
 outl := fn(): void {
 	msg := "whahaha\0"
-	@as(u8, 0)
+	_u := @as(u8, 0)
 	return
 }
 
