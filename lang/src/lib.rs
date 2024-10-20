@@ -1619,6 +1619,61 @@ impl hbvm::mem::Memory for LoggedMem {
     }
 }
 
+fn endoce_string(
+    literal: &str,
+    str: &mut Vec<u8>,
+    report: impl Fn(&core::str::Bytes, &str),
+) -> Option<()> {
+    let report = |bytes: &core::str::Bytes, msg: &_| {
+        report(bytes, msg);
+        None::<u8>
+    };
+
+    let decode_braces = |str: &mut Vec<u8>, bytes: &mut core::str::Bytes| {
+        while let Some(b) = bytes.next()
+            && b != b'}'
+        {
+            let c = bytes.next().or_else(|| report(bytes, "incomplete escape sequence"))?;
+            let decode = |b: u8| {
+                Some(match b {
+                    b'0'..=b'9' => b - b'0',
+                    b'a'..=b'f' => b - b'a' + 10,
+                    b'A'..=b'F' => b - b'A' + 10,
+                    _ => report(bytes, "expected hex digit or '}'")?,
+                })
+            };
+            str.push(decode(b)? << 4 | decode(c)?);
+        }
+
+        Some(())
+    };
+
+    let mut bytes = literal.bytes();
+    while let Some(b) = bytes.next() {
+        if b != b'\\' {
+            str.push(b);
+            continue;
+        }
+        let b = match bytes.next().or_else(|| report(&bytes, "incomplete escape sequence"))? {
+            b'n' => b'\n',
+            b'r' => b'\r',
+            b't' => b'\t',
+            b'\\' => b'\\',
+            b'\'' => b'\'',
+            b'"' => b'"',
+            b'0' => b'\0',
+            b'{' => {
+                decode_braces(str, &mut bytes);
+                continue;
+            }
+            _ => report(&bytes, "unknown escape sequence, expected [nrt\\\"'{0]")?,
+        };
+        str.push(b);
+    }
+
+    Some(())
+}
+
 struct AsHex<'a>(&'a [u8]);
 
 impl core::fmt::Display for AsHex<'_> {

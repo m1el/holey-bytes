@@ -1,0 +1,25 @@
+main:
+    ADDI64 r254, r254, -16d
+    ST r31, r254, 0a, 16h
+    LRA r2, r0, :"abඞ\n\r\t56789\0"
+    JAL r31, r0, :str_len
+    CP r32, r1
+    LRA r2, r0, :"fff\0"
+    JAL r31, r0, :str_len
+    ADD64 r1, r1, r32
+    LD r31, r254, 0a, 16h
+    ADDI64 r254, r254, 16d
+    JALA r0, r31, 0a
+str_len:
+    LI64 r6, 0d
+    LI64 r1, 0d
+ 2: LD r8, r2, 0a, 1h
+    JNE r8, r6, :0
+    JMP :1
+ 0: ADDI64 r2, r2, 1d
+    ADDI64 r1, r1, 1d
+    JMP :2
+ 1: JALA r0, r31, 0a
+code size: 201
+ret: 16
+status: Ok(())

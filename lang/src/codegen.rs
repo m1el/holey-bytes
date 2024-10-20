@@ -1069,61 +1069,19 @@ impl Codegen {
 
                 Some(Value { ty, loc })
             }
-            E::String { pos, mut literal } => {
-                literal = &literal[1..literal.len() - 1];
+            E::String { pos, literal } => {
+                let literal = &literal[1..literal.len() - 1];
 
                 if !literal.ends_with("\\0") {
                     self.report(pos, "string literal must end with null byte (for now)");
                 }
 
-                let report = |bytes: &core::str::Bytes, message| {
+                let report = |bytes: &core::str::Bytes, message: &str| {
                     self.report(pos + (literal.len() - bytes.len()) as u32 - 1, message)
                 };
 
                 let mut str = Vec::<u8>::with_capacity(literal.len());
-
-                let decode_braces = |str: &mut Vec<u8>, bytes: &mut core::str::Bytes| {
-                    while let Some(b) = bytes.next()
-                        && b != b'}'
-                    {
-                        let c = bytes
-                            .next()
-                            .unwrap_or_else(|| report(bytes, "incomplete escape sequence"));
-                        let decode = |b: u8| match b {
-                            b'0'..=b'9' => b - b'0',
-                            b'a'..=b'f' => b - b'a' + 10,
-                            b'A'..=b'F' => b - b'A' + 10,
-                            _ => report(bytes, "expected hex digit or '}'"),
-                        };
-                        str.push(decode(b) << 4 | decode(c));
-                    }
-                };
-
-                let mut bytes = literal.bytes();
-                while let Some(b) = bytes.next() {
-                    if b != b'\\' {
-                        str.push(b);
-                        continue;
-                    }
-                    let b = match bytes
-                        .next()
-                        .unwrap_or_else(|| report(&bytes, "incomplete escape sequence"))
-                    {
-                        b'n' => b'\n',
-                        b'r' => b'\r',
-                        b't' => b'\t',
-                        b'\\' => b'\\',
-                        b'\'' => b'\'',
-                        b'"' => b'"',
-                        b'0' => b'\0',
-                        b'{' => {
-                            decode_braces(&mut str, &mut bytes);
-                            continue;
-                        }
-                        _ => report(&bytes, "unknown escape sequence, expected [nrt\\\"'{0]"),
-                    };
-                    str.push(b);
-                }
+                crate::endoce_string(literal, &mut str, report);
 
                 let reloc = Reloc::new(self.ci.code.len() as _, 3, 4);
                 let glob = self.tys.ins.globals.len() as ty::Global;

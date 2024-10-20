@@ -41,7 +41,7 @@ trait StoreId: Sized {
 
 impl StoreId for Nid {
     fn to_store(self) -> Option<Self> {
-        (self != NEVER).then_some(self)
+        (self != ENTRY).then_some(self)
     }
 }
 
@@ -1013,12 +1013,12 @@ impl ItemCtx {
         let mem = self.nodes.new_node(ty::Id::VOID, Kind::Mem, [VOID]);
         debug_assert_eq!(mem, MEM);
         self.nodes.lock(mem);
-        self.nodes.lock(end);
-        self.scope.store = end;
+        self.nodes.lock(self.ctrl);
+        self.scope.store = self.ctrl;
     }
 
     fn finalize(&mut self) {
-        self.nodes.unlock(NEVER);
+        self.nodes.unlock(ENTRY);
         self.nodes.unlock(NEVER);
         self.nodes.unlock_remove_scope(&core::mem::take(&mut self.scope));
         self.nodes.unlock(MEM);
@@ -1477,7 +1477,11 @@ impl<'a> Codegen<'a> {
     fn raw_expr_ctx(&mut self, expr: &Expr, ctx: Ctx) -> Option<Value> {
         // ordered by complexity of the expression
         match *expr {
-            Expr::Comment { .. } => Some(Value::VOID),
+            Expr::Number { value, .. } => Some(self.ci.nodes.new_node_lit(
+                ctx.ty.filter(|ty| ty.is_integer() || ty.is_pointer()).unwrap_or(ty::Id::INT),
+                Kind::CInt { value },
+                [VOID],
+            )),
             Expr::Ident { id, .. }
                 if let Some(index) = self.ci.scope.vars.iter().rposition(|v| v.id == id) =>
             {
@@ -1489,25 +1493,35 @@ impl<'a> Codegen<'a> {
             Expr::Ident { id, pos, .. } => {
                 let decl = self.find_or_declare(pos, self.ci.file, Ok(id));
                 match decl {
-                    ty::Kind::Global(g) => {
-                        let gl = &self.tys.ins.globals[g as usize];
-                        Some(
-                            Value::ptr(self.ci.nodes.new_node(
-                                gl.ty,
-                                Kind::Global { global: g },
-                                [VOID],
-                            ))
-                            .ty(gl.ty),
-                        )
+                    ty::Kind::Global(global) => {
+                        let gl = &self.tys.ins.globals[global as usize];
+                        let value = self.ci.nodes.new_node(gl.ty, Kind::Global { global }, [VOID]);
+                        Some(Value::ptr(value).ty(gl.ty))
                     }
                     _ => todo!("{decl:?}"),
                 }
             }
-            Expr::Number { value, .. } => Some(self.ci.nodes.new_node_lit(
-                ctx.ty.filter(|ty| ty.is_integer() || ty.is_pointer()).unwrap_or(ty::Id::INT),
-                Kind::CInt { value },
-                [VOID],
-            )),
+            Expr::Comment { .. } => Some(Value::VOID),
+            Expr::String { pos, literal } => {
+                let literal = &literal[1..literal.len() - 1];
+
+                if !literal.ends_with("\\0") {
+                    self.report(pos, "string literal must end with null byte (for now)");
+                }
+
+                let report = |bytes: &core::str::Bytes, message: &str| {
+                    self.report(pos + (literal.len() - bytes.len()) as u32 - 1, message)
+                };
+
+                let mut data = Vec::<u8>::with_capacity(literal.len());
+                crate::endoce_string(literal, &mut data, report).unwrap();
+
+                let global = self.tys.ins.globals.len() as ty::Global;
+                let ty = self.tys.make_ptr(ty::Id::U8);
+                self.tys.ins.globals.push(Global { data, ty, ..Default::default() });
+                let global = self.ci.nodes.new_node(ty, Kind::Global { global }, [VOID]);
+                Some(Value::new(global).ty(ty))
+            }
             Expr::Return { pos, val } => {
                 let value = if let Some(val) = val {
                     self.expr_ctx(val, Ctx { ty: self.ci.ret })?
@@ -2076,6 +2090,9 @@ impl<'a> Codegen<'a> {
                     self.ci.nodes.unlock_remove(scope_value);
                 }
 
+                scope.loads.iter().for_each(|&n| _ = self.ci.nodes.unlock_remove(n));
+                bres.loads.iter().for_each(|&n| _ = self.ci.nodes.unlock_remove(n));
+
                 self.ci.nodes.unlock(self.ci.ctrl);
 
                 Some(Value::VOID)
@@ -2155,10 +2172,7 @@ impl<'a> Codegen<'a> {
 
                 Some(Value::VOID)
             }
-            ref e => {
-                self.report_unhandled_ast(e, "bruh");
-                Value::NEVER
-            }
+            ref e => self.report_unhandled_ast(e, "bruh"),
         }
     }
 
@@ -2325,8 +2339,7 @@ impl<'a> Codegen<'a> {
             return ty;
         }
 
-        self.report_unhandled_ast(expr, "type");
-        ty::Id::NEVER
+        self.report_unhandled_ast(expr, "type")
     }
 
     fn find_or_declare(&mut self, pos: Pos, file: FileId, name: Result<Ident, &str>) -> ty::Kind {
@@ -2546,7 +2559,7 @@ impl<'a> Codegen<'a> {
     }
 
     #[track_caller]
-    fn report_unhandled_ast(&self, ast: &Expr, hint: &str) {
+    fn report_unhandled_ast(&self, ast: &Expr, hint: &str) -> ! {
         log::info!("{ast:#?}");
         self.fatal_report(ast.pos(), fa!("compiler does not (yet) know how to handle ({hint})"));
     }
@@ -3093,7 +3106,7 @@ fn idepth(nodes: &mut Nodes, target: Nid) -> IDomDepth {
     }
     if nodes[target].depth == 0 {
         nodes[target].depth = match nodes[target].kind {
-            Kind::End | Kind::Start => unreachable!(),
+            Kind::End | Kind::Start => unreachable!("{:?}", nodes[target].kind),
             Kind::Region => {
                 idepth(nodes, nodes[target].inputs[0]).max(idepth(nodes, nodes[target].inputs[1]))
             }
@@ -3329,7 +3342,7 @@ mod tests {
         global_variables;
         //generic_types;
         //generic_functions;
-        //c_strings;
+        c_strings;
         //struct_patterns;
         arrays;
         //struct_return_from_module_function;
@@ -3345,7 +3358,7 @@ mod tests {
         branch_assignments;
         exhaustive_loop_testing;
         //idk;
-        //comptime_min_reg_leak;
+        comptime_min_reg_leak;
         //some_generic_code;
         //integer_inference_issues;
         //writing_into_string;
