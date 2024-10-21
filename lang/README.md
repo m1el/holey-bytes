@@ -273,7 +273,7 @@ main := fn(): int {
 	align_of_Type_in_bytes := @alignof(foo.Type)
 	hardcoded_pointer := @as(^u8, @bitcast(10))
 	ecall_that_returns_int := @as(int, @eca(1, foo.Type.(10, 20), 5, 6))
-	embedded_array := @as(^[u8; 15], @embed("text.txt"))
+	embedded_array := @as([u8; 15], @embed("text.txt"))
 	return @inline(foo.foo)
 }
 

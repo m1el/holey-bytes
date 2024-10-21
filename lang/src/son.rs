@@ -22,7 +22,6 @@ use {
         fmt::{self, Debug, Display, Write},
         format_args as fa, mem,
         ops::{self},
-        usize,
     },
     hashbrown::hash_map,
     regalloc2::VReg,
@@ -260,13 +259,6 @@ impl Nodes {
                 if op.is_comutative() && self[lhs].key() < self[rhs].key() {
                     core::mem::swap(&mut lhs, &mut rhs);
                     changed = true;
-                }
-
-                if let K::CInt { value } = self[lhs].kind
-                    && op == T::Sub
-                {
-                    let lhs = self.new_node_nop(ty, K::CInt { value: -value }, [ctrl]);
-                    return Some(self.new_node(ty, K::BinOp { op: T::Add }, [ctrl, rhs, lhs]));
                 }
 
                 if let K::CInt { value } = self[rhs].kind {
@@ -1252,24 +1244,25 @@ impl ItemCtx {
                         }
                     }
                     Kind::Call { argc, func } => {
-                        std::dbg!(node.ty.simple_size());
                         let (ret, mut parama) = tys.parama(node.ty);
-                        debug_assert_eq!(
-                            allocs.len(),
-                            argc as usize
-                                + !matches!(ret, PLoc::Reg(..) | PLoc::None) as usize
-                                + !matches!(ret, PLoc::None) as usize
-                        );
-                        for (&i, &arg) in node.inputs[1..][..argc as usize].iter().zip(&allocs[1..])
-                        {
+                        let has_ret = !matches!(ret, PLoc::None) as usize;
+                        let mut iter = allocs[has_ret..].iter();
+                        for &i in node.inputs[1..][..argc as usize].iter() {
                             let ty = fuc.nodes[i].ty;
-                            let (rg, size) = match parama.next(ty, tys) {
+                            let loc = parama.next(ty, tys);
+                            if let PLoc::None = loc {
+                                continue;
+                            }
+                            let &arg = iter.next().unwrap();
+                            let (rg, size) = match loc {
                                 PLoc::Reg(rg, size) if ty.loc(tys) == Loc::Stack => (rg, size),
                                 PLoc::WideReg(rg, size) => (rg, size),
                                 PLoc::None | PLoc::Ref(..) | PLoc::Reg(..) => continue,
                             };
                             self.emit(instrs::ld(rg, atr(arg), 0, size));
                         }
+
+                        debug_assert!(!matches!(ret, PLoc::Ref(..)) || iter.next().is_some());
 
                         if func == ty::ECA {
                             self.emit(instrs::eca());
@@ -1588,9 +1581,63 @@ impl TypeParser for Codegen<'_> {
         &mut self.tys
     }
 
-    #[expect(unused)]
-    fn eval_const(&mut self, file: FileId, expr: &Expr, ty: ty::Id) -> u64 {
-        todo!()
+    fn eval_const(&mut self, file: FileId, expr: &Expr, ret: ty::Id) -> u64 {
+        self.pool.push_ci(file, Some(ret), self.tasks.len(), &mut self.ci);
+
+        let prev_err_len = self.errors.borrow().len();
+
+        self.expr(&Expr::Return { pos: expr.pos(), val: Some(expr) });
+
+        self.ci.finalize();
+
+        if self.errors.borrow().len() == prev_err_len {
+            self.ci.emit_body(&mut self.tys, self.files, Sig { args: Tuple::empty(), ret });
+            self.ci.code.truncate(self.ci.code.len() - instrs::jala(0, 0, 0).0);
+            self.ci.emit(instrs::tx());
+
+            let func = Func {
+                file,
+                name: 0,
+                expr: ExprRef::new(expr),
+                relocs: core::mem::take(&mut self.ci.relocs),
+                code: core::mem::take(&mut self.ci.code),
+                ..Default::default()
+            };
+
+            self.pool.pop_ci(&mut self.ci);
+            self.complete_call_graph();
+
+            // TODO: return them back
+            let fuc = self.tys.ins.funcs.len() as ty::Func;
+            self.tys.ins.funcs.push(func);
+
+            self.tys.dump_reachable(fuc, &mut self.ct.code);
+
+            #[cfg(debug_assertions)]
+            {
+                let mut vc = String::new();
+                if let Err(e) = self.tys.disasm(&self.ct.code, self.files, &mut vc, |_| {}) {
+                    panic!("{e} {}", vc);
+                } else {
+                    log::trace!("{}", vc);
+                }
+            }
+
+            let prev_pc = self.ct.push_pc(self.tys.ins.funcs[fuc as usize].offset);
+            loop {
+                match self.ct.vm.run().expect("TODO") {
+                    hbvm::VmRunOk::End => break,
+                    hbvm::VmRunOk::Timer => todo!(),
+                    hbvm::VmRunOk::Ecall => todo!(),
+                    hbvm::VmRunOk::Breakpoint => todo!(),
+                }
+            }
+            self.ct.pop_pc(prev_pc);
+            self.ct.vm.read_reg(reg::RET).0
+        } else {
+            self.pool.pop_ci(&mut self.ci);
+            1
+        }
     }
 
     fn infer_type(&mut self, expr: &Expr) -> ty::Id {
@@ -2022,8 +2069,8 @@ impl<'a> Codegen<'a> {
             }
             Expr::Embed { id, .. } => {
                 let glob = &self.tys.ins.globals[id as usize];
-                let ty = self.tys.make_ptr(glob.ty);
-                Some(self.ci.nodes.new_node_lit(ty, Kind::Global { global: id }, [VOID]))
+                let g = self.ci.nodes.new_node(glob.ty, Kind::Global { global: id }, [VOID]);
+                Some(Value::ptr(g).ty(glob.ty))
             }
             Expr::Directive { name: "sizeof", args: [ty], .. } => {
                 let ty = self.ty(ty);
@@ -2110,8 +2157,12 @@ impl<'a> Codegen<'a> {
                 Some(self.ci.nodes.new_node_lit(ty, Kind::BinOp { op: TokenKind::Band }, inps))
             }
             Expr::Directive { name: "as", args: [ty, expr], .. } => {
-                let ctx = Ctx::default().with_ty(self.ty(ty));
-                self.raw_expr_ctx(expr, ctx)
+                let ty = self.ty(ty);
+                let ctx = Ctx::default().with_ty(ty);
+                let mut val = self.raw_expr_ctx(expr, ctx)?;
+                self.strip_var(&mut val);
+                self.assert_ty(expr.pos(), &mut val, ty, "hited expr");
+                Some(val)
             }
             Expr::Directive { pos, name: "eca", args } => {
                 let Some(ty) = ctx.ty else {
@@ -3720,6 +3771,7 @@ mod tests {
     fn generate(ident: &'static str, input: &'static str, output: &mut String) {
         _ = log::set_logger(&crate::fs::Logger);
         log::set_max_level(log::LevelFilter::Info);
+        //       log::set_max_level(log::LevelFilter::Trace);
 
         let (ref files, embeds) = crate::test_parse_files(ident, input);
         let mut codegen = super::Codegen { files, ..Default::default() };
@@ -3778,17 +3830,17 @@ mod tests {
         wide_ret;
         comptime_min_reg_leak;
         different_types;
-        //struct_return_from_module_function;
+        struct_return_from_module_function;
         sort_something_viredly;
-        //structs_in_registers;
+        structs_in_registers;
         comptime_function_from_another_file;
         inline_test;
         //inlined_generic_functions;
         //some_generic_code;
-        //integer_inference_issues;
+        integer_inference_issues;
         writing_into_string;
-        //request_page;
-        //tests_ptr_to_ptr_copy;
+        request_page;
+        tests_ptr_to_ptr_copy;
 
         // Just Testing Optimizations;
         const_folding_with_arg;
