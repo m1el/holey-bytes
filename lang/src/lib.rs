@@ -21,7 +21,8 @@
     str_from_raw_parts,
     ptr_sub_ptr,
     slice_from_ptr_range,
-    is_sorted
+    is_sorted,
+    iter_next_chunk
 )]
 #![feature(pointer_is_aligned_to)]
 #![warn(clippy::dbg_macro)]
@@ -247,7 +248,7 @@ mod ty {
             ident,
             lexer::TokenKind,
             parser::{self, Pos},
-            Size,
+            Size, Types,
         },
         core::{num::NonZeroU32, ops::Range},
     };
@@ -405,6 +406,21 @@ mod ty {
                 Self::UINT
             }
         }
+
+        pub fn loc(&self, tys: &Types) -> Loc {
+            match self.expand() {
+                Kind::Ptr(_) | Kind::Builtin(_) => Loc::Reg,
+                Kind::Struct(_) if tys.size_of(*self) == 0 => Loc::Reg,
+                Kind::Struct(_) | Kind::Slice(_) => Loc::Stack,
+                Kind::Func(_) | Kind::Global(_) | Kind::Module(_) => unreachable!(),
+            }
+        }
+    }
+
+    #[derive(PartialEq, Eq, Clone, Copy)]
+    pub enum Loc {
+        Reg,
+        Stack,
     }
 
     #[derive(PartialEq, Eq, Default, Debug, Clone, Copy)]
@@ -771,15 +787,23 @@ impl Array {
     }
 }
 
+enum PLoc {
+    None,
+    Reg(u8, u16),
+    WideReg(u8, u16),
+    Ref(u8, u32),
+}
+
 struct ParamAlloc(Range<u8>);
 
 impl ParamAlloc {
-    pub fn next(&mut self) -> u8 {
-        self.0.next().expect("too many paramteters")
-    }
-
-    fn next_wide(&mut self) -> u8 {
-        (self.next(), self.next()).0
+    pub fn next(&mut self, ty: ty::Id, tys: &Types) -> PLoc {
+        match tys.size_of(ty) {
+            0 => PLoc::None,
+            size @ 1..=8 => PLoc::Reg(self.0.next().unwrap(), size as _),
+            size @ 9..=16 => PLoc::WideReg(self.0.next_chunk::<2>().unwrap()[0], size as _),
+            size @ 17.. => PLoc::Ref(self.0.next().unwrap(), size),
+        }
     }
 }
 
@@ -1202,8 +1226,13 @@ impl Types {
         instrs::disasm(&mut sluce, &functions, output, eca_handler)
     }
 
-    fn parama(&self, ret: impl Into<ty::Id>) -> ParamAlloc {
-        ParamAlloc(2 + (9..=16).contains(&self.size_of(ret.into())) as u8..12)
+    fn parama(&self, ret: impl Into<ty::Id>) -> (PLoc, ParamAlloc) {
+        let mut iter = ParamAlloc(1..12);
+        let ret = iter.next(ret.into(), self);
+        if let PLoc::None = ret {
+            iter.0.start += 1;
+        }
+        (ret, iter)
     }
 
     fn make_ptr(&mut self, base: ty::Id) -> ty::Id {

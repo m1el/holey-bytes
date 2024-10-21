@@ -47,6 +47,9 @@ main:
     CP r2, r3
     CP r4, r5
     CP r6, r7
+    LD r2, r2, 0a, 16h
+    LD r4, r4, 0a, 16h
+    LD r6, r6, 0a, 16h
     JAL r31, r0, :line
     ADDI64 r7, r254, 0d
     ADDI64 r5, r254, 16d
@@ -61,6 +64,9 @@ main:
     CP r2, r3
     CP r4, r5
     CP r6, r7
+    LD r2, r2, 0a, 16h
+    LD r4, r4, 0a, 16h
+    LD r6, r6, 0a, 16h
     JAL r31, r0, :rect_line
     JAL r31, r0, :example
     LD r31, r254, 96a, 16h
@@ -86,7 +92,6 @@ rect_line:
  2: ADDI64 r9, r9, 1d
     JMP :4
  1: JALA r0, r31, 0a
-timed out
-code size: 797
-ret: 0
+code size: 875
+ret: 4
 status: Ok(())

@@ -10,10 +10,10 @@ use {
             CtorField, Expr, ExprRef, FileId, Pos,
         },
         reg, task,
-        ty::{self, ArrayLen, Tuple},
+        ty::{self, ArrayLen, Loc, Tuple},
         vc::{BitSet, Vc},
-        Comptime, Func, Global, HashMap, Offset, OffsetIter, Reloc, Sig, TypeParser, TypedReloc,
-        Types,
+        Comptime, Func, Global, HashMap, Offset, OffsetIter, PLoc, Reloc, Sig, TypeParser,
+        TypedReloc, Types,
     },
     alloc::{string::String, vec::Vec},
     core::{
@@ -1093,20 +1093,16 @@ impl ItemCtx {
             *saved_regs.entry(hvenc).or_insert(would_insert)
         };
 
-        let mut parama = tys.parama(sig.ret);
-
+        let (retl, mut parama) = tys.parama(sig.ret);
         for (ti, &arg) in sig.args.range().zip(fuc.nodes[VOID].outputs.iter().skip(2)) {
             let ty = tys.ins.args[ti];
-            if tys.size_of(ty) == 0 {
-                continue;
-            }
-            if let size @ 9..=16 = tys.size_of(ty) {
-                let rg = parama.next_wide();
-                self.emit(instrs::st(rg, reg::STACK_PTR, fuc.nodes[arg].offset as _, size as _));
-                self.emit(instrs::addi64(rg, reg::STACK_PTR, fuc.nodes[arg].offset as _));
-            } else {
-                parama.next();
-            }
+            let (rg, size) = match parama.next(ty, tys) {
+                PLoc::WideReg(rg, size) => (rg, size),
+                PLoc::Reg(rg, size) if ty.loc(tys) == Loc::Stack => (rg, size),
+                PLoc::Reg(..) | PLoc::Ref(..) | PLoc::None => continue,
+            };
+            self.emit(instrs::st(rg, reg::STACK_PTR, fuc.nodes[arg].offset as _, size));
+            self.emit(instrs::addi64(rg, reg::STACK_PTR, fuc.nodes[arg].offset as _));
         }
 
         for (i, block) in fuc.blocks.iter().enumerate() {
@@ -1177,17 +1173,13 @@ impl ItemCtx {
                         }
                     }
                     Kind::Return => {
-                        match tys.size_of(sig.ret) {
-                            0..=8 => {}
-                            size @ 9..=16 => {
-                                self.emit(instrs::ld(reg::RET, atr(allocs[0]), 0, size as _));
+                        match retl {
+                            PLoc::None | PLoc::Reg(..) => {}
+                            PLoc::WideReg(r, size) => {
+                                self.emit(instrs::ld(r, atr(allocs[0]), 0, size))
                             }
-                            size @ 17.. => {
-                                self.emit(instrs::bmc(
-                                    atr(allocs[0]),
-                                    reg::RET,
-                                    size.try_into().unwrap(),
-                                ));
+                            PLoc::Ref(r, size) => {
+                                self.emit(instrs::bmc(atr(allocs[0]), r, size.try_into().unwrap()));
                             }
                         }
 
@@ -1243,14 +1235,29 @@ impl ItemCtx {
                         }
                     }
                     Kind::Call { func } => {
+                        let (ret, mut parama) = tys.parama(node.ty);
+                        let mut allocs = allocs.iter();
+                        for ti in tys.ins.funcs[func as usize].sig.unwrap().args.range() {
+                            let ty = tys.ins.args[ti];
+                            let (rg, size) = match parama.next(ty, tys) {
+                                PLoc::Reg(rg, size) if ty.loc(tys) == Loc::Stack => (rg, size),
+                                PLoc::WideReg(rg, size) => (rg, size),
+                                PLoc::None | PLoc::Ref(..) | PLoc::Reg(..) => continue,
+                            };
+                            let &arg = allocs.next().unwrap();
+                            if size > 8 {
+                                allocs.next().unwrap();
+                            }
+                            self.emit(instrs::ld(rg, atr(arg), 0, size));
+                        }
                         self.relocs.push(TypedReloc {
                             target: ty::Kind::Func(func).compress(),
                             reloc: Reloc::new(self.code.len(), 3, 4),
                         });
                         self.emit(instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
-                        if let size @ 9..=16 = tys.size_of(node.ty) {
+                        if let PLoc::WideReg(r, size) = ret {
                             let stck = fuc.nodes[*node.inputs.last().unwrap()].offset;
-                            self.emit(instrs::st(reg::RET, reg::STACK_PTR, stck as _, size as _));
+                            self.emit(instrs::st(r, reg::STACK_PTR, stck as _, size));
                         }
                     }
                     Kind::Global { global } => {
@@ -1589,6 +1596,7 @@ impl TypeParser for Codegen<'_> {
                 code: core::mem::take(&mut self.ci.code),
                 ..Default::default()
             };
+
             self.pool.pop_ci(&mut self.ci);
             self.complete_call_graph();
 
@@ -2043,12 +2051,8 @@ impl<'a> Codegen<'a> {
                 let mut inps = Vc::from([self.ci.ctrl]);
                 for ((arg, carg), tyx) in args.iter().zip(cargs).zip(sig.args.range()) {
                     let ty = self.tys.ins.args[tyx];
-                    if self.tys.size_of(ty) == 0 {
-                        continue;
-                    }
                     let mut value = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
                     debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
-                    debug_assert_ne!(value.id, 0);
                     self.assert_ty(arg.pos(), &mut value, ty, fa!("argument {}", carg.name));
 
                     self.ci.nodes.lock(value.id);
@@ -2074,9 +2078,9 @@ impl<'a> Codegen<'a> {
                     false
                 });
 
-                let alt_value = match self.tys.size_of(sig.ret) {
-                    0..=8 => None,
-                    9.. => {
+                let alt_value = match sig.ret.loc(&self.tys) {
+                    Loc::Reg => None,
+                    Loc::Stack => {
                         let stck = self.ci.nodes.new_node_nop(sig.ret, Kind::Stck, [VOID, MEM]);
                         inps.push(stck);
                         Some(Value::ptr(stck).ty(sig.ret))
@@ -2692,7 +2696,7 @@ impl<'a> Codegen<'a> {
         for arg in args.iter() {
             let ty = self.tys.ins.args[sig_args.next().unwrap()];
             let mut deps = Vc::from([VOID]);
-            if matches!(self.tys.size_of(ty), 9..=16) {
+            if ty.loc(&self.tys) == Loc::Stack {
                 deps.push(MEM);
             }
             let value = self.ci.nodes.new_node_nop(ty, Kind::Arg, [VOID]);
@@ -2994,18 +2998,15 @@ impl<'a> Function<'a> {
                 }
             }
             Kind::Return => {
-                let ops = match self.tys.size_of(self.sig.ret) {
-                    0 => vec![],
-                    1..=8 => {
+                let ops = match self.tys.parama(self.sig.ret).0 {
+                    PLoc::None => vec![],
+                    PLoc::Reg(r, ..) => {
                         vec![regalloc2::Operand::reg_fixed_use(
                             self.rg(node.inputs[1]),
-                            regalloc2::PReg::new(1, regalloc2::RegClass::Int),
+                            regalloc2::PReg::new(r as _, regalloc2::RegClass::Int),
                         )]
                     }
-                    9..=16 => {
-                        vec![self.urg(self.nodes[node.inputs[1]].inputs[1])]
-                    }
-                    17.. => {
+                    PLoc::WideReg(..) | PLoc::Ref(..) => {
                         vec![self.urg(self.nodes[node.inputs[1]].inputs[1])]
                     }
                 };
@@ -3035,32 +3036,17 @@ impl<'a> Function<'a> {
             Kind::Entry => {
                 self.nodes[nid].ralloc_backref = self.add_block(nid);
 
-                let mut parama = self.tys.parama(self.sig.ret);
+                let (_, mut parama) = self.tys.parama(self.sig.ret);
                 for (ti, arg) in
                     self.sig.args.range().zip(self.nodes[VOID].clone().outputs.into_iter().skip(2))
                 {
                     let ty = self.tys.ins.args[ti];
-                    match self.tys.size_of(ty) {
-                        0 => continue,
-                        1..=8 => {
+                    match parama.next(ty, self.tys) {
+                        PLoc::None => {}
+                        PLoc::Reg(r, _) | PLoc::WideReg(r, _) | PLoc::Ref(r, _) => {
                             self.add_instr(NEVER, vec![regalloc2::Operand::reg_fixed_def(
                                 self.rg(arg),
-                                regalloc2::PReg::new(parama.next() as _, regalloc2::RegClass::Int),
-                            )]);
-                        }
-                        9..=16 => {
-                            self.add_instr(NEVER, vec![regalloc2::Operand::reg_fixed_def(
-                                self.rg(arg),
-                                regalloc2::PReg::new(
-                                    parama.next_wide() as _,
-                                    regalloc2::RegClass::Int,
-                                ),
-                            )]);
-                        }
-                        _ => {
-                            self.add_instr(NEVER, vec![regalloc2::Operand::reg_fixed_def(
-                                self.rg(arg),
-                                regalloc2::PReg::new(parama.next() as _, regalloc2::RegClass::Int),
+                                regalloc2::PReg::new(r as _, regalloc2::RegClass::Int),
                             )]);
                         }
                     }
@@ -3120,20 +3106,18 @@ impl<'a> Function<'a> {
                     ));
                 }
 
-                let mut parama = self.tys.parama(fuc.ret);
-                let mut inps = node.inputs[1..].iter();
-                for ti in fuc.args.range() {
+                let (ret, mut parama) = self.tys.parama(fuc.ret);
+                for (ti, &(mut i)) in fuc.args.range().zip(node.inputs[1..].iter()) {
                     let ty = self.tys.ins.args[ti];
-                    match self.tys.size_of(ty) {
-                        0 => continue,
-                        1..=8 => {
+                    match parama.next(ty, self.tys) {
+                        PLoc::None => {}
+                        PLoc::Reg(r, _) => {
                             ops.push(regalloc2::Operand::reg_fixed_use(
-                                self.rg(*inps.next().unwrap()),
-                                regalloc2::PReg::new(parama.next() as _, regalloc2::RegClass::Int),
+                                self.rg(i),
+                                regalloc2::PReg::new(r as _, regalloc2::RegClass::Int),
                             ));
                         }
-                        9..=16 => {
-                            let mut i = *inps.next().unwrap();
+                        PLoc::WideReg(r, _) => {
                             loop {
                                 match self.nodes[i].kind {
                                     Kind::Stre { .. } => i = self.nodes[i].inputs[2],
@@ -3145,15 +3129,14 @@ impl<'a> Function<'a> {
                             debug_assert!(i != 0);
                             ops.push(regalloc2::Operand::reg_fixed_use(
                                 self.rg(i),
-                                regalloc2::PReg::new(parama.next() as _, regalloc2::RegClass::Int),
+                                regalloc2::PReg::new(r as _, regalloc2::RegClass::Int),
                             ));
                             ops.push(regalloc2::Operand::reg_fixed_use(
                                 self.rg(i),
-                                regalloc2::PReg::new(parama.next() as _, regalloc2::RegClass::Int),
+                                regalloc2::PReg::new(r as usize + 1, regalloc2::RegClass::Int),
                             ));
                         }
-                        _ => {
-                            let mut i = *inps.next().unwrap();
+                        PLoc::Ref(r, _) => {
                             loop {
                                 match self.nodes[i].kind {
                                     Kind::Stre { .. } => i = self.nodes[i].inputs[2],
@@ -3165,20 +3148,17 @@ impl<'a> Function<'a> {
                             debug_assert!(i != 0);
                             ops.push(regalloc2::Operand::reg_fixed_use(
                                 self.rg(i),
-                                regalloc2::PReg::new(parama.next() as _, regalloc2::RegClass::Int),
+                                regalloc2::PReg::new(r as _, regalloc2::RegClass::Int),
                             ));
                         }
                     }
                 }
 
-                match self.tys.size_of(fuc.ret) {
-                    0..=16 => {}
-                    17.. => {
-                        ops.push(regalloc2::Operand::reg_fixed_use(
-                            self.rg(*node.inputs.last().unwrap()),
-                            regalloc2::PReg::new(1, regalloc2::RegClass::Int),
-                        ));
-                    }
+                if let PLoc::Ref(r, _) = ret {
+                    ops.push(regalloc2::Operand::reg_fixed_use(
+                        self.rg(*node.inputs.last().unwrap()),
+                        regalloc2::PReg::new(r as _, regalloc2::RegClass::Int),
+                    ));
                 }
 
                 self.add_instr(nid, ops);
@@ -3203,6 +3183,7 @@ impl<'a> Function<'a> {
             //            .iter()
             //            .all(|&n| matches!(self.nodes[n].kind, Kind::Stre | Kind::Load)))
             //    }) => {}
+            Kind::Stck if self.tys.size_of(node.ty) == 0 => self.nodes.lock(nid),
             Kind::Stck => {
                 let ops = vec![self.drg(nid)];
                 self.add_instr(nid, ops);
@@ -3212,6 +3193,9 @@ impl<'a> Function<'a> {
                 self.add_instr(nid, ops);
             }
             Kind::Phi | Kind::Arg | Kind::Mem => {}
+            Kind::Load { .. } if matches!(self.tys.size_of(node.ty), 0 | 9..) => {
+                self.nodes.lock(nid)
+            }
             Kind::Load { .. } => {
                 let mut region = node.inputs[1];
                 if self.nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
@@ -3219,13 +3203,11 @@ impl<'a> Function<'a> {
                 {
                     region = self.nodes[region].inputs[1]
                 }
-                if self.tys.size_of(node.ty) <= 8 {
-                    let ops = match self.nodes[region].kind {
-                        Kind::Stck => vec![self.drg(nid)],
-                        _ => vec![self.drg(nid), self.urg(region)],
-                    };
-                    self.add_instr(nid, ops);
-                }
+                let ops = match self.nodes[region].kind {
+                    Kind::Stck => vec![self.drg(nid)],
+                    _ => vec![self.drg(nid), self.urg(region)],
+                };
+                self.add_instr(nid, ops);
             }
             Kind::Stre if node.inputs[2] == VOID => self.nodes.lock(nid),
             Kind::Stre => {

@@ -8,7 +8,7 @@ use {
         },
         reg,
         ty::{self, TyCheck},
-        Comptime, Field, Func, Global, OffsetIter, ParamAlloc, Reloc, Sig, Struct, SymKey,
+        Comptime, Field, Func, Global, OffsetIter, PLoc, ParamAlloc, Reloc, Sig, Struct, SymKey,
         TypeParser, TypedReloc, Types,
     },
     alloc::{string::String, vec::Vec},
@@ -1037,7 +1037,7 @@ impl Codegen {
                     );
                 };
 
-                let mut parama = self.tys.parama(ty);
+                let (_, mut parama) = self.tys.parama(ty);
                 let base = self.pool.arg_locs.len();
                 for arg in args {
                     let arg = self.expr(arg)?;
@@ -1402,7 +1402,7 @@ impl Codegen {
                     unreachable!();
                 };
 
-                let mut parama = self.tys.parama(sig.ret);
+                let (_, mut parama) = self.tys.parama(sig.ret);
                 let base = self.pool.arg_locs.len();
                 let mut sig_args = sig.args.range();
                 let mut should_momize = !args.is_empty() && sig.ret == ty::Id::from(ty::TYPE);
@@ -2135,7 +2135,7 @@ impl Codegen {
 
         self.ci.emit_prelude();
 
-        let mut parama = self.tys.parama(sig.ret);
+        let (ret, mut parama) = self.tys.parama(sig.ret);
         let mut sig_args = sig.args.range();
         for arg in args.iter() {
             let ty = self.tys.ins.args[sig_args.next().unwrap()];
@@ -2147,7 +2147,7 @@ impl Codegen {
             self.ci.vars.push(Variable { id: arg.id, value: Value { ty, loc } });
         }
 
-        if self.tys.size_of(sig.ret) > 16 {
+        if let PLoc::Ref(..) = ret {
             let reg = self.ci.regs.allocate();
             self.ci.emit(instrs::cp(reg.get(), 1));
             self.ci.ret_reg = reg;
@@ -2179,20 +2179,21 @@ impl Codegen {
         if size == 0 {
             return Loc::default();
         }
-        let (src, dst) = match size {
-            0 => (Loc::default(), Loc::default()),
-            ..=8 if flags & idfl::REFERENCED == 0 => {
-                (Loc::reg(parama.next()), Loc::reg(self.ci.regs.allocate()))
+        let (src, dst) = match parama.next(ty, &self.tys) {
+            PLoc::None => (Loc::default(), Loc::default()),
+            PLoc::Reg(r, _) if flags & idfl::REFERENCED == 0 => {
+                (Loc::reg(r), Loc::reg(self.ci.regs.allocate()))
             }
-            1..=8 => (Loc::reg(parama.next()), Loc::stack(self.ci.stack.allocate(size))),
-            9..=16 => (Loc::reg(parama.next_wide()), Loc::stack(self.ci.stack.allocate(size))),
-            _ if flags & (idfl::MUTABLE | idfl::REFERENCED) == 0 => {
-                let ptr = parama.next();
+            PLoc::Reg(r, _) => (Loc::reg(r), Loc::stack(self.ci.stack.allocate(size))),
+            PLoc::WideReg(r, _) => (Loc::reg(r), Loc::stack(self.ci.stack.allocate(size))),
+            PLoc::Ref(ptr, _) if flags & (idfl::MUTABLE | idfl::REFERENCED) == 0 => {
                 let reg = self.ci.regs.allocate();
                 self.ci.emit(instrs::cp(reg.get(), ptr));
                 return Loc::reg(reg).into_derefed();
             }
-            _ => (Loc::reg(parama.next()).into_derefed(), Loc::stack(self.ci.stack.allocate(size))),
+            PLoc::Ref(ptr, _) => {
+                (Loc::reg(ptr).into_derefed(), Loc::stack(self.ci.stack.allocate(size)))
+            }
         };
 
         self.store_sized(src, &dst, size);
@@ -2265,23 +2266,16 @@ impl Codegen {
     }
 
     fn pass_arg(&mut self, value: &Value, parama: &mut ParamAlloc) {
-        self.pass_arg_low(&value.loc, self.tys.size_of(value.ty), parama)
-    }
-
-    fn pass_arg_low(&mut self, loc: &Loc, size: Size, parama: &mut ParamAlloc) {
-        if size > 16 {
-            let Loc::Rt { reg, stack, offset, .. } = loc else { unreachable!() };
-            self.stack_offset(parama.next(), reg.get(), stack.as_ref(), *offset as _);
-            return;
+        match parama.next(value.ty, &self.tys) {
+            PLoc::None => {}
+            PLoc::Reg(r, _) | PLoc::WideReg(r, _) => {
+                self.store_typed(&value.loc, Loc::reg(r), value.ty)
+            }
+            PLoc::Ref(ptr, _) => {
+                let Loc::Rt { reg, stack, offset, .. } = &value.loc else { unreachable!() };
+                self.stack_offset(ptr, reg.get(), stack.as_ref(), *offset as _);
+            }
         }
-
-        let dst = match size {
-            0 => return,
-            9..=16 => Loc::reg(parama.next_wide()),
-            _ => Loc::reg(parama.next()),
-        };
-
-        self.store_sized(loc, dst, size);
     }
 
     fn store_typed(&mut self, src: impl Into<LocCow>, dst: impl Into<LocCow>, ty: ty::Id) {
