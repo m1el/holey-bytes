@@ -107,6 +107,7 @@ mod ctx_map {
         }
     }
 
+    #[derive(Clone)]
     pub struct Key<T> {
         pub value: T,
         pub hash: Hash,
@@ -125,6 +126,7 @@ mod ctx_map {
         fn key<'a>(&self, ctx: &'a Self::Ctx) -> Self::Key<'a>;
     }
 
+    #[derive(Clone)]
     pub struct CtxMap<T> {
         inner: hashbrown::HashMap<Key<T>, (), HashBuilder>,
     }
@@ -262,6 +264,8 @@ mod ty {
     pub type Global = u32;
     pub type Module = u32;
     pub type Slice = u32;
+
+    pub const ECA: Func = Func::MAX;
 
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
     pub struct Tuple(pub u32);
@@ -702,6 +706,7 @@ impl Default for Func {
     }
 }
 
+#[derive(Clone, Copy)]
 struct TypedReloc {
     target: ty::Id,
     reloc: Reloc,

@@ -266,7 +266,7 @@ struct AllocedVc {
     base: Unique<Nid>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct BitSet {
     data: Vec<usize>,
 }

@@ -22,6 +22,7 @@ use {
         fmt::{self, Debug, Display, Write},
         format_args as fa, mem,
         ops::{self},
+        usize,
     },
     hashbrown::hash_map,
     regalloc2::VReg,
@@ -55,6 +56,7 @@ impl crate::ctx_map::CtxEntry for Nid {
     }
 }
 
+#[derive(Clone)]
 struct Nodes {
     values: Vec<Result<Node, Nid>>,
     visited: BitSet,
@@ -500,7 +502,7 @@ impl Nodes {
             Kind::BinOp { op } | Kind::UnOp { op } => {
                 write!(out, "{:>4}:      ", op.name())
             }
-            Kind::Call { func } => {
+            Kind::Call { func, argc: _ } => {
                 write!(out, "call: {func} {}  ", self[node].depth)
             }
             Kind::Global { global } => write!(out, "glob: {global:<5}"),
@@ -886,6 +888,7 @@ pub enum Kind {
     // [ctrl, ...args]
     Call {
         func: ty::Func,
+        argc: u32,
     },
     // [ctrl]
     Idk,
@@ -975,6 +978,7 @@ type LoopDepth = u16;
 type LockRc = u16;
 type IDomDepth = u16;
 
+#[derive(Clone)]
 struct Loop {
     node: Nid,
     ctrl: [Nid; 2],
@@ -1007,7 +1011,7 @@ impl Scope {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct ItemCtx {
     file: FileId,
     ret: Option<ty::Id>,
@@ -1247,27 +1251,36 @@ impl ItemCtx {
                             }
                         }
                     }
-                    Kind::Call { func } => {
+                    Kind::Call { argc, func } => {
+                        std::dbg!(node.ty.simple_size());
                         let (ret, mut parama) = tys.parama(node.ty);
-                        let mut allocs = allocs.iter();
-                        for ti in tys.ins.funcs[func as usize].sig.unwrap().args.range() {
-                            let ty = tys.ins.args[ti];
+                        debug_assert_eq!(
+                            allocs.len(),
+                            argc as usize
+                                + !matches!(ret, PLoc::Reg(..) | PLoc::None) as usize
+                                + !matches!(ret, PLoc::None) as usize
+                        );
+                        for (&i, &arg) in node.inputs[1..][..argc as usize].iter().zip(&allocs[1..])
+                        {
+                            let ty = fuc.nodes[i].ty;
                             let (rg, size) = match parama.next(ty, tys) {
                                 PLoc::Reg(rg, size) if ty.loc(tys) == Loc::Stack => (rg, size),
                                 PLoc::WideReg(rg, size) => (rg, size),
                                 PLoc::None | PLoc::Ref(..) | PLoc::Reg(..) => continue,
                             };
-                            let &arg = allocs.next().unwrap();
-                            if size > 8 {
-                                allocs.next().unwrap();
-                            }
                             self.emit(instrs::ld(rg, atr(arg), 0, size));
                         }
-                        self.relocs.push(TypedReloc {
-                            target: ty::Kind::Func(func).compress(),
-                            reloc: Reloc::new(self.code.len(), 3, 4),
-                        });
-                        self.emit(instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
+
+                        if func == ty::ECA {
+                            self.emit(instrs::eca());
+                        } else {
+                            self.relocs.push(TypedReloc {
+                                target: ty::Kind::Func(func).compress(),
+                                reloc: Reloc::new(self.code.len(), 3, 4),
+                            });
+                            self.emit(instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
+                        }
+
                         if let PLoc::WideReg(r, size) = ret {
                             let stck = fuc.nodes[*node.inputs.last().unwrap()].offset;
                             self.emit(instrs::st(r, reg::STACK_PTR, stck as _, size));
@@ -1482,6 +1495,20 @@ impl Pool {
         self.used_cis -= 1;
         core::mem::swap(&mut self.cis[self.used_cis], target);
     }
+
+    fn save_ci(&mut self, ci: &ItemCtx) {
+        if let Some(slot) = self.cis.get_mut(self.used_cis) {
+            slot.clone_from(ci);
+        } else {
+            self.cis.push(ci.clone());
+        }
+        self.used_cis += 1;
+    }
+
+    fn restore_ci(&mut self, dst: &mut ItemCtx) {
+        self.used_cis -= 1;
+        *dst = core::mem::take(&mut self.cis[self.used_cis]);
+    }
 }
 
 struct Regalloc {
@@ -1566,9 +1593,11 @@ impl TypeParser for Codegen<'_> {
         todo!()
     }
 
-    #[expect(unused)]
     fn infer_type(&mut self, expr: &Expr) -> ty::Id {
-        todo!()
+        self.pool.save_ci(&self.ci);
+        let ty = self.expr(expr).map_or(ty::Id::NEVER, |v| v.ty);
+        self.pool.restore_ci(&mut self.ci);
+        ty
     }
 
     fn on_reuse(&mut self, existing: ty::Id) {
@@ -1672,6 +1701,17 @@ impl TypeParser for Codegen<'_> {
 }
 
 impl<'a> Codegen<'a> {
+    pub fn push_embeds(&mut self, embeds: Vec<Vec<u8>>) {
+        self.tys.ins.globals = embeds
+            .into_iter()
+            .map(|data| Global {
+                ty: self.tys.make_array(ty::Id::U8, data.len() as _),
+                data,
+                ..Default::default()
+            })
+            .collect();
+    }
+
     fn store_mem(&mut self, region: Nid, value: Nid) -> Nid {
         if value == NEVER {
             return NEVER;
@@ -1980,6 +2020,11 @@ impl<'a> Codegen<'a> {
                     self.ci.nodes.new_node(ty::Id::INT, Kind::BinOp { op: TokenKind::Add }, inps);
                 Some(Value::ptr(ptr).ty(elem))
             }
+            Expr::Embed { id, .. } => {
+                let glob = &self.tys.ins.globals[id as usize];
+                let ty = self.tys.make_ptr(glob.ty);
+                Some(self.ci.nodes.new_node_lit(ty, Kind::Global { global: id }, [VOID]))
+            }
             Expr::Directive { name: "sizeof", args: [ty], .. } => {
                 let ty = self.ty(ty);
                 Some(self.ci.nodes.new_node_lit(
@@ -1988,7 +2033,44 @@ impl<'a> Codegen<'a> {
                     [VOID],
                 ))
             }
-            Expr::Directive { name: "trunc", args: [expr], pos } => {
+            Expr::Directive { name: "alignof", args: [ty], .. } => {
+                let ty = self.ty(ty);
+                Some(self.ci.nodes.new_node_lit(
+                    ty::Id::INT,
+                    Kind::CInt { value: self.tys.align_of(ty) as _ },
+                    [VOID],
+                ))
+            }
+            Expr::Directive { name: "bitcast", args: [val], pos } => {
+                let mut val = self.raw_expr(val)?;
+                self.strip_var(&mut val);
+
+                let Some(ty) = ctx.ty else {
+                    self.report(
+                        pos,
+                        "resulting type cannot be inferred from context, \
+                        consider using `@as(<ty>, @bitcast(<expr>))` to hint the type",
+                    );
+                    return Value::NEVER;
+                };
+
+                let (got, expected) = (self.tys.size_of(val.ty), self.tys.size_of(ty));
+                if got != expected {
+                    self.report(
+                        pos,
+                        fa!(
+                            "cast from '{}' to '{}' is not supported, \
+                            sizes dont match ({got} != {expected})",
+                            self.ty_display(val.ty),
+                            self.ty_display(ty)
+                        ),
+                    );
+                }
+
+                val.ty = ty;
+                Some(val)
+            }
+            Expr::Directive { name: "intcast", args: [expr], pos } => {
                 let val = self.expr(expr)?;
 
                 if !val.ty.is_integer() {
@@ -2006,7 +2088,7 @@ impl<'a> Codegen<'a> {
                     self.report(
                         pos,
                         "resulting integer cannot be inferred from context, \
-                        consider using `@as(<int_ty>, @trunc(<expr>))` to hint the type",
+                        consider using `@as(<int_ty>, @intcast(<expr>))` to hint the type",
                     );
                     return Value::NEVER;
                 };
@@ -2030,6 +2112,59 @@ impl<'a> Codegen<'a> {
             Expr::Directive { name: "as", args: [ty, expr], .. } => {
                 let ctx = Ctx::default().with_ty(self.ty(ty));
                 self.raw_expr_ctx(expr, ctx)
+            }
+            Expr::Directive { pos, name: "eca", args } => {
+                let Some(ty) = ctx.ty else {
+                    self.report(
+                        pos,
+                        "return type cannot be inferred from context, \
+                        consider using `@as(<return_ty>, @eca(<expr>...))` to hint the type",
+                    );
+                    return Value::NEVER;
+                };
+
+                let mut inps = Vc::from([self.ci.ctrl]);
+                for arg in args {
+                    let value = self.expr(arg)?;
+                    debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
+                    self.ci.nodes.lock(value.id);
+                    inps.push(value.id);
+                }
+
+                for &n in inps.iter().skip(1) {
+                    self.ci.nodes.unlock(n);
+                }
+
+                if let Some(str) = self.ci.scope.store.to_store() {
+                    inps.push(str);
+                }
+                self.ci.scope.loads.retain(|&load| {
+                    if inps.contains(&load) {
+                        return true;
+                    }
+
+                    if !self.ci.nodes.unlock_remove(load) {
+                        inps.push(load);
+                    }
+
+                    false
+                });
+
+                let alt_value = match ty.loc(&self.tys) {
+                    Loc::Reg => None,
+                    Loc::Stack => {
+                        let stck = self.ci.nodes.new_node_nop(ty, Kind::Stck, [VOID, MEM]);
+                        inps.push(stck);
+                        Some(Value::ptr(stck).ty(ty))
+                    }
+                };
+
+                let argc = args.len() as u32;
+                self.ci.ctrl = self.ci.nodes.new_node(ty, Kind::Call { func: ty::ECA, argc }, inps);
+
+                self.store_mem(VOID, VOID);
+
+                alt_value.or(Some(Value::new(self.ci.ctrl).ty(ty)))
             }
             Expr::Call { func, args, .. } => {
                 self.ci.call_count += 1;
@@ -2100,7 +2235,8 @@ impl<'a> Codegen<'a> {
                     }
                 };
 
-                self.ci.ctrl = self.ci.nodes.new_node(sig.ret, Kind::Call { func: fu }, inps);
+                let argc = args.len() as u32;
+                self.ci.ctrl = self.ci.nodes.new_node(sig.ret, Kind::Call { func: fu, argc }, inps);
 
                 self.store_mem(VOID, VOID);
 
@@ -3107,21 +3243,19 @@ impl<'a> Function<'a> {
                 let ops = vec![self.drg(nid), self.urg(node.inputs[1])];
                 self.add_instr(nid, ops);
             }
-            Kind::Call { func } => {
+            Kind::Call { argc, .. } => {
                 self.nodes[nid].ralloc_backref = self.nodes[prev].ralloc_backref;
                 let mut ops = vec![];
 
-                let fuc = self.tys.ins.funcs[func as usize].sig.unwrap();
-                if self.tys.size_of(fuc.ret) != 0 {
+                let (ret, mut parama) = self.tys.parama(node.ty);
+                if !matches!(ret, PLoc::None) {
                     ops.push(regalloc2::Operand::reg_fixed_def(
                         self.rg(nid),
                         regalloc2::PReg::new(1, regalloc2::RegClass::Int),
                     ));
                 }
-
-                let (ret, mut parama) = self.tys.parama(fuc.ret);
-                for (ti, &(mut i)) in fuc.args.range().zip(node.inputs[1..].iter()) {
-                    let ty = self.tys.ins.args[ti];
+                for &(mut i) in node.inputs[1..][..argc as usize].iter() {
+                    let ty = self.nodes[i].ty;
                     match parama.next(ty, self.tys) {
                         PLoc::None => {}
                         PLoc::Reg(r, _) => {
@@ -3130,7 +3264,7 @@ impl<'a> Function<'a> {
                                 regalloc2::PReg::new(r as _, regalloc2::RegClass::Int),
                             ));
                         }
-                        PLoc::WideReg(r, _) => {
+                        PLoc::WideReg(..) => {
                             loop {
                                 match self.nodes[i].kind {
                                     Kind::Stre { .. } => i = self.nodes[i].inputs[2],
@@ -3140,14 +3274,7 @@ impl<'a> Function<'a> {
                                 debug_assert_ne!(i, 0);
                             }
                             debug_assert!(i != 0);
-                            ops.push(regalloc2::Operand::reg_fixed_use(
-                                self.rg(i),
-                                regalloc2::PReg::new(r as _, regalloc2::RegClass::Int),
-                            ));
-                            ops.push(regalloc2::Operand::reg_fixed_use(
-                                self.rg(i),
-                                regalloc2::PReg::new(r as usize + 1, regalloc2::RegClass::Int),
-                            ));
+                            ops.push(self.urg(i));
                         }
                         PLoc::Ref(r, _) => {
                             loop {
@@ -3594,8 +3721,9 @@ mod tests {
         _ = log::set_logger(&crate::fs::Logger);
         log::set_max_level(log::LevelFilter::Info);
 
-        let (ref files, _embeds) = crate::test_parse_files(ident, input);
+        let (ref files, embeds) = crate::test_parse_files(ident, input);
         let mut codegen = super::Codegen { files, ..Default::default() };
+        codegen.push_embeds(embeds);
 
         codegen.generate();
 
@@ -3633,7 +3761,7 @@ mod tests {
         hex_octal_binary_literals;
         //struct_operators;
         global_variables;
-        //directives;
+        directives;
         c_strings;
         struct_patterns;
         arrays;
