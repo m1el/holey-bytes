@@ -305,6 +305,19 @@ impl Nodes {
                     return Some(self.new_node(ty, K::BinOp { op: T::Mul }, [ctrl, rhs, new_rhs]));
                 }
 
+                if op == T::Sub
+                    && self[lhs].kind == (K::BinOp { op: T::Add })
+                    && let K::CInt { value: a } = self[rhs].kind
+                    && let K::CInt { value: b } = self[self[lhs].inputs[2]].kind
+                {
+                    let new_rhs = self.new_node_nop(ty, K::CInt { value: b - a }, [ctrl]);
+                    return Some(self.new_node(ty, K::BinOp { op: T::Add }, [
+                        ctrl,
+                        self[lhs].inputs[1],
+                        new_rhs,
+                    ]));
+                }
+
                 if op == T::Sub && self[lhs].kind == (K::BinOp { op }) {
                     // (a - b) - c => a - (b + c)
                     let &[_, a, b] = self[lhs].inputs.as_slice() else { unreachable!() };
