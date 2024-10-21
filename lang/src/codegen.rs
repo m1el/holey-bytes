@@ -974,7 +974,7 @@ impl Codegen {
 
                 let fuc = &self.tys.ins.funcs[func as usize];
                 let ast = self.files[fuc.file as usize].clone();
-                let &E::Closure { args: cargs, body, .. } = fuc.expr.get(&ast).unwrap() else {
+                let &E::Closure { args: cargs, body, .. } = fuc.expr.get(&ast) else {
                     unreachable!();
                 };
 
@@ -1398,7 +1398,7 @@ impl Codegen {
 
                 let fuc = &self.tys.ins.funcs[func as usize];
                 let ast = self.files[fuc.file as usize].clone();
-                let &E::Closure { args: cargs, .. } = fuc.expr.get(&ast).unwrap() else {
+                let &E::Closure { args: cargs, .. } = fuc.expr.get(&ast) else {
                     unreachable!();
                 };
 
@@ -1803,7 +1803,7 @@ impl Codegen {
     fn compute_signature(&mut self, func: &mut ty::Func, pos: Pos, args: &[Expr]) -> Option<Sig> {
         let fuc = &self.tys.ins.funcs[*func as usize];
         let fast = self.files[fuc.file as usize].clone();
-        let &Expr::Closure { args: cargs, ret, .. } = fuc.expr.get(&fast).unwrap() else {
+        let &Expr::Closure { args: cargs, ret, .. } = fuc.expr.get(&fast) else {
             unreachable!();
         };
 
@@ -2122,7 +2122,7 @@ impl Codegen {
         debug_assert!(func.file == file);
         let sig = func.sig.unwrap();
         let ast = self.files[file as usize].clone();
-        let expr = func.expr.get(&ast).unwrap();
+        let expr = func.expr.get(&ast);
         let ct_stack_base = self.ct.vm.read_reg(reg::STACK_PTR).0;
 
         let repl = ItemCtx { file, ret: Some(sig.ret), ..self.pool.cis.pop().unwrap_or_default() };
@@ -2428,9 +2428,7 @@ impl Codegen {
         match *trap {
             trap::Trap::MakeStruct(trap::MakeStruct { file, struct_expr }) => {
                 let cfile = self.files[file as usize].clone();
-                let &Expr::Struct { fields, captured, packed, .. } =
-                    struct_expr.get(&cfile).unwrap()
-                else {
+                let &Expr::Struct { fields, captured, packed, .. } = struct_expr.get(&cfile) else {
                     unreachable!()
                 };
 

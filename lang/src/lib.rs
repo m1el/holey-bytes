@@ -395,6 +395,16 @@ mod ty {
                 _ => return None,
             })
         }
+
+        pub(crate) fn extend(self) -> Self {
+            if self.is_signed() {
+                Self::INT
+            } else if self.is_pointer() {
+                self
+            } else {
+                Self::UINT
+            }
+        }
     }
 
     #[derive(PartialEq, Eq, Default, Debug, Clone, Copy)]

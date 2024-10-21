@@ -1125,12 +1125,12 @@ impl ExprRef {
         Self(NonNull::from(expr).cast())
     }
 
-    pub fn get<'a>(&self, from: &'a Ast) -> Option<&'a Expr<'a>> {
-        from.mem.contains(self.0.as_ptr() as _).then_some(())?;
+    pub fn get<'a>(&self, from: &'a Ast) -> &'a Expr<'a> {
+        assert!(from.mem.contains(self.0.as_ptr() as _));
         // SAFETY: the pointer is or was a valid reference in the past, if it points within one of
         // arenas regions, it muts be walid, since arena does not give invalid pointers to its
         // allocations
-        Some(unsafe { { self.0 }.as_ref() })
+        unsafe { { self.0 }.as_ref() }
     }
 
     pub fn dangling() -> Self {

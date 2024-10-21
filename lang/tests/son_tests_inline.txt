@@ -1,0 +1,14 @@
+main:
+    LI64 r5, 0d
+    LRA r4, r0, :gb
+    LD r6, r4, 0a, 8h
+    LI64 r9, 6d
+    JEQ r6, r5, :0
+    LI64 r12, 1d
+    JMP :1
+ 0: CP r12, r9
+ 1: SUB64 r1, r12, r9
+    JALA r0, r31, 0a
+code size: 94
+ret: 0
+status: Ok(())

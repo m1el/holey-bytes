@@ -280,9 +280,20 @@ impl TokenKind {
             Self::Eq => (a == b) as i64,
             Self::Ne => (a != b) as i64,
             Self::Band => a & b,
+            Self::Bor => a | b,
+            Self::Mod => a % b,
             Self::Shr => a >> b,
             s => todo!("{s}"),
         }
+    }
+
+    pub fn cmp_against(self) -> Option<u64> {
+        Some(match self {
+            TokenKind::Le | TokenKind::Gt => 1,
+            TokenKind::Ne | TokenKind::Eq => 0,
+            TokenKind::Ge | TokenKind::Lt => (-1i64) as _,
+            _ => return None,
+        })
     }
 
     pub fn is_homogenous(&self) -> bool {

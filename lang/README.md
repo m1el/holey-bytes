@@ -375,7 +375,10 @@ main := fn(): int {
 	return @inline(foo, 1, 2, 3) - 6
 }
 
+gb := 0
+
 foo := fn(a: int, b: int, c: int): int {
+	if gb != 0 return 1
 	return a + b + c
 }
 ```
@@ -777,12 +780,13 @@ screenidx := fn(orange: int): int {
 // in module: random.hb
 
 integer := fn(min: int, max: int): int {
-	rng := @as(int, @eca(3, 4))
+	rng := @as(int, 4)
 
-	if min != 0 | max != 0 {
+	if max == 0 {
 		return rng % (max - min + 1) + min
+	} else {
+		return rng
 	}
-	return rng
 }
 ```
 

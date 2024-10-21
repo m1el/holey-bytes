@@ -1,0 +1,92 @@
+example:
+    ADDI64 r254, r254, -8d
+    ST r31, r254, 0a, 8h
+    LI64 r3, 768d
+    LI64 r2, 0d
+    JAL r31, r0, :integer
+    LD r31, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
+    JALA r0, r31, 0a
+integer:
+    LI64 r6, 0d
+    LI64 r1, 4d
+    JNE r3, r6, :0
+    SUB64 r10, r3, r2
+    ADDI64 r12, r10, 1d
+    DIRS64 r0, r3, r1, r12
+    ADD64 r1, r3, r2
+    JMP :0
+ 0: JALA r0, r31, 0a
+line:
+    ST r2, r254, 0a, 16h
+    ADDI64 r2, r254, 0d
+    ST r4, r254, 0a, 16h
+    ADDI64 r4, r254, 0d
+    ST r6, r254, 0a, 16h
+    ADDI64 r6, r254, 0d
+    LD r9, r4, 0a, 8h
+    LD r11, r2, 0a, 8h
+    JGTU r11, r9, :0
+    JMP :0
+ 0: JALA r0, r31, 0a
+main:
+    ADDI64 r254, r254, -112d
+    ST r31, r254, 96a, 16h
+    LI64 r32, 10d
+    LI64 r1, 0d
+    ADDI64 r7, r254, 48d
+    ADDI64 r5, r254, 64d
+    ADDI64 r3, r254, 80d
+    ST r1, r254, 80a, 8h
+    ST r1, r254, 88a, 8h
+    ST r1, r254, 64a, 8h
+    ST r1, r254, 72a, 8h
+    ST r1, r254, 48a, 8h
+    ST r1, r254, 56a, 8h
+    CP r8, r32
+    CP r2, r3
+    CP r4, r5
+    CP r6, r7
+    JAL r31, r0, :line
+    ADDI64 r7, r254, 0d
+    ADDI64 r5, r254, 16d
+    ADDI64 r3, r254, 32d
+    ST r1, r254, 32a, 8h
+    ST r1, r254, 40a, 8h
+    ST r1, r254, 16a, 8h
+    ST r1, r254, 24a, 8h
+    ST r1, r254, 0a, 8h
+    ST r1, r254, 8a, 8h
+    CP r8, r32
+    CP r2, r3
+    CP r4, r5
+    CP r6, r7
+    JAL r31, r0, :rect_line
+    JAL r31, r0, :example
+    LD r31, r254, 96a, 16h
+    ADDI64 r254, r254, 112d
+    JALA r0, r31, 0a
+rect_line:
+    ST r2, r254, 0a, 16h
+    ADDI64 r2, r254, 0d
+    ST r4, r254, 0a, 16h
+    ADDI64 r4, r254, 0d
+    ST r6, r254, 0a, 16h
+    ADDI64 r6, r254, 0d
+    LI64 r10, 0d
+    LD r12, r2, 8a, 8h
+    LD r4, r4, 0a, 8h
+    ADD64 r6, r4, r12
+ 3: JNE r10, r8, :0
+    JMP :1
+ 0: CP r9, r12
+ 4: JNE r6, r9, :2
+    ADDI64 r10, r10, 1d
+    JMP :3
+ 2: ADDI64 r9, r9, 1d
+    JMP :4
+ 1: JALA r0, r31, 0a
+timed out
+code size: 797
+ret: 0
+status: Ok(())
