@@ -815,7 +815,7 @@ impl Codegen {
         explicit_alignment: Option<u8>,
         fields: &[CommentOr<StructField>],
     ) -> ty::Struct {
-        let sym = pos.map(|pos| SymKey::Struct(file, pos));
+        let sym = pos.map(|pos| SymKey::Struct(file, pos, Default::default()));
         if let Some(sym) = sym
             && let Some(&ty) = self.tys.syms.get(sym, &self.tys.ins)
         {

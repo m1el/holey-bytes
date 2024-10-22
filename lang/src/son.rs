@@ -3964,7 +3964,7 @@ mod tests {
 
         // Incomplete Examples;
         //comptime_pointers;
-        //generic_types;
+        generic_types;
         fb_driver;
 
         // Purely Testing Examples;

@@ -267,7 +267,7 @@ mod ty {
 
     pub const ECA: Func = Func::MAX;
 
-    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
     pub struct Tuple(pub u32);
 
     impl Tuple {
@@ -309,7 +309,7 @@ mod ty {
                 Kind::Struct(s) => {
                     let st = &ctx.structs[s as usize];
                     debug_assert_ne!(st.pos, Pos::MAX);
-                    crate::SymKey::Struct(st.file, st.pos)
+                    crate::SymKey::Struct(st.file, st.pos, st.captures)
                 }
                 Kind::Ptr(p) => crate::SymKey::Pointer(&ctx.ptrs[p as usize]),
                 Kind::Func(f) => {
@@ -665,7 +665,7 @@ fn emit(out: &mut Vec<u8>, (len, instr): EncodedInstr) {
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
 pub enum SymKey<'a> {
     Pointer(&'a Ptr),
-    Struct(FileId, Pos),
+    Struct(FileId, Pos, ty::Tuple),
     FuncInst(ty::Func, ty::Tuple),
     Decl(FileId, Ident),
     Array(&'a Array),
@@ -772,6 +772,7 @@ struct Struct {
     file: FileId,
     size: Cell<Size>,
     align: Cell<u8>,
+    captures: ty::Tuple,
     explicit_alignment: Option<u8>,
     field_start: u32,
 }
@@ -1014,8 +1015,14 @@ trait TypeParser {
                 self.tys().make_array(ty, len)
             }
             Expr::Struct { pos, fields, packed, captured, .. } => {
-                assert!(captured.is_empty());
-                let sym = SymKey::Struct(file, pos);
+                let captures_start = self.tys().tmp.args.len();
+                for &cp in captured {
+                    let ty = self.find_local_ty(cp).expect("TODO");
+                    self.tys().tmp.args.push(ty);
+                }
+                let captured = self.tys().pack_args(captures_start).expect("TODO");
+
+                let sym = SymKey::Struct(file, pos, captured);
                 let tys = self.tys();
                 if let Some(&ty) = tys.syms.get(sym, &tys.ins) {
                     return ty;
