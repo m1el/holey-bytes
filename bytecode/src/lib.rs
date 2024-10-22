@@ -89,7 +89,6 @@ pub enum DisasmError<'a> {
     InstructionOutOfBounds(&'a str),
     FmtFailed(core::fmt::Error),
     HasOutOfBoundsJumps,
-    HasDirectInstructionCycles,
 }
 
 #[cfg(feature = "disasm")]
@@ -113,9 +112,6 @@ impl core::fmt::Display for DisasmError<'_> {
                 "the code contained jumps that dont got neither to a \
                 valid symbol or local insturction"
             ),
-            DisasmError::HasDirectInstructionCycles => {
-                writeln!(f, "found instruction that jumps to itself")
-            }
         }
     }
 }
@@ -145,7 +141,6 @@ pub fn disasm<'a>(
 
     let mut labels = BTreeMap::<u32, u32>::default();
     let mut buf = Vec::<instrs::Oper>::new();
-    let mut has_cycle = false;
     let mut has_oob = false;
 
     '_offset_pass: for (&off, &(name, len, kind)) in functions.iter() {
@@ -173,8 +168,6 @@ pub fn disasm<'a>(
                     instrs::Oper::P(rel) => rel.into(),
                     _ => continue,
                 };
-
-                has_cycle |= rel == 0;
 
                 let global_offset: u32 = (offset + rel).try_into().unwrap();
                 if functions.get(&global_offset).is_some() {
@@ -285,10 +278,6 @@ pub fn disasm<'a>(
 
     if has_oob {
         return Err(DisasmError::HasOutOfBoundsJumps);
-    }
-
-    if has_cycle {
-        return Err(DisasmError::HasDirectInstructionCycles);
     }
 
     Ok(())

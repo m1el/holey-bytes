@@ -528,99 +528,6 @@ main := fn(): int {
 
 ### Purely Testing Examples
 
-#### smh_happened
-```hb
-render := @use("render.hb")
-
-main := fn(): void {
-	render.init(true)
-	return
-}
-
-// in module: stn.hb
-
-string := @use("string.hb")
-dt := @use("dt.hb")
-memory := @use("memory.hb")
-
-// in module: memory.hb
-
-PAGE_SIZE := 4096
-MAX_ALLOC := 0xFF
-
-alloc := fn($Expr: type, num: int): ^Expr {
-	pages := 1 + @bitcast(@sizeof(Expr)) * num / PAGE_SIZE
-	if pages <= MAX_ALLOC {
-		return @bitcast(@inline(request_page, pages))
-	}
-	ptr := @inline(request_page, 0xFF)
-	remaining := pages - MAX_ALLOC
-	loop if remaining <= 0 break else {
-		if remaining < MAX_ALLOC {
-			request_page(remaining)
-		} else {
-			request_page(MAX_ALLOC)
-		}
-		remaining -= MAX_ALLOC
-	}
-	return @bitcast(ptr)
-}
-
-request_page := fn(page_count: u8): ^u8 {
-	msg := "\{00}\{01}xxxxxxxx\0"
-	msg_page_count := msg + 1;
-	*msg_page_count = page_count
-	return @eca(3, 2, msg, 12)
-}
-
-// in module: string.hb
-
-length := fn(ptr: ^u8): uint {
-	len := @as(uint, 0)
-	loop if *(ptr + len) == 0 break else len += 1
-	return len
-}
-
-// in module: dt.hb
-
-.{string} := @use("stn.hb")
-
-get := fn($Expr: type, query: ^u8): Expr {
-	return @eca(3, 5, query, @inline(string.length, query))
-}
-
-// in module: render.hb
-
-.{dt, memory} := @use("stn.hb")
-Color := packed struct {b: u8, g: u8, r: u8, a: u8}
-
-Surface := struct {
-	buf: ^Color,
-	width: int,
-	height: int,
-}
-
-new_surface := fn(width: int, height: int): Surface {
-	return .(
-		@inline(memory.alloc, Color, width * height),
-		width,
-		height,
-	)
-}
-
-init := fn(doublebuffer: bool): Surface {
-	framebuffer := dt.get(^Color, "framebuffer/fb0/ptr\0")
-	width := dt.get(int, "framebuffer/fb0/width\0")
-	height := dt.get(int, "framebuffer/fb0/height\0")
-	if doublebuffer {
-		return new_surface(width, height)
-	} else {
-		return .(framebuffer, width, height)
-	}
-}
-
-```
-
 #### wide_ret
 ```hb
 OemIdent := struct {
@@ -1019,6 +926,14 @@ main := fn(arg: int): int {
 #### exhaustive_loop_testing
 ```hb
 main := fn(): int {
+	loop break
+
+	x := 0
+	loop {
+		x += 1
+		break
+	}
+
 	if multiple_breaks(0) != 3 {
 		return 1
 	}
@@ -1043,7 +958,8 @@ main := fn(): int {
 		return 6
 	}
 
-	return 0
+	loop {
+	}
 }
 
 multiple_breaks := fn(arg: int): int {
