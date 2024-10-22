@@ -12,7 +12,7 @@ use {
         reg, task,
         ty::{self, ArrayLen, Loc, Tuple},
         vc::{BitSet, Vc},
-        Comptime, Func, Global, HashMap, Offset, OffsetIter, PLoc, Reloc, Sig, TypeParser,
+        Comptime, Func, Global, HashMap, Offset, OffsetIter, PLoc, Reloc, Sig, SymKey, TypeParser,
         TypedReloc, Types,
     },
     alloc::{string::String, vec::Vec},
@@ -25,6 +25,7 @@ use {
     },
     hashbrown::hash_map,
     regalloc2::VReg,
+    std::panic,
 };
 
 const VOID: Nid = 0;
@@ -210,6 +211,8 @@ impl Nodes {
         if !self[target].is_dangling() {
             return false;
         }
+
+        debug_assert!(!matches!(self[target].kind, Kind::Call { .. }));
 
         for i in 0..self[target].inputs.len() {
             let inp = self[target].inputs[i];
@@ -1053,8 +1056,8 @@ impl ItemCtx {
     }
 
     fn finalize(&mut self) {
-        self.nodes.unlock(NEVER);
         self.nodes.unlock_remove_scope(&core::mem::take(&mut self.scope));
+        self.nodes.unlock(NEVER);
         self.nodes.unlock(MEM);
     }
 
@@ -1064,7 +1067,6 @@ impl ItemCtx {
 
     fn emit_body_code(&mut self, sig: Sig, tys: &Types) -> usize {
         let mut nodes = core::mem::take(&mut self.nodes);
-        nodes.visited.clear(nodes.values.len());
 
         let fuc = Function::new(&mut nodes, tys, sig);
         let mut ralloc = Regalloc::default(); // TODO: reuse
@@ -1078,7 +1080,7 @@ impl ItemCtx {
 
         let options = regalloc2::RegallocOptions {
             verbose_log: false,
-            validate_ssa: false,
+            validate_ssa: cfg!(debug_assertions),
             algorithm: regalloc2::Algorithm::Ion,
         };
         regalloc2::run_with_ctx(&fuc, &ralloc.env, &options, &mut ralloc.ctx)
@@ -1154,7 +1156,8 @@ impl ItemCtx {
                     Kind::If => {
                         let &[_, cnd] = node.inputs.as_slice() else { unreachable!() };
                         if let Kind::BinOp { op } = fuc.nodes[cnd].kind
-                            && let Some((op, swapped)) = op.cond_op(node.ty.is_signed())
+                            && let Some((op, swapped)) =
+                                op.cond_op(fuc.nodes[fuc.nodes[cnd].inputs[1]].ty.is_signed())
                         {
                             let &[lhs, rhs] = allocs else { unreachable!() };
                             let &[_, lh, rh] = fuc.nodes[cnd].inputs.as_slice() else {
@@ -1742,8 +1745,8 @@ impl TypeParser for Codegen<'_> {
         ty::Id::NEVER
     }
 
-    fn find_local_ty(&mut self, _: Ident) -> Option<ty::Id> {
-        None
+    fn find_local_ty(&mut self, ident: Ident) -> Option<ty::Id> {
+        self.ci.scope.vars.iter().rfind(|v| (v.id == ident && v.value == NEVER)).map(|v| v.ty)
     }
 }
 
@@ -2220,7 +2223,7 @@ impl<'a> Codegen<'a> {
             Expr::Call { func, args, .. } => {
                 self.ci.call_count += 1;
                 let ty = self.ty(func);
-                let ty::Kind::Func(fu) = ty.expand() else {
+                let ty::Kind::Func(mut fu) = ty.expand() else {
                     self.report(
                         func.pos(),
                         fa!("compiler cant (yet) call '{}'", self.ty_display(ty)),
@@ -2228,10 +2231,12 @@ impl<'a> Codegen<'a> {
                     return Value::NEVER;
                 };
 
+                let Some(sig) = self.compute_signature(&mut fu, func.pos(), args) else {
+                    return Value::NEVER;
+                };
                 self.make_func_reachable(fu);
 
                 let fuc = &self.tys.ins.funcs[fu as usize];
-                let sig = fuc.sig.expect("TODO: generic functions");
                 let ast = &self.files[fuc.file as usize];
                 let &Expr::Closure { args: cargs, .. } = fuc.expr.get(ast) else { unreachable!() };
 
@@ -2248,8 +2253,13 @@ impl<'a> Codegen<'a> {
                 }
 
                 let mut inps = Vc::from([self.ci.ctrl]);
-                for ((arg, carg), tyx) in args.iter().zip(cargs).zip(sig.args.range()) {
-                    let ty = self.tys.ins.args[tyx];
+                let mut tys = sig.args.range();
+                for (arg, carg) in args.iter().zip(cargs) {
+                    let ty = self.tys.ins.args[tys.next().unwrap()];
+                    if ty == ty::Id::TYPE {
+                        tys.next().unwrap();
+                        continue;
+                    }
                     let mut value = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
                     debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
                     self.assert_ty(arg.pos(), &mut value, ty, fa!("argument {}", carg.name));
@@ -2258,6 +2268,7 @@ impl<'a> Codegen<'a> {
                     inps.push(value.id);
                 }
 
+                let argc = inps.len() as u32 - 1;
                 for &n in inps.iter().skip(1) {
                     self.ci.nodes.unlock(n);
                 }
@@ -2286,7 +2297,6 @@ impl<'a> Codegen<'a> {
                     }
                 };
 
-                let argc = args.len() as u32;
                 self.ci.ctrl = self.ci.nodes.new_node(sig.ret, Kind::Call { func: fu, argc }, inps);
 
                 self.store_mem(VOID, VOID);
@@ -2295,7 +2305,7 @@ impl<'a> Codegen<'a> {
             }
             Expr::Directive { name: "inline", args: [func, args @ ..], .. } => {
                 let ty = self.ty(func);
-                let ty::Kind::Func(fu) = ty.expand() else {
+                let ty::Kind::Func(mut fu) = ty.expand() else {
                     self.report(
                         func.pos(),
                         fa!(
@@ -2307,8 +2317,11 @@ impl<'a> Codegen<'a> {
                     return Value::NEVER;
                 };
 
+                let Some(sig) = self.compute_signature(&mut fu, func.pos(), args) else {
+                    return Value::NEVER;
+                };
+
                 let fuc = &self.tys.ins.funcs[fu as usize];
-                let sig = fuc.sig.expect("TODO: generic functions");
                 let ast = &self.files[fuc.file as usize];
                 let &Expr::Closure { args: cargs, body, .. } = fuc.expr.get(ast) else {
                     unreachable!()
@@ -2327,11 +2340,20 @@ impl<'a> Codegen<'a> {
                 }
 
                 let arg_base = self.ci.scope.vars.len();
-                for ((arg, carg), tyx) in args.iter().zip(cargs).zip(sig.args.range()) {
-                    let ty = self.tys.ins.args[tyx];
-                    if self.tys.size_of(ty) == 0 {
+                let mut sig_args = sig.args.range();
+                for (arg, carg) in args.iter().zip(cargs) {
+                    let ty = self.tys.ins.args[sig_args.next().unwrap()];
+                    if ty == ty::Id::TYPE {
+                        self.ci.scope.vars.push(Variable {
+                            id: carg.id,
+                            ty: self.tys.ins.args[sig_args.next().unwrap()],
+                            ptr: false,
+                            value: NEVER,
+                        });
+                        self.ci.nodes.lock(NEVER);
                         continue;
                     }
+
                     let mut value = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
                     debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
                     debug_assert_ne!(value.id, 0);
@@ -2731,6 +2753,69 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    fn compute_signature(&mut self, func: &mut ty::Func, pos: Pos, args: &[Expr]) -> Option<Sig> {
+        let fuc = &self.tys.ins.funcs[*func as usize];
+        let fast = self.files[fuc.file as usize].clone();
+        let &Expr::Closure { args: cargs, ret, .. } = fuc.expr.get(&fast) else {
+            unreachable!();
+        };
+
+        Some(if let Some(sig) = fuc.sig {
+            sig
+        } else {
+            let arg_base = self.tys.tmp.args.len();
+
+            let base = self.ci.scope.vars.len();
+            for (arg, carg) in args.iter().zip(cargs) {
+                let ty = self.ty(&carg.ty);
+                self.tys.tmp.args.push(ty);
+                let sym = parser::find_symbol(&fast.symbols, carg.id);
+                let ty = if sym.flags & idfl::COMPTIME == 0 {
+                    // FIXME: could fuck us
+                    ty::Id::UNDECLARED
+                } else {
+                    debug_assert_eq!(
+                        ty,
+                        ty::Id::TYPE,
+                        "TODO: we dont support anything except type generics"
+                    );
+                    let ty = self.ty(arg);
+                    self.tys.tmp.args.push(ty);
+                    ty
+                };
+
+                self.ci.scope.vars.push(Variable { id: carg.id, ty, ptr: false, value: NEVER });
+            }
+
+            let Some(args) = self.tys.pack_args(arg_base) else {
+                self.report(pos, "function instance has too many arguments");
+                return None;
+            };
+            let ret = self.ty(ret);
+
+            self.ci.scope.vars.truncate(base);
+
+            let sym = SymKey::FuncInst(*func, args);
+            let ct = |ins: &mut crate::TypeIns| {
+                let func_id = ins.funcs.len();
+                let fuc = &ins.funcs[*func as usize];
+                ins.funcs.push(Func {
+                    file: fuc.file,
+                    name: fuc.name,
+                    base: Some(*func),
+                    sig: Some(Sig { args, ret }),
+                    expr: fuc.expr,
+                    ..Default::default()
+                });
+
+                ty::Kind::Func(func_id as _).compress()
+            };
+            *func = self.tys.syms.get_or_insert(sym, &mut self.tys.ins, ct).expand().inner();
+
+            Sig { args, ret }
+        })
+    }
+
     fn assign_pattern(&mut self, pat: &Expr, right: Value) {
         match *pat {
             Expr::Ident { id, .. } => {
@@ -2895,14 +2980,22 @@ impl<'a> Codegen<'a> {
         let mut sig_args = sig.args.range();
         for arg in args.iter() {
             let ty = self.tys.ins.args[sig_args.next().unwrap()];
+            if ty == ty::Id::TYPE {
+                self.ci.scope.vars.push(Variable {
+                    id: arg.id,
+                    ty: self.tys.ins.args[sig_args.next().unwrap()],
+                    ptr: false,
+                    value: NEVER,
+                });
+                self.ci.nodes.lock(NEVER);
+                continue;
+            }
             let mut deps = Vc::from([VOID]);
             if ty.loc(&self.tys) == Loc::Stack {
                 deps.push(MEM);
             }
             let value = self.ci.nodes.new_node_nop(ty, Kind::Arg, [VOID]);
             self.ci.nodes.lock(value);
-            let sym = parser::find_symbol(&ast.symbols, arg.id);
-            assert!(sym.flags & idfl::COMPTIME == 0, "TODO");
             let ptr = self.tys.size_of(ty) > 8;
             self.ci.scope.vars.push(Variable { id: arg.id, value, ty, ptr });
         }
@@ -3355,7 +3448,10 @@ impl<'a> Function<'a> {
                 self.add_instr(nid, ops);
 
                 for o in node.outputs.into_iter().rev() {
-                    if self.nodes[o].inputs[0] == nid {
+                    if self.nodes[o].inputs[0] == nid
+                        || (matches!(self.nodes[o].kind, Kind::Loop | Kind::Region)
+                            && self.nodes[o].inputs[1] == nid)
+                    {
                         self.emit_node(o, nid);
                     }
                 }
@@ -3771,7 +3867,7 @@ mod tests {
     fn generate(ident: &'static str, input: &'static str, output: &mut String) {
         _ = log::set_logger(&crate::fs::Logger);
         log::set_max_level(log::LevelFilter::Info);
-        //       log::set_max_level(log::LevelFilter::Trace);
+        //log::set_max_level(log::LevelFilter::Trace);
 
         let (ref files, embeds) = crate::test_parse_files(ident, input);
         let mut codegen = super::Codegen { files, ..Default::default() };
@@ -3819,11 +3915,11 @@ mod tests {
         arrays;
         inline;
         idk;
+        generic_functions;
 
         // Incomplete Examples;
         //comptime_pointers;
         //generic_types;
-        //generic_functions;
         fb_driver;
 
         // Purely Testing Examples;
@@ -3835,8 +3931,8 @@ mod tests {
         structs_in_registers;
         comptime_function_from_another_file;
         inline_test;
-        //inlined_generic_functions;
-        //some_generic_code;
+        inlined_generic_functions;
+        some_generic_code;
         integer_inference_issues;
         writing_into_string;
         request_page;

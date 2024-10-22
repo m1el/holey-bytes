@@ -281,6 +281,7 @@ impl TokenKind {
             Self::Ne => (a != b) as i64,
             Self::Band => a & b,
             Self::Bor => a | b,
+            Self::Xor => a ^ b,
             Self::Mod => a % b,
             Self::Shr => a >> b,
             s => todo!("{s}"),

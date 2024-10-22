@@ -398,6 +398,15 @@ main := fn(): int {
 }
 ```
 
+#### generic_functions
+```hb
+add := fn($T: type, a: T, b: T): T return a + b
+
+main := fn(): int {
+	return add(u32, 2, 2) - add(int, 1, 3)
+}
+```
+
 ### Incomplete Examples
 
 #### comptime_pointers
@@ -476,15 +485,6 @@ main := fn(): int {
 	res := *vec.data
 	deinit(int, &vec)
 	return res
-}
-```
-
-#### generic_functions
-```hb
-add := fn($T: type, a: T, b: T): T return a + b
-
-main := fn(): int {
-	return add(u32, 2, 2) - add(int, 1, 3)
 }
 ```
 
@@ -859,15 +859,15 @@ request_page := fn(page_count: u8): ^u8 {
 
 create_back_buffer := fn(total_pages: int): ^u32 {
 	if total_pages <= 0xFF {
-		return @bitcast(request_page(total_pages))
+		return @bitcast(request_page(@intcast(total_pages)))
 	}
 	ptr := request_page(255)
 	remaining := total_pages - 0xFF
 	loop if remaining <= 0 break else {
 		if remaining < 0xFF {
-			request_page(remaining)
+			_f := request_page(@intcast(remaining))
 		} else {
-			request_page(0xFF)
+			_f := request_page(0xFF)
 		}
 		remaining -= 0xFF
 	}
@@ -875,7 +875,7 @@ create_back_buffer := fn(total_pages: int): ^u32 {
 }
 
 main := fn(): void {
-	create_back_buffer(400)
+	_f := create_back_buffer(400)
 	return
 }
 ```

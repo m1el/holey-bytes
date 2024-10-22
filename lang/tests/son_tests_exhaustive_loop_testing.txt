@@ -3,7 +3,7 @@ continue_and_state_change:
     LI64 r8, 4d
     LI64 r9, 2d
     LI64 r10, 10d
- 6: JLTU r2, r10, :0
+ 6: JLTS r2, r10, :0
     CP r1, r2
     JMP :1
  0: JNE r2, r9, :2
@@ -68,7 +68,7 @@ main:
 multiple_breaks:
     LI64 r6, 3d
     LI64 r5, 10d
- 4: JLTU r2, r5, :0
+ 4: JLTS r2, r5, :0
     CP r1, r2
     JMP :1
  0: ADDI64 r1, r2, 1d
@@ -80,7 +80,7 @@ multiple_breaks:
 state_change_in_break:
     LI64 r5, 3d
     LI64 r6, 10d
- 4: JLTU r2, r6, :0
+ 4: JLTS r2, r6, :0
     CP r1, r2
     JMP :1
  0: JNE r2, r5, :2

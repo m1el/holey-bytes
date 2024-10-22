@@ -26,7 +26,7 @@ line:
     ADDI64 r6, r254, 0d
     LD r9, r4, 0a, 8h
     LD r11, r2, 0a, 8h
-    JGTU r11, r9, :0
+    JGTS r11, r9, :0
     JMP :0
  0: JALA r0, r31, 0a
 main:

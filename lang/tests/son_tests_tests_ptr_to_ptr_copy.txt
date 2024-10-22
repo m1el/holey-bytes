@@ -5,10 +5,10 @@ main:
     LI64 r9, 1d
     LI64 r8, 0d
     ADDI64 r6, r254, 0d
- 4: JLTU r8, r5, :0
+ 4: JLTS r8, r5, :0
     LI64 r7, 10d
     CP r8, r9
- 3: JLTU r8, r7, :1
+ 3: JLTS r8, r7, :1
     LD r9, r254, 2048a, 1h
     ANDI r1, r9, 255d
     JMP :2
