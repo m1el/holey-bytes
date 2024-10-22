@@ -648,53 +648,53 @@ impl Nodes {
     }
 
     fn check_final_integrity(&mut self) {
-        //if !cfg!(debug_assertions) {
-        //    return;
-        //}
+        if !cfg!(debug_assertions) {
+            return;
+        }
 
-        ////let mut failed = false;
-        //for (_, node) in self.iter() {
-        //    debug_assert_eq!(node.lock_rc, 0, "{:?}", node.kind);
-        //    // if !matches!(node.kind, Kind::Return | Kind::End) && node.outputs.is_empty() {
-        //    //     log::err!("outputs are empry {i} {:?}", node.kind);
-        //    //     failed = true;
-        //    // }
+        //let mut failed = false;
+        for (_, node) in self.iter() {
+            debug_assert_eq!(node.lock_rc, 0, "{:?}", node.kind);
+            // if !matches!(node.kind, Kind::Return | Kind::End) && node.outputs.is_empty() {
+            //     log::err!("outputs are empry {i} {:?}", node.kind);
+            //     failed = true;
+            // }
 
-        //    // let mut allowed_cfgs = 1 + (node.kind == Kind::If) as usize;
-        //    // for &o in node.outputs.iter() {
-        //    //     if self.is_cfg(i) {
-        //    //         if allowed_cfgs == 0 && self.is_cfg(o) {
-        //    //             log::err!(
-        //    //                 "multiple cfg outputs detected: {:?} -> {:?}",
-        //    //                 node.kind,
-        //    //                 self[o].kind
-        //    //             );
-        //    //             failed = true;
-        //    //         } else {
-        //    //             allowed_cfgs += self.is_cfg(o) as usize;
-        //    //         }
-        //    //     }
+            // let mut allowed_cfgs = 1 + (node.kind == Kind::If) as usize;
+            // for &o in node.outputs.iter() {
+            //     if self.is_cfg(i) {
+            //         if allowed_cfgs == 0 && self.is_cfg(o) {
+            //             log::err!(
+            //                 "multiple cfg outputs detected: {:?} -> {:?}",
+            //                 node.kind,
+            //                 self[o].kind
+            //             );
+            //             failed = true;
+            //         } else {
+            //             allowed_cfgs += self.is_cfg(o) as usize;
+            //         }
+            //     }
 
-        //    //     let other = match &self.values[o as usize] {
-        //    //         Ok(other) => other,
-        //    //         Err(_) => {
-        //    //             log::err!("the edge points to dropped node: {i} {:?} {o}", node.kind,);
-        //    //             failed = true;
-        //    //             continue;
-        //    //         }
-        //    //     };
-        //    //     let occurs = self[o].inputs.iter().filter(|&&el| el == i).count();
-        //    //     let self_occurs = self[i].outputs.iter().filter(|&&el| el == o).count();
-        //    //     if occurs != self_occurs {
-        //    //         log::err!(
-        //    //             "the edge is not bidirectional: {i} {:?} {self_occurs} {o} {:?} {occurs}",
-        //    //             node.kind,
-        //    //             other.kind
-        //    //         );
-        //    //         failed = true;
-        //    //     }
-        //    // }
-        //}
+            //     let other = match &self.values[o as usize] {
+            //         Ok(other) => other,
+            //         Err(_) => {
+            //             log::err!("the edge points to dropped node: {i} {:?} {o}", node.kind,);
+            //             failed = true;
+            //             continue;
+            //         }
+            //     };
+            //     let occurs = self[o].inputs.iter().filter(|&&el| el == i).count();
+            //     let self_occurs = self[i].outputs.iter().filter(|&&el| el == o).count();
+            //     if occurs != self_occurs {
+            //         log::err!(
+            //             "the edge is not bidirectional: {i} {:?} {self_occurs} {o} {:?} {occurs}",
+            //             node.kind,
+            //             other.kind
+            //         );
+            //         failed = true;
+            //     }
+            // }
+        }
         //if failed {
         //    panic!()
         //}
