@@ -22,9 +22,9 @@ use {
         fmt::{self, Debug, Display, Write},
         format_args as fa, mem,
         ops::{self},
-        usize,
     },
     hashbrown::hash_map,
+    hbbytecode::DisasmError,
     regalloc2::VReg,
     std::{borrow::ToOwned, panic},
 };
@@ -1822,10 +1822,20 @@ impl<'a> Codegen<'a> {
         load
     }
 
-    pub fn generate(&mut self) {
-        self.find_type(0, 0, Err("main"), self.files);
+    pub fn generate(&mut self, entry: FileId) {
+        self.find_type(0, entry, Err("main"), self.files);
         self.make_func_reachable(0);
         self.complete_call_graph();
+    }
+
+    pub fn assemble(&mut self, buf: &mut Vec<u8>) {
+        self.tys.reassemble(buf);
+    }
+
+    pub fn disasm(&mut self, output: &mut String) -> Result<(), DisasmError> {
+        let mut bin = Vec::new();
+        self.assemble(&mut bin);
+        self.tys.disasm(&bin, self.files, output, |_| {})
     }
 
     fn make_func_reachable(&mut self, func: ty::Func) {

@@ -2,6 +2,7 @@ use {
     crate::{
         codegen,
         parser::{self, Ast, FileKind, ParserCtx},
+        son,
     },
     alloc::{string::String, vec::Vec},
     core::{fmt::Write, num::NonZeroUsize},
@@ -38,6 +39,7 @@ pub struct Options {
     pub fmt: bool,
     pub fmt_stdout: bool,
     pub dump_asm: bool,
+    pub optimize: bool,
     pub extra_threads: usize,
 }
 
@@ -51,6 +53,7 @@ impl Options {
 
         Ok(Options {
             fmt: args.contains(&"--fmt"),
+            optimize: args.contains(&"--optimize"),
             fmt_stdout: args.contains(&"--fmt-stdout"),
             dump_asm: args.contains(&"--dump-asm"),
             extra_threads: args
@@ -85,6 +88,19 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
     } else if options.fmt_stdout {
         let ast = parsed.ast.into_iter().next().unwrap();
         write!(out, "{ast}").unwrap();
+    } else if options.optimize {
+        let mut codegen = son::Codegen::default();
+        codegen.files = &parsed.ast;
+        codegen.push_embeds(parsed.embeds);
+
+        codegen.generate();
+        if options.dump_asm {
+            codegen
+                .disasm(unsafe { std::mem::transmute::<&mut Vec<u8>, &mut String>(out) })
+                .map_err(|e| io::Error::other(e.to_string()))?;
+        } else {
+            codegen.assemble(out);
+        }
     } else {
         let mut codegen = codegen::Codegen::default();
         codegen.files = parsed.ast;

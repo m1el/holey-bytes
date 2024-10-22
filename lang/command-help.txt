@@ -2,3 +2,4 @@
 --fmt-stdout - dont write the formatted file but print it
 --dump-asm - output assembly instead of raw code, (the assembly is more for debugging the compiler)
 --threads <1...> - number of threads compiler can use [default: 1]
+--optimize - compile with optimizing compiler (dangerose)
