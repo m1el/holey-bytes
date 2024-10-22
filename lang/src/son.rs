@@ -22,6 +22,7 @@ use {
         fmt::{self, Debug, Display, Write},
         format_args as fa, mem,
         ops::{self},
+        usize,
     },
     hashbrown::hash_map,
     regalloc2::VReg,
@@ -1778,6 +1779,11 @@ impl<'a> Codegen<'a> {
             return NEVER;
         }
 
+        debug_assert!(
+            self.ci.nodes[region].kind != Kind::Load || self.ci.nodes[region].ty.is_pointer()
+        );
+        debug_assert!(self.ci.nodes[region].kind != Kind::Stre);
+
         let mut vc = Vc::from([VOID, value, region]);
         self.ci.nodes.load_loop_store(&mut self.ci.scope.store, &mut self.ci.loops);
         self.ci.nodes.unlock(self.ci.scope.store);
@@ -1801,6 +1807,10 @@ impl<'a> Codegen<'a> {
 
     fn load_mem(&mut self, region: Nid, ty: ty::Id) -> Nid {
         debug_assert_ne!(region, VOID);
+        debug_assert!(
+            self.ci.nodes[region].kind != Kind::Load || self.ci.nodes[region].ty.is_pointer()
+        );
+        debug_assert!(self.ci.nodes[region].kind != Kind::Stre);
         let mut vc = Vc::from([VOID, region]);
         self.ci.nodes.load_loop_store(&mut self.ci.scope.store, &mut self.ci.loops);
         if let Some(str) = self.ci.scope.store.to_store() {
@@ -2013,6 +2023,7 @@ impl<'a> Codegen<'a> {
                 Some(self.ci.nodes.new_node_lit(val.ty, Kind::UnOp { op }, [VOID, val.id]))
             }
             Expr::BinOp { left, op: TokenKind::Decl, right } => {
+                std::println!("{}", self.ast_display(right));
                 let mut right = self.expr(right)?;
                 if right.ty.loc(&self.tys) == Loc::Stack {
                     let stck = self.ci.nodes.new_node_nop(right.ty, Kind::Stck, [VOID, MEM]);
@@ -2030,10 +2041,16 @@ impl<'a> Codegen<'a> {
                 self.assert_ty(left.pos(), &mut value, dest.ty, "assignment source");
 
                 if dest.var {
-                    self.ci.nodes.lock(value.id);
                     let var = &mut self.ci.scope.vars[(u16::MAX - dest.id) as usize];
-                    let prev = core::mem::replace(&mut var.value, value.id);
-                    self.ci.nodes.unlock_remove(prev);
+
+                    if var.ptr {
+                        let val = var.value;
+                        self.store_mem(val, value.id);
+                    } else {
+                        self.ci.nodes.lock(value.id);
+                        let prev = core::mem::replace(&mut var.value, value.id);
+                        self.ci.nodes.unlock_remove(prev);
+                    }
                 } else if dest.ptr {
                     self.store_mem(dest.id, value.id);
                 } else {
@@ -2045,14 +2062,46 @@ impl<'a> Codegen<'a> {
             Expr::BinOp { left, op, right }
                 if !matches!(op, TokenKind::Assign | TokenKind::Decl) =>
             {
-                let mut lhs = self.expr_ctx(left, ctx)?;
-                self.ci.nodes.lock(lhs.id);
-                let rhs = self.expr_ctx(right, Ctx::default().with_ty(lhs.ty));
-                self.ci.nodes.unlock(lhs.id);
-                let mut rhs = rhs?;
-                let ty = self.binop_ty(left.pos(), &mut rhs, &mut lhs, op);
-                let inps = [VOID, lhs.id, rhs.id];
-                Some(self.ci.nodes.new_node_lit(ty::bin_ret(ty, op), Kind::BinOp { op }, inps))
+                let mut lhs = self.raw_expr_ctx(left, ctx)?;
+                self.strip_var(&mut lhs);
+
+                match lhs.ty.expand() {
+                    _ if lhs.ty.is_pointer() || lhs.ty.is_integer() || lhs.ty == ty::Id::BOOL => {
+                        if core::mem::take(&mut lhs.ptr) {
+                            lhs.id = self.load_mem(lhs.id, lhs.ty);
+                        }
+                        self.ci.nodes.lock(lhs.id);
+                        let rhs = self.expr_ctx(right, Ctx::default().with_ty(lhs.ty));
+                        self.ci.nodes.unlock(lhs.id);
+                        let mut rhs = rhs?;
+                        self.strip_var(&mut rhs);
+                        let ty = self.binop_ty(left.pos(), &mut rhs, &mut lhs, op);
+                        let inps = [VOID, lhs.id, rhs.id];
+                        Some(self.ci.nodes.new_node_lit(
+                            ty::bin_ret(ty, op),
+                            Kind::BinOp { op },
+                            inps,
+                        ))
+                    }
+                    ty::Kind::Struct(s) if op.is_homogenous() => {
+                        self.ci.nodes.lock(lhs.id);
+                        let rhs = self.raw_expr_ctx(right, Ctx::default().with_ty(lhs.ty));
+                        self.ci.nodes.unlock(lhs.id);
+                        let mut rhs = rhs?;
+                        self.strip_var(&mut rhs);
+                        let dst = self.ci.nodes.new_node(lhs.ty, Kind::Stck, [VOID, MEM]);
+                        self.struct_op(left.pos(), op, s, dst, lhs.id, rhs.id);
+                        Some(Value::ptr(dst).ty(lhs.ty))
+                    }
+                    _ => {
+                        self.ci.nodes.unlock(lhs.id);
+                        self.report(
+                            left.pos(),
+                            fa!("'{0} {op} {0}' is not supported", self.ty_display(lhs.ty),),
+                        );
+                        Value::NEVER
+                    }
+                }
             }
             Expr::Index { base, index } => {
                 let mut bs = self.raw_expr(base)?;
@@ -2771,6 +2820,45 @@ impl<'a> Codegen<'a> {
             }
             ref e => self.report_unhandled_ast(e, "bruh"),
         }
+    }
+
+    fn struct_op(
+        &mut self,
+        pos: Pos,
+        op: TokenKind,
+        s: ty::Struct,
+        dst: Nid,
+        lhs: Nid,
+        rhs: Nid,
+    ) -> bool {
+        let mut offs = OffsetIter::new(s, &self.tys);
+        while let Some((ty, off)) = offs.next_ty(&self.tys) {
+            let lhs = self.offset(lhs, off);
+            let rhs = self.offset(rhs, off);
+            let dst = self.offset(dst, off);
+            match ty.expand() {
+                _ if ty.is_pointer() || ty.is_integer() || ty == ty::Id::BOOL => {
+                    let lhs = self.load_mem(lhs, ty);
+                    let rhs = self.load_mem(rhs, ty);
+                    let res = self.ci.nodes.new_node(ty, Kind::BinOp { op }, [VOID, lhs, rhs]);
+                    self.store_mem(dst, res);
+                }
+                ty::Kind::Struct(is) => {
+                    if !self.struct_op(pos, op, is, dst, lhs, rhs) {
+                        self.report(
+                            pos,
+                            fa!(
+                                "... when appliing '{0} {op} {0}'",
+                                self.ty_display(ty::Kind::Struct(s).compress())
+                            ),
+                        );
+                    }
+                }
+                _ => self.report(pos, fa!("'{0} {op} {0}' is not supported", self.ty_display(ty))),
+            }
+        }
+
+        true
     }
 
     fn compute_signature(&mut self, func: &mut ty::Func, pos: Pos, args: &[Expr]) -> Option<Sig> {
@@ -3952,7 +4040,7 @@ mod tests {
         pointers;
         structs;
         hex_octal_binary_literals;
-        //struct_operators;
+        struct_operators;
         global_variables;
         directives;
         c_strings;
