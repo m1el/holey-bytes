@@ -378,7 +378,7 @@ main := fn(): int {
 gb := 0
 
 foo := fn(a: int, b: int, c: int): int {
-	if gb != 0 return 1
+	if true | gb == 0 return 1
 	return a + b + c
 }
 ```

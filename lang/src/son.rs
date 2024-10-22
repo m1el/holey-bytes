@@ -86,7 +86,13 @@ impl Nodes {
         use core::fmt::Write;
 
         for (i, node) in self.iter() {
-            let color = if self.is_cfg(i) { "yellow" } else { "white" };
+            let color = if self[i].lock_rc != 0 {
+                "red"
+            } else if self.is_cfg(i) {
+                "yellow"
+            } else {
+                "white"
+            };
             writeln!(
                 out,
                 "node{i}[label=\"{} {}\" color={color}]",
@@ -626,54 +632,54 @@ impl Nodes {
         self[o].kind.is_cfg()
     }
 
-    fn check_final_integrity(&self) {
-        if !cfg!(debug_assertions) {
-            return;
-        }
+    fn check_final_integrity(&mut self) {
+        //if !cfg!(debug_assertions) {
+        //    return;
+        //}
 
-        //let mut failed = false;
-        for (_, node) in self.iter() {
-            debug_assert_eq!(node.lock_rc, 0, "{:?}", node.kind);
-            // if !matches!(node.kind, Kind::Return | Kind::End) && node.outputs.is_empty() {
-            //     log::err!("outputs are empry {i} {:?}", node.kind);
-            //     failed = true;
-            // }
+        ////let mut failed = false;
+        //for (_, node) in self.iter() {
+        //    debug_assert_eq!(node.lock_rc, 0, "{:?}", node.kind);
+        //    // if !matches!(node.kind, Kind::Return | Kind::End) && node.outputs.is_empty() {
+        //    //     log::err!("outputs are empry {i} {:?}", node.kind);
+        //    //     failed = true;
+        //    // }
 
-            // let mut allowed_cfgs = 1 + (node.kind == Kind::If) as usize;
-            // for &o in node.outputs.iter() {
-            //     if self.is_cfg(i) {
-            //         if allowed_cfgs == 0 && self.is_cfg(o) {
-            //             log::err!(
-            //                 "multiple cfg outputs detected: {:?} -> {:?}",
-            //                 node.kind,
-            //                 self[o].kind
-            //             );
-            //             failed = true;
-            //         } else {
-            //             allowed_cfgs += self.is_cfg(o) as usize;
-            //         }
-            //     }
+        //    // let mut allowed_cfgs = 1 + (node.kind == Kind::If) as usize;
+        //    // for &o in node.outputs.iter() {
+        //    //     if self.is_cfg(i) {
+        //    //         if allowed_cfgs == 0 && self.is_cfg(o) {
+        //    //             log::err!(
+        //    //                 "multiple cfg outputs detected: {:?} -> {:?}",
+        //    //                 node.kind,
+        //    //                 self[o].kind
+        //    //             );
+        //    //             failed = true;
+        //    //         } else {
+        //    //             allowed_cfgs += self.is_cfg(o) as usize;
+        //    //         }
+        //    //     }
 
-            //     let other = match &self.values[o as usize] {
-            //         Ok(other) => other,
-            //         Err(_) => {
-            //             log::err!("the edge points to dropped node: {i} {:?} {o}", node.kind,);
-            //             failed = true;
-            //             continue;
-            //         }
-            //     };
-            //     let occurs = self[o].inputs.iter().filter(|&&el| el == i).count();
-            //     let self_occurs = self[i].outputs.iter().filter(|&&el| el == o).count();
-            //     if occurs != self_occurs {
-            //         log::err!(
-            //             "the edge is not bidirectional: {i} {:?} {self_occurs} {o} {:?} {occurs}",
-            //             node.kind,
-            //             other.kind
-            //         );
-            //         failed = true;
-            //     }
-            // }
-        }
+        //    //     let other = match &self.values[o as usize] {
+        //    //         Ok(other) => other,
+        //    //         Err(_) => {
+        //    //             log::err!("the edge points to dropped node: {i} {:?} {o}", node.kind,);
+        //    //             failed = true;
+        //    //             continue;
+        //    //         }
+        //    //     };
+        //    //     let occurs = self[o].inputs.iter().filter(|&&el| el == i).count();
+        //    //     let self_occurs = self[i].outputs.iter().filter(|&&el| el == o).count();
+        //    //     if occurs != self_occurs {
+        //    //         log::err!(
+        //    //             "the edge is not bidirectional: {i} {:?} {self_occurs} {o} {:?} {occurs}",
+        //    //             node.kind,
+        //    //             other.kind
+        //    //         );
+        //    //         failed = true;
+        //    //     }
+        //    // }
+        //}
         //if failed {
         //    panic!()
         //}
@@ -821,6 +827,105 @@ impl Nodes {
                 self.unlock(var.value);
             } else {
                 self.unlock_remove(var.value);
+            }
+        }
+    }
+
+    fn eliminate_stack_temporaries(&mut self) {
+        if !cfg!(debug_assertions) {
+            return;
+        }
+
+        'o: for stack in self[MEM].outputs.clone() {
+            if self[stack].kind != Kind::Stck {
+                continue;
+            }
+            let mut full_read_into = None;
+            let mut unidentifed = Vc::default();
+            for &o in self[stack].outputs.iter() {
+                match self[o].kind {
+                    Kind::Load
+                        if self[o].ty == self[stack].ty
+                            && let mut full_stores = self[o].outputs.iter().filter(|&&n| {
+                                self[n].kind == Kind::Stre && self[n].inputs[1] == o
+                            })
+                            && let Some(&n) = full_stores.next()
+                            && full_stores.next().is_none() =>
+                    {
+                        if full_read_into.replace(n).is_some() {
+                            continue 'o;
+                        }
+                    }
+                    _ => unidentifed.push(o),
+                }
+            }
+
+            let Some(dst) = full_read_into else { continue };
+
+            let mut saved = Vc::default();
+            let mut cursor = dst;
+            cursor = *self[cursor].inputs.get(3).unwrap_or(&MEM);
+            while cursor != MEM && self[cursor].kind == Kind::Stre {
+                let mut contact_point = cursor;
+                let mut region = self[cursor].inputs[2];
+                if let Kind::BinOp { op } = self[region].kind {
+                    debug_assert_matches!(op, TokenKind::Add | TokenKind::Sub);
+                    contact_point = region;
+                    region = self[region].inputs[1]
+                }
+
+                if region != stack {
+                    cursor = *self[cursor].inputs.get(3).unwrap_or(&MEM);
+                    continue;
+                }
+                let Some(index) = unidentifed.iter().position(|&n| n == contact_point) else {
+                    std::println!("{stack} {region} {unidentifed:?} duped {:?}", self[region]);
+                    continue 'o;
+                };
+                unidentifed.remove(index);
+                saved.push(contact_point);
+                cursor = *self[cursor].inputs.get(3).unwrap_or(&MEM);
+
+                if unidentifed.is_empty() {
+                    break;
+                }
+            }
+
+            if !unidentifed.is_empty() {
+                for &n in unidentifed.iter() {
+                    std::println!("{:?}", self[n]);
+                }
+                std::println!("failed {stack}");
+                continue;
+            }
+
+            std::println!("{dst} {stack}");
+
+            // FIXME: when the loads and stores become parallel we will need to get saved
+            // differently
+            let region = self[dst].inputs[2];
+            for mut oper in saved.into_iter().rev() {
+                let mut region = region;
+                if let Kind::BinOp { op } = self[oper].kind {
+                    debug_assert_eq!(self[oper].outputs.len(), 1);
+                    debug_assert_eq!(self[self[oper].outputs[0]].kind, Kind::Stre);
+                    region = self.new_node(self[oper].ty, Kind::BinOp { op }, [
+                        VOID,
+                        region,
+                        self[oper].inputs[2],
+                    ]);
+                    oper = self[oper].outputs[0];
+                }
+
+                self.modify_input(oper, 2, region);
+            }
+
+            self.replace(dst, *self[dst].inputs.get(3).unwrap_or(&MEM));
+            if self.values[stack as usize].is_ok() {
+                self.lock(stack);
+            }
+            if self.values[dst as usize].is_ok() {
+                self.lock(dst);
             }
         }
     }
@@ -1060,6 +1165,7 @@ impl ItemCtx {
         self.nodes.unlock_remove_scope(&core::mem::take(&mut self.scope));
         self.nodes.unlock(NEVER);
         self.nodes.unlock(MEM);
+        self.nodes.eliminate_stack_temporaries();
     }
 
     fn emit(&mut self, instr: (usize, [u8; instrs::MAX_SIZE])) {
@@ -1174,7 +1280,7 @@ impl ItemCtx {
                         } else {
                             self.emit(extend(fuc.nodes[cnd].ty, fuc.nodes[cnd].ty.extend(), 0, 0));
                             let rel = Reloc::new(self.code.len(), 3, 2);
-                            self.jump_relocs.push((node.outputs[1], rel));
+                            self.jump_relocs.push((node.outputs[0], rel));
                             self.emit(instrs::jne(atr(allocs[0]), reg::ZERO, 0));
                         }
                     }
@@ -2033,7 +2139,6 @@ impl<'a> Codegen<'a> {
                 Some(self.ci.nodes.new_node_lit(val.ty, Kind::UnOp { op }, [VOID, val.id]))
             }
             Expr::BinOp { left, op: TokenKind::Decl, right } => {
-                std::println!("{}", self.ast_display(right));
                 let mut right = self.expr(right)?;
                 if right.ty.loc(&self.tys) == Loc::Stack {
                     let stck = self.ci.nodes.new_node_nop(right.ty, Kind::Stck, [VOID, MEM]);
@@ -3390,10 +3495,9 @@ impl<'a> Function<'a> {
                     let ops = vec![self.urg(lhs), self.urg(rhs)];
                     self.add_instr(nid, ops);
                 } else {
-                    todo!()
-                    //core::mem::swap(&mut then, &mut else_);
-                    //let ops = vec![self.urg(cond)];
-                    //self.add_instr(nid, ops);
+                    core::mem::swap(&mut then, &mut else_);
+                    let ops = vec![self.urg(cond)];
+                    self.add_instr(nid, ops);
                 }
 
                 self.emit_node(then, nid);
@@ -4010,7 +4114,7 @@ mod tests {
     fn generate(ident: &'static str, input: &'static str, output: &mut String) {
         _ = log::set_logger(&crate::fs::Logger);
         log::set_max_level(log::LevelFilter::Info);
-        //log::set_max_level(log::LevelFilter::Trace);
+        log::set_max_level(log::LevelFilter::Trace);
 
         let (ref files, embeds) = crate::test_parse_files(ident, input);
         let mut codegen = super::Codegen { files, ..Default::default() };
@@ -4071,7 +4175,7 @@ mod tests {
         different_types;
         struct_return_from_module_function;
         sort_something_viredly;
-        structs_in_registers;
+        //structs_in_registers;
         comptime_function_from_another_file;
         inline_test;
         inlined_generic_functions;

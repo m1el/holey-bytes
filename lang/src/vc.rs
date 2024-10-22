@@ -30,6 +30,16 @@ impl Debug for Vc {
     }
 }
 
+impl FromIterator<Nid> for Vc {
+    fn from_iter<T: IntoIterator<Item = Nid>>(iter: T) -> Self {
+        let mut slf = Self::default();
+        for i in iter {
+            slf.push(i);
+        }
+        slf
+    }
+}
+
 impl Vc {
     fn is_inline(&self) -> bool {
         unsafe { self.inline.cap <= INLINE_ELEMS as Nid }
