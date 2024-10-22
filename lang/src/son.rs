@@ -49,7 +49,7 @@ impl StoreId for Nid {
 }
 
 impl crate::ctx_map::CtxEntry for Nid {
-    type Ctx = [Result<Node, Nid>];
+    type Ctx = [Result<Node, (Nid, Trace)>];
     type Key<'a> = (Kind, &'a [Nid], ty::Id);
 
     fn key<'a>(&self, ctx: &'a Self::Ctx) -> Self::Key<'a> {
@@ -57,9 +57,23 @@ impl crate::ctx_map::CtxEntry for Nid {
     }
 }
 
+#[cfg(test)]
+type Trace = std::rc::Rc<std::backtrace::Backtrace>;
+#[cfg(not(test))]
+type Trace = ();
+
+fn trace() -> Trace {
+    #[cfg(test)]
+    {
+        std::rc::Rc::new(std::backtrace::Backtrace::capture())
+    }
+    #[cfg(not(test))]
+    {}
+}
+
 #[derive(Clone)]
 struct Nodes {
-    values: Vec<Result<Node, Nid>>,
+    values: Vec<Result<Node, (Nid, Trace)>>,
     visited: BitSet,
     free: Nid,
     lookup: Lookup,
@@ -130,11 +144,12 @@ impl Nodes {
 
     fn remove_low(&mut self, id: Nid) -> Node {
         if cfg!(debug_assertions) {
-            let value = mem::replace(&mut self.values[id as usize], Err(self.free)).unwrap();
+            let value =
+                mem::replace(&mut self.values[id as usize], Err((self.free, trace()))).unwrap();
             self.free = id;
             value
         } else {
-            mem::replace(&mut self.values[id as usize], Err(Nid::MAX)).unwrap()
+            mem::replace(&mut self.values[id as usize], Err((Nid::MAX, trace()))).unwrap()
         }
     }
 
@@ -162,7 +177,7 @@ impl Nodes {
 
         if self.free == Nid::MAX {
             self.free = self.values.len() as _;
-            self.values.push(Err(Nid::MAX));
+            self.values.push(Err((Nid::MAX, trace())));
         }
 
         let free = self.free;
@@ -170,7 +185,7 @@ impl Nodes {
             debug_assert_ne!(d, free);
             self.values[d as usize].as_mut().unwrap_or_else(|_| panic!("{d}")).outputs.push(free);
         }
-        self.free = mem::replace(&mut self.values[free as usize], Ok(node)).unwrap_err();
+        self.free = mem::replace(&mut self.values[free as usize], Ok(node)).unwrap_err().0;
 
         if let Some((entry, hash)) = lookup_meta {
             entry.insert(crate::ctx_map::Key { value: free, hash }, ());
@@ -219,7 +234,7 @@ impl Nodes {
             return false;
         }
 
-        debug_assert!(!matches!(self[target].kind, Kind::Call { .. }));
+        debug_assert!(!matches!(self[target].kind, Kind::Call { .. }), "{:?}", self[target]);
 
         for i in 0..self[target].inputs.len() {
             let inp = self[target].inputs[i];
@@ -935,13 +950,13 @@ impl ops::Index<Nid> for Nodes {
     type Output = Node;
 
     fn index(&self, index: Nid) -> &Self::Output {
-        self.values[index as usize].as_ref().unwrap()
+        self.values[index as usize].as_ref().unwrap_or_else(|(_, bt)| panic!("{index} {bt:#?}"))
     }
 }
 
 impl ops::IndexMut<Nid> for Nodes {
     fn index_mut(&mut self, index: Nid) -> &mut Self::Output {
-        self.values[index as usize].as_mut().unwrap()
+        self.values[index as usize].as_mut().unwrap_or_else(|(_, bt)| panic!("{index} {bt:#?}"))
     }
 }
 
@@ -2048,14 +2063,17 @@ impl<'a> Codegen<'a> {
                     self.ci.nodes[NEVER].inputs.push(self.ci.ctrl);
                     self.ci.nodes[self.ci.ctrl].outputs.push(NEVER);
                 } else if let Some((pv, ctrl)) = &mut self.ci.inline_ret {
+                    self.ci.nodes.unlock(*ctrl);
                     *ctrl =
                         self.ci.nodes.new_node(ty::Id::VOID, Kind::Region, [self.ci.ctrl, *ctrl]);
+                    self.ci.nodes.lock(*ctrl);
                     self.ci.ctrl = *ctrl;
                     self.ci.nodes.unlock(pv.id);
                     pv.id = self.ci.nodes.new_node(value.ty, Kind::Phi, [*ctrl, value.id, pv.id]);
                     self.ci.nodes.lock(pv.id);
                 } else {
                     self.ci.nodes.lock(value.id);
+                    self.ci.nodes.lock(self.ci.ctrl);
                     self.ci.inline_ret = Some((value, self.ci.ctrl));
                 }
 
@@ -2501,9 +2519,10 @@ impl<'a> Codegen<'a> {
                     return Value::NEVER;
                 };
 
-                let fuc = &self.tys.ins.funcs[fu as usize];
-                let ast = &self.files[fuc.file as usize];
-                let &Expr::Closure { args: cargs, body, .. } = fuc.expr.get(ast) else {
+                let Func { expr, file, .. } = self.tys.ins.funcs[fu as usize];
+
+                let ast = &self.files[file as usize];
+                let &Expr::Closure { args: cargs, body, .. } = expr.get(ast) else {
                     unreachable!()
                 };
 
@@ -2550,6 +2569,7 @@ impl<'a> Codegen<'a> {
 
                 let prev_ret = self.ci.ret.replace(sig.ret);
                 let prev_inline_ret = self.ci.inline_ret.take();
+                let prev_file = core::mem::replace(&mut self.ci.file, file);
                 self.ci.inline_depth += 1;
 
                 if self.expr(body).is_some() && sig.ret == ty::Id::VOID {
@@ -2561,12 +2581,14 @@ impl<'a> Codegen<'a> {
                 }
 
                 self.ci.ret = prev_ret;
+                self.ci.file = prev_file;
                 self.ci.inline_depth -= 1;
                 for var in self.ci.scope.vars.drain(arg_base..) {
                     self.ci.nodes.unlock_remove(var.value);
                 }
 
-                core::mem::replace(&mut self.ci.inline_ret, prev_inline_ret).map(|(v, _)| {
+                core::mem::replace(&mut self.ci.inline_ret, prev_inline_ret).map(|(v, ctrl)| {
+                    self.ci.nodes.unlock(ctrl);
                     self.ci.nodes.unlock(v.id);
                     v
                 })
@@ -3145,6 +3167,7 @@ impl<'a> Codegen<'a> {
         from: &mut Scope,
         drop_from: bool,
     ) {
+        nodes.lock(ctrl);
         for (i, ((.., ty, to_value), (.., from_value))) in
             to.iter_elems_mut().zip(from.iter_elems_mut()).enumerate()
         {
@@ -3170,6 +3193,7 @@ impl<'a> Codegen<'a> {
         if drop_from {
             nodes.unlock_remove_scope(from);
         }
+        nodes.unlock(ctrl);
     }
 
     #[inline(always)]
@@ -4170,6 +4194,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        smh_happened;
         wide_ret;
         comptime_min_reg_leak;
         different_types;
