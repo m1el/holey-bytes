@@ -4016,7 +4016,7 @@ mod tests {
         let mut codegen = super::Codegen { files, ..Default::default() };
         codegen.push_embeds(embeds);
 
-        codegen.generate();
+        codegen.generate(0);
 
         {
             let errors = codegen.errors.borrow();

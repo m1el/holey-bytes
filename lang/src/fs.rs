@@ -93,7 +93,7 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
         codegen.files = &parsed.ast;
         codegen.push_embeds(parsed.embeds);
 
-        codegen.generate();
+        codegen.generate(0);
         if options.dump_asm {
             codegen
                 .disasm(unsafe { std::mem::transmute::<&mut Vec<u8>, &mut String>(out) })
