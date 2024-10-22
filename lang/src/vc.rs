@@ -238,9 +238,6 @@ impl Deref for Vc {
     type Target = [Nid];
 
     fn deref(&self) -> &Self::Target {
-        if self.as_slice().iter().position(|&i| i == 1) == Some(2) {
-            log::info!("foo {}", std::backtrace::Backtrace::capture());
-        }
         self.as_slice()
     }
 }

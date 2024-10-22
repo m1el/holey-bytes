@@ -427,14 +427,14 @@ modify := fn($num: ^int): void {
 MALLOC_SYS_CALL := 69
 FREE_SYS_CALL := 96
 
-malloc := fn(size: uint, align: uint): ^void return @eca(MALLOC_SYS_CALL, size, align)
-free := fn(ptr: ^void, size: uint, align: uint): void return @eca(FREE_SYS_CALL, ptr, size, align)
+malloc := fn(size: int, align: int): ^void return @eca(MALLOC_SYS_CALL, size, align)
+free := fn(ptr: ^void, size: int, align: int): void return @eca(FREE_SYS_CALL, ptr, size, align)
 
 Vec := fn($Elem: type): type {
 	return struct {
 		data: ^Elem,
-		len: uint,
-		cap: uint,
+		len: int,
+		cap: int,
 	}
 }
 
@@ -455,7 +455,7 @@ push := fn($Elem: type, vec: ^Vec(Elem), value: Elem): ^Elem {
 		}
 
 		new_alloc := @as(^Elem, @bitcast(malloc(vec.cap * @sizeof(Elem), @alignof(Elem))))
-		if new_alloc == 0 return 0
+		if new_alloc == 0 return @bitcast(0)
 
 		src_cursor := vec.data
 		dst_cursor := new_alloc
@@ -481,7 +481,7 @@ push := fn($Elem: type, vec: ^Vec(Elem), value: Elem): ^Elem {
 
 main := fn(): int {
 	vec := new(int)
-	push(int, &vec, 69)
+	_f := push(int, &vec, 69)
 	res := *vec.data
 	deinit(int, &vec)
 	return res

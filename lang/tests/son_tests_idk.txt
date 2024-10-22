@@ -1,20 +1,22 @@
 main:
-    ADDI64 r254, r254, -128d
-    LI64 r6, 69d
-    LI64 r5, 128d
-    LI64 r7, 0d
-    ADDI64 r4, r254, 0d
- 2: JLTS r7, r5, :0
-    LD r2, r254, 42a, 1h
-    ANDI r1, r2, 255d
+    ADDI64 r254, r254, -256d
+    LI64 r7, 69d
+    LI64 r6, 128d
+    LI64 r8, 0d
+    ADDI64 r5, r254, 0d
+    ADDI64 r9, r254, 128d
+    BMC r9, r5, 128h
+ 2: JLTS r8, r6, :0
+    LD r5, r254, 42a, 1h
+    ANDI r1, r5, 255d
     JMP :1
- 0: ADDI64 r8, r7, 1d
-    ADD64 r3, r7, r4
-    ST r6, r3, 0a, 1h
-    CP r7, r8
+ 0: ADDI64 r9, r8, 1d
+    ADD64 r8, r8, r5
+    ST r7, r8, 0a, 1h
+    CP r8, r9
     JMP :2
- 1: ADDI64 r254, r254, 128d
+ 1: ADDI64 r254, r254, 256d
     JALA r0, r31, 0a
-code size: 152
+code size: 168
 ret: 69
 status: Ok(())

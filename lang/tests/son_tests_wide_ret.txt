@@ -1,43 +1,48 @@
 main:
-    ADDI64 r254, r254, -56d
-    ST r31, r254, 16a, 40h
+    ADDI64 r254, r254, -80d
+    ST r31, r254, 32a, 48h
     LI64 r4, 0d
-    ADDI64 r32, r254, 0d
+    ADDI64 r32, r254, 16d
     CP r3, r4
     JAL r31, r0, :maina
-    ST r1, r254, 0a, 16h
-    LD r33, r254, 12a, 1h
-    LD r34, r254, 3a, 1h
-    SUB8 r35, r34, r33
-    ANDI r1, r35, 255d
-    LD r31, r254, 16a, 40h
-    ADDI64 r254, r254, 56d
+    ST r1, r254, 16a, 16h
+    ADDI64 r33, r254, 0d
+    BMC r32, r33, 16h
+    LD r34, r254, 12a, 1h
+    LD r35, r254, 3a, 1h
+    SUB8 r36, r35, r34
+    ANDI r1, r36, 255d
+    LD r31, r254, 32a, 48h
+    ADDI64 r254, r254, 80d
     JALA r0, r31, 0a
 maina:
-    ADDI64 r254, r254, -100d
-    ST r31, r254, 28a, 72h
-    ADDI64 r32, r254, 24d
+    ADDI64 r254, r254, -120d
+    ST r31, r254, 40a, 80h
+    ADDI64 r32, r254, 36d
     JAL r31, r0, :small_struct
     LI64 r33, 1d
     LI64 r34, 3d
     LI64 r35, 0d
     ADDI64 r36, r254, 0d
-    ADDI64 r37, r254, 16d
-    ST r35, r254, 16a, 1h
-    ST r35, r254, 17a, 1h
-    ST r35, r254, 18a, 1h
-    ST r34, r254, 19a, 1h
-    ST r33, r254, 20a, 1h
-    ST r35, r254, 21a, 1h
-    ST r35, r254, 22a, 1h
-    ST r35, r254, 23a, 1h
-    LD r38, r254, 16a, 8h
-    ST r38, r254, 0a, 8h
-    LD r39, r254, 16a, 8h
-    ST r39, r254, 8a, 8h
+    ADDI64 r37, r36, 8d
+    ADDI64 r38, r254, 16d
+    ADDI64 r39, r254, 24d
+    ADDI64 r40, r254, 32d
+    BMC r32, r40, 4h
+    ST r35, r254, 24a, 1h
+    ST r35, r254, 25a, 1h
+    ST r35, r254, 26a, 1h
+    ST r34, r254, 27a, 1h
+    ST r33, r254, 28a, 1h
+    ST r35, r254, 29a, 1h
+    ST r35, r254, 30a, 1h
+    ST r35, r254, 31a, 1h
+    BMC r39, r38, 8h
+    BMC r39, r36, 8h
+    BMC r38, r37, 8h
     LD r1, r36, 0a, 16h
-    LD r31, r254, 28a, 72h
-    ADDI64 r254, r254, 100d
+    LD r31, r254, 40a, 80h
+    ADDI64 r254, r254, 120d
     JALA r0, r31, 0a
 small_struct:
     ADDI64 r254, r254, -4d
@@ -45,9 +50,9 @@ small_struct:
     ADDI64 r3, r254, 0d
     ST r2, r254, 0a, 2h
     ST r2, r254, 2a, 2h
-    LD r1, r254, 0a, 4h
+    LD r1, r3, 0a, 4h
     ADDI64 r254, r254, 4d
     JALA r0, r31, 0a
-code size: 543
+code size: 560
 ret: 2
 status: Ok(())

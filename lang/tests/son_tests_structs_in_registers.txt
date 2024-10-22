@@ -1,8 +1,12 @@
 main:
+    ADDI64 r254, r254, -4d
     LRA r1, r0, :MAGENTA
-    LD r3, r1, 2a, 1h
-    ANDI r1, r3, 255d
+    ADDI64 r3, r254, 0d
+    BMC r1, r3, 4h
+    LD r6, r254, 2a, 1h
+    ANDI r1, r6, 255d
+    ADDI64 r254, r254, 4d
     JALA r0, r31, 0a
-code size: 54
+code size: 92
 ret: 205
 status: Ok(())

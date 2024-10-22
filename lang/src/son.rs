@@ -25,7 +25,7 @@ use {
     },
     hashbrown::hash_map,
     regalloc2::VReg,
-    std::panic,
+    std::{borrow::ToOwned, panic},
 };
 
 const VOID: Nid = 0;
@@ -1186,6 +1186,9 @@ impl ItemCtx {
                     }
                     Kind::Return => {
                         match retl {
+                            PLoc::Reg(r, size) if sig.ret.loc(tys) == Loc::Stack => {
+                                self.emit(instrs::ld(r, atr(allocs[0]), 0, size))
+                            }
                             PLoc::None | PLoc::Reg(..) => {}
                             PLoc::WideReg(r, size) => {
                                 self.emit(instrs::ld(r, atr(allocs[0]), 0, size))
@@ -1307,7 +1310,7 @@ impl ItemCtx {
                             offset = value as Offset;
                         }
                         let size = tys.size_of(node.ty);
-                        if size <= 8 {
+                        if node.ty.loc(tys) != Loc::Stack {
                             let (base, offset) = match fuc.nodes[region].kind {
                                 Kind::Stck => (reg::STACK_PTR, fuc.nodes[region].offset + offset),
                                 _ => (atr(allocs[1]), offset),
@@ -1323,22 +1326,25 @@ impl ItemCtx {
                         if fuc.nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
                             && let Kind::CInt { value } =
                                 fuc.nodes[fuc.nodes[region].inputs[2]].kind
-                            && size <= 8
+                            && node.ty.loc(tys) == Loc::Reg
                         {
                             region = fuc.nodes[region].inputs[1];
                             offset = value as Offset;
                         }
                         let nd = &fuc.nodes[region];
                         let (base, offset, src) = match nd.kind {
-                            Kind::Stck if size <= 8 => {
+                            Kind::Stck if node.ty.loc(tys) == Loc::Reg => {
                                 (reg::STACK_PTR, nd.offset + offset, allocs[0])
                             }
                             _ => (atr(allocs[0]), offset, allocs[1]),
                         };
-                        if size > 8 {
-                            self.emit(instrs::bmc(atr(src), base, size));
-                        } else {
-                            self.emit(instrs::st(atr(src), base, offset as _, size));
+
+                        match node.ty.loc(tys) {
+                            Loc::Reg => self.emit(instrs::st(atr(src), base, offset as _, size)),
+                            Loc::Stack => {
+                                debug_assert_eq!(offset, 0);
+                                self.emit(instrs::bmc(atr(src), base, size))
+                            }
                         }
                     }
                     Kind::Start
@@ -1364,6 +1370,8 @@ impl ItemCtx {
         self.nodes.gcm();
         self.nodes.basic_blocks();
         self.nodes.graphviz(tys, files);
+
+        debug_assert!(self.code.is_empty());
 
         '_open_function: {
             self.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, 0));
@@ -1421,9 +1429,9 @@ impl ItemCtx {
                 }
                 (0, stack) => {
                     write_reloc(&mut self.code, 3, -stack, 8);
-                    stripped_prelude_size = instrs::addi64(0, 0, 0).0;
-                    let end = stripped_prelude_size + instrs::st(0, 0, 0, 0).0;
-                    self.code.drain(stripped_prelude_size..end);
+                    stripped_prelude_size = instrs::st(0, 0, 0, 0).0;
+                    let end = instrs::addi64(0, 0, 0).0 + instrs::st(0, 0, 0, 0).0;
+                    self.code.drain(instrs::addi64(0, 0, 0).0..end);
                     self.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, stack as _));
                     break '_close_function;
                 }
@@ -1585,12 +1593,15 @@ impl TypeParser for Codegen<'_> {
     }
 
     fn eval_const(&mut self, file: FileId, expr: &Expr, ret: ty::Id) -> u64 {
+        let vars = self.ci.scope.vars.clone();
         self.pool.push_ci(file, Some(ret), self.tasks.len(), &mut self.ci);
+        self.ci.scope.vars = vars;
 
         let prev_err_len = self.errors.borrow().len();
 
         self.expr(&Expr::Return { pos: expr.pos(), val: Some(expr) });
 
+        self.ci.scope.vars = vec![];
         self.ci.finalize();
 
         if self.errors.borrow().len() == prev_err_len {
@@ -2002,8 +2013,13 @@ impl<'a> Codegen<'a> {
                 Some(self.ci.nodes.new_node_lit(val.ty, Kind::UnOp { op }, [VOID, val.id]))
             }
             Expr::BinOp { left, op: TokenKind::Decl, right } => {
-                let mut right = self.raw_expr(right)?;
-                self.strip_var(&mut right);
+                let mut right = self.expr(right)?;
+                if right.ty.loc(&self.tys) == Loc::Stack {
+                    let stck = self.ci.nodes.new_node_nop(right.ty, Kind::Stck, [VOID, MEM]);
+                    self.store_mem(stck, right.id);
+                    right.id = stck;
+                    right.ptr = true;
+                }
                 self.assign_pattern(left, right);
                 Some(Value::VOID)
             }
@@ -2482,6 +2498,10 @@ impl<'a> Codegen<'a> {
                         Value::NEVER
                     }
                 }
+            }
+            Expr::Struct { .. } => {
+                let value = self.ty(expr).repr() as i64;
+                Some(self.ci.nodes.new_node_lit(ty::Id::TYPE, Kind::CInt { value }, [VOID]))
             }
             Expr::Ctor { pos, ty, fields, .. } => {
                 let Some(sty) = ty.map(|ty| self.ty(ty)).or(ctx.ty) else {
@@ -2996,7 +3016,7 @@ impl<'a> Codegen<'a> {
             }
             let value = self.ci.nodes.new_node_nop(ty, Kind::Arg, [VOID]);
             self.ci.nodes.lock(value);
-            let ptr = self.tys.size_of(ty) > 8;
+            let ptr = ty.loc(&self.tys) == Loc::Stack;
             self.ci.scope.vars.push(Variable { id: arg.id, value, ty, ptr });
         }
 
@@ -3076,12 +3096,22 @@ impl<'a> Codegen<'a> {
         expected: ty::Id,
         hint: impl fmt::Display,
     ) -> bool {
-        if let Some(upcasted) = src.ty.try_upcast(expected, ty::TyCheck::BinOp)
+        if let Some(upcasted) = src.ty.try_upcast(expected, ty::TyCheck::Assign)
             && upcasted == expected
         {
             if src.ty != upcasted {
-                debug_assert!(src.ty.is_integer());
-                debug_assert!(upcasted.is_integer());
+                debug_assert!(
+                    src.ty.is_integer() || src.ty == ty::Id::NEVER,
+                    "{} {}",
+                    self.ty_display(src.ty),
+                    self.ty_display(upcasted)
+                );
+                debug_assert!(
+                    upcasted.is_integer() || src.ty == ty::Id::NEVER,
+                    "{} {}",
+                    self.ty_display(src.ty),
+                    self.ty_display(upcasted)
+                );
                 src.ty = upcasted;
                 src.id = self.ci.nodes.new_node(upcasted, Kind::Extend, [VOID, src.id]);
             }
@@ -3293,6 +3323,9 @@ impl<'a> Function<'a> {
             Kind::Return => {
                 let ops = match self.tys.parama(self.sig.ret).0 {
                     PLoc::None => vec![],
+                    PLoc::Reg(..) if self.sig.ret.loc(self.tys) == Loc::Stack => {
+                        vec![self.urg(self.nodes[node.inputs[1]].inputs[1])]
+                    }
                     PLoc::Reg(r, ..) => {
                         vec![regalloc2::Operand::reg_fixed_use(
                             self.rg(node.inputs[1]),
@@ -3330,10 +3363,17 @@ impl<'a> Function<'a> {
                 self.nodes[nid].ralloc_backref = self.add_block(nid);
 
                 let (_, mut parama) = self.tys.parama(self.sig.ret);
-                for (ti, arg) in
-                    self.sig.args.range().zip(self.nodes[VOID].clone().outputs.into_iter().skip(2))
-                {
-                    let ty = self.tys.ins.args[ti];
+
+                let argc = self.sig.args.range().len()
+                    - self.tys.ins.args[self.sig.args.range()]
+                        .iter()
+                        .filter(|&&ty| ty == ty::Id::TYPE)
+                        .count()
+                        * 2;
+
+                #[allow(clippy::unnecessary_to_owned)]
+                for arg in self.nodes[VOID].outputs[2..][..argc].to_owned() {
+                    let ty = self.nodes[arg].ty;
                     match parama.next(ty, self.tys) {
                         PLoc::None => {}
                         PLoc::Reg(r, _) | PLoc::WideReg(r, _) | PLoc::Ref(r, _) => {
@@ -3359,8 +3399,9 @@ impl<'a> Function<'a> {
             Kind::BinOp { op: TokenKind::Add }
                 if self.nodes.is_const(node.inputs[2])
                     && node.outputs.iter().all(|&n| {
-                        matches!(self.nodes[n].kind, Kind::Stre | Kind::Load)
-                            && self.tys.size_of(self.nodes[n].ty) <= 8
+                        (matches!(self.nodes[n].kind, Kind::Stre if self.nodes[n].inputs[2] == nid)
+                            || matches!(self.nodes[n].kind, Kind::Load if self.nodes[n].inputs[1] == nid))
+                            && self.nodes[n].ty.loc(self.tys) == Loc::Reg
                     }) =>
             {
                 self.nodes.lock(nid)
@@ -3480,13 +3521,14 @@ impl<'a> Function<'a> {
                 self.add_instr(nid, ops);
             }
             Kind::Phi | Kind::Arg | Kind::Mem => {}
-            Kind::Load { .. } if matches!(self.tys.size_of(node.ty), 0 | 9..) => {
+            Kind::Load { .. } if node.ty.loc(self.tys) == Loc::Stack => {
                 self.nodes.lock(nid)
             }
             Kind::Load { .. } => {
                 let mut region = node.inputs[1];
                 if self.nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
                     && self.nodes.is_const(self.nodes[region].inputs[2])
+                    && node.ty.loc(self.tys) == Loc::Reg
                 {
                     region = self.nodes[region].inputs[1]
                 }
@@ -3501,11 +3543,12 @@ impl<'a> Function<'a> {
                 let mut region = node.inputs[2];
                 if self.nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
                     && self.nodes.is_const(self.nodes[region].inputs[2])
+                    && node.ty.loc(self.tys) == Loc::Reg
                 {
                     region = self.nodes[region].inputs[1]
                 }
                 let ops = match self.nodes[region].kind {
-                    _ if self.tys.size_of(node.ty) > 8 => {
+                    _ if node.ty.loc(self.tys) == Loc::Stack => {
                         vec![self.urg(region), self.urg(self.nodes[node.inputs[1]].inputs[1])]
                     }
                     Kind::Stck => vec![self.urg(node.inputs[1])],
@@ -3590,9 +3633,11 @@ impl regalloc2::Function for Function<'_> {
     }
 
     fn inst_clobbers(&self, insn: regalloc2::Inst) -> regalloc2::PRegSet {
-        if matches!(self.nodes[self.instrs[insn.index()].nid].kind, Kind::Call { .. }) {
+        let node = &self.nodes[self.instrs[insn.index()].nid];
+        if matches!(node.kind, Kind::Call { .. }) {
             let mut set = regalloc2::PRegSet::default();
-            for i in 2..13 {
+            let returns = !matches!(self.tys.parama(node.ty).0, PLoc::None);
+            for i in 1 + returns as usize..13 {
                 set.add(regalloc2::PReg::new(i, regalloc2::RegClass::Int));
             }
             set

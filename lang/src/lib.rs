@@ -1013,7 +1013,8 @@ trait TypeParser {
                     .map_or(ArrayLen::MAX, |expr| self.eval_const(file, expr, ty::Id::U32) as _);
                 self.tys().make_array(ty, len)
             }
-            Expr::Struct { pos, fields, packed, .. } => {
+            Expr::Struct { pos, fields, packed, captured, .. } => {
+                assert!(captured.is_empty());
                 let sym = SymKey::Struct(file, pos);
                 let tys = self.tys();
                 if let Some(&ty) = tys.syms.get(sym, &tys.ins) {
