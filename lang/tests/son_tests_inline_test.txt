@@ -18,17 +18,19 @@ integer:
     JMP :0
  0: JALA r0, r31, 0a
 line:
-    ST r2, r254, 0a, 16h
-    ADDI64 r2, r254, 0d
-    ST r4, r254, 0a, 16h
-    ADDI64 r4, r254, 0d
+    ADDI64 r254, r254, -48d
+    ST r2, r254, 32a, 16h
+    ADDI64 r2, r254, 32d
+    ST r4, r254, 16a, 16h
+    ADDI64 r4, r254, 16d
     ST r6, r254, 0a, 16h
     ADDI64 r6, r254, 0d
     LD r9, r4, 0a, 8h
     LD r11, r2, 0a, 8h
     JGTS r11, r9, :0
     JMP :0
- 0: JALA r0, r31, 0a
+ 0: ADDI64 r254, r254, 48d
+    JALA r0, r31, 0a
 main:
     ADDI64 r254, r254, -184d
     ST r31, r254, 96a, 88h
@@ -70,10 +72,11 @@ main:
     ADDI64 r254, r254, 184d
     JALA r0, r31, 0a
 rect_line:
-    ST r2, r254, 0a, 16h
-    ADDI64 r2, r254, 0d
-    ST r4, r254, 0a, 16h
-    ADDI64 r4, r254, 0d
+    ADDI64 r254, r254, -48d
+    ST r2, r254, 32a, 16h
+    ADDI64 r2, r254, 32d
+    ST r4, r254, 16a, 16h
+    ADDI64 r4, r254, 16d
     ST r6, r254, 0a, 16h
     ADDI64 r6, r254, 0d
     LI64 r10, 0d
@@ -88,7 +91,8 @@ rect_line:
     JMP :3
  2: ADDI64 r9, r9, 1d
     JMP :4
- 1: JALA r0, r31, 0a
-code size: 886
+ 1: ADDI64 r254, r254, 48d
+    JALA r0, r31, 0a
+code size: 930
 ret: 0
 status: Ok(())

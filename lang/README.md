@@ -743,8 +743,8 @@ rect_line := fn(buffer: Buffer, pos: Point, tr: Transform, color: ColorBGRA, thi
 		y = pos.y
 		x = pos.x
 		loop if y == pos.y + tr.x break else {
-			a := 1 + @inline(screenidx, 10)
-			a = 1 + @inline(screenidx, 2)
+			//a := 1 + @inline(screenidx, 10)
+			//a = 1 + @inline(screenidx, 2)
 			y += 1
 		}
 		t += 1
@@ -958,7 +958,15 @@ main := fn(): int {
 		return 6
 	}
 
+	f := 0
 	loop {
+		if f == 1 {
+			f = 0
+		} else {
+			f = 1
+		}
+
+		f = continue_and_state_change(0)
 	}
 }
 

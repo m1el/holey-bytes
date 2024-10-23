@@ -27,7 +27,7 @@ use {
     hashbrown::hash_map,
     hbbytecode::DisasmError,
     regalloc2::VReg,
-    std::{borrow::ToOwned, panic},
+    std::borrow::ToOwned,
 };
 
 const VOID: Nid = 0;
@@ -108,39 +108,41 @@ impl Nodes {
 
         for (i, node) in self.iter() {
             let color = match () {
-                _ if self[i].lock_rc != 0 => "red",
-                _ if self[i].outputs.is_empty() => "purple",
-                _ if self[i].is_mem() => "green",
+                _ if node.lock_rc == Nid::MAX => "orange",
+                _ if node.lock_rc == Nid::MAX - 1 => "blue",
+                _ if node.lock_rc != 0 => "red",
+                _ if node.outputs.is_empty() => "purple",
+                _ if node.is_mem() => "green",
                 _ if self.is_cfg(i) => "yellow",
                 _ => "white",
             };
 
-            let mut dest = i;
-            let mut index_override = None;
+            let dest = i;
+            //let mut index_override = None;
 
-            if !matches!(node.kind, Kind::Then | Kind::Else) {
-                if node.ty != ty::Id::VOID {
-                    writeln!(
-                        out,
-                        " node{i}[label=\"{} {}\" color={color}]",
-                        node.kind,
-                        ty::Display::new(tys, files, node.ty)
-                    )?;
-                } else {
-                    writeln!(out, " node{i}[label=\"{}\" color={color}]", node.kind,)?;
-                }
+            //if !matches!(node.kind, Kind::Then | Kind::Else) {
+            if node.ty != ty::Id::VOID {
+                writeln!(
+                    out,
+                    " node{i}[label=\"{i} {} {}\" color={color}]",
+                    node.kind,
+                    ty::Display::new(tys, files, node.ty)
+                )?;
             } else {
-                dest = node.inputs[0];
-
-                index_override = if node.kind == Kind::Then { Some(0) } else { Some(1) };
+                writeln!(out, " node{i}[label=\"{i} {}\" color={color}]", node.kind,)?;
             }
+            //} else {
+            //    dest = node.inputs[0];
 
-            if node.kind == Kind::If {
-                continue;
-            }
+            //    index_override = if node.kind == Kind::Then { Some(0) } else { Some(1) };
+            //}
+
+            //if node.kind == Kind::If {
+            //    continue;
+            //}
 
             for (j, &o) in node.outputs.iter().enumerate() {
-                let j = index_override.unwrap_or(j);
+                //let j = index_override.unwrap_or(j);
                 let color = if self.is_cfg(i) && self.is_cfg(o) { "red" } else { "lightgray" };
                 let index = self[o].inputs.iter().position(|&inp| i == inp).unwrap();
                 let style = if index == 0 && !self.is_cfg(o) { "style=dotted" } else { "" };
@@ -204,6 +206,26 @@ impl Nodes {
     fn new_node_nop(&mut self, ty: ty::Id, kind: Kind, inps: impl Into<Vc>) -> Nid {
         let node =
             Node { ralloc_backref: u16::MAX, inputs: inps.into(), kind, ty, ..Default::default() };
+
+        if node.kind == Kind::Phi && node.ty != ty::Id::VOID {
+            debug_assert_ne!(
+                self[node.inputs[1]].ty,
+                ty::Id::VOID,
+                "{:?} {:?}",
+                self[node.inputs[1]],
+                node.ty.expand(),
+            );
+
+            if self[node.inputs[0]].kind != Kind::Loop {
+                debug_assert_ne!(
+                    self[node.inputs[2]].ty,
+                    ty::Id::VOID,
+                    "{:?} {:?}",
+                    self[node.inputs[2]],
+                    node.ty.expand(),
+                );
+            }
+        }
 
         let mut lookup_meta = None;
         if !node.is_not_gvnd() {
@@ -857,6 +879,7 @@ impl Nodes {
         self.values.iter_mut().flat_map(Result::as_mut)
     }
 
+    #[allow(dead_code)]
     fn eliminate_stack_temporaries(&mut self) {
         if !cfg!(debug_assertions) {
             return;
@@ -1192,7 +1215,7 @@ mod var {
 
     impl Scope {
         pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Variable> {
-            self.vars.iter_mut().chain(core::iter::once(&mut self.store))
+            core::iter::once(&mut self.store).chain(self.vars.iter_mut())
         }
 
         pub fn dup(&self, nodes: &mut Nodes) -> Self {
@@ -1216,8 +1239,9 @@ struct ItemCtx {
     file: FileId,
     ret: Option<ty::Id>,
     task_base: usize,
+    inline_var_base: usize,
     inline_depth: u16,
-    inline_ret: Option<(Value, Nid)>,
+    inline_ret: Option<(Value, Nid, Scope)>,
     nodes: Nodes,
     ctrl: Nid,
     call_count: u16,
@@ -1290,6 +1314,10 @@ impl ItemCtx {
         };
         regalloc2::run_with_ctx(&fuc, &ralloc.env, &options, &mut ralloc.ctx).unwrap_or_else(
             |err| {
+                if let regalloc2::RegAllocError::SSA(vreg, inst) = err {
+                    fuc.nodes[vreg.vreg() as Nid].lock_rc = Nid::MAX;
+                    fuc.nodes[fuc.instrs[inst.index()].nid].lock_rc = Nid::MAX - 1;
+                }
                 fuc.nodes.graphviz_in_browser(tys, files);
                 panic!("{err}")
             },
@@ -1794,7 +1822,7 @@ pub struct Codegen<'a> {
     #[expect(dead_code)]
     ralloc: Regalloc,
     ct: Comptime,
-    errors: RefCell<String>,
+    pub errors: RefCell<String>,
 }
 
 impl TypeParser for Codegen<'_> {
@@ -2018,8 +2046,16 @@ impl<'a> Codegen<'a> {
 
     fn load_mem(&mut self, region: Nid, ty: ty::Id) -> Nid {
         debug_assert_ne!(region, VOID);
+        debug_assert_ne!({ self.ci.nodes[region].ty }, ty::Id::VOID, "{:?}", {
+            self.ci.nodes[region].lock_rc = Nid::MAX;
+            self.ci.nodes.graphviz_in_browser(&self.tys, self.files);
+        });
         debug_assert!(
-            self.ci.nodes[region].kind != Kind::Load || self.ci.nodes[region].ty.is_pointer()
+            self.ci.nodes[region].kind != Kind::Load || self.ci.nodes[region].ty.is_pointer(),
+            "{:?} {} {}",
+            self.ci.nodes.graphviz_in_browser(&self.tys, self.files),
+            self.cfile().path,
+            self.ty_display(self.ci.nodes[region].ty)
         );
         debug_assert!(self.ci.nodes[region].kind != Kind::Stre);
         let mut vc = Vc::from([VOID, region]);
@@ -2095,7 +2131,7 @@ impl<'a> Codegen<'a> {
                 if let Some(index) = self.ci.scope.vars.iter().rposition(|v| v.id == id) =>
             {
                 let var = &mut self.ci.scope.vars[index];
-                self.ci.nodes.load_loop_var(index, var, &mut self.ci.loops);
+                self.ci.nodes.load_loop_var(index + 1, var, &mut self.ci.loops);
 
                 Some(Value::var(index).ty(var.ty))
             }
@@ -2108,10 +2144,7 @@ impl<'a> Codegen<'a> {
                         let value = self.ci.nodes.new_node(gl.ty, Kind::Global { global }, [VOID]);
                         Some(Value::ptr(value).ty(gl.ty))
                     }
-                    _ => self.report_unhandled_ast(
-                        expr,
-                        format_args!("identifier evaluated to '{}'", self.ty_display(decl)),
-                    ),
+                    _ => Some(Value::new(Nid::MAX).ty(decl)),
                 }
             }
             Expr::Comment { .. } => Some(Value::VOID),
@@ -2152,19 +2185,31 @@ impl<'a> Codegen<'a> {
 
                     self.ci.nodes[NEVER].inputs.push(self.ci.ctrl);
                     self.ci.nodes[self.ci.ctrl].outputs.push(NEVER);
-                } else if let Some((pv, ctrl)) = &mut self.ci.inline_ret {
+                } else if let Some((pv, ctrl, scope)) = &mut self.ci.inline_ret {
                     self.ci.nodes.unlock(*ctrl);
                     *ctrl =
                         self.ci.nodes.new_node(ty::Id::VOID, Kind::Region, [self.ci.ctrl, *ctrl]);
                     self.ci.nodes.lock(*ctrl);
-                    self.ci.ctrl = *ctrl;
+                    Self::merge_scopes(
+                        &mut self.ci.nodes,
+                        &mut self.ci.loops,
+                        *ctrl,
+                        scope,
+                        &mut self.ci.scope,
+                    );
                     self.ci.nodes.unlock(pv.id);
                     pv.id = self.ci.nodes.new_node(value.ty, Kind::Phi, [*ctrl, value.id, pv.id]);
                     self.ci.nodes.lock(pv.id);
+                    self.ci.ctrl = *ctrl;
                 } else {
                     self.ci.nodes.lock(value.id);
                     self.ci.nodes.lock(self.ci.ctrl);
-                    self.ci.inline_ret = Some((value, self.ci.ctrl));
+                    let mut scope = self.ci.scope.dup(&mut self.ci.nodes);
+                    scope
+                        .vars
+                        .drain(self.ci.inline_var_base..)
+                        .for_each(|v| v.remove(&mut self.ci.nodes));
+                    self.ci.inline_ret = Some((value, self.ci.ctrl, scope));
                 }
 
                 None
@@ -2173,6 +2218,19 @@ impl<'a> Codegen<'a> {
                 let mut vtarget = self.raw_expr(target)?;
                 self.strip_var(&mut vtarget);
                 let tty = vtarget.ty;
+
+                if let ty::Kind::Module(m) = tty.expand() {
+                    return match self.find_type(pos, m, Err(name), self.files).expand() {
+                        ty::Kind::Builtin(ty::NEVER) => Value::NEVER,
+                        ty::Kind::Global(global) => {
+                            let gl = &self.tys.ins.globals[global as usize];
+                            let value =
+                                self.ci.nodes.new_node(gl.ty, Kind::Global { global }, [VOID]);
+                            Some(Value::ptr(value).ty(gl.ty))
+                        }
+                        v => Some(Value::new(Nid::MAX).ty(v.compress())),
+                    };
+                }
 
                 let ty::Kind::Struct(s) = self.tys.base_of(tty).unwrap_or(tty).expand() else {
                     self.report(
@@ -2296,7 +2354,7 @@ impl<'a> Codegen<'a> {
                         self.ci.nodes.unlock(lhs.id);
                         let mut rhs = rhs?;
                         self.strip_var(&mut rhs);
-                        let ty = self.binop_ty(left.pos(), &mut rhs, &mut lhs, op);
+                        let ty = self.binop_ty(left.pos(), &mut lhs, &mut rhs, op);
                         let inps = [VOID, lhs.id, rhs.id];
                         Some(self.ci.nodes.new_node_lit(
                             ty::bin_ret(ty, op),
@@ -2463,7 +2521,7 @@ impl<'a> Codegen<'a> {
                     return Value::NEVER;
                 };
 
-                let mut inps = Vc::from([self.ci.ctrl]);
+                let mut inps = Vc::from([NEVER]);
                 for arg in args {
                     let value = self.expr(arg)?;
                     debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
@@ -2500,6 +2558,7 @@ impl<'a> Codegen<'a> {
                 };
 
                 let argc = args.len() as u32;
+                inps[0] = self.ci.ctrl;
                 self.ci.ctrl = self.ci.nodes.new_node(ty, Kind::Call { func: ty::ECA, argc }, inps);
 
                 self.store_mem(VOID, VOID);
@@ -2538,7 +2597,7 @@ impl<'a> Codegen<'a> {
                     );
                 }
 
-                let mut inps = Vc::from([self.ci.ctrl]);
+                let mut inps = Vc::from([NEVER]);
                 let mut tys = sig.args.range();
                 for (arg, carg) in args.iter().zip(cargs) {
                     let ty = self.tys.ins.args[tys.next().unwrap()];
@@ -2546,6 +2605,7 @@ impl<'a> Codegen<'a> {
                         tys.next().unwrap();
                         continue;
                     }
+                    std::println!("{}", self.ast_display(arg));
                     let mut value = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
                     debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
                     self.assert_ty(arg.pos(), &mut value, ty, fa!("argument {}", carg.name));
@@ -2583,6 +2643,7 @@ impl<'a> Codegen<'a> {
                     }
                 };
 
+                inps[0] = self.ci.ctrl;
                 self.ci.ctrl = self.ci.nodes.new_node(sig.ret, Kind::Call { func: fu, argc }, inps);
 
                 self.store_mem(VOID, VOID);
@@ -2626,7 +2687,8 @@ impl<'a> Codegen<'a> {
                     );
                 }
 
-                let arg_base = self.ci.scope.vars.len();
+                let prev_var_base =
+                    std::mem::replace(&mut self.ci.inline_var_base, self.ci.scope.vars.len());
                 let mut sig_args = sig.args.range();
                 for (arg, carg) in args.iter().zip(cargs) {
                     let ty = self.tys.ins.args[sig_args.next().unwrap()];
@@ -2641,7 +2703,8 @@ impl<'a> Codegen<'a> {
                         continue;
                     }
 
-                    let mut value = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
+                    let mut value = self.raw_expr_ctx(arg, Ctx::default().with_ty(ty))?;
+                    self.strip_var(&mut value);
                     debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
                     debug_assert_ne!(value.id, 0);
                     self.assert_ty(arg.pos(), &mut value, ty, fa!("argument {}", carg.name));
@@ -2671,15 +2734,22 @@ impl<'a> Codegen<'a> {
                 self.ci.ret = prev_ret;
                 self.ci.file = prev_file;
                 self.ci.inline_depth -= 1;
-                for var in self.ci.scope.vars.drain(arg_base..) {
+                for var in self.ci.scope.vars.drain(self.ci.inline_var_base..) {
                     var.remove(&mut self.ci.nodes);
                 }
+                self.ci.inline_var_base = prev_var_base;
 
-                core::mem::replace(&mut self.ci.inline_ret, prev_inline_ret).map(|(v, ctrl)| {
-                    self.ci.nodes.unlock(ctrl);
-                    self.ci.nodes.unlock(v.id);
-                    v
-                })
+                core::mem::replace(&mut self.ci.inline_ret, prev_inline_ret).map(
+                    |(v, ctrl, scope)| {
+                        self.ci.nodes.unlock(ctrl);
+                        self.ci.nodes.unlock(v.id);
+                        self.ci.scope.clear(&mut self.ci.nodes);
+                        self.ci.scope = scope;
+                        std::println!("{:?}", self.ci.nodes[ctrl]);
+                        self.ci.ctrl = ctrl;
+                        v
+                    },
+                )
             }
             Expr::Tupl { pos, ty, fields, .. } => {
                 let Some(sty) = ty.map(|ty| self.ty(ty)).or(ctx.ty) else {
@@ -2912,8 +2982,27 @@ impl<'a> Codegen<'a> {
                 }
 
                 if bre == Nid::MAX {
-                    self.ci.ctrl = NEVER;
+                    for (loop_var, scope_var) in self.ci.scope.iter_mut().zip(scope.iter_mut()) {
+                        if self.ci.nodes[scope_var.value()].is_lazy_phi(node) {
+                            if loop_var.value() != scope_var.value() {
+                                scope_var.set_value(
+                                    self.ci.nodes.modify_input(
+                                        scope_var.value(),
+                                        2,
+                                        loop_var.value(),
+                                    ),
+                                    &mut self.ci.nodes,
+                                );
+                            } else {
+                                let phi = &self.ci.nodes[scope_var.value()];
+                                let prev = phi.inputs[1];
+                                self.ci.nodes.replace(scope_var.value(), prev);
+                                scope_var.set_value(prev, &mut self.ci.nodes);
+                            }
+                        }
+                    }
                     scope.clear(&mut self.ci.nodes);
+                    self.ci.ctrl = NEVER;
                     return None;
                 }
                 self.ci.ctrl = bre;
@@ -2954,6 +3043,7 @@ impl<'a> Codegen<'a> {
 
                 scope.clear(&mut self.ci.nodes);
                 bres.clear(&mut self.ci.nodes);
+                self.ci.scope.loads.drain(..).for_each(|l| _ = self.ci.nodes.unlock_remove(l));
 
                 self.ci.nodes.unlock(self.ci.ctrl);
                 self.ci.nodes.unlock(node);
@@ -3253,6 +3343,7 @@ impl<'a> Codegen<'a> {
     ) {
         nodes.lock(ctrl);
         for (i, (to_value, from_value)) in to.iter_mut().zip(from.iter_mut()).enumerate() {
+            debug_assert_eq!(to_value.ty, from_value.ty);
             if to_value.value() != from_value.value() {
                 nodes.load_loop_var(i, from_value, loops);
                 nodes.load_loop_var(i, to_value, loops);
@@ -3297,6 +3388,8 @@ impl<'a> Codegen<'a> {
         let expr = func.expr.get(ast);
 
         self.pool.push_ci(file, Some(sig.ret), 0, &mut self.ci);
+
+        log::info!("emmiting {}", self.ast_display(expr));
 
         let &Expr::Closure { body, args, .. } = expr else {
             unreachable!("{}", self.ast_display(expr))
@@ -3546,6 +3639,9 @@ impl<'a> Function<'a> {
             "{:?}",
             self.nodes[nid]
         );
+        debug_assert_eq!(self.nodes[nid].lock_rc, 0, "{:?}", self.nodes[nid]);
+        debug_assert_ne!(nid, MEM);
+        debug_assert!(self.nodes[nid].kind != Kind::Phi || self.nodes[nid].ty != ty::Id::VOID);
         regalloc2::VReg::new(nid as _, regalloc2::RegClass::Int)
     }
 
@@ -3754,13 +3850,13 @@ impl<'a> Function<'a> {
                     let ty = self.nodes[i].ty;
                     match parama.next(ty, self.tys) {
                         PLoc::None => {}
-                        PLoc::Reg(r, _) => {
+                        PLoc::Reg(r, _) if ty.loc(self.tys) == Loc::Reg => {
                             ops.push(regalloc2::Operand::reg_fixed_use(
                                 self.rg(i),
                                 regalloc2::PReg::new(r as _, regalloc2::RegClass::Int),
                             ));
                         }
-                        PLoc::WideReg(..) => {
+                        PLoc::WideReg(..) | PLoc::Reg(..) => {
                             loop {
                                 match self.nodes[i].kind {
                                     Kind::Stre { .. } => i = self.nodes[i].inputs[2],
@@ -3774,6 +3870,7 @@ impl<'a> Function<'a> {
                         }
                         PLoc::Ref(r, _) => {
                             loop {
+                                std::println!("{:?} {}", self.nodes[i], i);
                                 match self.nodes[i].kind {
                                     Kind::Stre { .. } => i = self.nodes[i].inputs[2],
                                     Kind::Load { .. } => i = self.nodes[i].inputs[1],
@@ -3860,7 +3957,11 @@ impl<'a> Function<'a> {
                 }
                 let ops = match self.nodes[region].kind {
                     _ if node.ty.loc(self.tys) == Loc::Stack => {
-                        vec![self.urg(region), self.urg(self.nodes[node.inputs[1]].inputs[1])]
+                        if self.nodes[node.inputs[1]].kind == Kind::Arg {
+                            vec![self.urg(region), self.urg(node.inputs[1])]
+                        } else {
+                            vec![self.urg(region), self.urg(self.nodes[node.inputs[1]].inputs[1])]
+                        }
                     }
                     Kind::Stck => vec![self.urg(node.inputs[1])],
                     _ => vec![self.urg(region), self.urg(node.inputs[1])],
@@ -4222,7 +4323,7 @@ mod tests {
 
     fn generate(ident: &'static str, input: &'static str, output: &mut String) {
         _ = log::set_logger(&crate::fs::Logger);
-        //log::set_max_level(log::LevelFilter::Info);
+        log::set_max_level(log::LevelFilter::Info);
         //        log::set_max_level(log::LevelFilter::Trace);
 
         let (ref files, embeds) = crate::test_parse_files(ident, input);

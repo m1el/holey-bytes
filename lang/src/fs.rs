@@ -94,6 +94,12 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
         codegen.push_embeds(parsed.embeds);
 
         codegen.generate(0);
+
+        if !codegen.errors.borrow().is_empty() {
+            log::error!("{}", codegen.errors.borrow());
+            return Err(std::io::Error::other("compilation faoled"));
+        }
+
         if options.dump_asm {
             codegen
                 .disasm(unsafe { std::mem::transmute::<&mut Vec<u8>, &mut String>(out) })

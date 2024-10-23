@@ -3,7 +3,7 @@ fn main() -> std::io::Result<()> {
     use std::io::Write;
 
     log::set_logger(&hblang::Logger).unwrap();
-    log::set_max_level(log::LevelFilter::Error);
+    log::set_max_level(log::LevelFilter::Info);
 
     let args = std::env::args().collect::<Vec<_>>();
     let args = args.iter().map(String::as_str).collect::<Vec<_>>();
