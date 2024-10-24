@@ -574,7 +574,36 @@ set := fn($Expr: type, src: ^Expr, dest: ^Expr, count: uint): u32 {
 main := fn(): int {
 	return set(int, &0, &0, 1024)
 }
+```
 
+#### string_flip
+```hb
+U := struct {u: int}
+main := fn(): int {
+	arr := @as([U; 2 * 2], idk)
+
+	i := 0
+	loop if i == 2 * 2 break else {
+		arr[i] = .(i)
+		i += 1
+	}
+
+	i = 0
+	loop if i == 2 / 2 break else {
+		j := 0
+		loop if j == 2 break else {
+			a := i * 2 + j
+			b := (2 - i - 1) * 2 + j
+			tmp := arr[a]
+			arr[a] = arr[b]
+			arr[b] = tmp
+			j += 1
+		}
+		i += 1
+	}
+
+	return arr[0].u
+}
 ```
 
 #### wide_ret

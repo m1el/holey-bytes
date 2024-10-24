@@ -902,8 +902,7 @@ impl Nodes {
                 }
 
                 if region != stack {
-                    cursor = *self[cursor].inputs.get(3).unwrap_or(&MEM);
-                    continue;
+                    break;
                 }
                 let Some(index) = unidentifed.iter().position(|&n| n == contact_point) else {
                     continue 'o;
@@ -4467,6 +4466,7 @@ mod tests {
         small_struct_bitcast;
         small_struct_assignment;
         intcast_store;
+        string_flip;
         wide_ret;
         comptime_min_reg_leak;
         different_types;

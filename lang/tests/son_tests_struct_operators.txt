@@ -1,41 +1,41 @@
 main:
-    ADDI64 r254, r254, -136d
+    ADDI64 r254, r254, -168d
     LI64 r2, 4d
     LI64 r9, 1d
     LI64 r6, 3d
     LI64 r7, 2d
     LI64 r8, 1d
     LI64 r10, 0d
-    ADDI64 r12, r254, 112d
-    ADDI64 r12, r254, 116d
-    ST r10, r254, 116a, 1h
-    ST r10, r254, 117a, 1h
-    ST r10, r254, 118a, 1h
-    ST r10, r254, 119a, 1h
-    ST r9, r254, 112a, 1h
-    ST r9, r254, 113a, 1h
-    ST r9, r254, 114a, 1h
-    ST r9, r254, 115a, 1h
-    LD r1, r254, 112a, 1h
-    LD r3, r254, 116a, 1h
+    ADDI64 r12, r254, 144d
+    ADDI64 r12, r254, 148d
+    ST r10, r254, 148a, 1h
+    ST r10, r254, 149a, 1h
+    ST r10, r254, 150a, 1h
+    ST r10, r254, 151a, 1h
+    ST r9, r254, 144a, 1h
+    ST r9, r254, 145a, 1h
+    ST r9, r254, 146a, 1h
+    ST r9, r254, 147a, 1h
+    LD r1, r254, 144a, 1h
+    LD r3, r254, 148a, 1h
     ADD8 r4, r1, r3
-    ST r4, r254, 116a, 1h
-    LD r9, r254, 113a, 1h
-    LD r10, r254, 117a, 1h
+    ST r4, r254, 148a, 1h
+    LD r9, r254, 145a, 1h
+    LD r10, r254, 149a, 1h
     ADD8 r11, r10, r9
-    ST r11, r254, 117a, 1h
-    LD r3, r254, 114a, 1h
-    LD r4, r254, 118a, 1h
+    ST r11, r254, 149a, 1h
+    LD r3, r254, 146a, 1h
+    LD r4, r254, 150a, 1h
     ADD8 r9, r4, r3
-    ST r9, r254, 118a, 1h
-    LD r10, r254, 115a, 1h
-    LD r11, r254, 119a, 1h
+    ST r9, r254, 150a, 1h
+    LD r10, r254, 147a, 1h
+    LD r11, r254, 151a, 1h
     ADD8 r1, r11, r10
-    ST r1, r254, 119a, 1h
-    LD r9, r254, 119a, 1h
-    LD r5, r254, 118a, 1h
-    LD r10, r254, 116a, 1h
-    LD r11, r254, 117a, 1h
+    ST r1, r254, 151a, 1h
+    LD r9, r254, 151a, 1h
+    LD r5, r254, 150a, 1h
+    LD r10, r254, 148a, 1h
+    LD r11, r254, 149a, 1h
     ADD8 r11, r5, r11
     ADD8 r3, r10, r11
     ADD8 r5, r9, r3
@@ -44,75 +44,77 @@ main:
     JEQ r5, r2, :0
     LI64 r1, 1008d
     JMP :1
- 0: LI64 r3, 0d
+ 0: LI64 r4, 0d
     LI64 r1, 4d
-    ADDI64 r4, r254, 0d
-    ADDI64 r2, r254, 16d
-    ADDI64 r10, r2, 16d
-    ADDI64 r4, r254, 48d
-    ADDI64 r9, r254, 64d
-    ADDI64 r11, r254, 96d
-    ST r8, r254, 48a, 8h
-    ST r7, r254, 56a, 8h
-    ST r6, r254, 0a, 8h
-    ST r1, r254, 8a, 8h
-    LD r2, r254, 48a, 8h
-    LD r5, r254, 0a, 8h
-    ADD64 r6, r5, r2
-    ST r6, r254, 64a, 8h
-    LD r11, r254, 8a, 8h
-    LD r12, r254, 56a, 8h
-    ADD64 r1, r11, r12
-    ST r1, r254, 72a, 8h
-    LD r5, r254, 0a, 8h
-    LD r6, r254, 48a, 8h
-    SUB64 r8, r5, r6
+    ADDI64 r9, r254, 0d
+    ADDI64 r5, r254, 32d
+    ADDI64 r5, r254, 48d
+    ADDI64 r12, r5, 16d
+    ADDI64 r5, r254, 80d
+    ADDI64 r2, r254, 96d
+    ADDI64 r11, r254, 112d
     ST r8, r254, 80a, 8h
-    LD r12, r254, 56a, 8h
-    LD r1, r254, 8a, 8h
-    SUB64 r5, r1, r12
-    ST r5, r254, 88a, 8h
-    ST r3, r254, 96a, 8h
-    ST r3, r254, 104a, 8h
-    LD r11, r254, 96a, 8h
-    LD r1, r254, 0a, 8h
-    SUB64 r3, r11, r1
-    ST r3, r254, 16a, 8h
-    LD r7, r254, 8a, 8h
-    LD r8, r254, 104a, 8h
-    SUB64 r11, r8, r7
-    ST r11, r254, 24a, 8h
-    BMC r4, r10, 16h
-    LD r3, r254, 16a, 8h
-    LD r5, r254, 64a, 8h
-    ADD64 r7, r3, r5
-    ST r7, r254, 16a, 8h
-    LD r11, r254, 72a, 8h
-    LD r12, r254, 24a, 8h
-    ADD64 r2, r11, r12
-    ST r2, r254, 24a, 8h
-    LD r7, r254, 80a, 8h
-    LD r8, r254, 32a, 8h
-    ADD64 r10, r7, r8
-    ST r10, r254, 32a, 8h
+    ST r7, r254, 88a, 8h
+    ST r6, r254, 32a, 8h
+    ST r1, r254, 40a, 8h
+    LD r6, r254, 80a, 8h
+    LD r7, r254, 32a, 8h
+    ADD64 r8, r7, r6
+    ST r8, r254, 0a, 8h
+    LD r1, r254, 40a, 8h
+    LD r2, r254, 88a, 8h
+    ADD64 r3, r1, r2
+    ST r3, r254, 8a, 8h
+    LD r6, r254, 32a, 8h
+    LD r8, r254, 80a, 8h
+    SUB64 r10, r6, r8
+    ST r10, r254, 16a, 8h
     LD r2, r254, 88a, 8h
     LD r3, r254, 40a, 8h
+    SUB64 r6, r3, r2
+    ST r6, r254, 24a, 8h
+    BMC r9, r11, 32h
+    ST r4, r254, 96a, 8h
+    ST r4, r254, 104a, 8h
+    LD r2, r254, 96a, 8h
+    LD r4, r254, 32a, 8h
+    SUB64 r6, r2, r4
+    ST r6, r254, 48a, 8h
+    LD r10, r254, 40a, 8h
+    LD r11, r254, 104a, 8h
+    SUB64 r1, r11, r10
+    ST r1, r254, 56a, 8h
+    BMC r5, r12, 16h
+    LD r6, r254, 48a, 8h
+    LD r8, r254, 112a, 8h
+    ADD64 r10, r6, r8
+    ST r10, r254, 48a, 8h
+    LD r2, r254, 120a, 8h
+    LD r3, r254, 56a, 8h
     ADD64 r5, r2, r3
-    ST r5, r254, 40a, 8h
-    LD r8, r254, 16a, 8h
-    LD r10, r254, 32a, 8h
-    ADD64 r12, r10, r8
-    ADDI64 r5, r254, 120d
-    ST r12, r254, 120a, 8h
-    LD r5, r254, 40a, 8h
-    LD r6, r254, 24a, 8h
+    ST r5, r254, 56a, 8h
+    LD r10, r254, 128a, 8h
+    LD r11, r254, 64a, 8h
+    ADD64 r1, r10, r11
+    ST r1, r254, 64a, 8h
+    LD r5, r254, 136a, 8h
+    LD r6, r254, 72a, 8h
     ADD64 r8, r5, r6
-    ST r8, r254, 128a, 8h
-    LD r12, r254, 120a, 8h
-    LD r2, r254, 128a, 8h
-    ADD64 r1, r2, r12
- 1: ADDI64 r254, r254, 136d
+    ST r8, r254, 72a, 8h
+    LD r11, r254, 48a, 8h
+    LD r1, r254, 64a, 8h
+    ADD64 r3, r1, r11
+    ADDI64 r8, r254, 152d
+    ST r3, r254, 152a, 8h
+    LD r8, r254, 72a, 8h
+    LD r9, r254, 56a, 8h
+    ADD64 r11, r8, r9
+    ST r11, r254, 160a, 8h
+    LD r3, r254, 152a, 8h
+    LD r5, r254, 160a, 8h
+    ADD64 r1, r5, r3
+ 1: ADDI64 r254, r254, 168d
     JALA r0, r31, 0a
-code size: 1231
+code size: 1247
 ret: 10
 status: Ok(())
