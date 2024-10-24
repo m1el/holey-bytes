@@ -23,11 +23,11 @@ main:
     JAL r31, r0, :multiple_breaks
     CP r3, r1
     LI64 r1, 3d
-    LI64 r6, 1d
+    LI64 r7, 1d
     JEQ r3, r1, :0
-    CP r1, r6
+    CP r1, r7
     JMP :1
- 0: CP r33, r6
+ 0: CP r33, r7
     CP r34, r1
     LI64 r35, 4d
     CP r2, r35

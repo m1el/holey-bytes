@@ -252,7 +252,7 @@ mod ty {
             parser::{self, Pos},
             Size, Types,
         },
-        core::{num::NonZeroU32, ops::Range},
+        core::{num::NonZeroU32, ops::Range, usize},
     };
 
     pub type ArrayLen = u32;
@@ -447,6 +447,15 @@ mod ty {
                 Kind::Struct(_) if tys.size_of(*self) == 0 => Loc::Reg,
                 Kind::Struct(_) | Kind::Slice(_) => Loc::Stack,
                 Kind::Func(_) | Kind::Global(_) | Kind::Module(_) => unreachable!(),
+            }
+        }
+
+        pub(crate) fn has_pointers(&self, tys: &Types) -> bool {
+            match self.expand() {
+                Kind::Struct(s) => tys.struct_fields(s).iter().any(|f| f.ty.has_pointers(tys)),
+                Kind::Ptr(_) => true,
+                Kind::Slice(s) => tys.ins.slices[s as usize].len == ArrayLen::MAX,
+                _ => false,
             }
         }
     }

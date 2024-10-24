@@ -16,7 +16,7 @@ use {
         Comptime, Func, Global, HashMap, Offset, OffsetIter, PLoc, Reloc, Sig, SymKey, TypeParser,
         TypedReloc, Types,
     },
-    alloc::{string::String, vec::Vec},
+    alloc::{borrow::ToOwned, string::String, vec::Vec},
     core::{
         assert_matches::debug_assert_matches,
         cell::RefCell,
@@ -27,7 +27,6 @@ use {
     hashbrown::hash_map,
     hbbytecode::DisasmError,
     regalloc2::VReg,
-    std::borrow::ToOwned,
 };
 
 const VOID: Nid = 0;
@@ -45,7 +44,7 @@ trait StoreId: Sized {
 
 impl StoreId for Nid {
     fn to_store(self) -> Option<Self> {
-        (self != ENTRY).then_some(self)
+        (self != MEM).then_some(self)
     }
 }
 
@@ -1134,7 +1133,7 @@ mod var {
     use {
         super::{Kind, Nid, Nodes},
         crate::{ident::Ident, ty},
-        std::{panic, vec::Vec},
+        alloc::vec::Vec,
     };
 
     // makes sure value inside is laways locked for this instance of variable
@@ -1158,7 +1157,7 @@ mod var {
 
         pub fn set_value(&mut self, mut new_value: Nid, nodes: &mut Nodes) -> Nid {
             nodes.unlock(self.value);
-            std::mem::swap(&mut self.value, &mut new_value);
+            core::mem::swap(&mut self.value, &mut new_value);
             nodes.lock(self.value);
             new_value
         }
@@ -1170,7 +1169,7 @@ mod var {
 
         pub fn remove(self, nodes: &mut Nodes) {
             nodes.unlock_remove(self.value);
-            std::mem::forget(self);
+            core::mem::forget(self);
         }
 
         pub fn set_value_remove(&mut self, new_value: Nid, nodes: &mut Nodes) {
@@ -1184,7 +1183,7 @@ mod var {
             } else {
                 nodes.unlock_remove(self.value);
             }
-            std::mem::forget(self);
+            core::mem::forget(self);
         }
     }
 
@@ -1219,7 +1218,7 @@ mod var {
         pub fn clear(&mut self, nodes: &mut Nodes) {
             self.vars.drain(..).for_each(|n| n.remove(nodes));
             self.loads.drain(..).for_each(|l| _ = nodes.unlock_remove(l));
-            std::mem::take(&mut self.store).remove(nodes);
+            core::mem::take(&mut self.store).remove(nodes);
         }
     }
 }
@@ -1268,15 +1267,17 @@ impl ItemCtx {
         self.nodes.lock(end);
         self.ctrl = self.nodes.new_node(ty::Id::VOID, Kind::Entry, [VOID]);
         debug_assert_eq!(self.ctrl, ENTRY);
+        self.nodes.lock(self.ctrl);
         let mem = self.nodes.new_node(ty::Id::VOID, Kind::Mem, [VOID]);
         debug_assert_eq!(mem, MEM);
         self.nodes.lock(mem);
-        self.scope.store = Variable::new(0, ty::Id::VOID, false, ENTRY, &mut self.nodes);
+        self.scope.store = Variable::new(0, ty::Id::VOID, false, MEM, &mut self.nodes);
     }
 
     fn finalize(&mut self) {
         self.scope.clear(&mut self.nodes);
         self.nodes.unlock(NEVER);
+        self.nodes.unlock(ENTRY);
         self.nodes.unlock(MEM);
         self.nodes.eliminate_stack_temporaries();
     }
@@ -1609,7 +1610,7 @@ impl ItemCtx {
         self.nodes.graphviz(tys, files);
 
         debug_assert!(self.code.is_empty());
-        let tail = std::mem::take(&mut self.call_count) == 0;
+        let tail = core::mem::take(&mut self.call_count) == 0;
 
         '_open_function: {
             self.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, 0));
@@ -1620,10 +1621,20 @@ impl ItemCtx {
         '_compute_stack: {
             let mems = core::mem::take(&mut self.nodes[MEM].outputs);
             for &stck in mems.iter() {
+                if !matches!(self.nodes[stck].kind, Kind::Stck | Kind::Arg) {
+                    debug_assert_matches!(
+                        self.nodes[stck].kind,
+                        Kind::Phi | Kind::Return | Kind::Load
+                    );
+                    continue;
+                }
                 stack_size += tys.size_of(self.nodes[stck].ty);
                 self.nodes[stck].offset = stack_size;
             }
             for &stck in mems.iter() {
+                if !matches!(self.nodes[stck].kind, Kind::Stck | Kind::Arg) {
+                    continue;
+                }
                 self.nodes[stck].offset = stack_size - self.nodes[stck].offset;
             }
             self.nodes[MEM].outputs = mems;
@@ -1837,7 +1848,7 @@ impl TypeParser for Codegen<'_> {
     }
 
     fn eval_const(&mut self, file: FileId, expr: &Expr, ret: ty::Id) -> u64 {
-        let mut scope = std::mem::take(&mut self.ci.scope.vars);
+        let mut scope = core::mem::take(&mut self.ci.scope.vars);
         self.pool.push_ci(file, Some(ret), self.tasks.len(), &mut self.ci);
         self.ci.scope.vars = scope;
 
@@ -1845,7 +1856,7 @@ impl TypeParser for Codegen<'_> {
 
         self.expr(&Expr::Return { pos: expr.pos(), val: Some(expr) });
 
-        scope = std::mem::take(&mut self.ci.scope.vars);
+        scope = core::mem::take(&mut self.ci.scope.vars);
         self.ci.finalize();
 
         if self.errors.borrow().len() == prev_err_len {
@@ -2187,6 +2198,7 @@ impl<'a> Codegen<'a> {
                 self.assert_ty(pos, &mut value, expected, "return value");
 
                 if self.ci.inline_depth == 0 {
+                    debug_assert_ne!(self.ci.ctrl, VOID);
                     let mut inps = Vc::from([self.ci.ctrl, value.id]);
                     self.ci.nodes.load_loop_store(&mut self.ci.scope.store, &mut self.ci.loops);
                     if let Some(str) = self.ci.scope.store.value().to_store() {
@@ -2610,10 +2622,12 @@ impl<'a> Codegen<'a> {
                 let mut tys = sig.args.args();
                 let mut cargs = cargs.iter();
                 let mut args = args.iter();
+                let mut has_ptr_arg = false;
                 while let Some(ty) = tys.next(&self.tys) {
                     let carg = cargs.next().unwrap();
                     let arg = args.next().unwrap();
                     let Arg::Value(ty) = ty else { continue };
+                    has_ptr_arg |= ty.has_pointers(&self.tys);
 
                     let mut value = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
                     debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
@@ -2627,20 +2641,22 @@ impl<'a> Codegen<'a> {
                     self.ci.nodes.unlock(n);
                 }
 
-                if let Some(str) = self.ci.scope.store.value().to_store() {
-                    inps.push(str);
+                if has_ptr_arg {
+                    if let Some(str) = self.ci.scope.store.value().to_store() {
+                        inps.push(str);
+                    }
+                    self.ci.scope.loads.retain(|&load| {
+                        if inps.contains(&load) {
+                            return true;
+                        }
+
+                        if !self.ci.nodes.unlock_remove(load) {
+                            inps.push(load);
+                        }
+
+                        false
+                    });
                 }
-                self.ci.scope.loads.retain(|&load| {
-                    if inps.contains(&load) {
-                        return true;
-                    }
-
-                    if !self.ci.nodes.unlock_remove(load) {
-                        inps.push(load);
-                    }
-
-                    false
-                });
 
                 let alt_value = match sig.ret.loc(&self.tys) {
                     Loc::Reg => None,
@@ -2655,7 +2671,9 @@ impl<'a> Codegen<'a> {
                 self.ci.ctrl =
                     self.ci.nodes.new_node(sig.ret, Kind::Call { func: fu, args: sig.args }, inps);
 
-                self.store_mem(VOID, ty::Id::VOID, VOID);
+                if has_ptr_arg {
+                    self.store_mem(VOID, ty::Id::VOID, VOID);
+                }
 
                 alt_value.or(Some(Value::new(self.ci.ctrl).ty(sig.ret)))
             }
@@ -2737,7 +2755,7 @@ impl<'a> Codegen<'a> {
                 }
 
                 let prev_var_base =
-                    std::mem::replace(&mut self.ci.inline_var_base, self.ci.scope.vars.len());
+                    core::mem::replace(&mut self.ci.inline_var_base, self.ci.scope.vars.len());
                 let prev_ret = self.ci.ret.replace(sig.ret);
                 let prev_inline_ret = self.ci.inline_ret.take();
                 let prev_file = core::mem::replace(&mut self.ci.file, file);
@@ -3950,7 +3968,6 @@ impl<'a> Function<'a> {
             }
             Kind::Stck
                 if node.ty.loc(self.tys) == Loc::Reg && node.outputs.iter().all(|&n| {
-            
                     matches!(self.nodes[n].kind, Kind::Stre | Kind::Load)
                         || matches!(self.nodes[n].kind, Kind::BinOp { op: TokenKind::Add }
                     if self.nodes.is_const(self.nodes[n].inputs[2])
@@ -4425,7 +4442,7 @@ mod tests {
         different_types;
         struct_return_from_module_function;
         sort_something_viredly;
-        //structs_in_registers;
+        structs_in_registers;
         comptime_function_from_another_file;
         inline_test;
         inlined_generic_functions;
