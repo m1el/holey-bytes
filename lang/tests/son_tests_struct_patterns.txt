@@ -4,14 +4,15 @@ fib:
     CP r32, r2
     LI64 r33, 2d
     JLTS r2, r33, :0
-    CP r34, r32
-    ADDI64 r2, r34, -1d
+    CP r6, r32
+    ADDI64 r2, r6, -1d
     JAL r31, r0, :fib
     CP r2, r32
     CP r34, r1
     SUB64 r2, r2, r33
     JAL r31, r0, :fib
-    ADD64 r1, r1, r34
+    CP r6, r34
+    ADD64 r1, r1, r6
     JMP :1
  0: CP r1, r32
  1: LD r31, r254, 0a, 32h
@@ -31,25 +32,26 @@ fib_iter:
     JMP :2
  1: JALA r0, r31, 0a
 main:
-    ADDI64 r254, r254, -60d
-    ST r31, r254, 4a, 56h
-    LI64 r32, 10d
-    ADDI64 r33, r254, 0d
-    ADDI64 r34, r254, 2d
-    ST r32, r254, 2a, 1h
-    ST r32, r254, 3a, 1h
-    BMC r34, r33, 2h
-    LD r35, r254, 0a, 1h
-    ANDI r2, r35, 255d
+    ADDI64 r254, r254, -20d
+    ST r31, r254, 4a, 16h
+    LI64 r2, 10d
+    ADDI64 r4, r254, 0d
+    ADDI64 r3, r254, 2d
+    ST r2, r254, 2a, 1h
+    ST r2, r254, 3a, 1h
+    BMC r3, r4, 2h
+    LD r10, r254, 0a, 1h
+    ANDI r2, r10, 255d
     JAL r31, r0, :fib
-    CP r36, r1
-    LD r37, r254, 1a, 1h
-    ANDI r2, r37, 255d
+    CP r32, r1
+    LD r4, r254, 1a, 1h
+    ANDI r2, r4, 255d
     JAL r31, r0, :fib_iter
-    SUB64 r1, r36, r1
-    LD r31, r254, 4a, 56h
-    ADDI64 r254, r254, 60d
+    CP r11, r32
+    SUB64 r1, r11, r1
+    LD r31, r254, 4a, 16h
+    ADDI64 r254, r254, 20d
     JALA r0, r31, 0a
-code size: 392
+code size: 398
 ret: 0
 status: Ok(())

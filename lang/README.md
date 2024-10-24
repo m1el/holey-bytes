@@ -158,7 +158,6 @@ Ty := struct {
 	// comment
 
 	a: int,
-	b: int,
 }
 
 Ty2 := struct {
@@ -174,7 +173,7 @@ main := fn(): int {
 		return 9001
 	}
 
-	finst := Ty2.{ty: .{a: 4, b: 1}, c: 3}
+	finst := Ty2.{ty: .{a: 4}, c: 3}
 	inst := odher_pass(finst)
 	if inst.c == 3 {
 		return pass(&inst.ty)
@@ -183,7 +182,7 @@ main := fn(): int {
 }
 
 pass := fn(t: ^Ty): int {
-	return t.a - t.b
+	return t.a
 }
 
 odher_pass := fn(t: Ty2): Ty2 {
@@ -701,92 +700,28 @@ min := fn(a: int, b: int): int {
 
 #### inline_test
 ```hb
-Point := struct {x: int, y: int}
-Buffer := struct {}
-Transform := Point
-ColorBGRA := Point
+fna := fn(a: int, b: int, c: int): int return a + b + c
 
-line := fn(buffer: Buffer, p0: Point, p1: Point, color: ColorBGRA, thickness: int): void {
-	if true {
-		if p0.x > p1.x {
-			@inline(line_low, buffer, p1, p0, color)
-		} else {
-			@inline(line_low, buffer, p0, p1, color)
-		}
-	} else {
-		if p0.y > p1.y {
-			// blah, test leading new line on directives
-
-			@inline(line_high, buffer, p1, p0, color)
-		} else {
-			@inline(line_high, buffer, p0, p1, color)
-		}
-	}
-	return
+scalar_values := fn(): int {
+	return @inline(fna, 1, @inline(fna, 2, 3, 4), -10)
 }
 
-line_low := fn(buffer: Buffer, p0: Point, p1: Point, color: ColorBGRA): void {
-	return
+A := struct {a: int}
+AB := struct {a: A, b: int}
+
+mangle := fn(a: A, ab: AB): int {
+	return a.a + ab.a.a - ab.b
 }
 
-line_high := fn(buffer: Buffer, p0: Point, p1: Point, color: ColorBGRA): void {
-	return
-}
-
-screenidx := @use("screen.hb").screenidx
-
-rect_line := fn(buffer: Buffer, pos: Point, tr: Transform, color: ColorBGRA, thickness: int): void {
-	t := 0
-	y := 0
-	x := 0
-	loop if t == thickness break else {
-		y = pos.y
-		x = pos.x
-		loop if y == pos.y + tr.x break else {
-			//a := 1 + @inline(screenidx, 10)
-			//a = 1 + @inline(screenidx, 2)
-			y += 1
-		}
-		t += 1
-	}
-	return
-}
-
-random := @use("random.hb")
-
-example := fn(): void {
-	loop {
-		random_x := @inline(random.integer, 0, 1024)
-		random_y := random.integer(0, 768)
-		a := @inline(screenidx, random_x)
-		break
-	}
-	return
+structs := fn(): int {
+	return @inline(mangle, .(0), .(.(@inline(mangle, .(20), .(.(5), 5))), 20))
 }
 
 main := fn(): int {
-	line(.(), .(0, 0), .(0, 0), .(0, 0), 10)
-	rect_line(.(), .(0, 0), .(0, 0), .(0, 0), 10)
-	example()
+	if scalar_values() != 0 return 1
+	if structs() != 0 return structs()
+
 	return 0
-}
-
-// in module: screen.hb
-
-screenidx := fn(orange: int): int {
-	return orange
-}
-
-// in module: random.hb
-
-integer := fn(min: int, max: int): int {
-	rng := @as(int, 4)
-
-	if max == 0 {
-		return rng % (max - min + 1) + min
-	} else {
-		return rng
-	}
 }
 ```
 

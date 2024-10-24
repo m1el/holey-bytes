@@ -1,6 +1,6 @@
 main:
     ADDI64 r254, r254, -440d
-    ST r31, r254, 352a, 88h
+    ST r32, r254, 352a, 88h
     LI64 r4, 4d
     LI64 r9, 1d
     LI64 r7, 3d
@@ -137,7 +137,7 @@ main:
     LD r3, r254, 8a, 8h
     LD r4, r254, 0a, 8h
     ADD64 r1, r3, r4
- 1: LD r31, r254, 352a, 88h
+ 1: LD r32, r254, 352a, 88h
     ADDI64 r254, r254, 440d
     JALA r0, r31, 0a
 code size: 1460

@@ -6,7 +6,8 @@ main:
     CP r32, r1
     LRA r2, r0, :"fff\0"
     JAL r31, r0, :str_len
-    ADD64 r1, r1, r32
+    CP r10, r32
+    ADD64 r1, r1, r10
     LD r31, r254, 0a, 16h
     ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
@@ -22,6 +23,6 @@ str_len:
     ADDI64 r1, r1, 1d
     JMP :2
  1: JALA r0, r31, 0a
-code size: 223
+code size: 226
 ret: 16
 status: Ok(())

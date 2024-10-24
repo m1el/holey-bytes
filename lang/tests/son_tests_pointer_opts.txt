@@ -3,17 +3,17 @@ clobber:
     ST r3, r2, 0a, 8h
     JALA r0, r31, 0a
 main:
-    ADDI64 r254, r254, -40d
-    ST r31, r254, 8a, 32h
-    LI64 r32, 2d
+    ADDI64 r254, r254, -16d
+    ST r31, r254, 8a, 8h
+    LI64 r3, 2d
     ADDI64 r2, r254, 0d
-    ST r32, r254, 0a, 8h
+    ST r3, r254, 0a, 8h
     JAL r31, r0, :clobber
-    LI64 r33, 4d
-    LD r34, r254, 0a, 8h
-    SUB64 r1, r33, r34
-    LD r31, r254, 8a, 32h
-    ADDI64 r254, r254, 40d
+    LI64 r6, 4d
+    LD r9, r254, 0a, 8h
+    SUB64 r1, r6, r9
+    LD r31, r254, 8a, 8h
+    ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
 code size: 169
 ret: 0

@@ -1,6 +1,6 @@
 integer_range:
     ADDI64 r254, r254, -16d
-    ST r31, r254, 0a, 16h
+    ST r32, r254, 0a, 16h
     CP r32, r2
     CP r33, r3
     LI64 r3, 4d
@@ -12,7 +12,7 @@ integer_range:
     ADDI64 r3, r11, 1d
     DIRU64 r0, r3, r1, r3
     ADD64 r1, r3, r2
-    LD r31, r254, 0a, 16h
+    LD r32, r254, 0a, 16h
     ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
 main:

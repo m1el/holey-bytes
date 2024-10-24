@@ -277,7 +277,7 @@ impl Value {
     }
 
     fn imm(value: u64) -> Self {
-        Self { ty: ty::Id::UINT, loc: Loc::ct(value) }
+        Self { ty: ty::Id::INT, loc: Loc::ct(value) }
     }
 
     fn ty(ty: ty::Id) -> Self {
@@ -2147,7 +2147,7 @@ impl Codegen {
             self.ci.vars.push(Variable { id: arg.id, value: Value { ty, loc } });
         }
 
-        if let PLoc::Ref(..) = ret {
+        if let Some(PLoc::Ref(..)) = ret {
             let reg = self.ci.regs.allocate();
             self.ci.emit(instrs::cp(reg.get(), 1));
             self.ci.ret_reg = reg;
@@ -2180,18 +2180,18 @@ impl Codegen {
             return Loc::default();
         }
         let (src, dst) = match parama.next(ty, &self.tys) {
-            PLoc::None => (Loc::default(), Loc::default()),
-            PLoc::Reg(r, _) if flags & idfl::REFERENCED == 0 => {
+            None => (Loc::default(), Loc::default()),
+            Some(PLoc::Reg(r, _)) if flags & idfl::REFERENCED == 0 => {
                 (Loc::reg(r), Loc::reg(self.ci.regs.allocate()))
             }
-            PLoc::Reg(r, _) => (Loc::reg(r), Loc::stack(self.ci.stack.allocate(size))),
-            PLoc::WideReg(r, _) => (Loc::reg(r), Loc::stack(self.ci.stack.allocate(size))),
-            PLoc::Ref(ptr, _) if flags & (idfl::MUTABLE | idfl::REFERENCED) == 0 => {
+            Some(PLoc::Reg(r, _)) => (Loc::reg(r), Loc::stack(self.ci.stack.allocate(size))),
+            Some(PLoc::WideReg(r, _)) => (Loc::reg(r), Loc::stack(self.ci.stack.allocate(size))),
+            Some(PLoc::Ref(ptr, _)) if flags & (idfl::MUTABLE | idfl::REFERENCED) == 0 => {
                 let reg = self.ci.regs.allocate();
                 self.ci.emit(instrs::cp(reg.get(), ptr));
                 return Loc::reg(reg).into_derefed();
             }
-            PLoc::Ref(ptr, _) => {
+            Some(PLoc::Ref(ptr, _)) => {
                 (Loc::reg(ptr).into_derefed(), Loc::stack(self.ci.stack.allocate(size)))
             }
         };
@@ -2267,11 +2267,11 @@ impl Codegen {
 
     fn pass_arg(&mut self, value: &Value, parama: &mut ParamAlloc) {
         match parama.next(value.ty, &self.tys) {
-            PLoc::None => {}
-            PLoc::Reg(r, _) | PLoc::WideReg(r, _) => {
+            None => {}
+            Some(PLoc::Reg(r, _) | PLoc::WideReg(r, _)) => {
                 self.store_typed(&value.loc, Loc::reg(r), value.ty)
             }
-            PLoc::Ref(ptr, _) => {
+            Some(PLoc::Ref(ptr, _)) => {
                 let Loc::Rt { reg, stack, offset, .. } = &value.loc else { unreachable!() };
                 self.stack_offset(ptr, reg.get(), stack.as_ref(), *offset as _);
             }

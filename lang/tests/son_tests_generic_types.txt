@@ -1,130 +1,18 @@
-deinit:
-    ADDI64 r254, r254, -64d
-    ST r31, r254, 24a, 40h
-    LI64 r4, 8d
-    LD r32, r2, 16a, 8h
-    CP r33, r2
-    MUL64 r3, r32, r4
-    CP r34, r33
-    LD r2, r34, 0a, 8h
-    JAL r31, r0, :free
-    ADDI64 r35, r254, 0d
-    CP r1, r35
-    JAL r31, r0, :new
-    CP r2, r33
-    BMC r35, r2, 24h
-    LD r31, r254, 24a, 40h
-    ADDI64 r254, r254, 64d
-    JALA r0, r31, 0a
-free:
-    CP r10, r2
-    LRA r7, r0, :FREE_SYS_CALL
-    LD r2, r7, 0a, 8h
-    CP r5, r4
-    CP r4, r3
-    CP r3, r10
-    ECA 
-    JALA r0, r31, 0a
-main:
-    ADDI64 r254, r254, -88d
-    ST r31, r254, 48a, 40h
-    ADDI64 r32, r254, 24d
-    CP r1, r32
-    JAL r31, r0, :new
-    LI64 r3, 69d
-    ADDI64 r33, r254, 0d
-    BMC r32, r33, 24h
-    CP r2, r33
-    JAL r31, r0, :push
-    LD r34, r254, 0a, 8h
-    LD r35, r34, 0a, 8h
-    CP r2, r33
-    JAL r31, r0, :deinit
-    CP r1, r35
-    LD r31, r254, 48a, 40h
-    ADDI64 r254, r254, 88d
-    JALA r0, r31, 0a
-malloc:
-    CP r9, r2
-    LRA r5, r0, :MALLOC_SYS_CALL
-    LD r2, r5, 0a, 8h
-    CP r4, r3
-    CP r3, r9
-    ECA 
-    JALA r0, r31, 0a
-new:
-    ADDI64 r254, r254, -24d
-    LI64 r2, 0d
-    ADDI64 r3, r254, 0d
-    ST r2, r254, 0a, 8h
-    ST r2, r254, 8a, 8h
-    ST r2, r254, 16a, 8h
-    BMC r3, r1, 24h
-    ADDI64 r254, r254, 24d
-    JALA r0, r31, 0a
-push:
-    ADDI64 r254, r254, -184d
-    ST r31, r254, 0a, 184h
-    CP r32, r3
-    LI64 r33, 1d
-    LI64 r34, 8d
-    LD r35, r2, 16a, 8h
-    LD r36, r2, 8a, 8h
-    CP r37, r2
-    JNE r35, r36, :0
-    LI64 r38, 0d
-    JNE r35, r38, :1
-    CP r39, r33
-    JMP :2
- 1: MULI64 r39, r35, 2d
- 2: MUL64 r2, r39, r34
-    ST r39, r37, 16a, 8h
-    CP r3, r34
-    JAL r31, r0, :malloc
-    JNE r1, r38, :3
-    CP r1, r38
-    JMP :4
- 3: CP r40, r37
-    CP r41, r1
-    CP r1, r38
-    LD r42, r40, 8a, 8h
-    MUL64 r43, r42, r34
-    LD r44, r40, 0a, 8h
-    ADD64 r45, r44, r43
-    CP r46, r41
- 9: JNE r45, r44, :5
-    LD r46, r40, 8a, 8h
-    JEQ r46, r1, :6
-    LD r2, r40, 0a, 8h
-    MUL64 r3, r46, r34
-    CP r4, r34
-    JAL r31, r0, :free
-    CP r38, r41
-    JMP :7
- 6: CP r38, r41
- 7: ST r38, r40, 0a, 8h
-    JMP :8
- 5: CP r38, r41
-    ADDI64 r47, r44, 8d
-    LD r48, r44, 0a, 8h
-    ADDI64 r49, r46, 8d
-    ST r48, r46, 0a, 8h
-    CP r44, r47
-    CP r46, r49
-    JMP :9
- 0: CP r40, r37
- 8: LD r50, r40, 8a, 8h
-    MUL64 r51, r50, r34
-    LD r38, r40, 0a, 8h
-    ADD64 r1, r38, r51
-    CP r3, r32
-    ST r3, r1, 0a, 8h
-    LD r52, r40, 8a, 8h
-    ADD64 r53, r52, r33
-    ST r53, r40, 8a, 8h
- 4: LD r31, r254, 0a, 184h
-    ADDI64 r254, r254, 184d
-    JALA r0, r31, 0a
-code size: 963
-ret: 69
-status: Ok(())
+test.hb:19:27: 'int * uint' is not supported
+    free(@bitcast(vec.data), vec.cap * @sizeof(Elem), @alignof(Elem));
+                             ^
+test.hb:19:52: expected argument align to be of type int, got uint
+    free(@bitcast(vec.data), vec.cap * @sizeof(Elem), @alignof(Elem));
+                                                      ^
+test.hb:32:43: 'int * uint' is not supported
+        new_alloc := @as(^Elem, @bitcast(malloc(vec.cap * @sizeof(Elem), @alignof(Elem))))
+                                                ^
+test.hb:32:68: expected argument align to be of type int, got uint
+        new_alloc := @as(^Elem, @bitcast(malloc(vec.cap * @sizeof(Elem), @alignof(Elem))))
+                                                                         ^
+test.hb:46:29: 'int * uint' is not supported
+            free(@bitcast(vec.data), vec.len * @sizeof(Elem), @alignof(Elem))
+                                     ^
+test.hb:46:54: expected argument align to be of type int, got uint
+            free(@bitcast(vec.data), vec.len * @sizeof(Elem), @alignof(Elem))
+                                                              ^

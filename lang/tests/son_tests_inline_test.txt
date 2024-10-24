@@ -1,98 +1,55 @@
-example:
-    ADDI64 r254, r254, -8d
-    ST r31, r254, 0a, 8h
-    LI64 r3, 768d
-    LI64 r2, 0d
-    JAL r31, r0, :integer
-    LD r31, r254, 0a, 8h
-    ADDI64 r254, r254, 8d
-    JALA r0, r31, 0a
-integer:
-    LI64 r6, 0d
-    LI64 r1, 4d
-    JNE r3, r6, :0
-    SUB64 r10, r3, r2
-    ADDI64 r12, r10, 1d
-    DIRS64 r0, r3, r1, r12
-    ADD64 r1, r3, r2
-    JMP :0
- 0: JALA r0, r31, 0a
-line:
-    ADDI64 r254, r254, -48d
-    ST r2, r254, 32a, 16h
-    ADDI64 r2, r254, 32d
-    ST r4, r254, 16a, 16h
-    ADDI64 r4, r254, 16d
-    ST r6, r254, 0a, 16h
-    ADDI64 r6, r254, 0d
-    LD r9, r4, 0a, 8h
-    LD r11, r2, 0a, 8h
-    JGTS r11, r9, :0
-    JMP :0
- 0: ADDI64 r254, r254, 48d
-    JALA r0, r31, 0a
 main:
-    ADDI64 r254, r254, -184d
-    ST r31, r254, 96a, 88h
-    LI64 r32, 10d
-    LI64 r33, 0d
-    ADDI64 r34, r254, 48d
-    ADDI64 r35, r254, 64d
-    ADDI64 r36, r254, 80d
-    LD r37, r254, 96a, 0h
-    ST r33, r254, 80a, 8h
-    ST r33, r254, 88a, 8h
-    ST r33, r254, 64a, 8h
-    ST r33, r254, 72a, 8h
-    ST r33, r254, 48a, 8h
-    ST r33, r254, 56a, 8h
-    CP r8, r32
-    LD r2, r36, 0a, 16h
-    LD r4, r35, 0a, 16h
-    LD r6, r34, 0a, 16h
-    JAL r31, r0, :line
-    ADDI64 r38, r254, 0d
-    ADDI64 r39, r254, 16d
-    ADDI64 r40, r254, 32d
-    LD r41, r254, 48a, 0h
-    ST r33, r254, 32a, 8h
-    ST r33, r254, 40a, 8h
-    ST r33, r254, 16a, 8h
-    ST r33, r254, 24a, 8h
-    ST r33, r254, 0a, 8h
-    ST r33, r254, 8a, 8h
-    CP r8, r32
-    LD r2, r40, 0a, 16h
-    LD r4, r39, 0a, 16h
-    LD r6, r38, 0a, 16h
-    JAL r31, r0, :rect_line
-    JAL r31, r0, :example
-    CP r1, r33
-    LD r31, r254, 96a, 88h
-    ADDI64 r254, r254, 184d
-    JALA r0, r31, 0a
-rect_line:
-    ADDI64 r254, r254, -48d
-    ST r2, r254, 32a, 16h
-    ADDI64 r2, r254, 32d
-    ST r4, r254, 16a, 16h
-    ADDI64 r4, r254, 16d
-    ST r6, r254, 0a, 16h
-    ADDI64 r6, r254, 0d
-    LI64 r10, 0d
-    LD r12, r2, 8a, 8h
-    LD r4, r4, 0a, 8h
-    ADD64 r6, r4, r12
- 3: JNE r10, r8, :0
+    ADDI64 r254, r254, -16d
+    ST r31, r254, 0a, 16h
+    JAL r31, r0, :scalar_values
+    LI64 r3, 0d
+    CP r8, r3
+    JEQ r1, r8, :0
+    LI64 r1, 1d
     JMP :1
- 0: CP r9, r12
- 4: JNE r6, r9, :2
-    ADDI64 r10, r10, 1d
-    JMP :3
- 2: ADDI64 r9, r9, 1d
-    JMP :4
- 1: ADDI64 r254, r254, 48d
+ 0: CP r32, r8
+    JAL r31, r0, :structs
+    CP r3, r32
+    JEQ r1, r3, :2
+    JAL r31, r0, :structs
+    JMP :1
+ 2: CP r1, r3
+    CP r32, r3
+ 1: LD r31, r254, 0a, 16h
+    ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
-code size: 930
+scalar_values:
+    LI64 r1, 0d
+    JALA r0, r31, 0a
+structs:
+    ADDI64 r254, r254, -64d
+    LI64 r9, 5d
+    LI64 r7, 20d
+    LI64 r4, 0d
+    ADDI64 r12, r254, 0d
+    ADDI64 r1, r254, 8d
+    ADDI64 r10, r254, 24d
+    ADDI64 r10, r254, 32d
+    ADDI64 r11, r254, 40d
+    ADDI64 r2, r254, 56d
+    ST r4, r254, 56a, 8h
+    ST r7, r254, 24a, 8h
+    ST r9, r254, 0a, 8h
+    BMC r12, r1, 8h
+    ST r9, r254, 16a, 8h
+    LD r1, r254, 8a, 8h
+    LD r2, r254, 24a, 8h
+    ADD64 r5, r1, r2
+    SUB64 r5, r5, r9
+    ST r5, r254, 32a, 8h
+    BMC r10, r11, 8h
+    ST r7, r254, 48a, 8h
+    LD r12, r254, 40a, 8h
+    LD r1, r254, 56a, 8h
+    ADD64 r4, r12, r1
+    SUB64 r1, r4, r7
+    ADDI64 r254, r254, 64d
+    JALA r0, r31, 0a
+code size: 449
 ret: 0
 status: Ok(())

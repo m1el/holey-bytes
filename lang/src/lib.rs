@@ -267,7 +267,7 @@ mod ty {
 
     pub const ECA: Func = Func::MAX;
 
-    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, PartialOrd, Ord)]
     pub struct Tuple(pub u32);
 
     impl Tuple {
@@ -294,6 +294,36 @@ mod ty {
 
         pub fn empty() -> Self {
             Self(0)
+        }
+
+        pub fn args(self) -> ArgIter {
+            ArgIter(self.range())
+        }
+    }
+
+    pub struct ArgIter(Range<usize>);
+
+    pub enum Arg {
+        Type(Id),
+        Value(Id),
+    }
+
+    impl ArgIter {
+        pub(crate) fn next(&mut self, tys: &Types) -> Option<Arg> {
+            let ty = tys.ins.args[self.0.next()?];
+            if ty == Id::TYPE {
+                return Some(Arg::Type(tys.ins.args[self.0.next().unwrap()]));
+            }
+            Some(Arg::Value(ty))
+        }
+
+        pub(crate) fn next_value(&mut self, tys: &Types) -> Option<Id> {
+            loop {
+                match self.next(tys)? {
+                    Arg::Type(_) => continue,
+                    Arg::Value(id) => break Some(id),
+                }
+            }
         }
     }
 
@@ -411,7 +441,7 @@ mod ty {
             }
         }
 
-        pub fn loc(&self, tys: &Types) -> Loc {
+        pub(crate) fn loc(&self, tys: &Types) -> Loc {
             match self.expand() {
                 Kind::Ptr(_) | Kind::Builtin(_) => Loc::Reg,
                 Kind::Struct(_) if tys.size_of(*self) == 0 => Loc::Reg,
@@ -794,7 +824,6 @@ impl Array {
 }
 
 enum PLoc {
-    None,
     Reg(u8, u16),
     WideReg(u8, u16),
     Ref(u8, u32),
@@ -803,13 +832,13 @@ enum PLoc {
 struct ParamAlloc(Range<u8>);
 
 impl ParamAlloc {
-    pub fn next(&mut self, ty: ty::Id, tys: &Types) -> PLoc {
-        match tys.size_of(ty) {
-            0 => PLoc::None,
+    pub fn next(&mut self, ty: ty::Id, tys: &Types) -> Option<PLoc> {
+        Some(match tys.size_of(ty) {
+            0 => return None,
             size @ 1..=8 => PLoc::Reg(self.0.next().unwrap(), size as _),
             size @ 9..=16 => PLoc::WideReg(self.0.next_chunk::<2>().unwrap()[0], size as _),
             size @ 17.. => PLoc::Ref(self.0.next().unwrap(), size),
-        }
+        })
     }
 }
 
@@ -878,6 +907,8 @@ pub struct TypeIns {
     funcs: Vec<Func>,
     args: Vec<ty::Id>,
     globals: Vec<Global>,
+    // TODO: use ctx map
+    strings: HashMap<Vec<u8>, ty::Global>,
     structs: Vec<Struct>,
     fields: Vec<Field>,
     ptrs: Vec<Ptr>,
@@ -1239,12 +1270,10 @@ impl Types {
         instrs::disasm(&mut sluce, &functions, output, eca_handler)
     }
 
-    fn parama(&self, ret: impl Into<ty::Id>) -> (PLoc, ParamAlloc) {
+    fn parama(&self, ret: impl Into<ty::Id>) -> (Option<PLoc>, ParamAlloc) {
         let mut iter = ParamAlloc(1..12);
         let ret = iter.next(ret.into(), self);
-        if let PLoc::None = ret {
-            iter.0.start += 1;
-        }
+        iter.0.start += ret.is_none() as u8;
         (ret, iter)
     }
 

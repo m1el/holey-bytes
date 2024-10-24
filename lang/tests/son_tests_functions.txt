@@ -12,10 +12,11 @@ main:
     CP r32, r1
     LI64 r2, 20d
     JAL r31, r0, :add_two
-    ADD64 r1, r1, r32
+    CP r10, r32
+    ADD64 r1, r1, r10
     LD r31, r254, 0a, 16h
     ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
-code size: 152
+code size: 155
 ret: 33
 status: Ok(())

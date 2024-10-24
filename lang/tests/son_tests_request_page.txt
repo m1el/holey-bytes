@@ -1,6 +1,6 @@
 create_back_buffer:
-    ADDI64 r254, r254, -56d
-    ST r31, r254, 0a, 56h
+    ADDI64 r254, r254, -48d
+    ST r31, r254, 0a, 48h
     LI64 r32, 255d
     JGTS r2, r32, :0
     AND r2, r2, r32
@@ -10,23 +10,23 @@ create_back_buffer:
     LI64 r34, 255d
     CP r2, r34
     JAL r31, r0, :request_page
-    LI64 r35, 0d
+    CP r35, r1
+    LI64 r36, 0d
     CP r2, r33
-    SUB64 r36, r2, r32
- 5: JGTS r36, r35, :2
+    SUB64 r33, r2, r32
+ 5: JGTS r33, r36, :2
+    CP r1, r35
     JMP :1
- 2: CP r37, r1
-    JLTS r36, r32, :3
+ 2: JLTS r33, r32, :3
     CP r2, r34
     JAL r31, r0, :request_page
     JMP :4
- 3: AND r2, r36, r32
+ 3: AND r2, r33, r32
     JAL r31, r0, :request_page
- 4: SUB64 r36, r36, r32
-    CP r1, r37
+ 4: SUB64 r33, r33, r32
     JMP :5
- 1: LD r31, r254, 0a, 56h
-    ADDI64 r254, r254, 56d
+ 1: LD r31, r254, 0a, 48h
+    ADDI64 r254, r254, 48d
     JALA r0, r31, 0a
 main:
     ADDI64 r254, r254, -8d

@@ -1,31 +1,31 @@
 main:
-    ADDI64 r254, r254, -152d
-    ST r31, r254, 56a, 96h
-    LI64 r32, 4d
-    LI64 r33, 1d
-    LI64 r34, 2d
-    LI64 r35, 3d
-    LI64 r36, 1d
-    LI64 r37, 0d
+    ADDI64 r254, r254, -64d
+    ST r31, r254, 56a, 8h
+    LI64 r9, 4d
+    LI64 r7, 1d
+    LI64 r6, 2d
+    LI64 r10, 3d
+    LI64 r8, 1d
+    LI64 r11, 0d
     ADDI64 r2, r254, 0d
-    ADDI64 r38, r254, 24d
-    ADDI64 r39, r254, 48d
-    ADDI64 r40, r254, 52d
-    ST r37, r254, 52a, 1h
-    ST r37, r254, 53a, 1h
-    ST r35, r254, 54a, 1h
-    ST r33, r254, 55a, 1h
-    BMC r40, r39, 4h
-    ST r36, r254, 24a, 8h
-    ST r34, r254, 32a, 8h
-    ST r32, r254, 40a, 8h
-    BMC r38, r2, 24h
+    ADDI64 r3, r254, 24d
+    ADDI64 r4, r254, 48d
+    ADDI64 r12, r254, 52d
+    ST r11, r254, 52a, 1h
+    ST r11, r254, 53a, 1h
+    ST r10, r254, 54a, 1h
+    ST r7, r254, 55a, 1h
+    BMC r12, r4, 4h
+    ST r8, r254, 24a, 8h
+    ST r6, r254, 32a, 8h
+    ST r9, r254, 40a, 8h
+    BMC r3, r2, 24h
     JAL r31, r0, :pass
-    LD r41, r254, 51a, 1h
-    ANDI r42, r41, 255d
-    ADD64 r1, r1, r42
-    LD r31, r254, 56a, 96h
-    ADDI64 r254, r254, 152d
+    LD r8, r254, 51a, 1h
+    ANDI r10, r8, 255d
+    ADD64 r1, r1, r10
+    LD r31, r254, 56a, 8h
+    ADDI64 r254, r254, 64d
     JALA r0, r31, 0a
 pass:
     LD r3, r2, 8a, 8h
