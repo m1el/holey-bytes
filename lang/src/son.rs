@@ -4282,13 +4282,15 @@ fn push_up(nodes: &mut Nodes) {
         nodes
             .iter()
             .map(|(n, _)| n)
-            .filter(|&n| !nodes.visited.get(n) && !matches!(nodes[n].kind, Kind::Arg | Kind::Mem))
+            .filter(|&n| !nodes.visited.get(n)
+                && !matches!(nodes[n].kind, Kind::Arg | Kind::Mem | Kind::End))
             .collect::<Vec<_>>(),
         vec![],
         "{:?}",
         nodes
             .iter()
-            .filter(|&(n, nod)| !nodes.visited.get(n) && !matches!(nod.kind, Kind::Arg | Kind::Mem))
+            .filter(|&(n, nod)| !nodes.visited.get(n)
+                && !matches!(nod.kind, Kind::Arg | Kind::Mem | Kind::End))
             .collect::<Vec<_>>()
     );
 }
