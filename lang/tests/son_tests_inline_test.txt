@@ -22,34 +22,30 @@ scalar_values:
     LI64 r1, 0d
     JALA r0, r31, 0a
 structs:
-    ADDI64 r254, r254, -64d
-    LI64 r9, 5d
-    LI64 r7, 20d
+    ADDI64 r254, r254, -48d
+    LI64 r7, 5d
+    LI64 r6, 20d
     LI64 r4, 0d
-    ADDI64 r12, r254, 0d
-    ADDI64 r1, r254, 8d
-    ADDI64 r10, r254, 24d
-    ADDI64 r10, r254, 32d
-    ADDI64 r11, r254, 40d
-    ADDI64 r2, r254, 56d
-    ST r4, r254, 56a, 8h
-    ST r7, r254, 24a, 8h
-    ST r9, r254, 0a, 8h
-    BMC r12, r1, 8h
-    ST r9, r254, 16a, 8h
-    LD r1, r254, 8a, 8h
-    LD r2, r254, 24a, 8h
-    ADD64 r5, r1, r2
-    SUB64 r5, r5, r9
-    ST r5, r254, 32a, 8h
-    BMC r10, r11, 8h
-    ST r7, r254, 48a, 8h
-    LD r12, r254, 40a, 8h
-    LD r1, r254, 56a, 8h
-    ADD64 r4, r12, r1
-    SUB64 r1, r4, r7
-    ADDI64 r254, r254, 64d
+    ADDI64 r8, r254, 0d
+    ADDI64 r10, r254, 8d
+    ADDI64 r8, r254, 24d
+    ADDI64 r8, r254, 40d
+    ST r4, r254, 40a, 8h
+    ST r6, r254, 0a, 8h
+    ST r7, r254, 8a, 8h
+    ST r7, r254, 16a, 8h
+    LD r8, r254, 8a, 8h
+    LD r9, r254, 0a, 8h
+    ADD64 r12, r8, r9
+    SUB64 r12, r12, r7
+    ST r12, r254, 24a, 8h
+    ST r6, r254, 32a, 8h
+    LD r7, r254, 24a, 8h
+    LD r8, r254, 40a, 8h
+    ADD64 r10, r7, r8
+    SUB64 r1, r10, r6
+    ADDI64 r254, r254, 48d
     JALA r0, r31, 0a
-code size: 449
+code size: 417
 ret: 0
 status: Ok(())

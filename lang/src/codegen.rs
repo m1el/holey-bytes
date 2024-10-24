@@ -277,7 +277,7 @@ impl Value {
     }
 
     fn imm(value: u64) -> Self {
-        Self { ty: ty::Id::INT, loc: Loc::ct(value) }
+        Self { ty: ty::Id::UINT, loc: Loc::ct(value) }
     }
 
     fn ty(ty: ty::Id) -> Self {

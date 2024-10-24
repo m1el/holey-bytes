@@ -881,10 +881,6 @@ impl Nodes {
 
     #[allow(dead_code)]
     fn eliminate_stack_temporaries(&mut self) {
-        if !cfg!(debug_assertions) {
-            return;
-        }
-
         'o: for stack in self[MEM].outputs.clone() {
             if self[stack].kind != Kind::Stck {
                 continue;
@@ -895,6 +891,7 @@ impl Nodes {
                 match self[o].kind {
                     Kind::Load
                         if self[o].ty == self[stack].ty
+                            && self[o].outputs.iter().all(|&n| self[n].kind == Kind::Stre)
                             && let mut full_stores = self[o].outputs.iter().filter(|&&n| {
                                 self[n].kind == Kind::Stre && self[n].inputs[1] == o
                             })
@@ -928,7 +925,6 @@ impl Nodes {
                     continue;
                 }
                 let Some(index) = unidentifed.iter().position(|&n| n == contact_point) else {
-                    std::println!("{stack} {region} {unidentifed:?} duped {:?}", self[region]);
                     continue 'o;
                 };
                 unidentifed.remove(index);
@@ -941,14 +937,8 @@ impl Nodes {
             }
 
             if !unidentifed.is_empty() {
-                for &n in unidentifed.iter() {
-                    std::println!("{:?}", self[n]);
-                }
-                std::println!("failed {stack}");
                 continue;
             }
-
-            std::println!("{dst} {stack}");
 
             // FIXME: when the loads and stores become parallel we will need to get saved
             // differently
@@ -1288,7 +1278,7 @@ impl ItemCtx {
         self.scope.clear(&mut self.nodes);
         self.nodes.unlock(NEVER);
         self.nodes.unlock(MEM);
-        //self.nodes.eliminate_stack_temporaries();
+        self.nodes.eliminate_stack_temporaries();
     }
 
     fn emit(&mut self, instr: (usize, [u8; instrs::MAX_SIZE])) {
@@ -3958,16 +3948,17 @@ impl<'a> Function<'a> {
                 let ops = vec![self.drg(nid)];
                 self.add_instr(nid, ops);
             }
-            //Kind::Stck
-            //    if node.outputs.iter().all(|&n| {
-            //        matches!(self.nodes[n].kind, Kind::Stre | Kind::Load)
-            //            || matches!(self.nodes[n].kind, Kind::BinOp { op: TokenKind::Add }
-            //    if self.nodes.is_const(self.nodes[n].inputs[2])
-            //        && self.nodes[n]
-            //            .outputs
-            //            .iter()
-            //            .all(|&n| matches!(self.nodes[n].kind, Kind::Stre | Kind::Load)))
-            //    }) => {}
+            Kind::Stck
+                if node.ty.loc(self.tys) == Loc::Reg && node.outputs.iter().all(|&n| {
+            
+                    matches!(self.nodes[n].kind, Kind::Stre | Kind::Load)
+                        || matches!(self.nodes[n].kind, Kind::BinOp { op: TokenKind::Add }
+                    if self.nodes.is_const(self.nodes[n].inputs[2])
+                        && self.nodes[n]
+                            .outputs
+                            .iter()
+                            .all(|&n| matches!(self.nodes[n].kind, Kind::Stre | Kind::Load)))
+                }) => {}
             Kind::Stck if self.tys.size_of(node.ty) == 0 => self.nodes.lock(nid),
             Kind::Stck => {
                 let ops = vec![self.drg(nid)];
@@ -4372,7 +4363,7 @@ mod tests {
 
     fn generate(ident: &'static str, input: &'static str, output: &mut String) {
         _ = log::set_logger(&crate::fs::Logger);
-        //log::set_max_level(log::LevelFilter::Info);
+        log::set_max_level(log::LevelFilter::Info);
         //        log::set_max_level(log::LevelFilter::Trace);
 
         let (ref files, embeds) = crate::test_parse_files(ident, input);

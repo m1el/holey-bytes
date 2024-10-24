@@ -32,26 +32,24 @@ fib_iter:
     JMP :2
  1: JALA r0, r31, 0a
 main:
-    ADDI64 r254, r254, -20d
-    ST r31, r254, 4a, 16h
-    LI64 r2, 10d
-    ADDI64 r4, r254, 0d
-    ADDI64 r3, r254, 2d
-    ST r2, r254, 2a, 1h
-    ST r2, r254, 3a, 1h
-    BMC r3, r4, 2h
-    LD r10, r254, 0a, 1h
-    ANDI r2, r10, 255d
+    ADDI64 r254, r254, -18d
+    ST r31, r254, 2a, 16h
+    LI64 r1, 10d
+    ADDI64 r3, r254, 0d
+    ST r1, r254, 0a, 1h
+    ST r1, r254, 1a, 1h
+    LD r7, r254, 0a, 1h
+    ANDI r2, r7, 255d
     JAL r31, r0, :fib
     CP r32, r1
-    LD r4, r254, 1a, 1h
-    ANDI r2, r4, 255d
+    LD r1, r254, 1a, 1h
+    ANDI r2, r1, 255d
     JAL r31, r0, :fib_iter
-    CP r11, r32
-    SUB64 r1, r11, r1
-    LD r31, r254, 4a, 16h
-    ADDI64 r254, r254, 20d
+    CP r8, r32
+    SUB64 r1, r8, r1
+    LD r31, r254, 2a, 16h
+    ADDI64 r254, r254, 18d
     JALA r0, r31, 0a
-code size: 398
+code size: 382
 ret: 0
 status: Ok(())
