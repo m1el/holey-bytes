@@ -2514,7 +2514,7 @@ impl<'a> Codegen<'a> {
                     return Some(val);
                 }
 
-                let value = (1i64 << self.tys.size_of(val.ty)) - 1;
+                let value = (1i64 << (self.tys.size_of(ty) * 8)) - 1;
                 let mask = self.ci.nodes.new_node_nop(val.ty, Kind::CInt { value }, [VOID]);
                 let inps = [VOID, val.id, mask];
                 Some(self.ci.nodes.new_node_lit(ty, Kind::BinOp { op: TokenKind::Band }, inps))
@@ -4282,15 +4282,13 @@ fn push_up(nodes: &mut Nodes) {
         nodes
             .iter()
             .map(|(n, _)| n)
-            .filter(|&n| !nodes.visited.get(n)
-                && !matches!(nodes[n].kind, Kind::Arg | Kind::Mem | Kind::End))
+            .filter(|&n| !nodes.visited.get(n) && !matches!(nodes[n].kind, Kind::Arg | Kind::Mem))
             .collect::<Vec<_>>(),
         vec![],
         "{:?}",
         nodes
             .iter()
-            .filter(|&(n, nod)| !nodes.visited.get(n)
-                && !matches!(nod.kind, Kind::Arg | Kind::Mem | Kind::End))
+            .filter(|&(n, nod)| !nodes.visited.get(n) && !matches!(nod.kind, Kind::Arg | Kind::Mem))
             .collect::<Vec<_>>()
     );
 }
@@ -4468,6 +4466,7 @@ mod tests {
         returning_global_struct;
         small_struct_bitcast;
         small_struct_assignment;
+        intcast_store;
         wide_ret;
         comptime_min_reg_leak;
         different_types;

@@ -4,7 +4,7 @@ main:
     LI64 r7, 4d
     LI64 r6, 1d
     LI64 r5, 2d
-    LI64 r9, 3d
+    LI64 r9, 255d
     LI64 r8, 1d
     LI64 r10, 0d
     ADDI64 r12, r254, 0d

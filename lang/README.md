@@ -553,7 +553,6 @@ main := fn(): int {
 
 #### small_struct_assignment
 ```hb
-
 Color := struct {r: u8, g: u8, b: u8, a: u8}
 white := Color.(255, 255, 255, 255)
 black := Color.(0, 0, 0, 0)
@@ -562,6 +561,20 @@ main := fn(): int {
 	f = white
 	return f.a
 }
+```
+
+#### intcast_store
+```hb
+SetMsg := packed struct {a: u8, count: u32, size: u32, src: ^u8, dest: ^u8}
+set := fn($Expr: type, src: ^Expr, dest: ^Expr, count: uint): u32 {
+	l := SetMsg.(5, @intcast(count), @intcast(@sizeof(Expr)), @bitcast(src), @bitcast(dest))
+	return l.count
+}
+
+main := fn(): int {
+	return set(int, &0, &0, 1024)
+}
+
 ```
 
 #### wide_ret
