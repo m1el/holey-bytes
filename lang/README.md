@@ -540,6 +540,19 @@ main := fn(): int {
 }
 ```
 
+#### small_struct_bitcast
+```hb
+
+Color := struct {r: u8, g: u8, b: u8, a: u8}
+white := Color.(255, 255, 255, 255)
+u32_to_color := fn(v: u32): Color {
+	return @bitcast(v)
+}
+main := fn(): int {
+	return u32_to_color(@bitcast(white)).r
+}
+```
+
 #### wide_ret
 ```hb
 OemIdent := struct {

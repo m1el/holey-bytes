@@ -1,0 +1,23 @@
+main:
+    ADDI64 r254, r254, -12d
+    ST r31, r254, 4a, 8h
+    LRA r1, r0, :white
+    LD r2, r1, 0a, 4h
+    ADDI64 r5, r254, 0d
+    JAL r31, r0, :u32_to_color
+    ST r1, r254, 0a, 4h
+    LD r9, r254, 0a, 1h
+    ANDI r1, r9, 255d
+    LD r31, r254, 4a, 8h
+    ADDI64 r254, r254, 12d
+    JALA r0, r31, 0a
+u32_to_color:
+    ADDI64 r254, r254, -4d
+    ADDI64 r3, r254, 0d
+    ST r2, r254, 0a, 4h
+    LD r1, r3, 0a, 4h
+    ADDI64 r254, r254, 4d
+    JALA r0, r31, 0a
+code size: 216
+ret: 255
+status: Ok(())

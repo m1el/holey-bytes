@@ -24,7 +24,6 @@ use {
         fmt::{self, Debug, Display, Write},
         format_args as fa, mem,
         ops::{self},
-        u16,
     },
     hashbrown::hash_map,
     hbbytecode::DisasmError,
@@ -2491,6 +2490,17 @@ impl<'a> Codegen<'a> {
                     );
                 }
 
+                match ty.loc(&self.tys) {
+                    Loc::Reg if core::mem::take(&mut val.ptr) => val.id = self.load_mem(val.id, ty),
+                    Loc::Stack if !val.ptr => {
+                        let stack = self.ci.nodes.new_node_nop(ty, Kind::Stck, [VOID, MEM]);
+                        self.store_mem(stack, val.ty, val.id);
+                        val.id = stack;
+                        val.ptr = true;
+                    }
+                    _ => {}
+                }
+
                 val.ty = ty;
                 Some(val)
             }
@@ -4450,6 +4460,7 @@ mod tests {
 
         // Purely Testing Examples;
         returning_global_struct;
+        small_struct_bitcast;
         wide_ret;
         comptime_min_reg_leak;
         different_types;
