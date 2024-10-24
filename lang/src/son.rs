@@ -39,16 +39,6 @@ type Nid = u16;
 
 type Lookup = crate::ctx_map::CtxMap<Nid>;
 
-trait StoreId: Sized {
-    fn to_store(self) -> Option<Self>;
-}
-
-impl StoreId for Nid {
-    fn to_store(self) -> Option<Self> {
-        (self != MEM).then_some(self)
-    }
-}
-
 impl crate::ctx_map::CtxEntry for Nid {
     type Ctx = [Result<Node, (Nid, debug::Trace)>];
     type Key<'a> = (Kind, &'a [Nid], ty::Id);
@@ -457,6 +447,7 @@ impl Nodes {
             K::Stre => {
                 if self[target].inputs[2] != VOID
                     && self[target].inputs.len() == 4
+                    && self[self[target].inputs[1]].kind != Kind::Load
                     && self[self[target].inputs[3]].kind == Kind::Stre
                     && self[self[target].inputs[3]].lock_rc == 0
                     && self[self[target].inputs[3]].inputs[2] == self[target].inputs[2]
@@ -872,7 +863,7 @@ impl Nodes {
     #[allow(dead_code)]
     fn eliminate_stack_temporaries(&mut self) {
         'o: for stack in self[MEM].outputs.clone() {
-            if self[stack].kind != Kind::Stck {
+            if self.values[stack as usize].is_err() || self[stack].kind != Kind::Stck {
                 continue;
             }
             let mut full_read_into = None;
@@ -1032,7 +1023,7 @@ pub enum Kind {
 
 impl Kind {
     fn is_pinned(&self) -> bool {
-        self.is_cfg() || matches!(self, Self::Phi | Self::Mem | Self::Arg)
+        self.is_cfg() || matches!(self, Self::Phi | Self::Arg | Self::Mem)
     }
 
     fn is_cfg(&self) -> bool {
@@ -1629,7 +1620,7 @@ impl ItemCtx {
                 if !matches!(self.nodes[stck].kind, Kind::Stck | Kind::Arg) {
                     debug_assert_matches!(
                         self.nodes[stck].kind,
-                        Kind::Phi | Kind::Return | Kind::Load
+                        Kind::Phi | Kind::Return | Kind::Load | Kind::Call { .. } | Kind::Stre
                     );
                     continue;
                 }
@@ -2045,11 +2036,8 @@ impl<'a> Codegen<'a> {
         );
         debug_assert!(self.ci.nodes[region].kind != Kind::Stre);
 
-        let mut vc = Vc::from([VOID, value, region]);
         self.ci.nodes.load_loop_store(&mut self.ci.scope.store, &mut self.ci.loops);
-        if let Some(str) = self.ci.scope.store.value().to_store() {
-            vc.push(str);
-        }
+        let mut vc = Vc::from([VOID, value, region, self.ci.scope.store.value()]);
         for load in self.ci.scope.loads.drain(..) {
             if load == value {
                 self.ci.nodes.unlock(load);
@@ -2080,11 +2068,8 @@ impl<'a> Codegen<'a> {
             self.ty_display(self.ci.nodes[region].ty)
         );
         debug_assert!(self.ci.nodes[region].kind != Kind::Stre);
-        let mut vc = Vc::from([VOID, region]);
         self.ci.nodes.load_loop_store(&mut self.ci.scope.store, &mut self.ci.loops);
-        if let Some(str) = self.ci.scope.store.value().to_store() {
-            vc.push(str);
-        }
+        let vc = [VOID, region, self.ci.scope.store.value()];
         let load = self.ci.nodes.new_node(ty, Kind::Load, vc);
         self.ci.nodes.lock(load);
         self.ci.scope.loads.push(load);
@@ -2206,9 +2191,7 @@ impl<'a> Codegen<'a> {
                     debug_assert_ne!(self.ci.ctrl, VOID);
                     let mut inps = Vc::from([self.ci.ctrl, value.id]);
                     self.ci.nodes.load_loop_store(&mut self.ci.scope.store, &mut self.ci.loops);
-                    if let Some(str) = self.ci.scope.store.value().to_store() {
-                        inps.push(str);
-                    }
+                    inps.push(self.ci.scope.store.value());
 
                     self.ci.ctrl = self.ci.nodes.new_node(ty::Id::VOID, Kind::Return, inps);
 
@@ -2570,9 +2553,7 @@ impl<'a> Codegen<'a> {
                     self.ci.nodes.unlock(n);
                 }
 
-                if let Some(str) = self.ci.scope.store.value().to_store() {
-                    inps.push(str);
-                }
+                inps.push(self.ci.scope.store.value());
                 self.ci.scope.loads.retain(|&load| {
                     if inps.contains(&load) {
                         return true;
@@ -2658,9 +2639,7 @@ impl<'a> Codegen<'a> {
                 }
 
                 if has_ptr_arg {
-                    if let Some(str) = self.ci.scope.store.value().to_store() {
-                        inps.push(str);
-                    }
+                    inps.push(self.ci.scope.store.value());
                     self.ci.scope.loads.retain(|&load| {
                         if inps.contains(&load) {
                             return true;
@@ -4243,7 +4222,7 @@ fn push_up(nodes: &mut Nodes) {
             return;
         }
 
-        for i in 0..nodes[node].inputs.len() {
+        for i in 1..nodes[node].inputs.len() {
             let inp = nodes[node].inputs[i];
             if !nodes[inp].kind.is_pinned() {
                 push_up_impl(inp, nodes);
@@ -4298,6 +4277,20 @@ fn push_up(nodes: &mut Nodes) {
             }
         }
     }
+
+    debug_assert_eq!(
+        nodes
+            .iter()
+            .map(|(n, _)| n)
+            .filter(|&n| !nodes.visited.get(n) && !matches!(nodes[n].kind, Kind::Arg | Kind::Mem))
+            .collect::<Vec<_>>(),
+        vec![],
+        "{:?}",
+        nodes
+            .iter()
+            .filter(|&(n, nod)| !nodes.visited.get(n) && !matches!(nod.kind, Kind::Arg | Kind::Mem))
+            .collect::<Vec<_>>()
+    );
 }
 
 fn push_down(nodes: &mut Nodes, node: Nid) {
@@ -4312,6 +4305,7 @@ fn push_down(nodes: &mut Nodes, node: Nid) {
     }
 
     fn better(nodes: &mut Nodes, is: Nid, then: Nid) -> bool {
+        debug_assert_ne!(idepth(nodes, is), idepth(nodes, then), "{is} {then}");
         loop_depth(is, nodes) < loop_depth(then, nodes)
             || idepth(nodes, is) > idepth(nodes, then)
             || nodes[then].kind == Kind::If
@@ -4319,6 +4313,12 @@ fn push_down(nodes: &mut Nodes, node: Nid) {
 
     if !nodes.visited.set(node) {
         return;
+    }
+
+    for usage in nodes[node].outputs.clone() {
+        if is_forward_edge(usage, node, nodes) && nodes[node].kind == Kind::Stre {
+            push_down(nodes, usage);
+        }
     }
 
     for usage in nodes[node].outputs.clone() {
@@ -4342,14 +4342,11 @@ fn push_down(nodes: &mut Nodes, node: Nid) {
     debug_assert!(nodes.dominates(nodes[node].inputs[0], min));
 
     let mut cursor = min;
-    loop {
+    while cursor != nodes[node].inputs[0] {
+        cursor = idom(nodes, cursor);
         if better(nodes, cursor, min) {
             min = cursor;
         }
-        if cursor == nodes[node].inputs[0] {
-            break;
-        }
-        cursor = idom(nodes, cursor);
     }
 
     if nodes[min].kind.ends_basic_block() {
@@ -4468,6 +4465,7 @@ mod tests {
         // Purely Testing Examples;
         returning_global_struct;
         small_struct_bitcast;
+        small_struct_assignment;
         wide_ret;
         comptime_min_reg_leak;
         different_types;

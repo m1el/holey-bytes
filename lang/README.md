@@ -544,10 +544,23 @@ main := fn(): int {
 ```hb
 Color := struct {r: u8, g: u8, b: u8, a: u8}
 white := Color.(255, 255, 255, 255)
-u32_to_color := fn(v: u32): Color return @bitcast(v)
+u32_to_color := fn(v: u32): Color return @as(Color, @bitcast(u32_to_u32(@bitcast(v))))
 u32_to_u32 := fn(v: u32): u32 return v
 main := fn(): int {
-	return u32_to_color(@bitcast(white)).r + @as(Color, @bitcast(u32_to_u32(@bitcast(Color.{r: 1, g: 1, b: 1, a: 1})))).g
+	return u32_to_color(@bitcast(white)).r
+}
+```
+
+#### small_struct_assignment
+```hb
+
+Color := struct {r: u8, g: u8, b: u8, a: u8}
+white := Color.(255, 255, 255, 255)
+black := Color.(0, 0, 0, 0)
+main := fn(): int {
+	f := black
+	f = white
+	return f.a
 }
 ```
 
