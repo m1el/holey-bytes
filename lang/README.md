@@ -542,14 +542,12 @@ main := fn(): int {
 
 #### small_struct_bitcast
 ```hb
-
 Color := struct {r: u8, g: u8, b: u8, a: u8}
 white := Color.(255, 255, 255, 255)
-u32_to_color := fn(v: u32): Color {
-	return @bitcast(v)
-}
+u32_to_color := fn(v: u32): Color return @bitcast(v)
+u32_to_u32 := fn(v: u32): u32 return v
 main := fn(): int {
-	return u32_to_color(@bitcast(white)).r
+	return u32_to_color(@bitcast(white)).r + @as(Color, @bitcast(u32_to_u32(@bitcast(white)))).g
 }
 ```
 

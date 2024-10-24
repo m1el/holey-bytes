@@ -6,17 +6,16 @@ main:
     ST r1, r254, 4a, 4h
     ADDI64 r5, r254, 0d
     BMC r32, r5, 4h
-    LD r4, r254, 3a, 1h
-    ANDI r6, r4, 255d
-    LD r3, r254, 2a, 1h
+    LD r3, r254, 3a, 1h
     ANDI r5, r3, 255d
-    LD r2, r254, 1a, 1h
+    LD r2, r254, 2a, 1h
     ANDI r4, r2, 255d
-    LD r2, r254, 0a, 1h
-    ANDI r7, r2, 255d
-    ADD64 r8, r4, r7
-    ADD64 r12, r8, r5
-    ADD64 r1, r12, r6
+    LD r1, r254, 1a, 1h
+    ANDI r3, r1, 255d
+    LD r2, r254, 0a, 8h
+    ADD64 r6, r2, r3
+    ADD64 r10, r6, r4
+    ADD64 r1, r10, r5
     LD r31, r254, 8a, 16h
     ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
@@ -24,6 +23,6 @@ random_color:
     LRA r1, r0, :white
     LD r1, r1, 0a, 4h
     JALA r0, r31, 0a
-code size: 257
-ret: 1020
+code size: 246
+ret: 764
 status: Ok(())

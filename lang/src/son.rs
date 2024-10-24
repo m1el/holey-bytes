@@ -2539,7 +2539,8 @@ impl<'a> Codegen<'a> {
             Expr::Directive { name: "as", args: [ty, expr], .. } => {
                 let ty = self.ty(ty);
                 let ctx = Ctx::default().with_ty(ty);
-                let mut val = self.expr_ctx(expr, ctx)?;
+                let mut val = self.raw_expr_ctx(expr, ctx)?;
+                self.strip_var(&mut val);
                 self.assert_ty(expr.pos(), &mut val, ty, "hinted expr");
                 Some(val)
             }
@@ -3538,6 +3539,9 @@ impl<'a> Codegen<'a> {
 
             if let Some(oper) = to_correct {
                 oper.ty = upcasted;
+                if core::mem::take(&mut oper.ptr) {
+                    oper.id = self.load_mem(oper.id, oper.ty);
+                }
                 oper.id = self.ci.nodes.new_node(upcasted, Kind::Extend, [VOID, oper.id]);
                 if matches!(op, TokenKind::Add | TokenKind::Sub)
                     && let Some(elem) = self.tys.base_of(upcasted)
@@ -3586,6 +3590,9 @@ impl<'a> Codegen<'a> {
                     self.ty_display(upcasted)
                 );
                 src.ty = upcasted;
+                if core::mem::take(&mut src.ptr) {
+                    src.id = self.load_mem(src.id, src.ty);
+                }
                 src.id = self.ci.nodes.new_node(upcasted, Kind::Extend, [VOID, src.id]);
             }
             true
