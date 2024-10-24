@@ -37,6 +37,7 @@ fn ensure_loaded(value: CtValue, derefed: bool, size: u32) -> u64 {
 mod stack {
     use {
         super::{Offset, Size},
+        crate::debug,
         alloc::vec::Vec,
         core::num::NonZeroU32,
     };
@@ -81,17 +82,7 @@ mod stack {
 
     impl Drop for Id {
         fn drop(&mut self) {
-            let is_panicking = {
-                #[cfg(feature = "std")]
-                {
-                    std::thread::panicking()
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    false
-                }
-            };
-            if !is_panicking && !self.is_ref() {
+            if !debug::panicking() && !self.is_ref() {
                 unreachable!("stack id leaked: {:?}", self.0);
             }
         }
@@ -163,7 +154,10 @@ mod stack {
 }
 
 mod rall {
-    use {crate::reg::*, alloc::vec::Vec};
+    use {
+        crate::{debug, reg::*},
+        alloc::vec::Vec,
+    };
 
     type Reg = u8;
 
@@ -208,17 +202,9 @@ mod rall {
     #[cfg(all(debug_assertions, feature = "std"))]
     impl Drop for Id {
         fn drop(&mut self) {
-            let is_panicking = {
-                #[cfg(all(debug_assertions, feature = "std"))]
-                {
-                    std::thread::panicking()
-                }
-                #[cfg(not(all(debug_assertions, feature = "std")))]
-                {
-                    false
-                }
-            };
-            if !is_panicking && let Some(bt) = self.1.take() {
+            if !debug::panicking()
+                && let Some(bt) = self.1.take()
+            {
                 unreachable!("reg id leaked: {:?} {bt}", self.0);
             }
         }

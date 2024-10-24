@@ -75,6 +75,34 @@ pub mod lexer;
 #[cfg(feature = "opts")]
 mod vc;
 
+mod debug {
+
+    pub fn panicking() -> bool {
+        #[cfg(feature = "std")]
+        {
+            std::thread::panicking()
+        }
+        #[cfg(not(feature = "std"))]
+        {
+            false
+        }
+    }
+
+    #[cfg(all(debug_assertions, feature = "std"))]
+    pub type Trace = std::rc::Rc<std::backtrace::Backtrace>;
+    #[cfg(not(all(debug_assertions, feature = "std")))]
+    pub type Trace = ();
+
+    pub fn trace() -> Trace {
+        #[cfg(all(debug_assertions, feature = "std"))]
+        {
+            std::rc::Rc::new(std::backtrace::Backtrace::capture())
+        }
+        #[cfg(not(all(debug_assertions, feature = "std")))]
+        {}
+    }
+}
+
 pub mod reg {
     pub const STACK_PTR: Reg = 254;
     pub const ZERO: Reg = 0;
@@ -252,7 +280,7 @@ mod ty {
             parser::{self, Pos},
             Size, Types,
         },
-        core::{num::NonZeroU32, ops::Range, usize},
+        core::{num::NonZeroU32, ops::Range},
     };
 
     pub type ArrayLen = u32;
@@ -1268,7 +1296,7 @@ impl Types {
             })
             .chain(self.ins.globals.iter().filter(|g| task::is_done(g.offset)).map(|g| {
                 let name = if g.file == u32::MAX {
-                    core::str::from_utf8(&g.data).unwrap()
+                    core::str::from_utf8(&g.data).unwrap_or("invalid utf-8")
                 } else {
                     let file = &files[g.file as usize];
                     file.ident_str(g.name)

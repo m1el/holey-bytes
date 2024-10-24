@@ -527,6 +527,19 @@ main := fn(): int {
 
 ### Purely Testing Examples
 
+#### returning_global_struct
+```hb
+Color := struct {r: u8, g: u8, b: u8, a: u8}
+white := Color.(255, 255, 255, 255)
+random_color := fn(): Color {
+	return white
+}
+main := fn(): int {
+	val := random_color()
+	return @as(int, val.r) + val.g + val.b + val.a
+}
+```
+
 #### wide_ret
 ```hb
 OemIdent := struct {

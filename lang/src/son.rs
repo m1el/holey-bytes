@@ -2,6 +2,7 @@ use {
     self::var::{Scope, Variable},
     crate::{
         ctx_map::CtxEntry,
+        debug,
         ident::Ident,
         instrs,
         lexer::{self, TokenKind},
@@ -23,6 +24,7 @@ use {
         fmt::{self, Debug, Display, Write},
         format_args as fa, mem,
         ops::{self},
+        u16,
     },
     hashbrown::hash_map,
     hbbytecode::DisasmError,
@@ -49,7 +51,7 @@ impl StoreId for Nid {
 }
 
 impl crate::ctx_map::CtxEntry for Nid {
-    type Ctx = [Result<Node, (Nid, Trace)>];
+    type Ctx = [Result<Node, (Nid, debug::Trace)>];
     type Key<'a> = (Kind, &'a [Nid], ty::Id);
 
     fn key<'a>(&self, ctx: &'a Self::Ctx) -> Self::Key<'a> {
@@ -57,23 +59,9 @@ impl crate::ctx_map::CtxEntry for Nid {
     }
 }
 
-#[cfg(debug_assertions)]
-type Trace = std::rc::Rc<std::backtrace::Backtrace>;
-#[cfg(not(debug_assertions))]
-type Trace = ();
-
-fn trace() -> Trace {
-    #[cfg(debug_assertions)]
-    {
-        std::rc::Rc::new(std::backtrace::Backtrace::capture())
-    }
-    #[cfg(not(debug_assertions))]
-    {}
-}
-
 #[derive(Clone)]
 struct Nodes {
-    values: Vec<Result<Node, (Nid, Trace)>>,
+    values: Vec<Result<Node, (Nid, debug::Trace)>>,
     visited: BitSet,
     free: Nid,
     lookup: Lookup,
@@ -165,15 +153,18 @@ impl Nodes {
     }
 
     fn graphviz_in_browser(&self, tys: &Types, files: &[parser::Ast]) {
-        let out = &mut String::new();
-        _ = self.graphviz_low(tys, files, out);
-        if !std::process::Command::new("brave")
-            .arg(format!("https://dreampuf.github.io/GraphvizOnline/#{out}"))
-            .status()
-            .unwrap()
-            .success()
+        #[cfg(all(debug_assertions, feature = "std"))]
         {
-            log::error!("{out}");
+            let out = &mut String::new();
+            _ = self.graphviz_low(tys, files, out);
+            if !std::process::Command::new("brave")
+                .arg(format!("https://dreampuf.github.io/GraphvizOnline/#{out}"))
+                .status()
+                .unwrap()
+                .success()
+            {
+                log::error!("{out}");
+            }
         }
     }
 
@@ -188,11 +179,12 @@ impl Nodes {
     fn remove_low(&mut self, id: Nid) -> Node {
         if cfg!(debug_assertions) {
             let value =
-                mem::replace(&mut self.values[id as usize], Err((self.free, trace()))).unwrap();
+                mem::replace(&mut self.values[id as usize], Err((self.free, debug::trace())))
+                    .unwrap();
             self.free = id;
             value
         } else {
-            mem::replace(&mut self.values[id as usize], Err((Nid::MAX, trace()))).unwrap()
+            mem::replace(&mut self.values[id as usize], Err((Nid::MAX, debug::trace()))).unwrap()
         }
     }
 
@@ -240,7 +232,7 @@ impl Nodes {
 
         if self.free == Nid::MAX {
             self.free = self.values.len() as _;
-            self.values.push(Err((Nid::MAX, trace())));
+            self.values.push(Err((Nid::MAX, debug::trace())));
         }
 
         let free = self.free;
@@ -1132,7 +1124,7 @@ struct Loop {
 mod var {
     use {
         super::{Kind, Nid, Nodes},
-        crate::{ident::Ident, ty},
+        crate::{debug, ident::Ident, ty},
         alloc::vec::Vec,
     };
 
@@ -1189,7 +1181,7 @@ mod var {
 
     impl Drop for Variable {
         fn drop(&mut self) {
-            if self.ty != ty::Id::UNDECLARED && !std::thread::panicking() {
+            if self.ty != ty::Id::UNDECLARED && !debug::panicking() {
                 panic!("variable unproperly deinitialized")
             }
         }
@@ -1427,11 +1419,19 @@ impl ItemCtx {
                                 self.emit(instrs::ld(r, atr(allocs[0]), 0, size))
                             }
                             Some(PLoc::Ref(_, size)) => {
-                                self.emit(instrs::bmc(
-                                    atr(allocs[0]),
-                                    atr(allocs[1]),
-                                    size.try_into().expect("TODO: handle huge copies"),
-                                ));
+                                let [src, dst] = [atr(allocs[0]), atr(allocs[1])];
+                                if let Ok(size) = u16::try_from(size) {
+                                    self.emit(instrs::bmc(src, dst, size));
+                                } else {
+                                    for _ in 0..size / u16::MAX as u32 {
+                                        self.emit(instrs::bmc(src, dst, u16::MAX));
+                                        self.emit(instrs::addi64(src, src, u16::MAX as _));
+                                        self.emit(instrs::addi64(dst, dst, u16::MAX as _));
+                                    }
+                                    self.emit(instrs::bmc(src, dst, size as u16));
+                                    self.emit(instrs::addi64(src, src, size.wrapping_neg() as _));
+                                    self.emit(instrs::addi64(dst, dst, size.wrapping_neg() as _));
+                                }
                             }
                         }
 
@@ -1519,6 +1519,12 @@ impl ItemCtx {
                         }
 
                         if let Some(PLoc::WideReg(r, size)) = ret {
+                            let stck = fuc.nodes[*node.inputs.last().unwrap()].offset;
+                            self.emit(instrs::st(r, reg::STACK_PTR, stck as _, size));
+                        }
+                        if let Some(PLoc::Reg(r, size)) = ret
+                            && node.ty.loc(tys) == Loc::Stack
+                        {
                             let stck = fuc.nodes[*node.inputs.last().unwrap()].offset;
                             self.emit(instrs::st(r, reg::STACK_PTR, stck as _, size));
                         }
@@ -2523,8 +2529,7 @@ impl<'a> Codegen<'a> {
             Expr::Directive { name: "as", args: [ty, expr], .. } => {
                 let ty = self.ty(ty);
                 let ctx = Ctx::default().with_ty(ty);
-                let mut val = self.raw_expr_ctx(expr, ctx)?;
-                self.strip_var(&mut val);
+                let mut val = self.expr_ctx(expr, ctx)?;
                 self.assert_ty(expr.pos(), &mut val, ty, "hinted expr");
                 Some(val)
             }
@@ -3230,11 +3235,18 @@ impl<'a> Codegen<'a> {
                     // FIXME: could fuck us
                     ty::Id::UNDECLARED
                 } else {
-                    debug_assert_eq!(
-                        ty,
-                        ty::Id::TYPE,
-                        "TODO: we dont support anything except type generics"
-                    );
+                    if ty != ty::Id::TYPE {
+                        self.report(
+                            arg.pos(),
+                            fa!(
+                                "arbitrary comptime types are not supported yet \
+                                (expected '{}' got '{}')",
+                                self.ty_display(ty::Id::TYPE),
+                                self.ty_display(ty)
+                            ),
+                        );
+                        return None;
+                    }
                     let ty = self.ty(arg);
                     self.tys.tmp.args.push(ty);
                     ty
@@ -4437,6 +4449,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        returning_global_struct;
         wide_ret;
         comptime_min_reg_leak;
         different_types;
