@@ -547,7 +547,7 @@ white := Color.(255, 255, 255, 255)
 u32_to_color := fn(v: u32): Color return @bitcast(v)
 u32_to_u32 := fn(v: u32): u32 return v
 main := fn(): int {
-	return u32_to_color(@bitcast(white)).r + @as(Color, @bitcast(u32_to_u32(@bitcast(white)))).g
+	return u32_to_color(@bitcast(white)).r + @as(Color, @bitcast(u32_to_u32(@bitcast(Color.{r: 1, g: 1, b: 1, a: 1})))).g
 }
 ```
 
