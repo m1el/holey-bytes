@@ -1430,9 +1430,12 @@ impl ItemCtx {
                             self.emit(instrs::jmp(0));
                         }
                     }
-                    Kind::CInt { value } => {
-                        self.emit(instrs::li64(atr(allocs[0]), value as _));
-                    }
+                    Kind::CInt { value } => self.emit(match tys.size_of(node.ty) {
+                        1 => instrs::li8(atr(allocs[0]), value as _),
+                        2 => instrs::li16(atr(allocs[0]), value as _),
+                        4 => instrs::li32(atr(allocs[0]), value as _),
+                        _ => instrs::li64(atr(allocs[0]), value as _),
+                    }),
                     Kind::Extend => {
                         let base = fuc.nodes[node.inputs[1]].ty;
                         let dest = node.ty;
