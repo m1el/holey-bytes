@@ -398,15 +398,19 @@ mod ty {
         pub const DEFAULT_INT: Self = Self::UINT;
 
         pub fn is_signed(self) -> bool {
-            (I8..=INT).contains(&self.repr())
+            (I8..=INT).contains(&self.repr()) || self.is_never()
         }
 
         pub fn is_unsigned(self) -> bool {
-            (U8..=UINT).contains(&self.repr())
+            (U8..=UINT).contains(&self.repr()) || self.is_never()
         }
 
         pub fn is_integer(self) -> bool {
-            (U8..=INT).contains(&self.repr())
+            (U8..=INT).contains(&self.repr()) || self.is_never()
+        }
+
+        pub fn is_never(self) -> bool {
+            self == Self::NEVER
         }
 
         pub fn strip_pointer(self) -> Self {
@@ -417,7 +421,7 @@ mod ty {
         }
 
         pub fn is_pointer(self) -> bool {
-            matches!(self.expand(), Kind::Ptr(_))
+            matches!(self.expand(), Kind::Ptr(_)) || self.is_never()
         }
 
         pub fn try_upcast(self, ob: Self, kind: TyCheck) -> Option<Self> {
@@ -441,11 +445,6 @@ mod ty {
 
         pub const fn repr(self) -> u32 {
             self.0.get()
-        }
-
-        #[allow(unused)]
-        pub fn is_struct(&self) -> bool {
-            matches!(self.expand(), Kind::Struct(_))
         }
 
         pub(crate) fn simple_size(&self) -> Option<Size> {
