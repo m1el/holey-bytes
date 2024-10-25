@@ -40,29 +40,29 @@ Following examples incrementally introduce language features and syntax.
 
 #### main_fn
 ```hb
-main := fn(): int {
+main := fn(): uint {
 	return 1
 }
 ```
 
 #### arithmetic
 ```hb
-main := fn(): int {
+main := fn(): uint {
 	return 10 - 20 / 2 + 4 * (2 + 2) - 4 * 4 + (1 << 0) + -1
 }
 ```
 
 #### functions
 ```hb
-main := fn(): int {
+main := fn(): uint {
 	return add_one(10) + add_two(20)
 }
 
-add_two := fn(x: int): int {
+add_two := fn(x: uint): uint {
 	return x + 2
 }
 
-add_one := fn(x: int): int {
+add_one := fn(x: uint): uint {
 	return x + 1
 }
 ```
@@ -70,7 +70,7 @@ add_one := fn(x: int): int {
 #### comments
 ```hb
 // commant is an item
-main := fn(): int {
+main := fn(): uint {
 	// comment is a statement
 
 	foo(/* comment is an exprression /* if you are crazy */ */)
@@ -84,11 +84,11 @@ foo := fn(comment: void): void return /* comment evaluates to void */
 
 #### if_statements
 ```hb
-main := fn(): int {
+main := fn(): uint {
 	return fib(10)
 }
 
-fib := fn(x: int): int {
+fib := fn(x: uint): uint {
 	if x <= 2 {
 		return 1
 	} else {
@@ -99,7 +99,7 @@ fib := fn(x: int): int {
 
 #### variables
 ```hb
-main := fn(): int {
+main := fn(): uint {
 	ඞ := 1
 	b := 2
 	ඞ += 1
@@ -109,11 +109,11 @@ main := fn(): int {
 
 #### loops
 ```hb
-main := fn(): int {
+main := fn(): uint {
 	return fib(10)
 }
 
-fib := fn(n: int): int {
+fib := fn(n: uint): uint {
 	a := 0
 	b := 1
 	loop if n == 0 break else {
@@ -128,7 +128,7 @@ fib := fn(n: int): int {
 
 #### pointers
 ```hb
-main := fn(): int {
+main := fn(): uint {
 	a := 1
 	b := &a
 
@@ -142,12 +142,12 @@ main := fn(): int {
 	return *b - 2
 }
 
-modify := fn(a: ^int): void {
+modify := fn(a: ^uint): void {
 	*a = 2
 	return
 }
 
-drop := fn(a: int): void {
+drop := fn(a: uint): void {
 	return
 }
 ```
@@ -157,17 +157,17 @@ drop := fn(a: int): void {
 Ty := struct {
 	// comment
 
-	a: int,
+	a: uint,
 }
 
 Ty2 := struct {
 	ty: Ty,
-	c: int,
+	c: uint,
 }
 
 useless := struct {}
 
-main := fn(): int {
+main := fn(): uint {
 	// `packed` structs have no padding (all fields are alighred to 1)
 	if @sizeof(packed struct {a: u8, b: u16}) != 3 {
 		return 9001
@@ -181,7 +181,7 @@ main := fn(): int {
 	return 0
 }
 
-pass := fn(t: ^Ty): int {
+pass := fn(t: ^Ty): uint {
 	return t.a
 }
 
@@ -192,7 +192,7 @@ odher_pass := fn(t: Ty2): Ty2 {
 
 #### hex_octal_binary_literals
 ```hb
-main := fn(): int {
+main := fn(): uint {
 	hex := 0xFF
 	decimal := 255
 	octal := 0o377
@@ -208,8 +208,8 @@ main := fn(): int {
 #### struct_operators
 ```hb
 Point := struct {
-	x: int,
-	y: int,
+	x: uint,
+	y: uint,
 }
 
 Rect := struct {
@@ -219,7 +219,7 @@ Rect := struct {
 
 Color := packed struct {b: u8, g: u8, r: u8, a: u8}
 
-main := fn(): int {
+main := fn(): uint {
 	i := Color.(0, 0, 0, 0)
 	i += .(1, 1, 1, 1)
 	if i.r + i.g + i.b + i.a != 4 {
@@ -245,14 +245,14 @@ global_var := 10
 
 complex_global_var := fib(global_var) - 5
 
-fib := fn(n: int): int {
+fib := fn(n: uint): uint {
 	if 2 > n {
 		return n
 	}
 	return fib(n - 1) + fib(n - 2)
 }
 
-main := fn(): int {
+main := fn(): uint {
 	complex_global_var += 5
 	return complex_global_var
 }
@@ -263,7 +263,7 @@ note: values of global variables are evaluated at compile time
 ```hb
 foo := @use("foo.hb")
 
-main := fn(): int {
+main := fn(): uint {
 	byte := @as(u8, 10)
 	same_type_as_byte := @as(@TypeOf(byte), 30)
 	wide_uint := @as(u32, 40)
@@ -271,7 +271,7 @@ main := fn(): int {
 	size_of_Type_in_bytes := @sizeof(foo.Type)
 	align_of_Type_in_bytes := @alignof(foo.Type)
 	hardcoded_pointer := @as(^u8, @bitcast(10))
-	ecall_that_returns_int := @as(int, @eca(1, foo.Type.(10, 20), 5, 6))
+	ecall_that_returns_uint := @as(uint, @eca(1, foo.Type.(10, 20), 5, 6))
 	embedded_array := @as([u8; 15], @embed("text.txt"))
 	return @inline(foo.foo)
 }
@@ -279,11 +279,11 @@ main := fn(): int {
 // in module: foo.hb
 
 Type := struct {
-	brah: int,
-	blah: int,
+	brah: uint,
+	blah: uint,
 }
 
-foo := fn(): int return 0
+foo := fn(): uint return 0
 
 // in module: text.txt
 arbitrary text
@@ -292,7 +292,7 @@ arbitrary text
 - `@use(<string>)`: imports a module based of string, the string is passed to a loader that can be customized, default loader uses following syntax:
 	- `((rel:|)(<path>)|git:<git-addr>:<path>)`: `rel:` and `''` prefixes both mean module is located at `path` relavive to the current file, `git:` takes a git url without `https://` passed as `git-addr`, `path` then refers to file within the repository
 - `@TypeOf(<expr>)`: results into literal type of whatever the type of `<expr>` is, `<expr>` is not included in final binary
-- `@as(<ty>, <expr>)`: hint to the compiler that  `@TypeOf(<expr>) == <ty>`
+- `@as(<ty>, <expr>)`: huint to the compiler that  `@TypeOf(<expr>) == <ty>`
 - `@intcast(<expr>)`: needs to be used when conversion of `@TypeOf(<expr>)` would loose precision (widening of integers is implicit)
 - `@sizeof(<ty>), @alignof(<ty>)`: I think explaining this would insult your intelligence
 - `@bitcast(<expr>)`: tell compiler to assume `@TypeOf(<expr>)` is whatever is inferred, so long as size and alignment did not change
@@ -301,7 +301,7 @@ arbitrary text
 
 #### c_strings
 ```hb
-str_len := fn(str: ^u8): int {
+str_len := fn(str: ^u8): uint {
 	len := 0
 	loop if *str == 0 break else {
 		len += 1
@@ -310,7 +310,7 @@ str_len := fn(str: ^u8): int {
 	return len
 }
 
-main := fn(): int {
+main := fn(): uint {
 	// when string ends with '\0' its a C string and thus type is '^u8'
 	some_str := "abඞ\n\r\t\{35}\{36373839}\0"
 	len := str_len(some_str)
@@ -324,7 +324,7 @@ main := fn(): int {
 ```hb
 .{fib, fib_iter, Fiber} := @use("fibs.hb")
 
-main := fn(): int {
+main := fn(): uint {
 	.{a, b} := Fiber.{a: 10, b: 10}
 	return fib(a) - fib_iter(b)
 }
@@ -333,13 +333,13 @@ main := fn(): int {
 
 Fiber := struct {a: u8, b: u8}
 
-fib := fn(n: int): int if n < 2 {
+fib := fn(n: uint): uint if n < 2 {
 	return n
 } else {
 	return fib(n - 1) + fib(n - 2)
 }
 
-fib_iter := fn(n: int): int {
+fib_iter := fn(n: uint): uint {
 	a := 0
 	b := 1
 	loop if n == 0 break else {
@@ -354,29 +354,29 @@ fib_iter := fn(n: int): int {
 
 #### arrays
 ```hb
-main := fn(): int {
+main := fn(): uint {
 	addr := @as(u16, 0x1FF)
 	msg := [u8].(0, 0, @intcast(addr), @intcast(addr >> 8))
 	_force_stack := &msg
 
-	arr := [int].(1, 2, 4)
+	arr := [uint].(1, 2, 4)
 	return pass(&arr) + msg[3]
 }
 
-pass := fn(arr: ^[int; 3]): int {
+pass := fn(arr: ^[uint; 3]): uint {
 	return arr[0] + arr[1] + arr[arr[1]]
 }
 ```
 
 #### inline
 ```hb
-main := fn(): int {
+main := fn(): uint {
 	return @inline(foo, 1, 2, 3) - 6
 }
 
 gb := 0
 
-foo := fn(a: int, b: int, c: int): int {
+foo := fn(a: uint, b: uint, c: uint): uint {
 	if false | gb != 0 return 1
 	return a + b + c
 }
@@ -384,9 +384,9 @@ foo := fn(a: int, b: int, c: int): int {
 
 #### idk
 ```hb
-_edge_case := @as(int, idk)
+_edge_case := @as(uint, idk)
 
-main := fn(): int {
+main := fn(): uint {
 	big_array := @as([u8; 128], idk)
 	i := 0
 	loop if i >= 128 break else {
@@ -401,8 +401,8 @@ main := fn(): int {
 ```hb
 add := fn($T: type, a: T, b: T): T return a + b
 
-main := fn(): int {
-	return add(u32, 2, 2) - add(int, 1, 3)
+main := fn(): uint {
+	return add(u32, 2, 2) - add(uint, 1, 3)
 }
 ```
 
@@ -410,13 +410,13 @@ main := fn(): int {
 
 #### comptime_pointers
 ```hb
-main := fn(): int {
+main := fn(): uint {
 	$integer := 7
 	modify(&integer)
 	return integer
 }
 
-modify := fn($num: ^int): void {
+modify := fn($num: ^uint): void {
 	$: *num = 0
 }
 ```
@@ -426,14 +426,14 @@ modify := fn($num: ^int): void {
 MALLOC_SYS_CALL := 69
 FREE_SYS_CALL := 96
 
-malloc := fn(size: int, align: int): ^void return @eca(MALLOC_SYS_CALL, size, align)
-free := fn(ptr: ^void, size: int, align: int): void return @eca(FREE_SYS_CALL, ptr, size, align)
+malloc := fn(size: uint, align: uint): ^void return @eca(MALLOC_SYS_CALL, size, align)
+free := fn(ptr: ^void, size: uint, align: uint): void return @eca(FREE_SYS_CALL, ptr, size, align)
 
 Vec := fn($Elem: type): type {
 	return struct {
 		data: ^Elem,
-		len: int,
-		cap: int,
+		len: uint,
+		cap: uint,
 	}
 }
 
@@ -478,29 +478,29 @@ push := fn($Elem: type, vec: ^Vec(Elem), value: Elem): ^Elem {
 	return slot
 }
 
-main := fn(): int {
-	vec := new(int)
-	_f := push(int, &vec, 69)
+main := fn(): uint {
+	vec := new(uint)
+	_f := push(uint, &vec, 69)
 	res := *vec.data
-	deinit(int, &vec)
+	deinit(uint, &vec)
 	return res
 }
 ```
 
 #### fb_driver
 ```hb
-arm_fb_ptr := fn(): int return 100
-x86_fb_ptr := fn(): int return 100
+arm_fb_ptr := fn(): uint return 100
+x86_fb_ptr := fn(): uint return 100
 
-check_platform := fn(): int {
+check_platform := fn(): uint {
 	return x86_fb_ptr()
 }
 
-set_pixel := fn(x: int, y: int, width: int): int {
+set_pixel := fn(x: uint, y: uint, width: uint): uint {
 	return y * width + x
 }
 
-main := fn(): int {
+main := fn(): uint {
 	fb_ptr := check_platform()
 	width := 100
 	height := 30
@@ -534,9 +534,9 @@ white := Color.(255, 255, 255, 255)
 random_color := fn(): Color {
 	return white
 }
-main := fn(): int {
+main := fn(): uint {
 	val := random_color()
-	return @as(int, val.r) + val.g + val.b + val.a
+	return @as(uint, val.r) + val.g + val.b + val.a
 }
 ```
 
@@ -546,7 +546,7 @@ Color := struct {r: u8, g: u8, b: u8, a: u8}
 white := Color.(255, 255, 255, 255)
 u32_to_color := fn(v: u32): Color return @as(Color, @bitcast(u32_to_u32(@bitcast(v))))
 u32_to_u32 := fn(v: u32): u32 return v
-main := fn(): int {
+main := fn(): uint {
 	return u32_to_color(@bitcast(white)).r
 }
 ```
@@ -556,7 +556,7 @@ main := fn(): int {
 Color := struct {r: u8, g: u8, b: u8, a: u8}
 white := Color.(255, 255, 255, 255)
 black := Color.(0, 0, 0, 0)
-main := fn(): int {
+main := fn(): uint {
 	f := black
 	f = white
 	return f.a
@@ -571,15 +571,15 @@ set := fn($Expr: type, src: ^Expr, dest: ^Expr, count: uint): u32 {
 	return l.count
 }
 
-main := fn(): int {
-	return set(int, &0, &0, 1024)
+main := fn(): uint {
+	return set(uint, &0, &0, 1024)
 }
 ```
 
 #### string_flip
 ```hb
-U := struct {u: int}
-main := fn(): int {
+U := struct {u: uint}
+main := fn(): uint {
 	arr := @as([U; 2 * 2], idk)
 
 	i := 0
@@ -622,13 +622,13 @@ small_struct := fn(): Stru {
 	return .{a: 0, b: 0}
 }
 
-maina := fn(major: int, minor: int): OemIdent {
+maina := fn(major: uint, minor: uint): OemIdent {
 	_f := small_struct()
 	ver := [u8].(0, 0, 0, 3, 1, 0, 0, 0)
 	return OemIdent.(ver, ver)
 }
 
-main := fn(): int {
+main := fn(): uint {
 	m := maina(0, 0)
 	return m.dos_version[3] - m.dos_version_name[4]
 }
@@ -638,15 +638,15 @@ main := fn(): int {
 ```hb
 a := @use("math.hb").min(100, 50)
 
-main := fn(): int {
+main := fn(): uint {
 	return a
 }
 
 // in module: math.hb
 
-SIZEOF_INT := 32
-SHIFT := SIZEOF_INT - 1
-min := fn(a: int, b: int): int {
+SIZEOF_uint := 32
+SHIFT := SIZEOF_uint - 1
+min := fn(a: uint, b: uint): uint {
 	c := a - b
 	return b + (c & c >> SHIFT)
 }
@@ -668,10 +668,10 @@ Point := struct {
 
 Pixel := struct {
 	color: Color,
-	point: Point,
+	pouint: Point,
 }
 
-main := fn(): int {
+main := fn(): uint {
 	pixel := Pixel.{
 		color: Color.{
 			r: 255,
@@ -679,22 +679,22 @@ main := fn(): int {
 			b: 0,
 			a: 255,
 		},
-		point: Point.{
+		pouint: Point.{
 			x: 0,
 			y: 2,
 		},
 	}
 
 	soupan := 1
-	if *(&pixel.point.x + soupan) != 2 {
+	if *(&pixel.pouint.x + soupan) != 2 {
 		return 0
 	}
 
-	if *(&pixel.point.y - 1) != 0 {
+	if *(&pixel.pouint.y - 1) != 0 {
 		return 64
 	}
 
-	return pixel.point.x + pixel.point.y + pixel.color.r
+	return pixel.pouint.x + pixel.pouint.y + pixel.color.r
 		+ pixel.color.g + pixel.color.b + pixel.color.a
 }
 ```
@@ -703,7 +703,7 @@ main := fn(): int {
 ```hb
 bar := @use("bar.hb")
 
-main := fn(): int {
+main := fn(): uint {
 	return 7 - bar.foo().x - bar.foo().y - bar.foo().z
 }
 
@@ -714,16 +714,16 @@ foo := fn(): Foo {
 	return .{x: 3, y: 2, z: 2}
 }
 
-Foo := struct {x: int, y: u32, z: u32}
+Foo := struct {x: uint, y: u32, z: u32}
 ```
 
 #### sort_something_viredly
 ```hb
-main := fn(): int {
+main := fn(): uint {
 	return sqrt(100)
 }
 
-sqrt := fn(x: int): int {
+sqrt := fn(x: uint): uint {
 	temp := 0
 	g := 0
 	b := 32768
@@ -747,7 +747,7 @@ sqrt := fn(x: int): int {
 ColorBGRA := struct {b: u8, g: u8, r: u8, a: u8}
 MAGENTA := ColorBGRA.{b: 205, g: 0, r: 205, a: 255}
 
-main := fn(): int {
+main := fn(): uint {
 	color := MAGENTA
 	return color.r
 }
@@ -761,7 +761,7 @@ CONST_A := 100
 CONST_B := 50
 a := stn.math.min(CONST_A, CONST_B)
 
-main := fn(): int {
+main := fn(): uint {
 	return a
 }
 
@@ -769,9 +769,9 @@ main := fn(): int {
 math := @use("math.hb")
 
 // in module: math.hb
-SIZEOF_INT := 32
-SHIFT := SIZEOF_INT - 1
-min := fn(a: int, b: int): int {
+SIZEOF_uint := 32
+SHIFT := SIZEOF_uint - 1
+min := fn(a: uint, b: uint): uint {
 	c := a - b
 	return b + (c & c >> SHIFT)
 }
@@ -779,24 +779,24 @@ min := fn(a: int, b: int): int {
 
 #### inline_test
 ```hb
-fna := fn(a: int, b: int, c: int): int return a + b + c
+fna := fn(a: uint, b: uint, c: uint): uint return a + b + c
 
-scalar_values := fn(): int {
+scalar_values := fn(): uint {
 	return @inline(fna, 1, @inline(fna, 2, 3, 4), -10)
 }
 
-A := struct {a: int}
-AB := struct {a: A, b: int}
+A := struct {a: uint}
+AB := struct {a: A, b: uint}
 
-mangle := fn(a: A, ab: AB): int {
+mangle := fn(a: A, ab: AB): uint {
 	return a.a + ab.a.a - ab.b
 }
 
-structs := fn(): int {
+structs := fn(): uint {
 	return @inline(mangle, .(0), .(.(@inline(mangle, .(20), .(.(5), 5))), 20))
 }
 
-main := fn(): int {
+main := fn(): uint {
 	if scalar_values() != 0 return 1
 	if structs() != 0 return structs()
 
@@ -811,8 +811,8 @@ abs := fn($Expr: type, x: Expr): Expr {
 	return (x ^ mask) - mask
 }
 
-main := fn(): int {
-	return @inline(abs, int, -10)
+main := fn(): uint {
+	return @inline(abs, uint, -10)
 }
 ```
 
@@ -837,7 +837,7 @@ main := fn(): void {
 }
 
 // in module: random.hb
-integer_range := fn(min: uint, max: int): uint {
+integer_range := fn(min: uint, max: uint): uint {
 	return @eca(3, 4) % (@bitcast(max) - min + 1) + min
 }
 ```
@@ -896,7 +896,7 @@ main := fn(): void {
 
 #### tests_ptr_to_ptr_copy
 ```hb
-main := fn(): int {
+main := fn(): uint {
 	back_buffer := @as([u8; 1024 * 10], idk)
 
 	n := 0
@@ -917,7 +917,7 @@ main := fn(): int {
 
 #### const_folding_with_arg
 ```hb
-main := fn(arg: int): int {
+main := fn(arg: uint): uint {
 	// reduces to 0
 	return arg + 0 - arg * 1 + arg + 1 + arg + 2 + arg + 3 - arg * 3 - 6
 }
@@ -925,7 +925,7 @@ main := fn(arg: int): int {
 
 #### branch_assignments
 ```hb
-main := fn(arg: int): int {
+main := fn(arg: uint): uint {
 	if arg == 1 {
 		arg = 1
 	} else if arg == 0 {
@@ -939,7 +939,7 @@ main := fn(arg: int): int {
 
 #### exhaustive_loop_testing
 ```hb
-main := fn(): int {
+main := fn(): uint {
 	loop break
 
 	x := 0
@@ -984,7 +984,7 @@ main := fn(): int {
 	}
 }
 
-multiple_breaks := fn(arg: int): int {
+multiple_breaks := fn(arg: uint): uint {
 	loop if arg < 10 {
 		arg += 1
 		if arg == 3 break
@@ -992,7 +992,7 @@ multiple_breaks := fn(arg: int): int {
 	return arg
 }
 
-state_change_in_break := fn(arg: int): int {
+state_change_in_break := fn(arg: uint): uint {
 	loop if arg < 10 {
 		if arg == 3 {
 			arg = 0
@@ -1003,7 +1003,7 @@ state_change_in_break := fn(arg: int): int {
 	return arg
 }
 
-continue_and_state_change := fn(arg: int): int {
+continue_and_state_change := fn(arg: uint): uint {
 	loop if arg < 10 {
 		if arg == 2 {
 			arg = 4
@@ -1021,7 +1021,7 @@ continue_and_state_change := fn(arg: int): int {
 
 #### pointer_opts
 ```hb
-main := fn(): int {
+main := fn(): uint {
 	mem := &0;
 	*mem = 1;
 	*mem = 2
@@ -1033,7 +1033,7 @@ main := fn(): int {
 	return b
 }
 
-clobber := fn(cb: ^int): void {
+clobber := fn(cb: ^uint): void {
 	*cb = 4
 	return
 }
@@ -1041,7 +1041,7 @@ clobber := fn(cb: ^int): void {
 
 #### conditional_stores
 ```hb
-main := fn(): int {
+main := fn(): uint {
 	cnd := cond()
 	mem := &1
 
@@ -1054,12 +1054,12 @@ main := fn(): int {
 	return *mem
 }
 
-cond := fn(): int return 0
+cond := fn(): uint return 0
 ```
 
 #### loop_stores
 ```hb
-main := fn(): int {
+main := fn(): uint {
 	mem := &10
 
 	loop if *mem == 0 break else {

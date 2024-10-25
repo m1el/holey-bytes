@@ -15,7 +15,7 @@ main:
     CP r10, r32
     CP r35, r32
     CP r36, r32
- 5: JLTS r10, r33, :0
+ 5: JLTU r10, r33, :0
     ADDI64 r35, r35, 1d
     CP r2, r32
     CP r3, r35

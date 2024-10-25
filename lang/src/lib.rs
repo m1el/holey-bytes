@@ -395,6 +395,8 @@ mod ty {
     }
 
     impl Id {
+        pub const DEFAULT_INT: Self = Self::UINT;
+
         pub fn is_signed(self) -> bool {
             (I8..=INT).contains(&self.repr())
         }

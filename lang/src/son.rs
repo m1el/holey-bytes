@@ -9,7 +9,7 @@ use {
         parser::{
             self,
             idfl::{self},
-            CtorField, Expr, ExprRef, FileId, Pos,
+            CtorField, Expr, FileId, Pos,
         },
         reg, task,
         ty::{self, Arg, ArrayLen, Loc, Tuple},
@@ -20,12 +20,10 @@ use {
     alloc::{borrow::ToOwned, string::String, vec::Vec},
     core::{
         assert_matches::debug_assert_matches,
-        borrow::Borrow,
         cell::RefCell,
         fmt::{self, Debug, Display, Write},
         format_args as fa, mem,
         ops::{self},
-        usize,
     },
     hashbrown::hash_map,
     hbbytecode::DisasmError,
@@ -2077,7 +2075,7 @@ impl<'a> Codegen<'a> {
                 [VOID],
             )),
             Expr::Number { value, .. } => Some(self.ci.nodes.new_node_lit(
-                ctx.ty.filter(|ty| ty.is_integer()).unwrap_or(ty::Id::INT),
+                ctx.ty.filter(|ty| ty.is_integer()).unwrap_or(ty::Id::DEFAULT_INT),
                 Kind::CInt { value },
                 [VOID],
             )),
@@ -2381,7 +2379,7 @@ impl<'a> Codegen<'a> {
             Expr::Directive { name: "sizeof", args: [ty], .. } => {
                 let ty = self.ty(ty);
                 Some(self.ci.nodes.new_node_lit(
-                    ty::Id::UINT,
+                    ctx.ty.filter(|ty| ty.is_integer()).unwrap_or(ty::Id::DEFAULT_INT),
                     Kind::CInt { value: self.tys.size_of(ty) as _ },
                     [VOID],
                 ))
@@ -2389,7 +2387,7 @@ impl<'a> Codegen<'a> {
             Expr::Directive { name: "alignof", args: [ty], .. } => {
                 let ty = self.ty(ty);
                 Some(self.ci.nodes.new_node_lit(
-                    ty::Id::UINT,
+                    ctx.ty.filter(|ty| ty.is_integer()).unwrap_or(ty::Id::DEFAULT_INT),
                     Kind::CInt { value: self.tys.align_of(ty) as _ },
                     [VOID],
                 ))
@@ -2435,7 +2433,7 @@ impl<'a> Codegen<'a> {
                 Some(val)
             }
             Expr::Directive { name: "intcast", args: [expr], pos } => {
-                let val = self.expr(expr)?;
+                let mut val = self.expr(expr)?;
 
                 if !val.ty.is_integer() {
                     self.report(
@@ -2457,7 +2455,18 @@ impl<'a> Codegen<'a> {
                     return Value::NEVER;
                 };
 
+                if !ty.is_integer() {
+                    self.report(
+                        expr.pos(),
+                        fa!(
+                            "intcast is inferred to output '{}', which is not an integer",
+                            self.ty_display(val.ty)
+                        ),
+                    );
+                }
+
                 if self.tys.size_of(val.ty) <= self.tys.size_of(ty) {
+                    val.ty = ty;
                     return Some(val);
                 }
 
@@ -4356,7 +4365,7 @@ mod tests {
 
     fn generate(ident: &'static str, input: &'static str, output: &mut String) {
         _ = log::set_logger(&crate::fs::Logger);
-        log::set_max_level(log::LevelFilter::Info);
+        // log::set_max_level(log::LevelFilter::Info);
         //        log::set_max_level(log::LevelFilter::Trace);
 
         let (ref files, embeds) = crate::test_parse_files(ident, input);

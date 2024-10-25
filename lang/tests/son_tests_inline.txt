@@ -3,7 +3,7 @@ main:
     LRA r4, r0, :gb
     LI64 r10, 6d
     LD r7, r4, 0a, 8h
-    CMPS r11, r7, r5
+    CMPU r11, r7, r5
     CMPUI r11, r11, 0d
     ORI r12, r11, 0d
     ANDI r12, r12, 255d

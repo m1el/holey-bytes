@@ -3,7 +3,7 @@ fib:
     ST r31, r254, 0a, 32h
     LI64 r1, 1d
     LI64 r32, 2d
-    JGTS r2, r32, :0
+    JGTU r2, r32, :0
     JMP :1
  0: CP r6, r2
     SUB64 r2, r6, r1

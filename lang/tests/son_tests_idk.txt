@@ -4,7 +4,7 @@ main:
     LI64 r5, 128d
     LI64 r7, 0d
     ADDI64 r4, r254, 0d
- 2: JLTS r7, r5, :0
+ 2: JLTU r7, r5, :0
     LD r2, r254, 42a, 1h
     ANDI r1, r2, 255d
     JMP :1
