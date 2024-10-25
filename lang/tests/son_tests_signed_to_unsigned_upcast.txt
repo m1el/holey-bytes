@@ -1,0 +1,7 @@
+main:
+    LI32 r1, 1w
+    ANDI r1, r1, 4294967295d
+    JALA r0, r31, 0a
+code size: 36
+ret: 1
+status: Ok(())

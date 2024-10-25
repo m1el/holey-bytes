@@ -1,12 +1,12 @@
 main:
     ADDI64 r254, r254, -31d
-    LI64 r6, 6d
     LI64 r5, 5d
     LI64 r7, 20d
     LI64 r2, 1d
-    LI64 r9, 10d
+    LI64 r4, 10d
+    LI64 r6, 6d
     ADDI64 r8, r254, 15d
-    ST r9, r254, 15a, 8h
+    ST r4, r254, 15a, 8h
     ST r7, r254, 23a, 8h
     LD r3, r8, 0a, 16h
     ECA 

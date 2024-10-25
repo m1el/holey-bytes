@@ -2501,8 +2501,10 @@ impl<'a> Codegen<'a> {
 
                 let mut inps = Vc::from([NEVER]);
                 let arg_base = self.tys.tmp.args.len();
+                let mut has_ptr_arg = false;
                 for arg in args {
                     let value = self.expr(arg)?;
+                    has_ptr_arg |= value.ty.has_pointers(&self.tys);
                     self.tys.tmp.args.push(value.ty);
                     debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
                     self.ci.nodes.lock(value.id);
@@ -2515,18 +2517,20 @@ impl<'a> Codegen<'a> {
                     self.ci.nodes.unlock(n);
                 }
 
-                inps.push(self.ci.scope.store.value());
-                self.ci.scope.loads.retain(|&load| {
-                    if inps.contains(&load) {
-                        return true;
-                    }
+                if has_ptr_arg {
+                    inps.push(self.ci.scope.store.value());
+                    self.ci.scope.loads.retain(|&load| {
+                        if inps.contains(&load) {
+                            return true;
+                        }
 
-                    if !self.ci.nodes.unlock_remove(load) {
-                        inps.push(load);
-                    }
+                        if !self.ci.nodes.unlock_remove(load) {
+                            inps.push(load);
+                        }
 
-                    false
-                });
+                        false
+                    });
+                }
 
                 let alt_value = match ty.loc(&self.tys) {
                     Loc::Reg => None,
@@ -2540,7 +2544,9 @@ impl<'a> Codegen<'a> {
                 inps[0] = self.ci.ctrl;
                 self.ci.ctrl = self.ci.nodes.new_node(ty, Kind::Call { func: ty::ECA, args }, inps);
 
-                self.store_mem(VOID, ty::Id::VOID, VOID);
+                if has_ptr_arg {
+                    self.store_mem(VOID, ty::Id::VOID, VOID);
+                }
 
                 alt_value.or(Some(Value::new(self.ci.ctrl).ty(ty)))
             }
