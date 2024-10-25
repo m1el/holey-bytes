@@ -28,7 +28,6 @@ use {
     hashbrown::hash_map,
     hbbytecode::DisasmError,
     regalloc2::VReg,
-    std::panic,
 };
 
 const VOID: Nid = 0;
@@ -4090,9 +4089,6 @@ impl<'a> Function<'a> {
             buf.push(o);
             while let Some(&n) = buf.get(cursor) {
                 for &i in &self.nodes[n].inputs[1..] {
-                    if self.nodes[i].inputs.is_empty() {
-                        std::println!("{:?}", self.nodes[i]);
-                    }
                     if self.nodes[n].inputs.first() == self.nodes[i].inputs.first()
                         && self.nodes[i].outputs.iter().all(|&o| {
                             self.nodes[o].inputs.first() != self.nodes[i].inputs.first()
@@ -4115,9 +4111,6 @@ impl<'a> Function<'a> {
             buf.push(o);
             while let Some(&n) = buf.get(cursor) {
                 for &i in &self.nodes[n].inputs[1..] {
-                    if self.nodes[i].inputs.is_empty() {
-                        std::println!("{:?}", self.nodes[i]);
-                    }
                     if self.nodes[n].inputs.first() == self.nodes[i].inputs.first()
                         && self.nodes[i].outputs.iter().all(|&o| {
                             self.nodes[o].inputs.first() != self.nodes[i].inputs.first()
@@ -4133,8 +4126,6 @@ impl<'a> Function<'a> {
         }
 
         debug_assert!(outputs.len() == buf.len() || outputs.len() == buf.len() + 1,);
-
-        std::println!("{:?}\n{:?}", outputs, buf);
 
         if buf.len() + 1 == outputs.len() {
             outputs.remove(outputs.len() - 1);
