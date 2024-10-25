@@ -4,9 +4,9 @@ main:
     LI64 r7, 4d
     LI64 r8, 2d
     LI64 r9, 1d
-    LI64 r6, 1d
-    LI64 r10, 255d
-    LI64 r11, 0d
+    LI8 r6, 1b
+    LI8 r10, 255b
+    LI8 r11, 0b
     ADDI64 r12, r254, 0d
     ST r11, r254, 0a, 1h
     ST r11, r254, 1a, 1h
@@ -24,14 +24,14 @@ main:
     ADDI64 r254, r254, 36d
     JALA r0, r31, 0a
 pass:
-    LD r3, r2, 8a, 8h
-    MULI64 r8, r3, 8d
+    LD r4, r2, 8a, 8h
+    MULI64 r8, r4, 8d
     ADD64 r10, r8, r2
     LD r8, r10, 0a, 8h
-    LD r9, r2, 0a, 8h
-    ADD64 r11, r3, r9
+    LD r7, r2, 0a, 8h
+    ADD64 r11, r4, r7
     ADD64 r1, r8, r11
     JALA r0, r31, 0a
-code size: 348
+code size: 327
 ret: 8
 status: Ok(())

@@ -1,9 +1,9 @@
 main:
     ADDI64 r254, r254, -24d
-    LI64 r6, 2d
-    LI64 r5, 0d
-    LI64 r8, 0d
-    LI64 r9, 255d
+    LI32 r6, 2w
+    LI32 r5, 0w
+    LI8 r8, 0b
+    LI8 r9, 255b
     ADDI64 r10, r254, 0d
     ADDI64 r7, r254, 12d
     ST r9, r254, 12a, 1h
@@ -43,6 +43,6 @@ main:
     ANDI r1, r12, 4294967295d
  1: ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
-code size: 449
+code size: 427
 ret: 512
 status: Ok(())

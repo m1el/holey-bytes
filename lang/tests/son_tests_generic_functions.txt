@@ -7,7 +7,7 @@ add:
 main:
     ADDI64 r254, r254, -16d
     ST r31, r254, 0a, 16h
-    LI64 r3, 2d
+    LI32 r3, 2w
     CP r2, r3
     JAL r31, r0, :add
     CP r32, r1
@@ -20,6 +20,6 @@ main:
     LD r31, r254, 0a, 16h
     ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
-code size: 165
+code size: 161
 ret: 0
 status: Ok(())

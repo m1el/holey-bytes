@@ -1,6 +1,6 @@
 foo:
     ADDI64 r254, r254, -16d
-    LI64 r3, 2d
+    LI32 r3, 2w
     LI64 r5, 3d
     ADDI64 r4, r254, 0d
     ST r5, r254, 0a, 8h
@@ -33,6 +33,6 @@ main:
     LD r31, r254, 48a, 8h
     ADDI64 r254, r254, 56d
     JALA r0, r31, 0a
-code size: 359
+code size: 355
 ret: 0
 status: Ok(())

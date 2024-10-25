@@ -159,7 +159,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 break;
             }
 
-            let op = self.next().kind;
+            let Token { kind: op, start: pos, .. } = self.next();
 
             if op == TokenKind::Decl {
                 self.declare_rec(&fold, top_level);
@@ -172,10 +172,15 @@ impl<'a, 'b> Parser<'a, 'b> {
 
             if let Some(op) = op.ass_op() {
                 self.flag_idents(*left, idfl::MUTABLE);
-                let right = Expr::BinOp { left: self.arena.alloc(fold), op, right };
-                fold = Expr::BinOp { left, op: TokenKind::Assign, right: self.arena.alloc(right) };
+                let right = Expr::BinOp { left: self.arena.alloc(fold), pos, op, right };
+                fold = Expr::BinOp {
+                    left,
+                    pos,
+                    op: TokenKind::Assign,
+                    right: self.arena.alloc(right),
+                };
             } else {
-                fold = Expr::BinOp { left, right, op };
+                fold = Expr::BinOp { left, right, pos, op };
                 if op == TokenKind::Assign {
                     self.flag_idents(*left, idfl::MUTABLE);
                 }
@@ -762,6 +767,7 @@ generate_expr! {
         /// `Expr OP Expr`
         BinOp {
             left:  &'a Self,
+            pos: Pos,
             op:    TokenKind,
             right: &'a Self,
         },

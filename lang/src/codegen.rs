@@ -1352,7 +1352,7 @@ impl Codegen {
                     ),
                 }
             }
-            E::BinOp { left, op: T::Decl, right } if self.has_ct(left) => {
+            E::BinOp { left, op: T::Decl, right, .. } if self.has_ct(left) => {
                 let slot_base = self.ct.vm.read_reg(reg::STACK_PTR).0;
                 let (cnt, ty) = self.eval_const_low(self.ci.file, right, None);
                 if self.assign_ct_pattern(left, ty, cnt as _) {
@@ -1360,7 +1360,7 @@ impl Codegen {
                 }
                 Some(Value::void())
             }
-            E::BinOp { left, op: T::Decl, right } => {
+            E::BinOp { left, op: T::Decl, right, .. } => {
                 let value = self.expr(right)?;
                 self.assign_pattern(left, value)
             }
@@ -1506,7 +1506,7 @@ impl Codegen {
             E::If { cond, then, mut else_, .. } => {
                 let mut then = Some(then);
                 let jump_offset;
-                if let &E::BinOp { left, op, right } = cond
+                if let &E::BinOp { left, op, right, .. } = cond
                     && let ty = self.infer_type(left)
                     && let Some((op, swapped)) = op.cond_op(ty.is_signed())
                 {
@@ -1605,7 +1605,7 @@ impl Codegen {
                 self.ci.emit(jmp(loop_.offset as i32 - offset as i32));
                 None
             }
-            E::BinOp { left, op: op @ (T::And | T::Or), right } => {
+            E::BinOp { left, op: op @ (T::And | T::Or), right, .. } => {
                 let lhs = self.expr_ctx(left, Ctx::default().with_ty(ty::BOOL))?;
                 let lhs = self.loc_to_reg(lhs.loc, 1);
                 let jump_offset = self.ci.code.len() + 3;
@@ -1622,7 +1622,7 @@ impl Codegen {
 
                 Some(Value { ty: ty::Id::BOOL, loc: Loc::reg(lhs) })
             }
-            E::BinOp { left, op, right } if op != T::Decl => 'ops: {
+            E::BinOp { left, op, right, .. } if op != T::Decl => 'ops: {
                 let left = self.expr_ctx(left, Ctx {
                     ty: ctx.ty.filter(|_| op.is_homogenous()),
                     check: ctx.check,

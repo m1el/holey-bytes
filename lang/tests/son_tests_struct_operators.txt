@@ -1,8 +1,8 @@
 main:
     ADDI64 r254, r254, -168d
-    LI64 r11, 4d
-    LI64 r5, 1d
-    LI64 r3, 0d
+    LI8 r11, 4b
+    LI8 r5, 1b
+    LI8 r3, 0b
     ADDI64 r6, r254, 144d
     ADDI64 r6, r254, 148d
     ST r3, r254, 148a, 1h
@@ -115,6 +115,6 @@ main:
     ADD64 r1, r5, r3
  1: ADDI64 r254, r254, 168d
     JALA r0, r31, 0a
-code size: 1247
+code size: 1226
 ret: 10
 status: Ok(())

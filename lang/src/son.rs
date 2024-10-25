@@ -2265,7 +2265,7 @@ impl<'a> Codegen<'a> {
                 }
                 Some(self.ci.nodes.new_node_lit(val.ty, Kind::UnOp { op }, [VOID, val.id]))
             }
-            Expr::BinOp { left, op: TokenKind::Decl, right } => {
+            Expr::BinOp { left, op: TokenKind::Decl, right, .. } => {
                 let mut right = self.expr(right)?;
                 if right.ty.loc(&self.tys) == Loc::Stack {
                     let stck = self.ci.nodes.new_node_nop(right.ty, Kind::Stck, [VOID, MEM]);
@@ -2276,11 +2276,11 @@ impl<'a> Codegen<'a> {
                 self.assign_pattern(left, right);
                 Some(Value::VOID)
             }
-            Expr::BinOp { left, op: TokenKind::Assign, right } => {
+            Expr::BinOp { left, pos, op: TokenKind::Assign, right } => {
                 let dest = self.raw_expr(left)?;
                 let mut value = self.expr_ctx(right, Ctx::default().with_ty(dest.ty))?;
 
-                self.assert_ty(left.pos(), &mut value, dest.ty, "assignment source");
+                self.assert_ty(pos, &mut value, dest.ty, "assignment source");
 
                 if dest.var {
                     let var = &mut self.ci.scope.vars[(u16::MAX - dest.id) as usize];
@@ -2295,12 +2295,12 @@ impl<'a> Codegen<'a> {
                 } else if dest.ptr {
                     self.store_mem(dest.id, dest.ty, value.id);
                 } else {
-                    self.report(left.pos(), "cannot assign to this expression");
+                    self.report(pos, "cannot assign to this expression");
                 }
 
                 Some(Value::VOID)
             }
-            Expr::BinOp { left, op, right }
+            Expr::BinOp { left, pos, op, right }
                 if !matches!(op, TokenKind::Assign | TokenKind::Decl) =>
             {
                 let mut lhs = self.raw_expr_ctx(left, ctx)?;
@@ -2316,7 +2316,7 @@ impl<'a> Codegen<'a> {
                         self.ci.nodes.unlock(lhs.id);
                         let mut rhs = rhs?;
                         self.strip_var(&mut rhs);
-                        let ty = self.binop_ty(right.pos(), &mut lhs, &mut rhs, op);
+                        let ty = self.binop_ty(pos, &mut lhs, &mut rhs, op);
                         let inps = [VOID, lhs.id, rhs.id];
                         Some(self.ci.nodes.new_node_lit(
                             ty::bin_ret(ty, op),
@@ -2330,15 +2330,15 @@ impl<'a> Codegen<'a> {
                         self.ci.nodes.unlock(lhs.id);
                         let mut rhs = rhs?;
                         self.strip_var(&mut rhs);
-                        self.assert_ty(right.pos(), &mut rhs, lhs.ty, "struct operand");
+                        self.assert_ty(pos, &mut rhs, lhs.ty, "struct operand");
                         let dst = self.ci.nodes.new_node(lhs.ty, Kind::Stck, [VOID, MEM]);
                         self.struct_op(left.pos(), op, s, dst, lhs.id, rhs.id);
                         Some(Value::ptr(dst).ty(lhs.ty))
                     }
                     _ => {
                         self.report(
-                            left.pos(),
-                            fa!("'{0} {op} {0}' is not supported", self.ty_display(lhs.ty),),
+                            pos,
+                            fa!("'{} {op} _' is not supported", self.ty_display(lhs.ty)),
                         );
                         Value::NEVER
                     }

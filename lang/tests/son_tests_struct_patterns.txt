@@ -34,7 +34,7 @@ fib_iter:
 main:
     ADDI64 r254, r254, -18d
     ST r31, r254, 2a, 16h
-    LI64 r1, 10d
+    LI8 r1, 10b
     ADDI64 r3, r254, 0d
     ST r1, r254, 0a, 1h
     ST r1, r254, 1a, 1h
@@ -50,6 +50,6 @@ main:
     LD r31, r254, 2a, 16h
     ADDI64 r254, r254, 18d
     JALA r0, r31, 0a
-code size: 382
+code size: 375
 ret: 0
 status: Ok(())

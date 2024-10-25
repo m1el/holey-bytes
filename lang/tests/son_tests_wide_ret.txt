@@ -8,10 +8,10 @@ main:
     ST r1, r254, 16a, 16h
     ADDI64 r7, r254, 0d
     BMC r32, r7, 16h
-    LD r1, r254, 12a, 1h
+    LD r12, r254, 12a, 1h
     LD r11, r254, 3a, 1h
-    SUB8 r2, r11, r1
-    ANDI r1, r2, 255d
+    SUB8 r3, r11, r12
+    ANDI r1, r3, 255d
     LD r31, r254, 32a, 16h
     ADDI64 r254, r254, 48d
     JALA r0, r31, 0a
@@ -21,9 +21,9 @@ maina:
     ADDI64 r32, r254, 36d
     JAL r31, r0, :small_struct
     ST r1, r254, 36a, 4h
-    LI64 r2, 1d
-    LI64 r3, 3d
-    LI64 r1, 0d
+    LI8 r2, 1b
+    LI8 r3, 3b
+    LI8 r1, 0b
     ADDI64 r6, r254, 0d
     ADDI64 r8, r6, 8d
     ADDI64 r7, r254, 16d
@@ -47,13 +47,13 @@ maina:
     JALA r0, r31, 0a
 small_struct:
     ADDI64 r254, r254, -4d
-    LI64 r2, 0d
+    LI16 r2, 0h
     ADDI64 r3, r254, 0d
     ST r2, r254, 0a, 2h
     ST r2, r254, 2a, 2h
     LD r1, r3, 0a, 4h
     ADDI64 r254, r254, 4d
     JALA r0, r31, 0a
-code size: 573
+code size: 546
 ret: 2
 status: Ok(())

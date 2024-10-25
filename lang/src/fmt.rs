@@ -358,7 +358,8 @@ impl<'a> Formatter<'a> {
             Expr::BinOp {
                 left,
                 op: TokenKind::Assign,
-                right: &Expr::BinOp { left: lleft, op, right },
+                right: &Expr::BinOp { left: lleft, op, right, .. },
+                ..
             } if left.pos() == lleft.pos() => {
                 self.fmt(left, f)?;
                 f.write_str(" ")?;
@@ -366,7 +367,7 @@ impl<'a> Formatter<'a> {
                 f.write_str("= ")?;
                 self.fmt(right, f)
             }
-            Expr::BinOp { right, op, left } => {
+            Expr::BinOp { right, op, left, .. } => {
                 let prec_miss_left = |e: &Expr| {
                     matches!(
                         e, Expr::BinOp { op: lop, .. } if op.precedence() > lop.precedence()
