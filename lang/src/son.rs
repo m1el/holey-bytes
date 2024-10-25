@@ -20,10 +20,11 @@ use {
     alloc::{borrow::ToOwned, string::String, vec::Vec},
     core::{
         assert_matches::debug_assert_matches,
+        borrow::Borrow,
         cell::RefCell,
         fmt::{self, Debug, Display, Write},
         format_args as fa, mem,
-        ops::{self},
+        ops::{self, Deref},
     },
     hashbrown::hash_map,
     hbbytecode::DisasmError,
@@ -1845,9 +1846,27 @@ impl CodegenCtx {
     }
 }
 
+pub struct Errors<'a>(&'a RefCell<String>);
+
+impl Deref for Errors<'_> {
+    type Target = RefCell<String>;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
+impl Drop for Errors<'_> {
+    fn drop(&mut self) {
+        if debug::panicking() && !self.0.borrow().is_empty() {
+            log::error!("{}", self.0.borrow());
+        }
+    }
+}
+
 pub struct Codegen<'a> {
     pub files: &'a [parser::Ast],
-    pub errors: &'a RefCell<String>,
+    pub errors: Errors<'a>,
     tys: &'a mut Types,
     ci: ItemCtx,
     pool: &'a mut Pool,
@@ -1858,7 +1877,7 @@ impl<'a> Codegen<'a> {
     pub fn new(files: &'a [parser::Ast], ctx: &'a mut CodegenCtx) -> Self {
         Self {
             files,
-            errors: &ctx.parser.errors,
+            errors: Errors(&ctx.parser.errors),
             tys: &mut ctx.tys,
             ci: Default::default(),
             pool: &mut ctx.pool,
