@@ -2316,7 +2316,7 @@ impl<'a> Codegen<'a> {
                         self.ci.nodes.unlock(lhs.id);
                         let mut rhs = rhs?;
                         self.strip_var(&mut rhs);
-                        let ty = self.binop_ty(left.pos(), &mut lhs, &mut rhs, op);
+                        let ty = self.binop_ty(right.pos(), &mut lhs, &mut rhs, op);
                         let inps = [VOID, lhs.id, rhs.id];
                         Some(self.ci.nodes.new_node_lit(
                             ty::bin_ret(ty, op),
@@ -2330,6 +2330,7 @@ impl<'a> Codegen<'a> {
                         self.ci.nodes.unlock(lhs.id);
                         let mut rhs = rhs?;
                         self.strip_var(&mut rhs);
+                        self.assert_ty(right.pos(), &mut rhs, lhs.ty, "struct operand");
                         let dst = self.ci.nodes.new_node(lhs.ty, Kind::Stck, [VOID, MEM]);
                         self.struct_op(left.pos(), op, s, dst, lhs.id, rhs.id);
                         Some(Value::ptr(dst).ty(lhs.ty))
