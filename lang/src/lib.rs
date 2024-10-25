@@ -1236,6 +1236,7 @@ impl Types {
         for &func in &self.tmp.funcs {
             let fuc = &mut self.ins.funcs[func as usize];
             fuc.offset = to.len() as _;
+            debug_assert!(!fuc.code.is_empty());
             to.extend(&fuc.code);
         }
 
@@ -1520,6 +1521,26 @@ pub struct Comptime {
 }
 
 impl Comptime {
+    fn run(&mut self, ret_loc: &mut [u8], offset: u32) -> u64 {
+        self.vm.write_reg(reg::RET, ret_loc.as_mut_ptr() as u64);
+        let prev_pc = self.push_pc(offset);
+        loop {
+            match self.vm.run().expect("TODO") {
+                hbvm::VmRunOk::End => break,
+                hbvm::VmRunOk::Timer => todo!(),
+                hbvm::VmRunOk::Ecall => todo!(),
+                hbvm::VmRunOk::Breakpoint => todo!(),
+            }
+        }
+        self.pop_pc(prev_pc);
+
+        if let len @ 1..=8 = ret_loc.len() {
+            ret_loc.copy_from_slice(&self.vm.read_reg(reg::RET).0.to_ne_bytes()[..len])
+        }
+
+        self.vm.read_reg(reg::RET).0
+    }
+
     fn reset(&mut self) {
         let ptr = unsafe { self.stack.as_mut_ptr().cast::<u8>().add(VM_STACK_SIZE) as u64 };
         self.vm.registers.fill(hbvm::value::Value(0));

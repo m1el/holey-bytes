@@ -20,10 +20,12 @@ use {
     alloc::{borrow::ToOwned, string::String, vec::Vec},
     core::{
         assert_matches::debug_assert_matches,
+        borrow::Borrow,
         cell::RefCell,
         fmt::{self, Debug, Display, Write},
         format_args as fa, mem,
         ops::{self},
+        usize,
     },
     hashbrown::hash_map,
     hbbytecode::DisasmError,
@@ -1826,6 +1828,7 @@ impl Value {
 #[derive(Default)]
 pub struct Codegen<'a> {
     pub files: &'a [parser::Ast],
+    pub errors: RefCell<String>,
 
     tasks: Vec<Option<FTask>>,
     tys: Types,
@@ -1834,7 +1837,6 @@ pub struct Codegen<'a> {
     #[expect(dead_code)]
     ralloc: Regalloc,
     ct: Comptime,
-    pub errors: RefCell<String>,
 }
 
 impl TypeParser for Codegen<'_> {
@@ -1854,56 +1856,16 @@ impl TypeParser for Codegen<'_> {
         scope = core::mem::take(&mut self.ci.scope.vars);
         self.ci.finalize();
 
-        if self.errors.borrow().len() == prev_err_len {
-            self.ci.emit_body(&mut self.tys, self.files, Sig { args: Tuple::empty(), ret });
-            self.ci.code.truncate(self.ci.code.len() - instrs::jala(0, 0, 0).0);
-            self.ci.emit(instrs::tx());
-
-            let func = Func {
-                file,
-                name: 0,
-                expr: ExprRef::new(expr),
-                relocs: core::mem::take(&mut self.ci.relocs),
-                code: core::mem::take(&mut self.ci.code),
-                ..Default::default()
-            };
-
-            self.complete_call_graph();
-            self.pool.pop_ci(&mut self.ci);
-            self.ci.scope.vars = scope;
-
-            // TODO: return them back
-            let fuc = self.tys.ins.funcs.len() as ty::Func;
-            self.tys.ins.funcs.push(func);
-
-            self.tys.dump_reachable(fuc, &mut self.ct.code);
-
-            #[cfg(debug_assertions)]
-            {
-                let mut vc = String::new();
-                if let Err(e) = self.tys.disasm(&self.ct.code, self.files, &mut vc, |_| {}) {
-                    panic!("{e} {}", vc);
-                } else {
-                    log::trace!("{}", vc);
-                }
-            }
-
-            let prev_pc = self.ct.push_pc(self.tys.ins.funcs[fuc as usize].offset);
-            loop {
-                match self.ct.vm.run().expect("TODO") {
-                    hbvm::VmRunOk::End => break,
-                    hbvm::VmRunOk::Timer => todo!(),
-                    hbvm::VmRunOk::Ecall => todo!(),
-                    hbvm::VmRunOk::Breakpoint => todo!(),
-                }
-            }
-            self.ct.pop_pc(prev_pc);
-            self.ct.vm.read_reg(reg::RET).0
+        let res = if self.errors.borrow().len() == prev_err_len {
+            self.emit_and_eval(file, ret, &mut [])
         } else {
-            self.pool.pop_ci(&mut self.ci);
-            self.ci.scope.vars = scope;
             1
-        }
+        };
+
+        self.pool.pop_ci(&mut self.ci);
+        self.ci.scope.vars = scope;
+
+        res
     }
 
     fn infer_type(&mut self, expr: &Expr) -> ty::Id {
@@ -1931,73 +1893,20 @@ impl TypeParser for Codegen<'_> {
 
         let ty = ty::Kind::Global(gid);
         self.pool.push_ci(file, None, self.tasks.len(), &mut self.ci);
+        let prev_err_len = self.errors.borrow().len();
 
-        let ret = Expr::Return { pos: expr.pos(), val: Some(expr) };
-        self.expr(&ret);
+        self.expr(&(Expr::Return { pos: expr.pos(), val: Some(expr) }));
 
         self.ci.finalize();
 
         let ret = self.ci.ret.expect("for return type to be infered");
-        if self.errors.borrow().is_empty() {
-            self.ci.emit_body(&mut self.tys, self.files, Sig { args: Tuple::empty(), ret });
-            self.ci.code.truncate(self.ci.code.len() - instrs::jala(0, 0, 0).0);
-            self.ci.emit(instrs::tx());
-
-            let func = Func {
-                file,
-                name,
-                expr: ExprRef::new(expr),
-                relocs: core::mem::take(&mut self.ci.relocs),
-                code: core::mem::take(&mut self.ci.code),
-                ..Default::default()
-            };
-
-            self.complete_call_graph();
-            self.pool.pop_ci(&mut self.ci);
-
+        if self.errors.borrow().len() == prev_err_len {
             let mut mem = vec![0u8; self.tys.size_of(ret) as usize];
-
-            // TODO: return them back
-            let fuc = self.tys.ins.funcs.len() as ty::Func;
-            self.tys.ins.funcs.push(func);
-
-            self.tys.dump_reachable(fuc, &mut self.ct.code);
-
-            #[cfg(debug_assertions)]
-            {
-                let mut vc = String::new();
-                if let Err(e) = self.tys.disasm(&self.ct.code, self.files, &mut vc, |_| {}) {
-                    panic!("{e} {}", vc);
-                } else {
-                    log::trace!("{}", vc);
-                }
-            }
-
-            self.ct.vm.write_reg(reg::RET, mem.as_mut_ptr() as u64);
-            let prev_pc = self.ct.push_pc(self.tys.ins.funcs[fuc as usize].offset);
-            loop {
-                match self.ct.vm.run().expect("TODO") {
-                    hbvm::VmRunOk::End => break,
-                    hbvm::VmRunOk::Timer => todo!(),
-                    hbvm::VmRunOk::Ecall => todo!(),
-                    hbvm::VmRunOk::Breakpoint => todo!(),
-                }
-            }
-            self.ct.pop_pc(prev_pc);
-
-            match mem.len() {
-                0 => unreachable!(),
-                len @ 1..=8 => {
-                    mem.copy_from_slice(&self.ct.vm.read_reg(reg::RET).0.to_ne_bytes()[..len])
-                }
-                9..=16 => todo!(),
-                _ => {}
-            }
-
+            self.emit_and_eval(file, ret, &mut mem);
             self.tys.ins.globals[gid as usize].data = mem;
-        } else {
-            self.pool.pop_ci(&mut self.ci);
         }
+
+        self.pool.pop_ci(&mut self.ci);
         self.tys.ins.globals[gid as usize].ty = ret;
 
         ty.compress()
@@ -2014,6 +1923,45 @@ impl TypeParser for Codegen<'_> {
 }
 
 impl<'a> Codegen<'a> {
+    fn emit_and_eval(&mut self, file: FileId, ret: ty::Id, ret_loc: &mut [u8]) -> u64 {
+        if !self.complete_call_graph() {
+            return 1;
+        }
+
+        self.ci.emit_body(&mut self.tys, self.files, Sig { args: Tuple::empty(), ret });
+        self.ci.code.truncate(self.ci.code.len() - instrs::jala(0, 0, 0).0);
+        self.ci.emit(instrs::tx());
+
+        let func = Func {
+            file,
+            name: 0,
+            relocs: core::mem::take(&mut self.ci.relocs),
+            code: core::mem::take(&mut self.ci.code),
+            ..Default::default()
+        };
+
+        // TODO: return them back
+        let fuc = self.tys.ins.funcs.len() as ty::Func;
+        self.tys.ins.funcs.push(func);
+
+        self.tys.dump_reachable(fuc, &mut self.ct.code);
+        self.dump_ct_asm();
+
+        self.ct.run(ret_loc, self.tys.ins.funcs[fuc as usize].offset)
+    }
+
+    fn dump_ct_asm(&self) {
+        #[cfg(debug_assertions)]
+        {
+            let mut vc = String::new();
+            if let Err(e) = self.tys.disasm(&self.ct.code, self.files, &mut vc, |_| {}) {
+                panic!("{e} {}", vc);
+            } else {
+                log::trace!("{}", vc);
+            }
+        }
+    }
+
     pub fn push_embeds(&mut self, embeds: Vec<Vec<u8>>) {
         self.tys.ins.globals = embeds
             .into_iter()
@@ -3414,13 +3362,15 @@ impl<'a> Codegen<'a> {
         self.ci.nodes[id].ty
     }
 
-    fn complete_call_graph(&mut self) {
+    fn complete_call_graph(&mut self) -> bool {
+        let prev_err_len = self.errors.borrow().len();
         while self.ci.task_base < self.tasks.len()
             && let Some(task_slot) = self.tasks.pop()
         {
             let Some(task) = task_slot else { continue };
             self.emit_func(task);
         }
+        self.errors.borrow().len() == prev_err_len
     }
 
     fn emit_func(&mut self, FTask { file, id }: FTask) {
@@ -3432,6 +3382,7 @@ impl<'a> Codegen<'a> {
         let expr = func.expr.get(ast);
 
         self.pool.push_ci(file, Some(sig.ret), 0, &mut self.ci);
+        let prev_err_len = self.errors.borrow().len();
 
         let &Expr::Closure { body, args, .. } = expr else {
             unreachable!("{}", self.ast_display(expr))
@@ -3482,7 +3433,7 @@ impl<'a> Codegen<'a> {
 
         self.ci.finalize();
 
-        if self.errors.borrow().is_empty() {
+        if self.errors.borrow().len() == prev_err_len {
             self.ci.emit_body(&mut self.tys, self.files, sig);
             self.tys.ins.funcs[id as usize].code.append(&mut self.ci.code);
             self.tys.ins.funcs[id as usize].relocs.append(&mut self.ci.relocs);
