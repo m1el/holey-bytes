@@ -51,6 +51,8 @@ macro_rules! gen_token_kind {
         }
 
         impl $name {
+            pub const OPS: &[Self] = &[$($(Self::$op),*),*];
+
             pub fn name(&self) -> &str {
                 let sf = unsafe { &*(self as *const _ as *const u8) } ;
                 match *self {
@@ -279,11 +281,16 @@ impl TokenKind {
             Self::Shl => a.wrapping_shl(b as _),
             Self::Eq => (a == b) as i64,
             Self::Ne => (a != b) as i64,
+            Self::Lt => (a < b) as i64,
+            Self::Gt => (a > b) as i64,
+            Self::Le => (a >= b) as i64,
+            Self::Ge => (a <= b) as i64,
             Self::Band => a & b,
             Self::Bor => a | b,
             Self::Xor => a ^ b,
-            Self::Mod => a % b,
-            Self::Shr => a >> b,
+            Self::Mod if b == 0 => 0,
+            Self::Mod => a.wrapping_rem(b),
+            Self::Shr => a.wrapping_shr(b as _),
             s => todo!("{s}"),
         }
     }
@@ -315,6 +322,17 @@ impl TokenKind {
             Self::Sub => value.wrapping_neg(),
             s => todo!("{s}"),
         }
+    }
+
+    pub fn closing(&self) -> Option<TokenKind> {
+        Some(match self {
+            Self::Ctor => Self::RBrace,
+            Self::Tupl => Self::RParen,
+            Self::LParen => Self::RParen,
+            Self::LBrack => Self::RBrack,
+            Self::LBrace => Self::RBrace,
+            _ => return None,
+        })
     }
 }
 

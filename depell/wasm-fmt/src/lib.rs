@@ -19,7 +19,7 @@ unsafe extern "C" fn fmt() {
     let code = core::str::from_raw_parts(core::ptr::addr_of!(INPUT).cast(), INPUT_LEN);
 
     let arena = parser::Arena::with_capacity(code.len() * parser::SOURCE_TO_AST_FACTOR);
-    let mut ctx = parser::ParserCtx::default();
+    let mut ctx = parser::Ctx::default();
     let exprs = parser::Parser::parse(&mut ctx, code, "source.hb", &mut parser::no_loader, &arena);
 
     let mut f = wasm_rt::Write(&mut OUTPUT[..]);

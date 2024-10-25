@@ -930,6 +930,11 @@ impl IdentInterner {
     fn project(&self, ident: &str) -> Option<Ident> {
         self.lookup.get(ident, &self.strings).copied()
     }
+
+    fn clear(&mut self) {
+        self.lookup.clear();
+        self.strings.clear()
+    }
 }
 
 #[derive(Default)]
@@ -946,20 +951,36 @@ pub struct TypeIns {
     funcs: Vec<Func>,
     args: Vec<ty::Id>,
     globals: Vec<Global>,
-    // TODO: use ctx map
-    strings: HashMap<Vec<u8>, ty::Global>,
     structs: Vec<Struct>,
     fields: Vec<Field>,
     ptrs: Vec<Ptr>,
     slices: Vec<Array>,
 }
 
+struct FTask {
+    file: FileId,
+    id: ty::Func,
+}
+
+struct StringRef(ty::Global);
+
+impl ctx_map::CtxEntry for StringRef {
+    type Ctx = [Global];
+    type Key<'a> = &'a [u8];
+
+    fn key<'a>(&self, ctx: &'a Self::Ctx) -> Self::Key<'a> {
+        &ctx[self.0 as usize].data
+    }
+}
+
 #[derive(Default)]
 struct Types {
     syms: ctx_map::CtxMap<ty::Id>,
     names: IdentInterner,
+    strings: ctx_map::CtxMap<StringRef>,
     ins: TypeIns,
     tmp: TypesTmp,
+    tasks: Vec<Option<FTask>>,
 }
 
 const HEADER_SIZE: usize = core::mem::size_of::<AbleOsExecutableHeader>();
@@ -1444,6 +1465,28 @@ impl Types {
         let name = self.names.project(name)?;
         self.struct_fields(s).iter().position(|f| f.name == name)
     }
+
+    fn clear(&mut self) {
+        self.syms.clear();
+        self.names.clear();
+        self.strings.clear();
+
+        self.ins.funcs.clear();
+        self.ins.args.clear();
+        self.ins.globals.clear();
+        self.ins.structs.clear();
+        self.ins.fields.clear();
+        self.ins.ptrs.clear();
+        self.ins.slices.clear();
+
+        debug_assert_eq!(self.tmp.fields.len(), 0);
+        debug_assert_eq!(self.tmp.frontier.len(), 0);
+        debug_assert_eq!(self.tmp.globals.len(), 0);
+        debug_assert_eq!(self.tmp.funcs.len(), 0);
+        debug_assert_eq!(self.tmp.args.len(), 0);
+
+        debug_assert_eq!(self.tasks.len(), 0);
+    }
 }
 
 struct OffsetIter {
@@ -1559,6 +1602,10 @@ impl Comptime {
     fn pop_pc(&mut self, prev_pc: hbvm::mem::Address) {
         self.vm.pc = prev_pc + self.code.as_ptr() as usize;
     }
+
+    fn clear(&mut self) {
+        self.code.clear();
+    }
 }
 
 impl Default for Comptime {
@@ -1641,13 +1688,17 @@ pub fn run_test(
 }
 
 #[cfg(test)]
-fn test_parse_files(ident: &'static str, input: &'static str) -> (Vec<parser::Ast>, Vec<Vec<u8>>) {
+fn test_parse_files(
+    ident: &str,
+    input: &str,
+    ctx: &mut parser::Ctx,
+) -> (Vec<parser::Ast>, Vec<Vec<u8>>) {
     use {
         self::parser::FileKind,
         std::{borrow::ToOwned, string::ToString},
     };
 
-    fn find_block(mut input: &'static str, test_name: &'static str) -> &'static str {
+    fn find_block<'a>(mut input: &'a str, test_name: &str) -> &'a str {
         const CASE_PREFIX: &str = "#### ";
         const CASE_SUFFIX: &str = "\n```hb";
         loop {
@@ -1707,13 +1758,10 @@ fn test_parse_files(ident: &'static str, input: &'static str) -> (Vec<parser::As
             .ok_or("Embed Not Found".to_string()),
     };
 
-    let mut ctx = parser::ParserCtx::default();
     (
         module_map
             .iter()
-            .map(|&(path, content)| {
-                parser::Ast::new(path, content.to_owned(), &mut ctx, &mut loader)
-            })
+            .map(|&(path, content)| parser::Ast::new(path, content.to_owned(), ctx, &mut loader))
             .collect(),
         embed_map.iter().map(|&(_, content)| content.to_owned().into_bytes()).collect(),
     )

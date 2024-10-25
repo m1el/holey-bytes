@@ -2649,13 +2649,21 @@ impl Codegen {
 
 #[cfg(test)]
 mod tests {
-    use alloc::{string::String, vec::Vec};
+    use {
+        crate::parser,
+        alloc::{string::String, vec::Vec},
+    };
 
     fn generate(ident: &'static str, input: &'static str, output: &mut String) {
         _ = log::set_logger(&crate::fs::Logger);
         log::set_max_level(log::LevelFilter::Debug);
 
-        let (files, embeds) = crate::test_parse_files(ident, input);
+        let mut ctx = parser::Ctx::default();
+        let (files, embeds) = crate::test_parse_files(ident, input, &mut ctx);
+        if !ctx.errors.get_mut().is_empty() {
+            output.push_str(ctx.errors.get_mut());
+            return;
+        }
         let mut codegen = super::Codegen { files, ..Default::default() };
         codegen.push_embeds(embeds);
 

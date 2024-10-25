@@ -14,8 +14,8 @@ use {
         reg, task,
         ty::{self, Arg, ArrayLen, Loc, Tuple},
         vc::{BitSet, Vc},
-        Comptime, Func, Global, HashMap, Offset, OffsetIter, PLoc, Reloc, Sig, SymKey, TypeParser,
-        TypedReloc, Types,
+        Comptime, FTask, Func, Global, HashMap, Offset, OffsetIter, PLoc, Reloc, Sig, StringRef,
+        SymKey, TypeParser, TypedReloc, Types,
     },
     alloc::{borrow::ToOwned, string::String, vec::Vec},
     core::{
@@ -1707,11 +1707,6 @@ fn write_reloc(doce: &mut [u8], offset: usize, value: i64, size: u16) {
     doce[offset..offset + size as usize].copy_from_slice(&value[..size as usize]);
 }
 
-struct FTask {
-    file: FileId,
-    id: ty::Func,
-}
-
 #[derive(Default, Debug)]
 struct Ctx {
     ty: Option<ty::Id>,
@@ -1727,6 +1722,9 @@ impl Ctx {
 struct Pool {
     cis: Vec<ItemCtx>,
     used_cis: usize,
+
+    #[expect(dead_code)]
+    ralloc: Regalloc,
 }
 
 impl Pool {
@@ -1765,6 +1763,10 @@ impl Pool {
         self.used_cis -= 1;
         dst.scope.clear(&mut dst.nodes);
         *dst = core::mem::take(&mut self.cis[self.used_cis]);
+    }
+
+    fn clear(&mut self) {
+        debug_assert_eq!(self.used_cis, 0);
     }
 }
 
@@ -1827,109 +1829,49 @@ impl Value {
 }
 
 #[derive(Default)]
-pub struct Codegen<'a> {
-    pub files: &'a [parser::Ast],
-    pub errors: RefCell<String>,
-
-    tasks: Vec<Option<FTask>>,
+pub struct CodegenCtx {
+    pub parser: parser::Ctx,
     tys: Types,
-    ci: ItemCtx,
     pool: Pool,
-    #[expect(dead_code)]
-    ralloc: Regalloc,
     ct: Comptime,
 }
 
-impl TypeParser for Codegen<'_> {
-    fn tys(&mut self) -> &mut Types {
-        &mut self.tys
-    }
-
-    fn eval_const(&mut self, file: FileId, expr: &Expr, ret: ty::Id) -> u64 {
-        let mut scope = core::mem::take(&mut self.ci.scope.vars);
-        self.pool.push_ci(file, Some(ret), self.tasks.len(), &mut self.ci);
-        self.ci.scope.vars = scope;
-
-        let prev_err_len = self.errors.borrow().len();
-
-        self.expr(&Expr::Return { pos: expr.pos(), val: Some(expr) });
-
-        scope = core::mem::take(&mut self.ci.scope.vars);
-        self.ci.finalize();
-
-        let res = if self.errors.borrow().len() == prev_err_len {
-            self.emit_and_eval(file, ret, &mut [])
-        } else {
-            1
-        };
-
-        self.pool.pop_ci(&mut self.ci);
-        self.ci.scope.vars = scope;
-
-        res
-    }
-
-    fn infer_type(&mut self, expr: &Expr) -> ty::Id {
-        self.pool.save_ci(&self.ci);
-        let ty = self.expr(expr).map_or(ty::Id::NEVER, |v| v.ty);
-        self.pool.restore_ci(&mut self.ci);
-        ty
-    }
-
-    fn on_reuse(&mut self, existing: ty::Id) {
-        if let ty::Kind::Func(id) = existing.expand()
-            && let func = &mut self.tys.ins.funcs[id as usize]
-            && let Err(idx) = task::unpack(func.offset)
-            && idx < self.tasks.len()
-        {
-            func.offset = task::id(self.tasks.len());
-            let task = self.tasks[idx].take();
-            self.tasks.push(task);
-        }
-    }
-
-    fn eval_global(&mut self, file: FileId, name: Ident, expr: &Expr) -> ty::Id {
-        let gid = self.tys.ins.globals.len() as ty::Global;
-        self.tys.ins.globals.push(Global { file, name, ..Default::default() });
-
-        let ty = ty::Kind::Global(gid);
-        self.pool.push_ci(file, None, self.tasks.len(), &mut self.ci);
-        let prev_err_len = self.errors.borrow().len();
-
-        self.expr(&(Expr::Return { pos: expr.pos(), val: Some(expr) }));
-
-        self.ci.finalize();
-
-        let ret = self.ci.ret.expect("for return type to be infered");
-        if self.errors.borrow().len() == prev_err_len {
-            let mut mem = vec![0u8; self.tys.size_of(ret) as usize];
-            self.emit_and_eval(file, ret, &mut mem);
-            self.tys.ins.globals[gid as usize].data = mem;
-        }
-
-        self.pool.pop_ci(&mut self.ci);
-        self.tys.ins.globals[gid as usize].ty = ret;
-
-        ty.compress()
-    }
-
-    fn report(&self, pos: Pos, msg: impl Display) -> ty::Id {
-        self.report(pos, msg);
-        ty::Id::NEVER
-    }
-
-    fn find_local_ty(&mut self, ident: Ident) -> Option<ty::Id> {
-        self.ci.scope.vars.iter().rfind(|v| (v.id == ident && v.value() == NEVER)).map(|v| v.ty)
+impl CodegenCtx {
+    pub fn clear(&mut self) {
+        self.parser.clear();
+        self.tys.clear();
+        self.pool.clear();
+        self.ct.clear();
     }
 }
 
+pub struct Codegen<'a> {
+    pub files: &'a [parser::Ast],
+    pub errors: &'a RefCell<String>,
+    tys: &'a mut Types,
+    ci: ItemCtx,
+    pool: &'a mut Pool,
+    ct: &'a mut Comptime,
+}
+
 impl<'a> Codegen<'a> {
+    pub fn new(files: &'a [parser::Ast], ctx: &'a mut CodegenCtx) -> Self {
+        Self {
+            files,
+            errors: &ctx.parser.errors,
+            tys: &mut ctx.tys,
+            ci: Default::default(),
+            pool: &mut ctx.pool,
+            ct: &mut ctx.ct,
+        }
+    }
+
     fn emit_and_eval(&mut self, file: FileId, ret: ty::Id, ret_loc: &mut [u8]) -> u64 {
         if !self.complete_call_graph() {
             return 1;
         }
 
-        self.ci.emit_body(&mut self.tys, self.files, Sig { args: Tuple::empty(), ret });
+        self.ci.emit_body(self.tys, self.files, Sig { args: Tuple::empty(), ret });
         self.ci.code.truncate(self.ci.code.len() - instrs::jala(0, 0, 0).0);
         self.ci.emit(instrs::tx());
 
@@ -2006,12 +1948,12 @@ impl<'a> Codegen<'a> {
         debug_assert_ne!(region, VOID);
         debug_assert_ne!({ self.ci.nodes[region].ty }, ty::Id::VOID, "{:?}", {
             self.ci.nodes[region].lock_rc = Nid::MAX;
-            self.ci.nodes.graphviz_in_browser(&self.tys, self.files);
+            self.ci.nodes.graphviz_in_browser(self.tys, self.files);
         });
         debug_assert!(
             self.ci.nodes[region].kind != Kind::Load || self.ci.nodes[region].ty.is_pointer(),
             "{:?} {} {}",
-            self.ci.nodes.graphviz_in_browser(&self.tys, self.files),
+            self.ci.nodes.graphviz_in_browser(self.tys, self.files),
             self.cfile().path,
             self.ty_display(self.ci.nodes[region].ty)
         );
@@ -2043,8 +1985,8 @@ impl<'a> Codegen<'a> {
     fn make_func_reachable(&mut self, func: ty::Func) {
         let fuc = &mut self.tys.ins.funcs[func as usize];
         if fuc.offset == u32::MAX {
-            fuc.offset = task::id(self.tasks.len() as _);
-            self.tasks.push(Some(FTask { file: fuc.file, id: func }));
+            fuc.offset = task::id(self.tys.tasks.len() as _);
+            self.tys.tasks.push(Some(FTask { file: fuc.file, id: func }));
         }
     }
 
@@ -2114,12 +2056,18 @@ impl<'a> Codegen<'a> {
                 crate::endoce_string(literal, &mut data, report).unwrap();
 
                 let ty = self.tys.make_ptr(ty::Id::U8);
-                let global = match self.tys.ins.strings.entry(data.clone()) {
-                    hash_map::Entry::Occupied(occupied_entry) => *occupied_entry.get(),
-                    hash_map::Entry::Vacant(vacant_entry) => {
+                let global = match self.tys.strings.entry(&data, &self.tys.ins.globals) {
+                    (hash_map::RawEntryMut::Occupied(occupied_entry), _) => {
+                        occupied_entry.get_key_value().0.value.0
+                    }
+                    (hash_map::RawEntryMut::Vacant(vacant_entry), hash) => {
                         let global = self.tys.ins.globals.len() as ty::Global;
                         self.tys.ins.globals.push(Global { data, ty, ..Default::default() });
-                        *vacant_entry.insert(global)
+                        vacant_entry
+                            .insert(crate::ctx_map::Key { value: StringRef(global), hash }, ())
+                            .0
+                            .value
+                            .0
                     }
                 };
                 let global = self.ci.nodes.new_node(ty, Kind::Global { global }, [VOID]);
@@ -2204,7 +2152,7 @@ impl<'a> Codegen<'a> {
                     return Value::NEVER;
                 };
 
-                let Some((offset, ty)) = OffsetIter::offset_of(&self.tys, s, name) else {
+                let Some((offset, ty)) = OffsetIter::offset_of(self.tys, s, name) else {
                     let field_list = self
                         .tys
                         .struct_fields(s)
@@ -2267,7 +2215,7 @@ impl<'a> Codegen<'a> {
             }
             Expr::BinOp { left, op: TokenKind::Decl, right, .. } => {
                 let mut right = self.expr(right)?;
-                if right.ty.loc(&self.tys) == Loc::Stack {
+                if right.ty.loc(self.tys) == Loc::Stack {
                     let stck = self.ci.nodes.new_node_nop(right.ty, Kind::Stck, [VOID, MEM]);
                     self.store_mem(stck, right.ty, right.id);
                     right.id = stck;
@@ -2424,7 +2372,7 @@ impl<'a> Codegen<'a> {
                     );
                 }
 
-                match ty.loc(&self.tys) {
+                match ty.loc(self.tys) {
                     Loc::Reg if core::mem::take(&mut val.ptr) => val.id = self.load_mem(val.id, ty),
                     Loc::Stack if !val.ptr => {
                         let stack = self.ci.nodes.new_node_nop(ty, Kind::Stck, [VOID, MEM]);
@@ -2504,7 +2452,7 @@ impl<'a> Codegen<'a> {
                 let mut has_ptr_arg = false;
                 for arg in args {
                     let value = self.expr(arg)?;
-                    has_ptr_arg |= value.ty.has_pointers(&self.tys);
+                    has_ptr_arg |= value.ty.has_pointers(self.tys);
                     self.tys.tmp.args.push(value.ty);
                     debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
                     self.ci.nodes.lock(value.id);
@@ -2532,7 +2480,7 @@ impl<'a> Codegen<'a> {
                     });
                 }
 
-                let alt_value = match ty.loc(&self.tys) {
+                let alt_value = match ty.loc(self.tys) {
                     Loc::Reg => None,
                     Loc::Stack => {
                         let stck = self.ci.nodes.new_node_nop(ty, Kind::Stck, [VOID, MEM]);
@@ -2550,7 +2498,6 @@ impl<'a> Codegen<'a> {
 
                 alt_value.or(Some(Value::new(self.ci.ctrl).ty(ty)))
             }
-            //Expr::Directive { name: "inline", args: [func, args @ ..], .. }
             Expr::Call { func, args, .. } => {
                 self.ci.call_count += 1;
                 let ty = self.ty(func);
@@ -2588,11 +2535,11 @@ impl<'a> Codegen<'a> {
                 let mut cargs = cargs.iter();
                 let mut args = args.iter();
                 let mut has_ptr_arg = false;
-                while let Some(ty) = tys.next(&self.tys) {
+                while let Some(ty) = tys.next(self.tys) {
                     let carg = cargs.next().unwrap();
-                    let arg = args.next().unwrap();
+                    let Some(arg) = args.next() else { break };
                     let Arg::Value(ty) = ty else { continue };
-                    has_ptr_arg |= ty.has_pointers(&self.tys);
+                    has_ptr_arg |= ty.has_pointers(self.tys);
 
                     let mut value = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
                     debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
@@ -2621,7 +2568,7 @@ impl<'a> Codegen<'a> {
                     });
                 }
 
-                let alt_value = match sig.ret.loc(&self.tys) {
+                let alt_value = match sig.ret.loc(self.tys) {
                     Loc::Reg => None,
                     Loc::Stack => {
                         let stck = self.ci.nodes.new_node_nop(sig.ret, Kind::Stck, [VOID, MEM]);
@@ -2681,9 +2628,9 @@ impl<'a> Codegen<'a> {
                 let mut args = args.iter();
                 let mut cargs = cargs.iter();
                 let var_base = self.ci.scope.vars.len();
-                while let Some(aty) = tys.next(&self.tys) {
-                    let arg = args.next().unwrap();
+                while let Some(aty) = tys.next(self.tys) {
                     let carg = cargs.next().unwrap();
+                    let Some(arg) = args.next() else { break };
                     match aty {
                         Arg::Type(id) => {
                             self.ci.scope.vars.push(Variable::new(
@@ -2769,9 +2716,9 @@ impl<'a> Codegen<'a> {
                 match sty.expand() {
                     ty::Kind::Struct(s) => {
                         let mem = self.ci.nodes.new_node(sty, Kind::Stck, [VOID, MEM]);
-                        let mut offs = OffsetIter::new(s, &self.tys);
+                        let mut offs = OffsetIter::new(s, self.tys);
                         for field in fields {
-                            let Some((ty, offset)) = offs.next_ty(&self.tys) else {
+                            let Some((ty, offset)) = offs.next_ty(self.tys) else {
                                 self.report(
                                     field.pos(),
                                     "this init argumen overflows the field count",
@@ -2787,7 +2734,7 @@ impl<'a> Codegen<'a> {
                         }
 
                         let field_list = offs
-                            .into_iter(&self.tys)
+                            .into_iter(self.tys)
                             .map(|(f, ..)| self.tys.names.ident_str(f.name))
                             .intersperse(", ")
                             .collect::<String>();
@@ -2877,8 +2824,8 @@ impl<'a> Codegen<'a> {
                 };
 
                 // TODO: dont allocate
-                let mut offs = OffsetIter::new(s, &self.tys)
-                    .into_iter(&self.tys)
+                let mut offs = OffsetIter::new(s, self.tys)
+                    .into_iter(self.tys)
                     .map(|(f, o)| (f.ty, o))
                     .collect::<Vec<_>>();
                 let mem = self.ci.nodes.new_node(sty, Kind::Stck, [VOID, MEM]);
@@ -3131,7 +3078,10 @@ impl<'a> Codegen<'a> {
 
                 Some(Value::VOID)
             }
-            ref e => self.report_unhandled_ast(e, "bruh"),
+            ref e => {
+                self.report_unhandled_ast(e, "bruh");
+                Some(Value::VOID)
+            }
         }
     }
 
@@ -3144,8 +3094,8 @@ impl<'a> Codegen<'a> {
         lhs: Nid,
         rhs: Nid,
     ) -> bool {
-        let mut offs = OffsetIter::new(s, &self.tys);
-        while let Some((ty, off)) = offs.next_ty(&self.tys) {
+        let mut offs = OffsetIter::new(s, self.tys);
+        while let Some((ty, off)) = offs.next_ty(self.tys) {
             let lhs = self.offset(lhs, off);
             let rhs = self.offset(rhs, off);
             let dst = self.offset(dst, off);
@@ -3268,7 +3218,7 @@ impl<'a> Codegen<'a> {
                 };
 
                 for &CtorField { pos, name, ref value } in fields {
-                    let Some((offset, ty)) = OffsetIter::offset_of(&self.tys, idx, name) else {
+                    let Some((offset, ty)) = OffsetIter::offset_of(self.tys, idx, name) else {
                         self.report(pos, format_args!("field not found: {name:?}"));
                         continue;
                     };
@@ -3387,8 +3337,8 @@ impl<'a> Codegen<'a> {
 
     fn complete_call_graph(&mut self) -> bool {
         let prev_err_len = self.errors.borrow().len();
-        while self.ci.task_base < self.tasks.len()
-            && let Some(task_slot) = self.tasks.pop()
+        while self.ci.task_base < self.tys.tasks.len()
+            && let Some(task_slot) = self.tys.tasks.pop()
         {
             let Some(task) = task_slot else { continue };
             self.emit_func(task);
@@ -3413,7 +3363,7 @@ impl<'a> Codegen<'a> {
 
         let mut tys = sig.args.args();
         let mut args = args.iter();
-        while let Some(aty) = tys.next(&self.tys) {
+        while let Some(aty) = tys.next(self.tys) {
             let arg = args.next().unwrap();
             match aty {
                 Arg::Type(ty) => {
@@ -3427,12 +3377,12 @@ impl<'a> Codegen<'a> {
                 }
                 Arg::Value(ty) => {
                     let mut deps = Vc::from([VOID]);
-                    if ty.loc(&self.tys) == Loc::Stack && self.tys.size_of(ty) <= 16 {
+                    if ty.loc(self.tys) == Loc::Stack && self.tys.size_of(ty) <= 16 {
                         deps.push(MEM);
                     }
                     // TODO: whe we not using the deps?
                     let value = self.ci.nodes.new_node_nop(ty, Kind::Arg, deps);
-                    let ptr = ty.loc(&self.tys) == Loc::Stack;
+                    let ptr = ty.loc(self.tys) == Loc::Stack;
                     self.ci.scope.vars.push(Variable::new(
                         arg.id,
                         ty,
@@ -3457,7 +3407,7 @@ impl<'a> Codegen<'a> {
         self.ci.finalize();
 
         if self.errors.borrow().len() == prev_err_len {
-            self.ci.emit_body(&mut self.tys, self.files, sig);
+            self.ci.emit_body(self.tys, self.files, sig);
             self.tys.ins.funcs[id as usize].code.append(&mut self.ci.code);
             self.tys.ins.funcs[id as usize].relocs.append(&mut self.ci.relocs);
         }
@@ -3470,7 +3420,7 @@ impl<'a> Codegen<'a> {
     }
 
     fn ty_display(&self, ty: ty::Id) -> ty::Display {
-        ty::Display::new(&self.tys, self.files, ty)
+        ty::Display::new(self.tys, self.files, ty)
     }
 
     fn ast_display(&self, ast: &'a Expr<'a>) -> parser::Display<'a> {
@@ -3563,18 +3513,96 @@ impl<'a> Codegen<'a> {
     }
 
     #[track_caller]
-    fn report_unhandled_ast(&self, ast: &Expr, hint: impl Display) -> ! {
+    fn report_unhandled_ast(&self, ast: &Expr, hint: impl Display) {
         log::info!("{ast:#?}");
-        self.fatal_report(ast.pos(), fa!("compiler does not (yet) know how to handle ({hint})"));
+        self.report(ast.pos(), fa!("compiler does not (yet) know how to handle ({hint})"));
     }
 
     fn cfile(&self) -> &'a parser::Ast {
         &self.files[self.ci.file as usize]
     }
+}
 
-    fn fatal_report(&self, pos: Pos, msg: impl Display) -> ! {
+impl TypeParser for Codegen<'_> {
+    fn tys(&mut self) -> &mut Types {
+        self.tys
+    }
+
+    fn eval_const(&mut self, file: FileId, expr: &Expr, ret: ty::Id) -> u64 {
+        let mut scope = core::mem::take(&mut self.ci.scope.vars);
+        self.pool.push_ci(file, Some(ret), self.tys.tasks.len(), &mut self.ci);
+        self.ci.scope.vars = scope;
+
+        let prev_err_len = self.errors.borrow().len();
+
+        self.expr(&Expr::Return { pos: expr.pos(), val: Some(expr) });
+
+        scope = core::mem::take(&mut self.ci.scope.vars);
+        self.ci.finalize();
+
+        let res = if self.errors.borrow().len() == prev_err_len {
+            self.emit_and_eval(file, ret, &mut [])
+        } else {
+            1
+        };
+
+        self.pool.pop_ci(&mut self.ci);
+        self.ci.scope.vars = scope;
+
+        res
+    }
+
+    fn infer_type(&mut self, expr: &Expr) -> ty::Id {
+        self.pool.save_ci(&self.ci);
+        let ty = self.expr(expr).map_or(ty::Id::NEVER, |v| v.ty);
+        self.pool.restore_ci(&mut self.ci);
+        ty
+    }
+
+    fn on_reuse(&mut self, existing: ty::Id) {
+        if let ty::Kind::Func(id) = existing.expand()
+            && let func = &mut self.tys.ins.funcs[id as usize]
+            && let Err(idx) = task::unpack(func.offset)
+            && idx < self.tys.tasks.len()
+        {
+            func.offset = task::id(self.tys.tasks.len());
+            let task = self.tys.tasks[idx].take();
+            self.tys.tasks.push(task);
+        }
+    }
+
+    fn eval_global(&mut self, file: FileId, name: Ident, expr: &Expr) -> ty::Id {
+        let gid = self.tys.ins.globals.len() as ty::Global;
+        self.tys.ins.globals.push(Global { file, name, ..Default::default() });
+
+        let ty = ty::Kind::Global(gid);
+        self.pool.push_ci(file, None, self.tys.tasks.len(), &mut self.ci);
+        let prev_err_len = self.errors.borrow().len();
+
+        self.expr(&(Expr::Return { pos: expr.pos(), val: Some(expr) }));
+
+        self.ci.finalize();
+
+        let ret = self.ci.ret.expect("for return type to be infered");
+        if self.errors.borrow().len() == prev_err_len {
+            let mut mem = vec![0u8; self.tys.size_of(ret) as usize];
+            self.emit_and_eval(file, ret, &mut mem);
+            self.tys.ins.globals[gid as usize].data = mem;
+        }
+
+        self.pool.pop_ci(&mut self.ci);
+        self.tys.ins.globals[gid as usize].ty = ret;
+
+        ty.compress()
+    }
+
+    fn report(&self, pos: Pos, msg: impl Display) -> ty::Id {
         self.report(pos, msg);
-        panic!("{}", self.errors.borrow());
+        ty::Id::NEVER
+    }
+
+    fn find_local_ty(&mut self, ident: Ident) -> Option<ty::Id> {
+        self.ci.scope.vars.iter().rfind(|v| (v.id == ident && v.value() == NEVER)).map(|v| v.ty)
     }
 }
 
@@ -4373,17 +4401,108 @@ fn common_dom(mut a: Nid, mut b: Nid, nodes: &mut Nodes) -> Nid {
 #[cfg(test)]
 mod tests {
     use {
+        super::{Codegen, CodegenCtx},
+        crate::{
+            lexer::TokenKind,
+            parser::{self},
+        },
         alloc::{string::String, vec::Vec},
-        core::fmt::Write,
+        core::{fmt::Write, hash::BuildHasher, ops::Range},
     };
+
+    #[derive(Default)]
+    struct Rand(pub u64);
+
+    impl Rand {
+        pub fn next(&mut self) -> u64 {
+            self.0 = crate::FnvBuildHasher::default().hash_one(self.0);
+            self.0
+        }
+
+        pub fn range(&mut self, min: u64, max: u64) -> u64 {
+            self.next() % (max - min) + min
+        }
+    }
+
+    #[derive(Default)]
+    struct FuncGen {
+        rand: Rand,
+        buf: String,
+    }
+
+    impl FuncGen {
+        fn gen(&mut self, seed: u64) -> &str {
+            self.rand = Rand(seed);
+            self.buf.clear();
+            self.buf.push_str("main := fn(): void { return ");
+            self.expr().unwrap();
+            self.buf.push('}');
+            &self.buf
+        }
+
+        fn expr(&mut self) -> core::fmt::Result {
+            match self.rand.range(0, 100) {
+                0..80 => {
+                    write!(self.buf, "{}", self.rand.next())
+                }
+                80..100 => {
+                    self.expr()?;
+                    let ops = [
+                        TokenKind::Add,
+                        TokenKind::Sub,
+                        TokenKind::Mul,
+                        TokenKind::Div,
+                        TokenKind::Shl,
+                        TokenKind::Eq,
+                        TokenKind::Ne,
+                        TokenKind::Lt,
+                        TokenKind::Gt,
+                        TokenKind::Le,
+                        TokenKind::Ge,
+                        TokenKind::Band,
+                        TokenKind::Bor,
+                        TokenKind::Xor,
+                        TokenKind::Mod,
+                        TokenKind::Shr,
+                    ];
+                    let op = ops[self.rand.range(0, ops.len() as u64) as usize];
+                    write!(self.buf, " {op} ")?;
+                    self.expr()
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    fn fuzz(seed_range: Range<u64>) {
+        let mut gen = FuncGen::default();
+        let mut ctx = CodegenCtx::default();
+        for i in seed_range {
+            ctx.clear();
+            let src = gen.gen(i);
+            let parsed = parser::Ast::new("fuzz", src, &mut ctx.parser, &mut parser::no_loader);
+
+            let mut cdg = Codegen::new(core::slice::from_ref(&parsed), &mut ctx);
+            cdg.generate(0);
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn fuzz_test() {
+        _ = log::set_logger(&crate::fs::Logger);
+        log::set_max_level(log::LevelFilter::Info);
+        fuzz(0..10000);
+    }
 
     fn generate(ident: &'static str, input: &'static str, output: &mut String) {
         _ = log::set_logger(&crate::fs::Logger);
-        // log::set_max_level(log::LevelFilter::Info);
-        //        log::set_max_level(log::LevelFilter::Trace);
+        log::set_max_level(log::LevelFilter::Info);
+        //log::set_max_level(log::LevelFilter::Trace);
 
-        let (ref files, embeds) = crate::test_parse_files(ident, input);
-        let mut codegen = super::Codegen { files, ..Default::default() };
+        let mut ctx = CodegenCtx::default();
+        let (ref files, embeds) = crate::test_parse_files(ident, input, &mut ctx.parser);
+        let mut codegen = super::Codegen::new(files, &mut ctx);
         codegen.push_embeds(embeds);
 
         codegen.generate(0);

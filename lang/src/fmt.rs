@@ -451,7 +451,7 @@ pub fn fmt_file(exprs: &[Expr], file: &str, f: &mut impl fmt::Write) -> fmt::Res
 #[cfg(test)]
 pub mod test {
     use {
-        crate::parser::{self, ParserCtx},
+        crate::parser::{self, Ctx},
         alloc::borrow::ToOwned,
         std::{fmt::Write, string::String},
     };
@@ -461,8 +461,7 @@ pub mod test {
         let len = crate::fmt::minify(&mut minned);
         minned.truncate(len);
 
-        let ast =
-            parser::Ast::new(ident, minned, &mut ParserCtx::default(), &mut parser::no_loader);
+        let ast = parser::Ast::new(ident, minned, &mut Ctx::default(), &mut parser::no_loader);
         //log::error!(
         //    "{} / {} = {} | {} / {} = {}",
         //    ast.mem.size(),

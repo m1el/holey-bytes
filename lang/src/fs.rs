@@ -1,7 +1,7 @@
 use {
     crate::{
         codegen,
-        parser::{self, Ast, FileKind, ParserCtx},
+        parser::{self, Ast, Ctx, FileKind},
         son,
     },
     alloc::{string::String, vec::Vec},
@@ -89,10 +89,11 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
         let ast = parsed.ast.into_iter().next().unwrap();
         write!(out, "{ast}").unwrap();
     } else if options.optimize {
-        let mut codegen = son::Codegen::default();
-        codegen.files = &parsed.ast;
-        codegen.push_embeds(parsed.embeds);
+        let mut ctx = crate::son::CodegenCtx::default();
+        *ctx.parser.errors.get_mut() = parsed.errors;
+        let mut codegen = son::Codegen::new(&parsed.ast, &mut ctx);
 
+        codegen.push_embeds(parsed.embeds);
         codegen.generate(0);
 
         if !codegen.errors.borrow().is_empty() {
@@ -108,6 +109,11 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
             codegen.assemble(out);
         }
     } else {
+        if !parsed.errors.is_empty() {
+            log::error!("{}", parsed.errors);
+            return Err(std::io::Error::other("parsing failed"));
+        }
+
         let mut codegen = codegen::Codegen::default();
         codegen.files = parsed.ast;
         codegen.push_embeds(parsed.embeds);
@@ -213,6 +219,7 @@ impl<T> TaskQueueInner<T> {
 pub struct Loaded {
     ast: Vec<Ast>,
     embeds: Vec<Vec<u8>>,
+    errors: String,
 }
 
 pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Loaded> {
@@ -334,7 +341,7 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Loaded> {
     };
 
     let thread = || {
-        let mut ctx = ParserCtx::default();
+        let mut ctx = Ctx::default();
         let mut tmp = PathBuf::new();
         while let Some(task @ (indx, ..)) = tasks.pop() {
             let res = execute_task(&mut ctx, task, &mut tmp);
@@ -343,6 +350,7 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Loaded> {
             ast.resize_with(len, || Err(io::ErrorKind::InvalidData.into()));
             ast[indx as usize] = res;
         }
+        ctx.errors.into_inner()
     };
 
     let path = Path::new(root).canonicalize().map_err(|e| {
@@ -351,15 +359,23 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Loaded> {
     seen_modules.lock().unwrap().insert(path.clone(), 0);
     tasks.push((0, path));
 
-    if extra_threads == 0 {
-        thread();
+    let errors = if extra_threads == 0 {
+        thread()
     } else {
-        std::thread::scope(|s| (0..extra_threads + 1).for_each(|_| _ = s.spawn(thread)));
-    }
+        std::thread::scope(|s| {
+            (0..extra_threads + 1)
+                .map(|_| s.spawn(thread))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|t| t.join().unwrap())
+                .collect::<String>()
+        })
+    };
 
     Ok(Loaded {
         ast: ast.into_inner().unwrap().into_iter().collect::<io::Result<Vec<_>>>()?,
         embeds: embeds.into_inner().unwrap(),
+        errors,
     })
 }
 

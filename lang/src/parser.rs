@@ -7,7 +7,7 @@ use {
     alloc::{boxed::Box, string::String, vec::Vec},
     core::{
         alloc::Layout,
-        cell::UnsafeCell,
+        cell::{RefCell, UnsafeCell},
         fmt::{self},
         intrinsics::unlikely,
         marker::PhantomData,
@@ -19,7 +19,6 @@ use {
 
 pub type Pos = u32;
 pub type IdentFlags = u32;
-pub type Symbols = Vec<Symbol>;
 pub type FileId = u32;
 pub type IdentIndex = u16;
 pub type LoaderError = String;
@@ -29,6 +28,20 @@ pub type Loader<'a> = &'a mut (dyn FnMut(&str, &str, FileKind) -> Result<FileId,
 pub enum FileKind {
     Module,
     Embed,
+}
+
+trait Trans {
+    fn trans(self) -> Self;
+}
+
+impl<T> Trans for Option<Option<T>> {
+    fn trans(self) -> Self {
+        match self {
+            Some(None) => None,
+            Some(Some(v)) => Some(Some(v)),
+            None => Some(None),
+        }
+    }
 }
 
 pub const SOURCE_TO_AST_FACTOR: usize = 7 * (core::mem::size_of::<usize>() / 4) + 1;
@@ -73,7 +86,7 @@ pub struct Parser<'a, 'b> {
     loader: Loader<'b>,
     lexer: Lexer<'a>,
     arena: &'a Arena,
-    ctx: &'b mut ParserCtx,
+    ctx: &'b mut Ctx,
     token: Token,
     ns_bound: usize,
     trailing_sep: bool,
@@ -82,7 +95,7 @@ pub struct Parser<'a, 'b> {
 
 impl<'a, 'b> Parser<'a, 'b> {
     pub fn parse(
-        ctx: &'b mut ParserCtx,
+        ctx: &'b mut Ctx,
         input: &'a str,
         path: &'b str,
         loader: Loader<'b>,
@@ -110,23 +123,17 @@ impl<'a, 'b> Parser<'a, 'b> {
 
         if !self.ctx.idents.is_empty() {
             // TODO: we need error recovery
-            log::error!("{}", {
-                let mut errors = String::new();
-                for id in self.ctx.idents.drain(..) {
-                    report_to(
-                        self.lexer.source(),
-                        self.path,
-                        ident::pos(id.ident),
-                        &format_args!(
-                            "undeclared identifier: {}",
-                            self.lexer.slice(ident::range(id.ident))
-                        ),
-                        &mut errors,
-                    );
-                }
-                errors
-            });
-            unreachable!();
+            let mut idents = core::mem::take(&mut self.ctx.idents);
+            for id in idents.drain(..) {
+                self.report(
+                    ident::pos(id.ident),
+                    format_args!(
+                        "undeclared identifier: {}",
+                        self.lexer.slice(ident::range(id.ident))
+                    ),
+                );
+            }
+            self.ctx.idents = idents;
         }
 
         f
@@ -136,20 +143,20 @@ impl<'a, 'b> Parser<'a, 'b> {
         core::mem::replace(&mut self.token, self.lexer.eat())
     }
 
-    fn ptr_expr(&mut self) -> &'a Expr<'a> {
-        self.arena.alloc(self.expr())
+    fn ptr_expr(&mut self) -> Option<&'a Expr<'a>> {
+        Some(self.arena.alloc(self.expr()?))
     }
 
-    fn expr_low(&mut self, top_level: bool) -> Expr<'a> {
-        let left = self.unit_expr();
+    fn expr_low(&mut self, top_level: bool) -> Option<Expr<'a>> {
+        let left = self.unit_expr()?;
         self.bin_expr(left, 0, top_level)
     }
 
-    fn expr(&mut self) -> Expr<'a> {
+    fn expr(&mut self) -> Option<Expr<'a>> {
         self.expr_low(false)
     }
 
-    fn bin_expr(&mut self, mut fold: Expr<'a>, min_prec: u8, top_level: bool) -> Expr<'a> {
+    fn bin_expr(&mut self, mut fold: Expr<'a>, min_prec: u8, top_level: bool) -> Option<Expr<'a>> {
         loop {
             let Some(prec) = self.token.kind.precedence() else {
                 break;
@@ -165,8 +172,8 @@ impl<'a, 'b> Parser<'a, 'b> {
                 self.declare_rec(&fold, top_level);
             }
 
-            let right = self.unit_expr();
-            let right = self.bin_expr(right, prec, false);
+            let right = self.unit_expr()?;
+            let right = self.bin_expr(right, prec, false)?;
             let right = self.arena.alloc(right);
             let left = self.arena.alloc(fold);
 
@@ -187,7 +194,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             }
         }
 
-        fold
+        Some(fold)
     }
 
     fn declare_rec(&mut self, expr: &Expr, top_level: bool) {
@@ -200,7 +207,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                     self.declare_rec(value, top_level)
                 }
             }
-            _ => self.report(expr.pos(), "cant declare this shit (yet)"),
+            _ => _ = self.report(expr.pos(), "cant declare this shit (yet)"),
         }
     }
 
@@ -217,12 +224,14 @@ impl<'a, 'b> Parser<'a, 'b> {
 
         let Ok(index) = self.ctx.idents.binary_search_by_key(&id, |s| s.ident) else {
             self.report(pos, "the identifier is rezerved for a builtin (proably)");
+            return;
         };
         if core::mem::replace(&mut self.ctx.idents[index].declared, true) {
             self.report(
                 pos,
                 format_args!("redeclaration of identifier: {}", self.lexer.slice(ident::range(id))),
-            )
+            );
+            return;
         }
 
         self.ctx.idents[index].ordered = ordered;
@@ -245,11 +254,16 @@ impl<'a, 'b> Parser<'a, 'b> {
         {
             Some((i, elem)) => (i, elem, false),
             None => {
-                let Some(id) = ident::new(token.start, name.len() as _) else {
-                    self.report(token.start, "identifier can at most have 64 characters");
+                let ident = match ident::new(token.start, name.len() as _) {
+                    None => {
+                        self.report(token.start, "identifier can at most have 64 characters");
+                        ident::new(token.start, 64).unwrap()
+                    }
+                    Some(id) => id,
                 };
+
                 self.ctx.idents.push(ScopeIdent {
-                    ident: id,
+                    ident,
                     declared: false,
                     ordered: false,
                     flags: 0,
@@ -271,18 +285,18 @@ impl<'a, 'b> Parser<'a, 'b> {
         self.lexer.slice(range.range())
     }
 
-    fn unit_expr(&mut self) -> Expr<'a> {
+    fn unit_expr(&mut self) -> Option<Expr<'a>> {
         use {Expr as E, TokenKind as T};
         let frame = self.ctx.idents.len();
         let token @ Token { start: pos, .. } = self.next();
         let prev_boundary = self.ns_bound;
         let prev_captured = self.ctx.captured.len();
         let mut expr = match token.kind {
-            T::Ct => E::Ct { pos, value: self.ptr_expr() },
+            T::Ct => E::Ct { pos, value: self.ptr_expr()? },
             T::Directive if self.lexer.slice(token.range()) == "use" => {
-                self.expect_advance(TokenKind::LParen);
-                let str = self.expect_advance(TokenKind::DQuote);
-                self.expect_advance(TokenKind::RParen);
+                self.expect_advance(TokenKind::LParen)?;
+                let str = self.expect_advance(TokenKind::DQuote)?;
+                self.expect_advance(TokenKind::RParen)?;
                 let path = self.lexer.slice(str.range());
                 let path = &path[1..path.len() - 1];
 
@@ -292,15 +306,15 @@ impl<'a, 'b> Parser<'a, 'b> {
                     id: match (self.loader)(path, self.path, FileKind::Module) {
                         Ok(id) => id,
                         Err(e) => {
-                            self.report(str.start, format_args!("error loading dependency: {e:#}"))
+                            self.report(str.start, format_args!("error loading dependency: {e:#}"))?
                         }
                     },
                 }
             }
             T::Directive if self.lexer.slice(token.range()) == "embed" => {
-                self.expect_advance(TokenKind::LParen);
-                let str = self.expect_advance(TokenKind::DQuote);
-                self.expect_advance(TokenKind::RParen);
+                self.expect_advance(TokenKind::LParen)?;
+                let str = self.expect_advance(TokenKind::DQuote)?;
+                self.expect_advance(TokenKind::RParen)?;
                 let path = self.lexer.slice(str.range());
                 let path = &path[1..path.len() - 1];
 
@@ -309,8 +323,10 @@ impl<'a, 'b> Parser<'a, 'b> {
                     path,
                     id: match (self.loader)(path, self.path, FileKind::Embed) {
                         Ok(id) => id,
-                        Err(e) => self
-                            .report(str.start, format_args!("error loading embedded file: {e:#}")),
+                        Err(e) => self.report(
+                            str.start,
+                            format_args!("error loading embedded file: {e:#}"),
+                        )?,
                     },
                 }
             }
@@ -318,7 +334,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 pos: pos - 1, // need to undo the directive shift
                 name: self.tok_str(token),
                 args: {
-                    self.expect_advance(T::LParen);
+                    self.expect_advance(T::LParen)?;
                     self.collect_list(T::Comma, T::RParen, Self::expr)
                 },
             },
@@ -328,7 +344,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             T::DQuote => E::String { pos, literal: self.tok_str(token) },
             T::Packed => {
                 self.packed = true;
-                let expr = self.unit_expr();
+                let expr = self.unit_expr()?;
                 if self.packed {
                     self.report(
                         expr.pos(),
@@ -342,20 +358,20 @@ impl<'a, 'b> Parser<'a, 'b> {
                 packed: core::mem::take(&mut self.packed),
                 fields: {
                     self.ns_bound = self.ctx.idents.len();
-                    self.expect_advance(T::LBrace);
+                    self.expect_advance(T::LBrace)?;
                     self.collect_list(T::Comma, T::RBrace, |s| {
                         let tok = s.token;
-                        if s.advance_if(T::Comment) {
+                        Some(if s.advance_if(T::Comment) {
                             CommentOr::Comment { literal: s.tok_str(tok), pos: tok.start }
                         } else {
-                            let name = s.expect_advance(T::Ident);
-                            s.expect_advance(T::Colon);
+                            let name = s.expect_advance(T::Ident)?;
+                            s.expect_advance(T::Colon)?;
                             CommentOr::Or(StructField {
                                 pos: name.start,
                                 name: s.tok_str(name),
-                                ty: s.expr(),
+                                ty: s.expr()?,
                             })
-                        }
+                        })
                     })
                 },
                 captured: {
@@ -381,11 +397,11 @@ impl<'a, 'b> Parser<'a, 'b> {
             }
             T::If => E::If {
                 pos,
-                cond: self.ptr_expr(),
-                then: self.ptr_expr(),
-                else_: self.advance_if(T::Else).then(|| self.ptr_expr()),
+                cond: self.ptr_expr()?,
+                then: self.ptr_expr()?,
+                else_: self.advance_if(T::Else).then(|| self.ptr_expr()).trans()?,
             },
-            T::Loop => E::Loop { pos, body: self.ptr_expr() },
+            T::Loop => E::Loop { pos, body: self.ptr_expr()? },
             T::Break => E::Break { pos },
             T::Continue => E::Continue { pos },
             T::Return => E::Return {
@@ -394,39 +410,40 @@ impl<'a, 'b> Parser<'a, 'b> {
                     self.token.kind,
                     T::Semi | T::RBrace | T::RBrack | T::RParen | T::Comma
                 ))
-                .then(|| self.ptr_expr()),
+                .then(|| self.ptr_expr())
+                .trans()?,
             },
             T::Fn => E::Closure {
                 pos,
                 args: {
-                    self.expect_advance(T::LParen);
+                    self.expect_advance(T::LParen)?;
                     self.collect_list(T::Comma, T::RParen, |s| {
-                        let name = s.advance_ident();
+                        let name = s.advance_ident()?;
                         let (id, _) = s.resolve_ident(name);
                         s.declare(name.start, id, true, true);
-                        s.expect_advance(T::Colon);
-                        Arg {
+                        s.expect_advance(T::Colon)?;
+                        Some(Arg {
                             pos: name.start,
                             name: s.tok_str(name),
                             is_ct: name.kind == T::CtIdent,
                             id,
-                            ty: s.expr(),
-                        }
+                            ty: s.expr()?,
+                        })
                     })
                 },
                 ret: {
-                    self.expect_advance(T::Colon);
-                    self.ptr_expr()
+                    self.expect_advance(T::Colon)?;
+                    self.ptr_expr()?
                 },
-                body: self.ptr_expr(),
+                body: self.ptr_expr()?,
             },
             T::Ctor => self.ctor(pos, None),
             T::Tupl => self.tupl(pos, None),
             T::LBrack => E::Slice {
-                item: self.ptr_unit_expr(),
-                size: self.advance_if(T::Semi).then(|| self.ptr_expr()),
+                item: self.ptr_unit_expr()?,
+                size: self.advance_if(T::Semi).then(|| self.ptr_expr()).trans()?,
                 pos: {
-                    self.expect_advance(T::RBrack);
+                    self.expect_advance(T::RBrack)?;
                     pos
                 },
             },
@@ -434,7 +451,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 pos,
                 op: token.kind,
                 val: {
-                    let expr = self.ptr_unit_expr();
+                    let expr = self.ptr_unit_expr()?;
                     if token.kind == T::Band {
                         self.flag_idents(*expr, idfl::REFERENCED);
                     }
@@ -454,18 +471,18 @@ impl<'a, 'b> Parser<'a, 'b> {
                     pos,
                     value: match u64::from_str_radix(slice, radix as u32) {
                         Ok(value) => value,
-                        Err(e) => self.report(token.start, format_args!("invalid number: {e}")),
+                        Err(e) => self.report(token.start, format_args!("invalid number: {e}"))?,
                     } as i64,
                     radix,
                 }
             }
             T::LParen => {
-                let expr = self.expr();
-                self.expect_advance(T::RParen);
+                let expr = self.expr()?;
+                self.expect_advance(T::RParen)?;
                 expr
             }
             T::Comment => Expr::Comment { pos, literal: self.tok_str(token) },
-            tok => self.report(token.start, format_args!("unexpected token: {tok}")),
+            tok => self.report(token.start, format_args!("unexpected token: {tok}"))?,
         };
 
         loop {
@@ -485,8 +502,8 @@ impl<'a, 'b> Parser<'a, 'b> {
                 T::LBrack => E::Index {
                     base: self.arena.alloc(expr),
                     index: {
-                        let index = self.expr();
-                        self.expect_advance(T::RBrack);
+                        let index = self.expr()?;
+                        self.expect_advance(T::RBrack)?;
                         self.arena.alloc(index)
                     },
                 },
@@ -494,7 +511,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                     target: self.arena.alloc(expr),
                     pos: token.start,
                     name: {
-                        let token = self.expect_advance(T::Ident);
+                        let token = self.expect_advance(T::Ident)?;
                         self.tok_str(token)
                     },
                 },
@@ -506,7 +523,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             self.pop_scope(frame);
         }
 
-        expr
+        Some(expr)
     }
 
     fn tupl(&mut self, pos: Pos, ty: Option<Expr<'a>>) -> Expr<'a> {
@@ -523,31 +540,29 @@ impl<'a, 'b> Parser<'a, 'b> {
             pos,
             ty: ty.map(|ty| self.arena.alloc(ty)),
             fields: self.collect_list(TokenKind::Comma, TokenKind::RBrace, |s| {
-                let name_tok = s.advance_ident();
+                let name_tok = s.advance_ident()?;
                 let name = s.tok_str(name_tok);
-                CtorField {
+                Some(CtorField {
                     pos: name_tok.start,
                     name,
                     value: if s.advance_if(TokenKind::Colon) {
-                        s.expr()
+                        s.expr()?
                     } else {
                         let (id, is_first) = s.resolve_ident(name_tok);
                         Expr::Ident { pos: name_tok.start, is_ct: false, id, is_first }
                     },
-                }
+                })
             }),
             trailing_comma: core::mem::take(&mut self.trailing_sep),
         }
     }
 
-    fn advance_ident(&mut self) -> Token {
-        if matches!(self.token.kind, TokenKind::Ident | TokenKind::CtIdent) {
-            self.next()
+    fn advance_ident(&mut self) -> Option<Token> {
+        let next = self.next();
+        if matches!(next.kind, TokenKind::Ident | TokenKind::CtIdent) {
+            Some(next)
         } else {
-            self.report(
-                self.token.start,
-                format_args!("expected identifier, found {}", self.token.kind),
-            )
+            self.report(self.token.start, format_args!("expected identifier, found {}", next.kind))?
         }
     }
 
@@ -567,20 +582,49 @@ impl<'a, 'b> Parser<'a, 'b> {
             .collect_into(&mut self.ctx.symbols);
     }
 
-    fn ptr_unit_expr(&mut self) -> &'a Expr<'a> {
-        self.arena.alloc(self.unit_expr())
+    fn ptr_unit_expr(&mut self) -> Option<&'a Expr<'a>> {
+        Some(self.arena.alloc(self.unit_expr()?))
     }
 
     fn collect_list<T: Copy>(
         &mut self,
         delim: TokenKind,
         end: TokenKind,
-        mut f: impl FnMut(&mut Self) -> T,
+        mut f: impl FnMut(&mut Self) -> Option<T>,
     ) -> &'a [T] {
         let mut trailing_sep = false;
         let mut view = self.ctx.stack.view();
-        while !self.advance_if(end) {
-            let val = f(self);
+        'o: while !self.advance_if(end) {
+            let val = match f(self) {
+                Some(val) => val,
+                None => {
+                    let mut paren = None::<TokenKind>;
+                    let mut depth = 0;
+                    loop {
+                        let tok = self.next();
+                        if tok.kind == TokenKind::Eof {
+                            break 'o;
+                        }
+                        if let Some(par) = paren {
+                            if par == tok.kind {
+                                depth += 1;
+                            } else if tok.kind.closing() == par.closing() {
+                                depth -= 1;
+                                if depth == 0 {
+                                    paren = None;
+                                }
+                            }
+                        } else if tok.kind == delim {
+                            continue 'o;
+                        } else if tok.kind == end {
+                            break 'o;
+                        } else if tok.kind.closing().is_some() && paren.is_none() {
+                            paren = Some(tok.kind);
+                            depth = 1;
+                        }
+                    }
+                }
+            };
             trailing_sep = self.advance_if(delim);
             unsafe { self.ctx.stack.push(&mut view, val) };
         }
@@ -597,20 +641,28 @@ impl<'a, 'b> Parser<'a, 'b> {
         }
     }
 
-    fn expect_advance(&mut self, kind: TokenKind) -> Token {
-        if self.token.kind != kind {
-            self.report(
-                self.token.start,
-                format_args!("expected {}, found {}", kind, self.token.kind),
-            );
+    #[must_use]
+    fn expect_advance(&mut self, kind: TokenKind) -> Option<Token> {
+        let next = self.next();
+        if next.kind != kind {
+            self.report(next.start, format_args!("expected {}, found {}", kind, next.kind))?
+        } else {
+            Some(next)
         }
-        self.next()
     }
 
     #[track_caller]
-    fn report(&self, pos: Pos, msg: impl fmt::Display) -> ! {
-        log::error!("{}", Report::new(self.lexer.source(), self.path, pos, msg));
-        unreachable!();
+    fn report(&mut self, pos: Pos, msg: impl fmt::Display) -> Option<!> {
+        if log::log_enabled!(log::Level::Error) {
+            use core::fmt::Write;
+            writeln!(
+                self.ctx.errors.get_mut(),
+                "{}",
+                Report::new(self.lexer.source(), self.path, pos, msg)
+            )
+            .unwrap();
+        }
+        None
     }
 
     fn flag_idents(&mut self, e: Expr<'a>, flags: IdentFlags) {
@@ -988,11 +1040,23 @@ impl core::fmt::Display for Display<'_> {
 }
 
 #[derive(Default)]
-pub struct ParserCtx {
-    symbols: Symbols,
+pub struct Ctx {
+    pub errors: RefCell<String>,
+    symbols: Vec<Symbol>,
     stack: StackAlloc,
     idents: Vec<ScopeIdent>,
     captured: Vec<Ident>,
+}
+
+impl Ctx {
+    pub fn clear(&mut self) {
+        self.errors.get_mut().clear();
+
+        debug_assert_eq!(self.symbols.len(), 0);
+        debug_assert_eq!(self.stack.len, 0);
+        debug_assert_eq!(self.idents.len(), 0);
+        debug_assert_eq!(self.captured.len(), 0);
+    }
 }
 
 #[repr(C)]
@@ -1014,12 +1078,12 @@ impl AstInner<[Symbol]> {
             .0
     }
 
-    fn new(file: Box<str>, path: &str, ctx: &mut ParserCtx, loader: Loader) -> NonNull<Self> {
+    fn new(file: Box<str>, path: Box<str>, ctx: &mut Ctx, loader: Loader) -> NonNull<Self> {
         let arena = Arena::with_capacity(
             SOURCE_TO_AST_FACTOR * file.bytes().filter(|b| !b.is_ascii_whitespace()).count(),
         );
         let exprs =
-            unsafe { core::mem::transmute(Parser::parse(ctx, &file, path, loader, &arena)) };
+            unsafe { core::mem::transmute(Parser::parse(ctx, &file, &path, loader, &arena)) };
 
         crate::quad_sort(&mut ctx.symbols, |a, b| a.name.cmp(&b.name));
 
@@ -1033,13 +1097,14 @@ impl AstInner<[Symbol]> {
                 ref_count: AtomicUsize::new(1),
                 mem: arena.chunk.into_inner(),
                 exprs,
-                path: path.into(),
+                path,
                 file,
                 symbols: (),
             });
             core::ptr::addr_of_mut!((*inner).symbols)
                 .as_mut_ptr()
                 .copy_from_nonoverlapping(ctx.symbols.as_ptr(), ctx.symbols.len());
+            ctx.symbols.clear();
 
             NonNull::new_unchecked(inner)
         }
@@ -1090,8 +1155,13 @@ fn report_to(file: &str, path: &str, pos: Pos, msg: &dyn fmt::Display, out: &mut
 pub struct Ast(NonNull<AstInner<[Symbol]>>);
 
 impl Ast {
-    pub fn new(path: &str, content: String, ctx: &mut ParserCtx, loader: Loader) -> Self {
-        Self(AstInner::new(content.into(), path, ctx, loader))
+    pub fn new(
+        path: impl Into<Box<str>>,
+        content: impl Into<Box<str>>,
+        ctx: &mut Ctx,
+        loader: Loader,
+    ) -> Self {
+        Self(AstInner::new(content.into(), path.into(), ctx, loader))
     }
 
     pub fn exprs(&self) -> &[Expr] {
@@ -1118,7 +1188,7 @@ impl Ast {
 
 impl Default for Ast {
     fn default() -> Self {
-        Self(AstInner::new("".into(), "", &mut ParserCtx::default(), &mut no_loader))
+        Self(AstInner::new("".into(), "".into(), &mut Ctx::default(), &mut no_loader))
     }
 }
 
@@ -1327,6 +1397,15 @@ impl Arena {
 
         chunk.alloc(layout).unwrap()
     }
+
+    pub fn clear(&mut self) {
+        let size = self.chunk.get_mut().size();
+        if self.chunk.get_mut().next().is_some() {
+            self.chunk = ArenaChunk::new(size + 1024, Default::default()).into();
+        } else {
+            self.chunk.get_mut().reset();
+        }
+    }
 }
 
 pub struct ArenaChunk {
@@ -1384,6 +1463,10 @@ impl ArenaChunk {
 
     pub fn size(&self) -> usize {
         self.base as usize + self.size - self.end as usize + self.next().map_or(0, Self::size)
+    }
+
+    fn reset(&mut self) {
+        self.end = unsafe { self.base.add(self.size) };
     }
 }
 

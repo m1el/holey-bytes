@@ -728,7 +728,9 @@ sqrt := fn(x: uint): uint {
 	g := 0
 	b := 32768
 	bshift := 15
-	loop if b == 0 break else {
+	loop if b == 0 {
+		break
+	} else {
 		bshift -= 1
 		temp = b + (g << 1)
 		temp <<= bshift
