@@ -1715,8 +1715,8 @@ struct Ctx {
 }
 
 impl Ctx {
-    pub fn with_ty(self, ty: impl Into<ty::Id>) -> Self {
-        Self { ty: Some(ty.into()) }
+    pub fn with_ty(self, ty: ty::Id) -> Self {
+        Self { ty: Some(ty) }
     }
 }
 
@@ -2255,7 +2255,8 @@ impl<'a> Codegen<'a> {
                 Some(val)
             }
             Expr::UnOp { pos, op: op @ TokenKind::Sub, val } => {
-                let val = self.expr_ctx(val, ctx)?;
+                let val =
+                    self.expr_ctx(val, Ctx::default().with_ty(ctx.ty.unwrap_or(ty::Id::INT)))?;
                 if !val.ty.is_integer() {
                     self.report(pos, fa!("cant negate '{}'", self.ty_display(val.ty)));
                 }
@@ -2360,7 +2361,8 @@ impl<'a> Codegen<'a> {
                 };
 
                 let elem = self.tys.ins.slices[s as usize].elem;
-                let idx = self.expr_ctx(index, Ctx::default().with_ty(ty::Id::INT))?;
+                let mut idx = self.expr_ctx(index, Ctx::default().with_ty(ty::Id::DEFAULT_INT))?;
+                self.assert_ty(index.pos(), &mut idx, ty::Id::DEFAULT_INT, "subscript");
                 let value = self.tys.size_of(elem) as i64;
                 let size = self.ci.nodes.new_node_nop(ty::Id::INT, Kind::CInt { value }, [VOID]);
                 let inps = [VOID, idx.id, size];
@@ -2888,7 +2890,8 @@ impl<'a> Codegen<'a> {
                         continue;
                     }
 
-                    let value = self.expr_ctx(&field.value, Ctx::default().with_ty(ty))?;
+                    let mut value = self.expr_ctx(&field.value, Ctx::default().with_ty(ty))?;
+                    self.assert_ty(field.pos, &mut value, ty, fa!("field {}", field.name));
                     let mem = self.offset(mem, offset);
                     self.store_mem(mem, ty, value.id);
                 }
@@ -3051,10 +3054,11 @@ impl<'a> Codegen<'a> {
             Expr::Break { pos } => self.jump_to(pos, 1),
             Expr::Continue { pos } => self.jump_to(pos, 0),
             Expr::If { cond, then, else_, .. } => {
-                let cond = self.expr_ctx(cond, Ctx::default().with_ty(ty::BOOL))?;
+                let mut cnd = self.expr_ctx(cond, Ctx::default().with_ty(ty::Id::BOOL))?;
+                self.assert_ty(cond.pos(), &mut cnd, ty::Id::BOOL, "condition");
 
                 let if_node =
-                    self.ci.nodes.new_node(ty::Id::VOID, Kind::If, [self.ci.ctrl, cond.id]);
+                    self.ci.nodes.new_node(ty::Id::VOID, Kind::If, [self.ci.ctrl, cnd.id]);
 
                 'b: {
                     let branch = match self.tof(if_node).expand().inner() {

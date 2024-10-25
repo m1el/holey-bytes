@@ -8,7 +8,7 @@ name = "hbc"
 path = "src/main.rs"
 
 [dependencies]
-hashbrown = { version = "0.15.0", default-features = false, features = ["raw-entry"] }
+hashbrown = { version = "0.15.0", default-features = false, features = ["raw-entry", "allocator-api2"] }
 hbbytecode = { workspace = true, features = ["disasm"] }
 hbvm = { workspace = true, features = ["nightly"] }
 log = "0.4.22"
