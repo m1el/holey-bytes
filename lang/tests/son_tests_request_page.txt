@@ -37,14 +37,13 @@ main:
     ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
 request_page:
-    CP r12, r2
+    LRA r4, r0, :"\0\u{1}xxxxxxxx\0"
+    ST r2, r4, 1a, 1h
     LI64 r5, 12d
     LI64 r3, 2d
     LI64 r2, 3d
-    LRA r4, r0, :"\0\u{1}xxxxxxxx\0"
-    ST r12, r4, 1a, 1h
     ECA 
     JALA r0, r31, 0a
-code size: 339
+code size: 336
 ret: 42
 status: Ok(())

@@ -6,16 +6,16 @@ main:
     ST r1, r254, 4a, 4h
     ADDI64 r5, r254, 0d
     BMC r32, r5, 4h
-    LD r3, r254, 3a, 1h
-    ANDI r5, r3, 255d
-    LD r2, r254, 2a, 1h
-    ANDI r4, r2, 255d
-    LD r1, r254, 1a, 1h
-    ANDI r3, r1, 255d
-    LD r2, r254, 0a, 8h
-    ADD64 r6, r2, r3
-    ADD64 r10, r6, r4
-    ADD64 r1, r10, r5
+    LD r9, r254, 1a, 1h
+    LD r1, r254, 2a, 1h
+    ANDI r12, r9, 255d
+    LD r11, r254, 0a, 8h
+    LD r7, r254, 3a, 1h
+    ANDI r6, r1, 255d
+    ADD64 r5, r11, r12
+    ANDI r11, r7, 255d
+    ADD64 r10, r5, r6
+    ADD64 r1, r10, r11
     LD r31, r254, 8a, 16h
     ADDI64 r254, r254, 24d
     JALA r0, r31, 0a

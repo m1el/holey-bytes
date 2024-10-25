@@ -16,21 +16,21 @@ main:
     JNE r10, r6, :3
     CP r7, r9
     JMP :4
- 3: ADDI64 r12, r254, 32d
-    MUL64 r11, r7, r6
-    SUB64 r1, r6, r9
-    MUL64 r1, r1, r6
-    ADD64 r9, r10, r8
-    ADD64 r1, r1, r10
-    MULI64 r1, r1, 8d
-    ADD64 r1, r1, r5
-    ADD64 r2, r11, r10
-    MULI64 r10, r2, 8d
-    ADD64 r10, r10, r5
+ 3: ADD64 r3, r10, r8
+    MUL64 r12, r7, r6
+    SUB64 r11, r6, r9
+    ADD64 r9, r12, r10
+    MUL64 r11, r11, r6
+    MULI64 r9, r9, 8d
+    ADD64 r11, r11, r10
+    ADD64 r9, r9, r5
+    MULI64 r11, r11, 8d
+    ADDI64 r10, r254, 32d
+    ADD64 r12, r11, r5
+    BMC r9, r10, 8h
+    BMC r12, r9, 8h
     BMC r10, r12, 8h
-    BMC r1, r10, 8h
-    BMC r12, r1, 8h
-    CP r10, r9
+    CP r10, r3
     JMP :5
  0: ADD64 r2, r9, r8
     MULI64 r12, r9, 8d

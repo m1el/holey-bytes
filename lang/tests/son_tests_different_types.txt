@@ -1,45 +1,45 @@
 main:
     ADDI64 r254, r254, -24d
-    LI32 r6, 2w
-    LI32 r5, 0w
-    LI8 r8, 0b
-    LI8 r9, 255b
-    ADDI64 r10, r254, 0d
-    ADDI64 r7, r254, 12d
-    ST r9, r254, 12a, 1h
-    ST r8, r254, 13a, 1h
-    ST r8, r254, 14a, 1h
-    ST r9, r254, 15a, 1h
-    ST r5, r254, 16a, 4h
-    ST r6, r254, 20a, 4h
-    BMC r7, r10, 12h
+    LI8 r3, 255b
+    ADDI64 r2, r254, 12d
+    ST r3, r254, 12a, 1h
+    LI8 r6, 0b
+    ST r6, r254, 13a, 1h
+    ST r6, r254, 14a, 1h
+    ST r3, r254, 15a, 1h
+    LI32 r11, 0w
+    ST r11, r254, 16a, 4h
+    LI32 r3, 2w
+    ST r3, r254, 20a, 4h
+    ADDI64 r5, r254, 0d
+    BMC r2, r5, 12h
     LD r8, r254, 8a, 4h
     ANDI r8, r8, 4294967295d
-    ANDI r6, r6, 4294967295d
-    JEQ r8, r6, :0
+    ANDI r3, r3, 4294967295d
+    JEQ r8, r3, :0
     LI64 r1, 0d
     JMP :1
  0: LD r2, r254, 4a, 4h
     ANDI r2, r2, 4294967295d
-    ANDI r5, r5, 4294967295d
-    JEQ r2, r5, :2
+    ANDI r11, r11, 4294967295d
+    JEQ r2, r11, :2
     LI64 r1, 64d
     JMP :1
- 2: LD r8, r254, 3a, 1h
-    ANDI r10, r8, 255d
-    LD r7, r254, 2a, 1h
-    ANDI r9, r7, 255d
-    LD r6, r254, 1a, 1h
-    ANDI r8, r6, 255d
-    LD r4, r254, 0a, 1h
-    ANDI r7, r4, 255d
-    LD r5, r254, 8a, 4h
-    LD r6, r254, 4a, 4h
-    ADD32 r11, r5, r6
-    ADD32 r12, r11, r7
-    ADD32 r4, r12, r8
-    ADD32 r8, r4, r9
-    ADD32 r12, r8, r10
+ 2: LD r10, r254, 0a, 1h
+    LD r9, r254, 4a, 4h
+    LD r11, r254, 8a, 4h
+    LD r5, r254, 1a, 1h
+    ANDI r4, r10, 255d
+    ADD32 r6, r11, r9
+    LD r11, r254, 2a, 1h
+    ANDI r10, r5, 255d
+    ADD32 r9, r6, r4
+    LD r5, r254, 3a, 1h
+    ANDI r4, r11, 255d
+    ADD32 r3, r9, r10
+    ANDI r9, r5, 255d
+    ADD32 r8, r3, r4
+    ADD32 r12, r8, r9
     ANDI r1, r12, 4294967295d
  1: ADDI64 r254, r254, 24d
     JALA r0, r31, 0a

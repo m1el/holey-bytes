@@ -20,7 +20,6 @@ use {
     alloc::{borrow::ToOwned, string::String, vec::Vec},
     core::{
         assert_matches::debug_assert_matches,
-        borrow::Borrow,
         cell::RefCell,
         fmt::{self, Debug, Display, Write},
         format_args as fa, mem,
@@ -29,6 +28,7 @@ use {
     hashbrown::hash_map,
     hbbytecode::DisasmError,
     regalloc2::VReg,
+    std::panic,
 };
 
 const VOID: Nid = 0;
@@ -145,16 +145,16 @@ impl Nodes {
     fn graphviz_in_browser(&self, tys: &Types, files: &[parser::Ast]) {
         #[cfg(all(debug_assertions, feature = "std"))]
         {
-            let out = &mut String::new();
-            _ = self.graphviz_low(tys, files, out);
-            if !std::process::Command::new("brave")
-                .arg(format!("https://dreampuf.github.io/GraphvizOnline/#{out}"))
-                .status()
-                .unwrap()
-                .success()
-            {
-                log::error!("{out}");
-            }
+            //     let out = &mut String::new();
+            //     _ = self.graphviz_low(tys, files, out);
+            //     if !std::process::Command::new("brave")
+            //         .arg(format!("https://dreampuf.github.io/GraphvizOnline/#{out}"))
+            //         .status()
+            //         .unwrap()
+            //         .success()
+            //     {
+            //         log::error!("{out}");
+            //     }
         }
     }
 
@@ -3755,7 +3755,7 @@ impl<'a> Function<'a> {
             return;
         }
 
-        let node = self.nodes[nid].clone();
+        let mut node = self.nodes[nid].clone();
         match node.kind {
             Kind::Start => {
                 debug_assert_matches!(self.nodes[node.outputs[0]].kind, Kind::Entry);
@@ -3801,6 +3801,7 @@ impl<'a> Function<'a> {
                     block.push(self.rg(ph));
                 }
                 self.blocks[self.nodes[nid].ralloc_backref as usize].params = block;
+                self.reschedule_block(&mut node.outputs);
                 for o in node.outputs.into_iter().rev() {
                     self.emit_node(o, nid);
                 }
@@ -3874,6 +3875,7 @@ impl<'a> Function<'a> {
                     )]);
                 }
 
+                self.reschedule_block(&mut node.outputs);
                 for o in node.outputs.into_iter().rev() {
                     self.emit_node(o, nid);
                 }
@@ -3881,6 +3883,7 @@ impl<'a> Function<'a> {
             Kind::Then | Kind::Else => {
                 self.nodes[nid].ralloc_backref = self.add_block(nid);
                 self.bridge(prev, nid);
+                self.reschedule_block(&mut node.outputs);
                 for o in node.outputs.into_iter().rev() {
                     self.emit_node(o, nid);
                 }
@@ -3981,6 +3984,7 @@ impl<'a> Function<'a> {
 
                 self.add_instr(nid, ops);
 
+                self.reschedule_block(&mut node.outputs);
                 for o in node.outputs.into_iter().rev() {
                     if self.nodes[o].inputs[0] == nid
                         || (matches!(self.nodes[o].kind, Kind::Loop | Kind::Region)
@@ -4068,6 +4072,74 @@ impl<'a> Function<'a> {
         self.blocks[self.nodes[succ].ralloc_backref as usize]
             .preds
             .push(regalloc2::Block::new(self.nodes[pred].ralloc_backref as usize));
+    }
+
+    fn reschedule_block(&mut self, outputs: &mut Vc) {
+        let mut buf = Vec::with_capacity(outputs.len());
+        let mut seen = BitSet::default();
+        seen.clear(self.nodes.values.len());
+
+        for &o in outputs.iter() {
+            if !self.nodes.is_cfg(o) {
+                continue;
+            }
+
+            seen.set(o);
+
+            let mut cursor = buf.len();
+            buf.push(o);
+            while let Some(&n) = buf.get(cursor) {
+                for &i in &self.nodes[n].inputs[1..] {
+                    if self.nodes[i].inputs.is_empty() {
+                        std::println!("{:?}", self.nodes[i]);
+                    }
+                    if self.nodes[n].inputs.first() == self.nodes[i].inputs.first()
+                        && self.nodes[i].outputs.iter().all(|&o| {
+                            self.nodes[o].inputs.first() != self.nodes[i].inputs.first()
+                                || seen.get(o)
+                        })
+                        && seen.set(i)
+                    {
+                        buf.push(i);
+                    }
+                }
+                cursor += 1;
+            }
+        }
+
+        for &o in outputs.iter() {
+            if !seen.set(o) {
+                continue;
+            }
+            let mut cursor = buf.len();
+            buf.push(o);
+            while let Some(&n) = buf.get(cursor) {
+                for &i in &self.nodes[n].inputs[1..] {
+                    if self.nodes[i].inputs.is_empty() {
+                        std::println!("{:?}", self.nodes[i]);
+                    }
+                    if self.nodes[n].inputs.first() == self.nodes[i].inputs.first()
+                        && self.nodes[i].outputs.iter().all(|&o| {
+                            self.nodes[o].inputs.first() != self.nodes[i].inputs.first()
+                                || seen.get(o)
+                        })
+                        && seen.set(i)
+                    {
+                        buf.push(i);
+                    }
+                }
+                cursor += 1;
+            }
+        }
+
+        debug_assert!(outputs.len() == buf.len() || outputs.len() == buf.len() + 1,);
+
+        std::println!("{:?}\n{:?}", outputs, buf);
+
+        if buf.len() + 1 == outputs.len() {
+            outputs.remove(outputs.len() - 1);
+        }
+        outputs.copy_from_slice(&buf);
     }
 }
 
@@ -4574,6 +4646,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        big_array_crash;
         returning_global_struct;
         small_struct_bitcast;
         small_struct_assignment;
