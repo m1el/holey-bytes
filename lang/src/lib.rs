@@ -434,6 +434,7 @@ mod ty {
                 _ if oa.is_pointer() && ob.is_pointer() => return None,
                 _ if a.is_signed() && b.is_signed() || a.is_unsigned() && b.is_unsigned() => ob,
                 _ if a.is_unsigned() && b.is_signed() && a.repr() - U8 < b.repr() - I8 => ob,
+                _ if a.is_unsigned() && b.is_signed() && a.repr() - U8 > b.repr() - I8 => oa,
                 _ if oa.is_integer() && ob.is_pointer() && kind == TyCheck::BinOp => ob,
                 _ => return None,
             })

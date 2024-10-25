@@ -4435,6 +4435,7 @@ mod tests {
         small_struct_assignment;
         intcast_store;
         string_flip;
+        signed_to_unsigned_upcast;
         wide_ret;
         comptime_min_reg_leak;
         different_types;

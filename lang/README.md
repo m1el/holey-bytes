@@ -842,6 +842,11 @@ integer_range := fn(min: uint, max: uint): uint {
 }
 ```
 
+#### signed_to_unsigned_upcast
+```hb
+main := fn(): uint return @as(i32, 1)
+```
+
 #### writing_into_string
 ```hb
 outl := fn(): void {
