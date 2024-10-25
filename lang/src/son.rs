@@ -2466,7 +2466,7 @@ impl<'a> Codegen<'a> {
                         expr.pos(),
                         fa!(
                             "intcast is inferred to output '{}', which is not an integer",
-                            self.ty_display(val.ty)
+                            self.ty_display(ty)
                         ),
                     );
                 }
