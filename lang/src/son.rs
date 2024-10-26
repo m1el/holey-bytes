@@ -141,7 +141,7 @@ impl Nodes {
         log::info!("{out}");
     }
 
-    fn graphviz_in_browser(&self, tys: &Types, files: &[parser::Ast]) {
+    fn graphviz_in_browser(&self, _tys: &Types, _files: &[parser::Ast]) {
         #[cfg(all(debug_assertions, feature = "std"))]
         {
             //     let out = &mut String::new();

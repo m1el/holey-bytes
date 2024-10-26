@@ -81,6 +81,11 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
         Ok(())
     }
 
+    if !options.optimize && !parsed.errors.is_empty() {
+        log::error!("{}", parsed.errors);
+        return Err(std::io::Error::other("parsing failed"));
+    }
+
     if options.fmt {
         for parsed in parsed.ast {
             format_ast(parsed)?;
@@ -109,11 +114,6 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
             codegen.assemble(out);
         }
     } else {
-        if !parsed.errors.is_empty() {
-            log::error!("{}", parsed.errors);
-            return Err(std::io::Error::other("parsing failed"));
-        }
-
         let mut codegen = codegen::Codegen::default();
         codegen.files = parsed.ast;
         codegen.push_embeds(parsed.embeds);
