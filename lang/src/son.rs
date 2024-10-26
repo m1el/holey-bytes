@@ -883,27 +883,35 @@ impl Nodes {
                 }
             }
 
-            if !unidentifed.is_empty() {
-                continue;
-            }
-
-            // FIXME: when the loads and stores become parallel we will need to get saved
-            // differently
             let region = self[dst].inputs[2];
-            for mut oper in saved.into_iter().rev() {
-                let mut region = region;
-                if let Kind::BinOp { op } = self[oper].kind {
-                    debug_assert_eq!(self[oper].outputs.len(), 1);
-                    debug_assert_eq!(self[self[oper].outputs[0]].kind, Kind::Stre);
-                    region = self.new_node(self[oper].ty, Kind::BinOp { op }, [
-                        VOID,
-                        region,
-                        self[oper].inputs[2],
-                    ]);
-                    oper = self[oper].outputs[0];
+            // TODO: this can be an offset already due to previous peeps so handle that
+            if let &[mcall] = unidentifed.as_slice()
+                && matches!(self[mcall].kind, Kind::Call { .. })
+                && self[mcall].inputs.last() == Some(&stack)
+            {
+                self.modify_input(mcall, self[mcall].inputs.len() - 1, region);
+            } else {
+                if !unidentifed.is_empty() {
+                    continue;
                 }
 
-                self.modify_input(oper, 2, region);
+                // FIXME: when the loads and stores become parallel we will need to get saved
+                // differently
+                for mut oper in saved.into_iter().rev() {
+                    let mut region = region;
+                    if let Kind::BinOp { op } = self[oper].kind {
+                        debug_assert_eq!(self[oper].outputs.len(), 1);
+                        debug_assert_eq!(self[self[oper].outputs[0]].kind, Kind::Stre);
+                        region = self.new_node(self[oper].ty, Kind::BinOp { op }, [
+                            VOID,
+                            region,
+                            self[oper].inputs[2],
+                        ]);
+                        oper = self[oper].outputs[0];
+                    }
+
+                    self.modify_input(oper, 2, region);
+                }
             }
 
             self.replace(dst, *self[dst].inputs.get(3).unwrap_or(&MEM));
@@ -1364,7 +1372,9 @@ impl ItemCtx {
                 PLoc::Reg(..) | PLoc::Ref(..) => continue,
             };
             self.emit(instrs::st(rg, reg::STACK_PTR, fuc.nodes[arg].offset as _, size));
-            self.emit(instrs::addi64(rg, reg::STACK_PTR, fuc.nodes[arg].offset as _));
+            if fuc.nodes[arg].lock_rc == 0 {
+                self.emit(instrs::addi64(rg, reg::STACK_PTR, fuc.nodes[arg].offset as _));
+            }
         }
 
         for (i, block) in fuc.blocks.iter().enumerate() {
@@ -3478,10 +3488,10 @@ impl<'a> Codegen<'a> {
             };
 
             if let Some(oper) = to_correct {
-                oper.ty = upcasted;
                 if mem::take(&mut oper.ptr) {
                     oper.id = self.load_mem(oper.id, oper.ty);
                 }
+                oper.ty = upcasted;
                 oper.id = self.ci.nodes.new_node(upcasted, Kind::Extend, [VOID, oper.id]);
                 if matches!(op, TokenKind::Add | TokenKind::Sub)
                     && let Some(elem) = self.tys.base_of(upcasted)
@@ -3529,10 +3539,10 @@ impl<'a> Codegen<'a> {
                     self.ty_display(src.ty),
                     self.ty_display(upcasted)
                 );
-                src.ty = upcasted;
                 if mem::take(&mut src.ptr) {
                     src.id = self.load_mem(src.id, src.ty);
                 }
+                src.ty = upcasted;
                 src.id = self.ci.nodes.new_node(upcasted, Kind::Extend, [VOID, src.id]);
             }
             true
@@ -3908,6 +3918,7 @@ impl<'a> Function<'a> {
                     self.emit_node(o, nid);
                 }
             }
+            Kind::BinOp { op: TokenKind::Add } if self.nodes[node.inputs[1]].lock_rc != 0 => self.nodes.lock(nid),
             Kind::BinOp { op: TokenKind::Add }
                 if self.nodes.is_const(node.inputs[2])
                     && node.outputs.iter().all(|&n| {
@@ -4018,7 +4029,7 @@ impl<'a> Function<'a> {
                 let ops = vec![self.drg(nid)];
                 self.add_instr(nid, ops);
             }
-            Kind::Stck
+            Kind::Stck | Kind::Arg
                 if node.outputs.iter().all(|&n| {
                     matches!(self.nodes[n].kind, Kind::Stre | Kind::Load
                         if self.nodes[n].ty.loc(self.tys) == Loc::Reg)
@@ -4678,7 +4689,7 @@ mod tests {
         different_types;
         struct_return_from_module_function;
         sort_something_viredly;
-        structs_in_registers;
+        //structs_in_registers;
         comptime_function_from_another_file;
         inline_test;
         inlined_generic_functions;
