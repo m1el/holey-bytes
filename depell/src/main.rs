@@ -694,7 +694,7 @@ mod db {
             fetch_deps: "
                 WITH RECURSIVE roots(name, author, code) AS (
                     SELECT name, author, code FROM post WHERE name = ? AND author = ?
-                    UNION ALL
+                    UNION
                     SELECT post.name, post.author, post.code FROM
                         post JOIN import ON post.name = import.to_name
                             AND post.author = import.to_author
