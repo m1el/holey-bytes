@@ -527,6 +527,14 @@ main := fn(): uint {
 
 ### Purely Testing Examples
 
+#### reading_idk
+```hb
+main := fn(): int {
+	a := @as(int, idk)
+	return a
+}
+```
+
 #### nonexistent_ident_import
 ```hb
 main := @use("foo.hb").main

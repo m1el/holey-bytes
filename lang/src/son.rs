@@ -692,7 +692,6 @@ impl Nodes {
             Kind::Load => write!(out, "load:      "),
             Kind::Stre => write!(out, "stre:      "),
             Kind::Mem => write!(out, " mem:      "),
-            Kind::Idk => write!(out, " idk:      "),
             Kind::Extend => write!(out, " ext:      "),
         }?;
 
@@ -1061,8 +1060,6 @@ pub enum Kind {
         func: ty::Func,
         args: ty::Tuple,
     },
-    // [ctrl]
-    Idk,
     // [ctrl]
     Stck,
     // [ctrl, memory]
@@ -1661,7 +1658,6 @@ impl ItemCtx {
                         let offset = fuc.nodes[nid].offset;
                         self.emit(instrs::addi64(atr(allocs[0]), base, offset as _));
                     }
-                    Kind::Idk => {}
                     Kind::Load => {
                         let mut region = node.inputs[1];
                         let mut offset = 0;
@@ -2168,7 +2164,15 @@ impl<'a> Codegen<'a> {
                     let stck = self.ci.nodes.new_node(ty, Kind::Stck, [VOID, MEM]);
                     Some(Value::ptr(stck).ty(ty))
                 } else {
-                    Some(self.ci.nodes.new_node_lit(ty, Kind::Idk, [VOID]))
+                    self.report(
+                        pos,
+                        fa!(
+                            "type '{}' cannot be uninitialized, use a zero \
+                            value instead ('@bitcast(0)' in case of pointers)",
+                            self.ty_display(ty)
+                        ),
+                    );
+                    Value::NEVER
                 }
             }
             Expr::Bool { value, .. } => Some(self.ci.nodes.new_node_lit(
@@ -2376,6 +2380,7 @@ impl<'a> Codegen<'a> {
             }
             Expr::BinOp { left, op: TokenKind::Decl, right, .. } => {
                 let mut right = self.expr(right)?;
+
                 if right.ty.loc(self.tys) == Loc::Stack {
                     let stck = self.ci.nodes.new_node_nop(right.ty, Kind::Stck, [VOID, MEM]);
                     self.store_mem(stck, right.ty, right.id);
@@ -2417,9 +2422,7 @@ impl<'a> Codegen<'a> {
 
                 match lhs.ty.expand() {
                     _ if lhs.ty.is_pointer() || lhs.ty.is_integer() || lhs.ty == ty::Id::BOOL => {
-                        if mem::take(&mut lhs.ptr) {
-                            lhs.id = self.load_mem(lhs.id, lhs.ty);
-                        }
+                        self.strip_ptr(&mut lhs);
                         self.ci.nodes.lock(lhs.id);
                         let rhs = self.expr_ctx(right, Ctx::default().with_ty(lhs.ty));
                         self.ci.nodes.unlock(lhs.id);
@@ -3400,10 +3403,18 @@ impl<'a> Codegen<'a> {
     fn expr_ctx(&mut self, expr: &Expr, ctx: Ctx) -> Option<Value> {
         let mut n = self.raw_expr_ctx(expr, ctx)?;
         self.strip_var(&mut n);
-        if mem::take(&mut n.ptr) {
-            n.id = self.load_mem(n.id, n.ty);
-        }
+        self.strip_ptr(&mut n);
         Some(n)
+    }
+
+    fn expr(&mut self, expr: &Expr) -> Option<Value> {
+        self.expr_ctx(expr, Default::default())
+    }
+
+    fn strip_ptr(&mut self, target: &mut Value) {
+        if mem::take(&mut target.ptr) {
+            target.id = self.load_mem(target.id, target.ty);
+        }
     }
 
     fn offset(&mut self, val: Nid, off: Offset) -> Nid {
@@ -3422,10 +3433,6 @@ impl<'a> Codegen<'a> {
             n.ptr = self.ci.scope.vars[id].ptr;
             n.id = self.ci.scope.vars[id].value();
         }
-    }
-
-    fn expr(&mut self, expr: &Expr) -> Option<Value> {
-        self.expr_ctx(expr, Default::default())
     }
 
     fn jump_to(&mut self, pos: Pos, id: usize) -> Option<Value> {
@@ -3574,9 +3581,7 @@ impl<'a> Codegen<'a> {
             };
 
             if let Some(oper) = to_correct {
-                if mem::take(&mut oper.ptr) {
-                    oper.id = self.load_mem(oper.id, oper.ty);
-                }
+                self.strip_ptr(oper);
                 oper.ty = upcasted;
                 oper.id = self.ci.nodes.new_node(upcasted, Kind::Extend, [VOID, oper.id]);
                 if matches!(op, TokenKind::Add | TokenKind::Sub)
@@ -3625,9 +3630,7 @@ impl<'a> Codegen<'a> {
                     self.ty_display(src.ty),
                     self.ty_display(upcasted)
                 );
-                if mem::take(&mut src.ptr) {
-                    src.id = self.load_mem(src.id, src.ty);
-                }
+                self.strip_ptr(src);
                 src.ty = upcasted;
                 src.id = self.ci.nodes.new_node(upcasted, Kind::Extend, [VOID, src.id]);
             }
@@ -4130,10 +4133,6 @@ impl<'a> Function<'a> {
                 }) => self.nodes.lock(nid),
             Kind::Stck if self.tys.size_of(node.ty) == 0 => self.nodes.lock(nid),
             Kind::Stck => {
-                let ops = vec![self.drg(nid)];
-                self.add_instr(nid, ops);
-            }
-            Kind::Idk => {
                 let ops = vec![self.drg(nid)];
                 self.add_instr(nid, ops);
             }
@@ -4764,6 +4763,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        reading_idk;
         nonexistent_ident_import;
         big_array_crash;
         returning_global_struct;

@@ -1,0 +1,3 @@
+test.hb:3:16: type 'int' cannot be uninitialized, use a zero value instead ('@bitcast(0)' in case of pointers)
+    a := @as(int, idk)
+                  ^
