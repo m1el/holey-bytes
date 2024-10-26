@@ -23,10 +23,10 @@ use {
         cell::RefCell,
         fmt::{self, Debug, Display, Write},
         format_args as fa, mem,
-        ops::{self, Deref},
+        ops::{self, Deref, Not},
     },
     hashbrown::hash_map,
-    hbbytecode::DisasmError,
+    hbbytecode::{st, DisasmError},
     regalloc2::VReg,
 };
 
@@ -277,6 +277,36 @@ impl Nodes {
         self.remove_low(target);
 
         true
+    }
+
+    fn late_peephole(&mut self, target: Nid) -> Option<Nid> {
+        if let Some(id) = self.peephole(target) {
+            self.replace(target, id);
+            return Some(id);
+        }
+        None
+    }
+
+    fn iter_peeps(&mut self, mut fuel: usize) {
+        let mut in_stack = BitSet::default();
+        in_stack.clear(self.values.len());
+        let mut stack =
+            self.iter().map(|(id, ..)| id).inspect(|&id| _ = in_stack.set(id)).collect::<Vec<_>>();
+
+        while fuel != 0
+            && let Some(node) = stack.pop()
+        {
+            fuel -= 1;
+            in_stack.unset(node);
+            let new = self.late_peephole(node);
+            if let Some(new) = new {
+                for &i in self[new].outputs.iter().chain(self[new].inputs.iter()) {
+                    if in_stack.set(i) {
+                        stack.push(i)
+                    }
+                }
+            }
+        }
     }
 
     fn peephole(&mut self, target: Nid) -> Option<Nid> {
@@ -701,14 +731,6 @@ impl Nodes {
             self.graphviz_in_browser(tys, files);
             panic!()
         }
-    }
-
-    fn late_peephole(&mut self, target: Nid) -> Nid {
-        if let Some(id) = self.peephole(target) {
-            self.replace(target, id);
-            return id;
-        }
-        target
     }
 
     fn load_loop_var(&mut self, index: usize, value: &mut Variable, loops: &mut [Loop]) {
@@ -1182,6 +1204,7 @@ impl ItemCtx {
         self.nodes.unlock(ENTRY);
         self.nodes.unlock(MEM);
         self.nodes.eliminate_stack_temporaries();
+        self.nodes.iter_peeps(1000);
     }
 
     fn emit(&mut self, instr: (usize, [u8; instrs::MAX_SIZE])) {
@@ -1892,7 +1915,7 @@ impl<'a> Codegen<'a> {
         }
         let store = self.ci.nodes.new_node_nop(ty, Kind::Stre, vc);
         self.ci.scope.store.set_value(store, &mut self.ci.nodes);
-        let opted = self.ci.nodes.late_peephole(store);
+        let opted = self.ci.nodes.late_peephole(store).unwrap_or(store);
         self.ci.scope.store.set_value_remove(opted, &mut self.ci.nodes);
         opted
     }
@@ -2954,7 +2977,7 @@ impl<'a> Codegen<'a> {
 
                 self.ci.nodes.unlock(self.ci.ctrl);
                 self.ci.nodes.unlock(node);
-                let rpl = self.ci.nodes.late_peephole(node);
+                let rpl = self.ci.nodes.late_peephole(node).unwrap_or(node);
                 if self.ci.ctrl == node {
                     self.ci.ctrl = rpl;
                 }

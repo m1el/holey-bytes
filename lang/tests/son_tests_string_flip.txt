@@ -23,19 +23,19 @@ main:
     MUL64 r11, r11, r6
     MULI64 r9, r9, 8d
     ADD64 r11, r11, r10
-    ADD64 r9, r9, r5
+    ADD64 r9, r5, r9
     MULI64 r11, r11, 8d
     ADDI64 r10, r254, 32d
-    ADD64 r12, r11, r5
+    ADD64 r11, r5, r11
     BMC r9, r10, 8h
-    BMC r12, r9, 8h
-    BMC r10, r12, 8h
+    BMC r11, r9, 8h
+    BMC r10, r11, 8h
     CP r10, r3
     JMP :5
  0: ADD64 r2, r9, r8
     MULI64 r12, r9, 8d
-    ADD64 r3, r12, r5
-    ST r9, r3, 0a, 8h
+    ADD64 r7, r5, r12
+    ST r9, r7, 0a, 8h
     CP r9, r2
     JMP :6
  2: ADDI64 r254, r254, 40d

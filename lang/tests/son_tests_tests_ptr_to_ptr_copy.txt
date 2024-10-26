@@ -14,13 +14,13 @@ main:
     JMP :2
  1: ADD64 r2, r7, r9
     MULI64 r1, r7, 1024d
-    ADD64 r3, r1, r5
-    BMC r5, r3, 1024h
+    ADD64 r7, r5, r1
+    BMC r5, r7, 1024h
     CP r7, r2
     JMP :3
  0: ADD64 r2, r8, r9
-    ADD64 r12, r8, r5
-    ST r6, r12, 0a, 1h
+    ADD64 r8, r5, r8
+    ST r6, r8, 0a, 1h
     CP r8, r2
     JMP :4
  2: ADDI64 r254, r254, 10240d

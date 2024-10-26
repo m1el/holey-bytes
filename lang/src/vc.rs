@@ -287,6 +287,15 @@ impl BitSet {
         self.data.resize(new_len, 0);
     }
 
+    pub fn unset(&mut self, idx: Nid) -> bool {
+        let idx = idx as usize;
+        let data_idx = idx / Self::ELEM_SIZE;
+        let sub_idx = idx % Self::ELEM_SIZE;
+        let prev = self.data[data_idx] & (1 << sub_idx);
+        self.data[data_idx] &= !(1 << sub_idx);
+        prev != 0
+    }
+
     pub fn set(&mut self, idx: Nid) -> bool {
         let idx = idx as usize;
         let data_idx = idx / Self::ELEM_SIZE;
