@@ -1,5 +1,5 @@
 use {
-    self::var::{Scope, Variable},
+    self::strong_ref::StrongRef,
     crate::{
         ctx_map::CtxEntry,
         debug,
@@ -23,10 +23,10 @@ use {
         cell::RefCell,
         fmt::{self, Debug, Display, Write},
         format_args as fa, mem,
-        ops::{self, Deref, Not},
+        ops::{self, Deref},
     },
     hashbrown::hash_map,
-    hbbytecode::{st, DisasmError},
+    hbbytecode::DisasmError,
     regalloc2::VReg,
 };
 
@@ -68,6 +68,29 @@ impl Default for Nodes {
 }
 
 impl Nodes {
+    fn merge_scopes(
+        &mut self,
+        loops: &mut [Loop],
+        ctrl: &StrongRef,
+        to: &mut Scope,
+        from: &mut Scope,
+    ) {
+        for (i, (to_value, from_value)) in to.iter_mut().zip(from.iter_mut()).enumerate() {
+            debug_assert_eq!(to_value.ty, from_value.ty);
+            if to_value.value() != from_value.value() {
+                self.load_loop_var(i, from_value, loops);
+                self.load_loop_var(i, to_value, loops);
+                if to_value.value() != from_value.value() {
+                    let inps = [ctrl.get(), from_value.value(), to_value.value()];
+                    to_value.set_value_remove(self.new_node(from_value.ty, Kind::Phi, inps), self);
+                }
+            }
+        }
+
+        to.loads.drain(..).for_each(|l| _ = l.remove(self));
+        from.loads.drain(..).for_each(|l| _ = l.remove(self));
+    }
+
     fn graphviz_low(
         &self,
         tys: &Types,
@@ -342,7 +365,7 @@ impl Nodes {
                 // this is more general the pushing constants to left to help deduplicate expressions more
                 let mut changed = false;
                 if op.is_comutative() && self[lhs].key() < self[rhs].key() {
-                    core::mem::swap(&mut lhs, &mut rhs);
+                    mem::swap(&mut lhs, &mut rhs);
                     changed = true;
                 }
 
@@ -682,7 +705,7 @@ impl Nodes {
                     let mut print_ret = true;
                     for o in iter(self, node) {
                         if self[o].inputs[0] == node
-                            && (self[node].outputs[0] != o || core::mem::take(&mut print_ret))
+                            && (self[node].outputs[0] != o || mem::take(&mut print_ret))
                         {
                             self.basic_blocks_instr(out, o)?;
                         }
@@ -1048,102 +1071,167 @@ type IDomDepth = u16;
 #[derive(Clone)]
 struct Loop {
     node: Nid,
-    ctrl: [Nid; 2],
+    ctrl: [StrongRef; 2],
     ctrl_scope: [Scope; 2],
     scope: Scope,
 }
 
-mod var {
+mod strong_ref {
     use {
         super::{Kind, Nid, Nodes},
-        crate::{debug, ident::Ident, ty},
-        alloc::vec::Vec,
+        crate::debug,
+        core::ops::Not,
     };
 
-    // makes sure value inside is laways locked for this instance of variable
-    #[derive(Default, Clone)]
-    pub struct Variable {
-        pub id: Ident,
-        pub ty: ty::Id,
-        pub ptr: bool,
-        value: Nid,
-    }
+    #[derive(Clone)]
+    pub struct StrongRef(Nid);
 
-    impl Variable {
-        pub fn new(id: Ident, ty: ty::Id, ptr: bool, value: Nid, nodes: &mut Nodes) -> Self {
+    impl StrongRef {
+        pub const DEFAULT: Self = Self(Nid::MAX);
+
+        pub fn new(value: Nid, nodes: &mut Nodes) -> Self {
             nodes.lock(value);
-            Self { id, ty, ptr, value }
+            Self(value)
         }
 
-        pub fn value(&self) -> Nid {
-            self.value
+        pub fn get(&self) -> Nid {
+            debug_assert!(self.0 != Nid::MAX);
+            self.0
         }
 
-        pub fn set_value(&mut self, mut new_value: Nid, nodes: &mut Nodes) -> Nid {
-            nodes.unlock(self.value);
-            core::mem::swap(&mut self.value, &mut new_value);
-            nodes.lock(self.value);
+        pub fn unwrap(self, nodes: &mut Nodes) -> Option<Nid> {
+            let nid = self.0;
+            if nid != Nid::MAX {
+                nodes.unlock(nid);
+                core::mem::forget(self);
+                Some(nid)
+            } else {
+                None
+            }
+        }
+
+        pub fn set(&mut self, mut new_value: Nid, nodes: &mut Nodes) -> Nid {
+            nodes.unlock(self.0);
+            core::mem::swap(&mut self.0, &mut new_value);
+            nodes.lock(self.0);
             new_value
         }
 
         pub fn dup(&self, nodes: &mut Nodes) -> Self {
-            nodes.lock(self.value);
-            Self { id: self.id, ty: self.ty, ptr: self.ptr, value: self.value }
+            nodes.lock(self.0);
+            Self(self.0)
         }
 
-        pub fn remove(self, nodes: &mut Nodes) {
-            nodes.unlock_remove(self.value);
+        pub fn remove(self, nodes: &mut Nodes) -> Option<Nid> {
+            let ret = nodes.unlock_remove(self.0).not().then_some(self.0);
             core::mem::forget(self);
+            ret
         }
 
-        pub fn set_value_remove(&mut self, new_value: Nid, nodes: &mut Nodes) {
-            let old = self.set_value(new_value, nodes);
+        pub fn set_remove(&mut self, new_value: Nid, nodes: &mut Nodes) {
+            let old = self.set(new_value, nodes);
             nodes.remove(old);
         }
 
         pub fn remove_ignore_arg(self, nodes: &mut Nodes) {
-            if nodes[self.value].kind == Kind::Arg {
-                nodes.unlock(self.value);
+            if nodes[self.0].kind == Kind::Arg {
+                nodes.unlock(self.0);
             } else {
-                nodes.unlock_remove(self.value);
+                nodes.unlock_remove(self.0);
             }
             core::mem::forget(self);
         }
+
+        pub fn soft_remove(self, nodes: &mut Nodes) -> Nid {
+            let nid = self.0;
+            nodes.unlock(self.0);
+            core::mem::forget(self);
+            nid
+        }
+
+        pub fn is_live(&self) -> bool {
+            self.0 != Nid::MAX
+        }
     }
 
-    impl Drop for Variable {
+    impl Default for StrongRef {
+        fn default() -> Self {
+            Self::DEFAULT
+        }
+    }
+
+    impl Drop for StrongRef {
         fn drop(&mut self) {
-            if self.ty != ty::Id::UNDECLARED && !debug::panicking() {
+            if self.0 != Nid::MAX && !debug::panicking() {
                 panic!("variable unproperly deinitialized")
             }
         }
     }
+}
 
-    #[derive(Default, Clone)]
-    pub struct Scope {
-        pub vars: Vec<Variable>,
-        pub loads: Vec<Nid>,
-        pub store: Variable,
+// makes sure value inside is laways locked for this instance of variable
+#[derive(Default, Clone)]
+struct Variable {
+    id: Ident,
+    ty: ty::Id,
+    ptr: bool,
+    value: StrongRef,
+}
+
+impl Variable {
+    fn new(id: Ident, ty: ty::Id, ptr: bool, value: Nid, nodes: &mut Nodes) -> Self {
+        Self { id, ty, ptr, value: StrongRef::new(value, nodes) }
     }
 
-    impl Scope {
-        pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Variable> {
-            core::iter::once(&mut self.store).chain(self.vars.iter_mut())
-        }
+    fn value(&self) -> Nid {
+        self.value.get()
+    }
 
-        pub fn dup(&self, nodes: &mut Nodes) -> Self {
-            Self {
-                vars: self.vars.iter().map(|v| v.dup(nodes)).collect(),
-                loads: self.loads.iter().copied().inspect(|&l| nodes.lock(l)).collect(),
-                store: self.store.dup(nodes),
-            }
-        }
+    fn set_value(&mut self, new_value: Nid, nodes: &mut Nodes) -> Nid {
+        self.value.set(new_value, nodes)
+    }
 
-        pub fn clear(&mut self, nodes: &mut Nodes) {
-            self.vars.drain(..).for_each(|n| n.remove(nodes));
-            self.loads.drain(..).for_each(|l| _ = nodes.unlock_remove(l));
-            core::mem::take(&mut self.store).remove(nodes);
+    fn dup(&self, nodes: &mut Nodes) -> Self {
+        Self { id: self.id, ty: self.ty, ptr: self.ptr, value: self.value.dup(nodes) }
+    }
+
+    fn remove(self, nodes: &mut Nodes) {
+        self.value.remove(nodes);
+    }
+
+    fn set_value_remove(&mut self, new_value: Nid, nodes: &mut Nodes) {
+        self.value.set_remove(new_value, nodes);
+    }
+
+    fn remove_ignore_arg(self, nodes: &mut Nodes) {
+        self.value.remove_ignore_arg(nodes);
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct Scope {
+    vars: Vec<Variable>,
+    loads: Vec<StrongRef>,
+    store: Variable,
+}
+
+impl Scope {
+    fn iter_mut(&mut self) -> impl Iterator<Item = &mut Variable> {
+        core::iter::once(&mut self.store).chain(self.vars.iter_mut())
+    }
+
+    fn dup(&self, nodes: &mut Nodes) -> Self {
+        Self {
+            vars: self.vars.iter().map(|v| v.dup(nodes)).collect(),
+            loads: self.loads.iter().map(|l| l.dup(nodes)).collect(),
+            store: self.store.dup(nodes),
         }
+    }
+
+    fn clear(&mut self, nodes: &mut Nodes) {
+        self.vars.drain(..).for_each(|n| n.remove(nodes));
+        self.loads.drain(..).for_each(|l| _ = l.remove(nodes));
+        mem::take(&mut self.store).remove(nodes);
     }
 }
 
@@ -1154,9 +1242,9 @@ struct ItemCtx {
     task_base: usize,
     inline_var_base: usize,
     inline_depth: u16,
-    inline_ret: Option<(Value, Nid, Scope)>,
+    inline_ret: Option<(Value, StrongRef, Scope)>,
     nodes: Nodes,
-    ctrl: Nid,
+    ctrl: StrongRef,
     call_count: u16,
     loops: Vec<Loop>,
     scope: Scope,
@@ -1189,9 +1277,9 @@ impl ItemCtx {
         let end = self.nodes.new_node(ty::Id::NEVER, Kind::End, []);
         debug_assert_eq!(end, NEVER);
         self.nodes.lock(end);
-        self.ctrl = self.nodes.new_node(ty::Id::VOID, Kind::Entry, [VOID]);
-        debug_assert_eq!(self.ctrl, ENTRY);
-        self.nodes.lock(self.ctrl);
+        self.ctrl =
+            StrongRef::new(self.nodes.new_node(ty::Id::VOID, Kind::Entry, [VOID]), &mut self.nodes);
+        debug_assert_eq!(self.ctrl.get(), ENTRY);
         let mem = self.nodes.new_node(ty::Id::VOID, Kind::Mem, [VOID]);
         debug_assert_eq!(mem, MEM);
         self.nodes.lock(mem);
@@ -1201,7 +1289,7 @@ impl ItemCtx {
     fn finalize(&mut self) {
         self.scope.clear(&mut self.nodes);
         self.nodes.unlock(NEVER);
-        self.nodes.unlock(ENTRY);
+        mem::take(&mut self.ctrl).soft_remove(&mut self.nodes);
         self.nodes.unlock(MEM);
         self.nodes.eliminate_stack_temporaries();
         self.nodes.iter_peeps(1000);
@@ -1218,12 +1306,12 @@ impl ItemCtx {
         files: &[parser::Ast],
         ralloc: &mut Regalloc,
     ) -> usize {
-        let mut nodes = core::mem::take(&mut self.nodes);
+        let mut nodes = mem::take(&mut self.nodes);
 
         let fuc = Function::new(&mut nodes, tys, sig);
         log::info!("{:?}", fuc);
         if self.call_count != 0 {
-            core::mem::swap(
+            mem::swap(
                 &mut ralloc.env.preferred_regs_by_class,
                 &mut ralloc.env.non_preferred_regs_by_class,
             );
@@ -1246,7 +1334,7 @@ impl ItemCtx {
         );
 
         if self.call_count != 0 {
-            core::mem::swap(
+            mem::swap(
                 &mut ralloc.env.preferred_regs_by_class,
                 &mut ralloc.env.non_preferred_regs_by_class,
             );
@@ -1563,7 +1651,7 @@ impl ItemCtx {
         self.nodes.graphviz(tys, files);
 
         debug_assert!(self.code.is_empty());
-        let tail = core::mem::take(&mut self.call_count) == 0;
+        let tail = mem::take(&mut self.call_count) == 0;
 
         '_open_function: {
             self.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, 0));
@@ -1572,7 +1660,7 @@ impl ItemCtx {
 
         let mut stack_size = 0;
         '_compute_stack: {
-            let mems = core::mem::take(&mut self.nodes[MEM].outputs);
+            let mems = mem::take(&mut self.nodes[MEM].outputs);
             for &stck in mems.iter() {
                 if !matches!(self.nodes[stck].kind, Kind::Stck | Kind::Arg) {
                     debug_assert_matches!(
@@ -1689,10 +1777,10 @@ impl Pool {
         target: &mut ItemCtx,
     ) {
         if let Some(slot) = self.cis.get_mut(self.used_cis) {
-            core::mem::swap(slot, target);
+            mem::swap(slot, target);
         } else {
             self.cis.push(ItemCtx::default());
-            core::mem::swap(self.cis.last_mut().unwrap(), target);
+            mem::swap(self.cis.last_mut().unwrap(), target);
         }
         target.init(file, ret, task_base);
         self.used_cis += 1;
@@ -1700,7 +1788,7 @@ impl Pool {
 
     pub fn pop_ci(&mut self, target: &mut ItemCtx) {
         self.used_cis -= 1;
-        core::mem::swap(&mut self.cis[self.used_cis], target);
+        mem::swap(&mut self.cis[self.used_cis], target);
     }
 
     fn save_ci(&mut self, ci: &ItemCtx) {
@@ -1715,7 +1803,8 @@ impl Pool {
     fn restore_ci(&mut self, dst: &mut ItemCtx) {
         self.used_cis -= 1;
         dst.scope.clear(&mut dst.nodes);
-        *dst = core::mem::take(&mut self.cis[self.used_cis]);
+        mem::take(&mut dst.ctrl).remove(&mut dst.nodes);
+        *dst = mem::take(&mut self.cis[self.used_cis]);
     }
 
     fn clear(&mut self) {
@@ -1854,8 +1943,8 @@ impl<'a> Codegen<'a> {
         let func = Func {
             file,
             name: 0,
-            relocs: core::mem::take(&mut self.ci.relocs),
-            code: core::mem::take(&mut self.ci.code),
+            relocs: mem::take(&mut self.ci.relocs),
+            code: mem::take(&mut self.ci.code),
             ..Default::default()
         };
 
@@ -1905,11 +1994,11 @@ impl<'a> Codegen<'a> {
         self.ci.nodes.load_loop_store(&mut self.ci.scope.store, &mut self.ci.loops);
         let mut vc = Vc::from([VOID, value, region, self.ci.scope.store.value()]);
         for load in self.ci.scope.loads.drain(..) {
-            if load == value {
-                self.ci.nodes.unlock(load);
+            if load.get() == value {
+                load.soft_remove(&mut self.ci.nodes);
                 continue;
             }
-            if !self.ci.nodes.unlock_remove(load) {
+            if let Some(load) = load.remove(&mut self.ci.nodes) {
                 vc.push(load);
             }
         }
@@ -1937,8 +2026,7 @@ impl<'a> Codegen<'a> {
         self.ci.nodes.load_loop_store(&mut self.ci.scope.store, &mut self.ci.loops);
         let vc = [VOID, region, self.ci.scope.store.value()];
         let load = self.ci.nodes.new_node(ty, Kind::Load, vc);
-        self.ci.nodes.lock(load);
-        self.ci.scope.loads.push(load);
+        self.ci.scope.loads.push(StrongRef::new(load, &mut self.ci.nodes));
         load
     }
 
@@ -2060,40 +2148,41 @@ impl<'a> Codegen<'a> {
                 self.assert_ty(pos, &mut value, expected, "return value");
 
                 if self.ci.inline_depth == 0 {
-                    debug_assert_ne!(self.ci.ctrl, VOID);
-                    let mut inps = Vc::from([self.ci.ctrl, value.id]);
+                    debug_assert_ne!(self.ci.ctrl.get(), VOID);
+                    let mut inps = Vc::from([self.ci.ctrl.get(), value.id]);
                     self.ci.nodes.load_loop_store(&mut self.ci.scope.store, &mut self.ci.loops);
                     inps.push(self.ci.scope.store.value());
 
-                    self.ci.ctrl = self.ci.nodes.new_node(ty::Id::VOID, Kind::Return, inps);
-
-                    self.ci.nodes[NEVER].inputs.push(self.ci.ctrl);
-                    self.ci.nodes[self.ci.ctrl].outputs.push(NEVER);
-                } else if let Some((pv, ctrl, scope)) = &mut self.ci.inline_ret {
-                    self.ci.nodes.unlock(*ctrl);
-                    *ctrl =
-                        self.ci.nodes.new_node(ty::Id::VOID, Kind::Region, [self.ci.ctrl, *ctrl]);
-                    self.ci.nodes.lock(*ctrl);
-                    Self::merge_scopes(
+                    self.ci.ctrl.set(
+                        self.ci.nodes.new_node(ty::Id::VOID, Kind::Return, inps),
                         &mut self.ci.nodes,
-                        &mut self.ci.loops,
-                        *ctrl,
-                        scope,
-                        &mut self.ci.scope,
                     );
+
+                    self.ci.nodes[NEVER].inputs.push(self.ci.ctrl.get());
+                    self.ci.nodes[self.ci.ctrl.get()].outputs.push(NEVER);
+                } else if let Some((pv, ctrl, scope)) = &mut self.ci.inline_ret {
+                    ctrl.set(
+                        self.ci
+                            .nodes
+                            .new_node(ty::Id::VOID, Kind::Region, [self.ci.ctrl.get(), ctrl.get()]),
+                        &mut self.ci.nodes,
+                    );
+                    self.ci.nodes.merge_scopes(&mut self.ci.loops, ctrl, scope, &mut self.ci.scope);
                     self.ci.nodes.unlock(pv.id);
-                    pv.id = self.ci.nodes.new_node(value.ty, Kind::Phi, [*ctrl, value.id, pv.id]);
+                    pv.id =
+                        self.ci.nodes.new_node(value.ty, Kind::Phi, [ctrl.get(), value.id, pv.id]);
                     self.ci.nodes.lock(pv.id);
-                    self.ci.ctrl = *ctrl;
+                    self.ci.ctrl.set(NEVER, &mut self.ci.nodes);
                 } else {
                     self.ci.nodes.lock(value.id);
-                    self.ci.nodes.lock(self.ci.ctrl);
                     let mut scope = self.ci.scope.dup(&mut self.ci.nodes);
                     scope
                         .vars
                         .drain(self.ci.inline_var_base..)
                         .for_each(|v| v.remove(&mut self.ci.nodes));
-                    self.ci.inline_ret = Some((value, self.ci.ctrl, scope));
+                    let repl = StrongRef::new(NEVER, &mut self.ci.nodes);
+                    self.ci.inline_ret =
+                        Some((value, mem::replace(&mut self.ci.ctrl, repl), scope));
                 }
 
                 None
@@ -2232,7 +2321,7 @@ impl<'a> Codegen<'a> {
 
                 match lhs.ty.expand() {
                     _ if lhs.ty.is_pointer() || lhs.ty.is_integer() || lhs.ty == ty::Id::BOOL => {
-                        if core::mem::take(&mut lhs.ptr) {
+                        if mem::take(&mut lhs.ptr) {
                             lhs.id = self.load_mem(lhs.id, lhs.ty);
                         }
                         self.ci.nodes.lock(lhs.id);
@@ -2349,7 +2438,7 @@ impl<'a> Codegen<'a> {
                 }
 
                 match ty.loc(self.tys) {
-                    Loc::Reg if core::mem::take(&mut val.ptr) => val.id = self.load_mem(val.id, ty),
+                    Loc::Reg if mem::take(&mut val.ptr) => val.id = self.load_mem(val.id, ty),
                     Loc::Stack if !val.ptr => {
                         let stack = self.ci.nodes.new_node_nop(ty, Kind::Stck, [VOID, MEM]);
                         self.store_mem(stack, val.ty, val.id);
@@ -2443,12 +2532,12 @@ impl<'a> Codegen<'a> {
 
                 if has_ptr_arg {
                     inps.push(self.ci.scope.store.value());
-                    self.ci.scope.loads.retain(|&load| {
-                        if inps.contains(&load) {
+                    self.ci.scope.loads.retain_mut(|load| {
+                        if inps.contains(&load.get()) {
                             return true;
                         }
 
-                        if !self.ci.nodes.unlock_remove(load) {
+                        if let Some(load) = mem::take(load).remove(&mut self.ci.nodes) {
                             inps.push(load);
                         }
 
@@ -2465,14 +2554,17 @@ impl<'a> Codegen<'a> {
                     }
                 };
 
-                inps[0] = self.ci.ctrl;
-                self.ci.ctrl = self.ci.nodes.new_node(ty, Kind::Call { func: ty::ECA, args }, inps);
+                inps[0] = self.ci.ctrl.get();
+                self.ci.ctrl.set(
+                    self.ci.nodes.new_node(ty, Kind::Call { func: ty::ECA, args }, inps),
+                    &mut self.ci.nodes,
+                );
 
                 if has_ptr_arg {
                     self.store_mem(VOID, ty::Id::VOID, VOID);
                 }
 
-                alt_value.or(Some(Value::new(self.ci.ctrl).ty(ty)))
+                alt_value.or(Some(Value::new(self.ci.ctrl.get()).ty(ty)))
             }
             Expr::Call { func, args, .. } => {
                 self.ci.call_count += 1;
@@ -2531,12 +2623,12 @@ impl<'a> Codegen<'a> {
 
                 if has_ptr_arg {
                     inps.push(self.ci.scope.store.value());
-                    self.ci.scope.loads.retain(|&load| {
-                        if inps.contains(&load) {
+                    self.ci.scope.loads.retain_mut(|load| {
+                        if inps.contains(&load.get()) {
                             return true;
                         }
 
-                        if !self.ci.nodes.unlock_remove(load) {
+                        if let Some(load) = mem::take(load).remove(&mut self.ci.nodes) {
                             inps.push(load);
                         }
 
@@ -2553,15 +2645,17 @@ impl<'a> Codegen<'a> {
                     }
                 };
 
-                inps[0] = self.ci.ctrl;
-                self.ci.ctrl =
-                    self.ci.nodes.new_node(sig.ret, Kind::Call { func: fu, args: sig.args }, inps);
+                inps[0] = self.ci.ctrl.get();
+                self.ci.ctrl.set(
+                    self.ci.nodes.new_node(sig.ret, Kind::Call { func: fu, args: sig.args }, inps),
+                    &mut self.ci.nodes,
+                );
 
                 if has_ptr_arg {
                     self.store_mem(VOID, ty::Id::VOID, VOID);
                 }
 
-                alt_value.or(Some(Value::new(self.ci.ctrl).ty(sig.ret)))
+                alt_value.or(Some(Value::new(self.ci.ctrl.get()).ty(sig.ret)))
             }
             Expr::Directive { name: "inline", args: [func, args @ ..], .. } => {
                 let ty = self.ty(func);
@@ -2641,10 +2735,10 @@ impl<'a> Codegen<'a> {
                 }
 
                 let prev_var_base =
-                    core::mem::replace(&mut self.ci.inline_var_base, self.ci.scope.vars.len());
+                    mem::replace(&mut self.ci.inline_var_base, self.ci.scope.vars.len());
                 let prev_ret = self.ci.ret.replace(sig.ret);
                 let prev_inline_ret = self.ci.inline_ret.take();
-                let prev_file = core::mem::replace(&mut self.ci.file, file);
+                let prev_file = mem::replace(&mut self.ci.file, file);
                 self.ci.inline_depth += 1;
 
                 if self.expr(body).is_some() && sig.ret == ty::Id::VOID {
@@ -2663,21 +2757,14 @@ impl<'a> Codegen<'a> {
                     var.remove(&mut self.ci.nodes);
                 }
 
-                core::mem::replace(&mut self.ci.inline_ret, prev_inline_ret).map(
-                    |(v, ctrl, scope)| {
-                        self.ci.nodes.unlock(ctrl);
-                        self.ci.nodes.unlock(v.id);
-                        self.ci.scope.clear(&mut self.ci.nodes);
-                        self.ci.scope = scope;
-                        self.ci
-                            .scope
-                            .vars
-                            .drain(var_base..)
-                            .for_each(|v| v.remove(&mut self.ci.nodes));
-                        self.ci.ctrl = ctrl;
-                        v
-                    },
-                )
+                mem::replace(&mut self.ci.inline_ret, prev_inline_ret).map(|(v, ctrl, scope)| {
+                    self.ci.nodes.unlock(v.id);
+                    self.ci.scope.clear(&mut self.ci.nodes);
+                    self.ci.scope = scope;
+                    self.ci.scope.vars.drain(var_base..).for_each(|v| v.remove(&mut self.ci.nodes));
+                    mem::replace(&mut self.ci.ctrl, ctrl).remove(&mut self.ci.nodes);
+                    v
+                })
             }
             Expr::Tupl { pos, ty, fields, .. } => {
                 let Some(sty) = ty.map(|ty| self.ty(ty)).or(ctx.ty) else {
@@ -2815,7 +2902,7 @@ impl<'a> Codegen<'a> {
                     };
 
                     let (ty, offset) =
-                        core::mem::replace(&mut offs[index], (ty::Id::UNDECLARED, field.pos));
+                        mem::replace(&mut offs[index], (ty::Id::UNDECLARED, field.pos));
 
                     if ty == ty::Id::UNDECLARED {
                         self.report(field.pos, "the struct field is already initialized");
@@ -2858,19 +2945,20 @@ impl<'a> Codegen<'a> {
                     }
                 }
 
-                self.ci.nodes.lock(self.ci.ctrl);
                 for var in self.ci.scope.vars.drain(base..) {
                     var.remove(&mut self.ci.nodes);
                 }
-                self.ci.nodes.unlock(self.ci.ctrl);
 
                 ret
             }
             Expr::Loop { body, .. } => {
-                self.ci.ctrl = self.ci.nodes.new_node(ty::Id::VOID, Kind::Loop, [self.ci.ctrl; 2]);
+                self.ci.ctrl.set(
+                    self.ci.nodes.new_node(ty::Id::VOID, Kind::Loop, [self.ci.ctrl.get(); 2]),
+                    &mut self.ci.nodes,
+                );
                 self.ci.loops.push(Loop {
-                    node: self.ci.ctrl,
-                    ctrl: [Nid::MAX; 2],
+                    node: self.ci.ctrl.get(),
+                    ctrl: [StrongRef::DEFAULT; 2],
                     ctrl_scope: core::array::from_fn(|_| Default::default()),
                     scope: self.ci.scope.dup(&mut self.ci.nodes),
                 });
@@ -2883,27 +2971,28 @@ impl<'a> Codegen<'a> {
 
                 let Loop { ctrl: [con, ..], ctrl_scope: [cons, ..], .. } =
                     self.ci.loops.last_mut().unwrap();
-                let mut cons = core::mem::take(cons);
-                let mut con = *con;
+                let mut cons = mem::take(cons);
 
-                if con != Nid::MAX {
-                    self.ci.nodes.unlock(con);
-                    con = self.ci.nodes.new_node(ty::Id::VOID, Kind::Region, [con, self.ci.ctrl]);
-                    Self::merge_scopes(
+                if let Some(con) = mem::take(con).unwrap(&mut self.ci.nodes) {
+                    self.ci.ctrl.set(
+                        self.ci
+                            .nodes
+                            .new_node(ty::Id::VOID, Kind::Region, [con, self.ci.ctrl.get()]),
                         &mut self.ci.nodes,
+                    );
+                    self.ci.nodes.merge_scopes(
                         &mut self.ci.loops,
-                        con,
+                        &self.ci.ctrl,
                         &mut self.ci.scope,
                         &mut cons,
                     );
                     cons.clear(&mut self.ci.nodes);
-                    self.ci.ctrl = con;
                 }
 
                 let Loop { node, ctrl: [.., bre], ctrl_scope: [.., mut bres], mut scope } =
                     self.ci.loops.pop().unwrap();
 
-                self.ci.nodes.modify_input(node, 1, self.ci.ctrl);
+                self.ci.nodes.modify_input(node, 1, self.ci.ctrl.get());
 
                 if let Some(idx) =
                     self.ci.nodes[node].outputs.iter().position(|&n| self.ci.nodes.is_cfg(n))
@@ -2911,7 +3000,7 @@ impl<'a> Codegen<'a> {
                     self.ci.nodes[node].outputs.swap(idx, 0);
                 }
 
-                if bre == Nid::MAX {
+                let Some(bre) = bre.unwrap(&mut self.ci.nodes) else {
                     for (loop_var, scope_var) in self.ci.scope.iter_mut().zip(scope.iter_mut()) {
                         if self.ci.nodes[scope_var.value()].is_lazy_phi(node) {
                             if loop_var.value() != scope_var.value() {
@@ -2932,12 +3021,13 @@ impl<'a> Codegen<'a> {
                         }
                     }
                     scope.clear(&mut self.ci.nodes);
-                    self.ci.ctrl = NEVER;
+                    self.ci.ctrl.set(NEVER, &mut self.ci.nodes);
                     return None;
-                }
-                self.ci.ctrl = bre;
+                };
 
-                core::mem::swap(&mut self.ci.scope, &mut bres);
+                self.ci.ctrl.set(bre, &mut self.ci.nodes);
+
+                mem::swap(&mut self.ci.scope, &mut bres);
 
                 debug_assert_eq!(self.ci.scope.vars.len(), scope.vars.len());
                 debug_assert_eq!(self.ci.scope.vars.len(), bres.vars.len());
@@ -2973,13 +3063,12 @@ impl<'a> Codegen<'a> {
 
                 scope.clear(&mut self.ci.nodes);
                 bres.clear(&mut self.ci.nodes);
-                self.ci.scope.loads.drain(..).for_each(|l| _ = self.ci.nodes.unlock_remove(l));
+                self.ci.scope.loads.drain(..).for_each(|l| _ = l.remove(&mut self.ci.nodes));
 
-                self.ci.nodes.unlock(self.ci.ctrl);
                 self.ci.nodes.unlock(node);
                 let rpl = self.ci.nodes.late_peephole(node).unwrap_or(node);
-                if self.ci.ctrl == node {
-                    self.ci.ctrl = rpl;
+                if self.ci.ctrl.get() == node {
+                    self.ci.ctrl.set_remove(rpl, &mut self.ci.nodes);
                 }
 
                 Some(Value::VOID)
@@ -2991,7 +3080,7 @@ impl<'a> Codegen<'a> {
                 self.assert_ty(cond.pos(), &mut cnd, ty::Id::BOOL, "condition");
 
                 let if_node =
-                    self.ci.nodes.new_node(ty::Id::VOID, Kind::If, [self.ci.ctrl, cnd.id]);
+                    self.ci.nodes.new_node(ty::Id::VOID, Kind::If, [self.ci.ctrl.get(), cnd.id]);
 
                 'b: {
                     let branch = match self.tof(if_node).expand().inner() {
@@ -3000,9 +3089,7 @@ impl<'a> Codegen<'a> {
                         _ => break 'b,
                     };
 
-                    self.ci.nodes.lock(self.ci.ctrl);
                     self.ci.nodes.remove(if_node);
-                    self.ci.nodes.unlock(self.ci.ctrl);
 
                     if let Some(branch) = branch {
                         return self.expr(branch);
@@ -3015,15 +3102,21 @@ impl<'a> Codegen<'a> {
                 let orig_store = self.ci.scope.store.dup(&mut self.ci.nodes);
                 let else_scope = self.ci.scope.dup(&mut self.ci.nodes);
 
-                self.ci.ctrl = self.ci.nodes.new_node(ty::Id::VOID, Kind::Then, [if_node]);
-                let lcntrl = self.expr(then).map_or(Nid::MAX, |_| self.ci.ctrl);
+                self.ci.ctrl.set(
+                    self.ci.nodes.new_node(ty::Id::VOID, Kind::Then, [if_node]),
+                    &mut self.ci.nodes,
+                );
+                let lcntrl = self.expr(then).map_or(Nid::MAX, |_| self.ci.ctrl.get());
 
-                let mut then_scope = core::mem::replace(&mut self.ci.scope, else_scope);
-                self.ci.ctrl = self.ci.nodes.new_node(ty::Id::VOID, Kind::Else, [if_node]);
+                let mut then_scope = mem::replace(&mut self.ci.scope, else_scope);
+                self.ci.ctrl.set(
+                    self.ci.nodes.new_node(ty::Id::VOID, Kind::Else, [if_node]),
+                    &mut self.ci.nodes,
+                );
                 let rcntrl = if let Some(else_) = else_ {
-                    self.expr(else_).map_or(Nid::MAX, |_| self.ci.ctrl)
+                    self.expr(else_).map_or(Nid::MAX, |_| self.ci.ctrl.get())
                 } else {
-                    self.ci.ctrl
+                    self.ci.ctrl.get()
                 };
 
                 orig_store.remove(&mut self.ci.nodes);
@@ -3037,16 +3130,18 @@ impl<'a> Codegen<'a> {
                 } else if rcntrl == Nid::MAX {
                     self.ci.scope.clear(&mut self.ci.nodes);
                     self.ci.scope = then_scope;
-                    self.ci.ctrl = lcntrl;
+                    self.ci.ctrl.set(lcntrl, &mut self.ci.nodes);
                     return Some(Value::VOID);
                 }
 
-                self.ci.ctrl = self.ci.nodes.new_node(ty::Id::VOID, Kind::Region, [lcntrl, rcntrl]);
-
-                Self::merge_scopes(
+                self.ci.ctrl.set(
+                    self.ci.nodes.new_node(ty::Id::VOID, Kind::Region, [lcntrl, rcntrl]),
                     &mut self.ci.nodes,
+                );
+
+                self.ci.nodes.merge_scopes(
                     &mut self.ci.loops,
-                    self.ci.ctrl,
+                    &self.ci.ctrl,
                     &mut self.ci.scope,
                     &mut then_scope,
                 );
@@ -3209,7 +3304,7 @@ impl<'a> Codegen<'a> {
     fn expr_ctx(&mut self, expr: &Expr, ctx: Ctx) -> Option<Value> {
         let mut n = self.raw_expr_ctx(expr, ctx)?;
         self.strip_var(&mut n);
-        if core::mem::take(&mut n.ptr) {
+        if mem::take(&mut n.ptr) {
             n.id = self.load_mem(n.id, n.ty);
         }
         Some(n)
@@ -3226,7 +3321,7 @@ impl<'a> Codegen<'a> {
     }
 
     fn strip_var(&mut self, n: &mut Value) {
-        if core::mem::take(&mut n.var) {
+        if mem::take(&mut n.var) {
             let id = (u16::MAX - n.id) as usize;
             n.ptr = self.ci.scope.vars[id].ptr;
             n.id = self.ci.scope.vars[id].value();
@@ -3243,67 +3338,34 @@ impl<'a> Codegen<'a> {
             return None;
         };
 
-        if loob.ctrl[id] == Nid::MAX {
-            self.ci.nodes.lock(self.ci.ctrl);
-            loob.ctrl[id] = self.ci.ctrl;
+        if loob.ctrl[id].is_live() {
+            loob.ctrl[id].set(
+                self.ci.nodes.new_node(ty::Id::VOID, Kind::Region, [
+                    self.ci.ctrl.get(),
+                    loob.ctrl[id].get(),
+                ]),
+                &mut self.ci.nodes,
+            );
+            let mut scope = mem::take(&mut loob.ctrl_scope[id]);
+            let ctrl = mem::take(&mut loob.ctrl[id]);
+
+            self.ci.nodes.merge_scopes(&mut self.ci.loops, &ctrl, &mut scope, &mut self.ci.scope);
+
+            loob = self.ci.loops.last_mut().unwrap();
+            loob.ctrl_scope[id] = scope;
+            loob.ctrl[id] = ctrl;
+            self.ci.ctrl.set(NEVER, &mut self.ci.nodes);
+        } else {
+            let term = StrongRef::new(NEVER, &mut self.ci.nodes);
+            loob.ctrl[id] = mem::replace(&mut self.ci.ctrl, term);
             loob.ctrl_scope[id] = self.ci.scope.dup(&mut self.ci.nodes);
             loob.ctrl_scope[id]
                 .vars
                 .drain(loob.scope.vars.len()..)
                 .for_each(|v| v.remove(&mut self.ci.nodes));
-        } else {
-            let reg =
-                self.ci.nodes.new_node(ty::Id::VOID, Kind::Region, [self.ci.ctrl, loob.ctrl[id]]);
-            let mut scope = core::mem::take(&mut loob.ctrl_scope[id]);
-
-            Self::merge_scopes(
-                &mut self.ci.nodes,
-                &mut self.ci.loops,
-                reg,
-                &mut scope,
-                &mut self.ci.scope,
-            );
-
-            loob = self.ci.loops.last_mut().unwrap();
-            loob.ctrl_scope[id] = scope;
-            self.ci.nodes.unlock(loob.ctrl[id]);
-            loob.ctrl[id] = reg;
-            self.ci.nodes.lock(loob.ctrl[id]);
         }
 
-        self.ci.ctrl = NEVER;
         None
-    }
-
-    fn merge_scopes(
-        nodes: &mut Nodes,
-        loops: &mut [Loop],
-        ctrl: Nid,
-        to: &mut Scope,
-        from: &mut Scope,
-    ) {
-        nodes.lock(ctrl);
-        for (i, (to_value, from_value)) in to.iter_mut().zip(from.iter_mut()).enumerate() {
-            debug_assert_eq!(to_value.ty, from_value.ty);
-            if to_value.value() != from_value.value() {
-                nodes.load_loop_var(i, from_value, loops);
-                nodes.load_loop_var(i, to_value, loops);
-                if to_value.value() != from_value.value() {
-                    let inps = [ctrl, from_value.value(), to_value.value()];
-                    to_value
-                        .set_value_remove(nodes.new_node(from_value.ty, Kind::Phi, inps), nodes);
-                }
-            }
-        }
-
-        for load in to.loads.drain(..) {
-            nodes.unlock_remove(load);
-        }
-        for load in from.loads.drain(..) {
-            nodes.unlock_remove(load);
-        }
-
-        nodes.unlock(ctrl);
     }
 
     #[inline(always)]
@@ -3417,7 +3479,7 @@ impl<'a> Codegen<'a> {
 
             if let Some(oper) = to_correct {
                 oper.ty = upcasted;
-                if core::mem::take(&mut oper.ptr) {
+                if mem::take(&mut oper.ptr) {
                     oper.id = self.load_mem(oper.id, oper.ty);
                 }
                 oper.id = self.ci.nodes.new_node(upcasted, Kind::Extend, [VOID, oper.id]);
@@ -3468,7 +3530,7 @@ impl<'a> Codegen<'a> {
                     self.ty_display(upcasted)
                 );
                 src.ty = upcasted;
-                if core::mem::take(&mut src.ptr) {
+                if mem::take(&mut src.ptr) {
                     src.id = self.load_mem(src.id, src.ty);
                 }
                 src.id = self.ci.nodes.new_node(upcasted, Kind::Extend, [VOID, src.id]);
@@ -3505,7 +3567,7 @@ impl TypeParser for Codegen<'_> {
     }
 
     fn eval_const(&mut self, file: FileId, expr: &Expr, ret: ty::Id) -> u64 {
-        let mut scope = core::mem::take(&mut self.ci.scope.vars);
+        let mut scope = mem::take(&mut self.ci.scope.vars);
         self.pool.push_ci(file, Some(ret), self.tys.tasks.len(), &mut self.ci);
         self.ci.scope.vars = scope;
 
@@ -3513,7 +3575,7 @@ impl TypeParser for Codegen<'_> {
 
         self.expr(&Expr::Return { pos: expr.pos(), val: Some(expr) });
 
-        scope = core::mem::take(&mut self.ci.scope.vars);
+        scope = mem::take(&mut self.ci.scope.vars);
         self.ci.finalize();
 
         let res = if self.errors.borrow().len() == prev_err_len {
@@ -3531,6 +3593,7 @@ impl TypeParser for Codegen<'_> {
     fn infer_type(&mut self, expr: &Expr) -> ty::Id {
         self.pool.save_ci(&self.ci);
         let ty = self.expr(expr).map_or(ty::Id::NEVER, |v| v.ty);
+
         self.pool.restore_ci(&mut self.ci);
         ty
     }
@@ -3729,13 +3792,13 @@ impl<'a> Function<'a> {
                     && let Some((_, swapped)) = op.cond_op(node.ty.is_signed())
                 {
                     if swapped {
-                        core::mem::swap(&mut then, &mut else_);
+                        mem::swap(&mut then, &mut else_);
                     }
                     let &[_, lhs, rhs] = self.nodes[cond].inputs.as_slice() else { unreachable!() };
                     let ops = vec![self.urg(lhs), self.urg(rhs)];
                     self.add_instr(nid, ops);
                 } else {
-                    core::mem::swap(&mut then, &mut else_);
+                    mem::swap(&mut then, &mut else_);
                     let ops = vec![self.urg(cond)];
                     self.add_instr(nid, ops);
                 }
