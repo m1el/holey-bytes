@@ -316,13 +316,10 @@ impl Nodes {
     fn iter_peeps(&mut self, mut fuel: usize) {
         self.lock(NEVER);
 
-        for n in self[VOID].outputs.clone() {
-            if self[n].kind == Kind::Arg {
-                self.lock(n);
-            }
-        }
-
-        let mut stack = self.iter().map(|(id, ..)| id).collect::<Vec<_>>();
+        let mut stack = self
+            .iter()
+            .filter_map(|(id, node)| node.kind.is_peeped().then_some(id))
+            .collect::<Vec<_>>();
         stack.iter().for_each(|&s| self.lock(s));
 
         while fuel != 0
@@ -336,17 +333,11 @@ impl Nodes {
             if let Some(new) = new {
                 let prev_len = stack.len();
                 for &i in self[new].outputs.iter().chain(self[new].inputs.iter()) {
-                    if self[i].lock_rc == 0 {
-                        stack.push(i)
+                    if self[i].kind.is_peeped() && self[i].lock_rc == 0 {
+                        stack.push(i);
                     }
                 }
                 stack.iter().skip(prev_len).for_each(|&n| self.lock(n));
-            }
-        }
-
-        for n in self[VOID].outputs.clone() {
-            if self[n].kind == Kind::Arg {
-                self.unlock(n);
             }
         }
 
@@ -464,15 +455,74 @@ impl Nodes {
                 }
             }
             K::If => {
-                let cond = self[target].inputs[1];
-                if let K::CInt { value } = self[cond].kind {
-                    let ty = if value == 0 {
-                        ty::Id::LEFT_UNREACHABLE
-                    } else {
-                        ty::Id::RIGHT_UNREACHABLE
-                    };
-                    return Some(self.new_node_nop(ty, K::If, [self[target].inputs[0], cond]));
+                if self[target].ty == ty::Id::VOID {
+                    let &[ctrl, cond] = self[target].inputs.as_slice() else { unreachable!() };
+                    if let K::CInt { value } = self[cond].kind {
+                        let ty = if value == 0 {
+                            ty::Id::LEFT_UNREACHABLE
+                        } else {
+                            ty::Id::RIGHT_UNREACHABLE
+                        };
+                        return Some(self.new_node_nop(ty, K::If, [ctrl, cond]));
+                    }
+
+                    'b: {
+                        let mut cursor = ctrl;
+                        let ty = loop {
+                            if cursor == ENTRY {
+                                break 'b;
+                            }
+
+                            // TODO: do more inteligent checks on the condition
+                            if self[cursor].kind == Kind::Then
+                                && self[self[cursor].inputs[0]].inputs[1] == cond
+                            {
+                                break ty::Id::RIGHT_UNREACHABLE;
+                            }
+                            if self[cursor].kind == Kind::Else
+                                && self[self[cursor].inputs[0]].inputs[1] == cond
+                            {
+                                break ty::Id::LEFT_UNREACHABLE;
+                            }
+
+                            cursor = idom(self, cursor);
+                        };
+
+                        return Some(self.new_node_nop(ty, K::If, [ctrl, cond]));
+                    }
                 }
+            }
+            K::Then => {
+                if self[self[target].inputs[0]].ty == ty::Id::LEFT_UNREACHABLE {
+                    return Some(NEVER);
+                } else if self[self[target].inputs[0]].ty == ty::Id::RIGHT_UNREACHABLE {
+                    return Some(self[self[target].inputs[0]].inputs[0]);
+                }
+            }
+            K::Else => {
+                if self[self[target].inputs[0]].ty == ty::Id::RIGHT_UNREACHABLE {
+                    return Some(NEVER);
+                } else if self[self[target].inputs[0]].ty == ty::Id::LEFT_UNREACHABLE {
+                    return Some(self[self[target].inputs[0]].inputs[0]);
+                }
+            }
+            K::Region => {
+                let (ctrl, side) = match self[target].inputs.as_slice() {
+                    [NEVER, NEVER] => return Some(NEVER),
+                    &[NEVER, ctrl] => (ctrl, 2),
+                    &[ctrl, NEVER] => (ctrl, 1),
+                    _ => return None,
+                };
+
+                self.lock(target);
+                for i in self[target].outputs.clone() {
+                    if self[i].kind == Kind::Phi {
+                        self.replace(i, self[i].inputs[side]);
+                    }
+                }
+                self.unlock(target);
+
+                return Some(ctrl);
             }
             K::Phi => {
                 let &[ctrl, lhs, rhs] = self[target].inputs.as_slice() else { unreachable!() };
@@ -532,6 +582,10 @@ impl Nodes {
                 }
             }
             K::Loop => {
+                if self[target].inputs[0] == NEVER {
+                    return Some(NEVER);
+                }
+
                 if self[target].inputs[1] == NEVER {
                     self.lock(target);
                     for o in self[target].outputs.clone() {
@@ -554,6 +608,7 @@ impl Nodes {
     }
 
     fn replace(&mut self, target: Nid, with: Nid) {
+        debug_assert_ne!(target, with, "{:?}", self[target]);
         let mut back_press = 0;
         for i in 0..self[target].outputs.len() {
             let out = self[target].outputs[i - back_press];
@@ -570,7 +625,7 @@ impl Nodes {
 
     fn modify_input(&mut self, target: Nid, inp_index: usize, with: Nid) -> Nid {
         self.remove_node_lookup(target);
-        debug_assert_ne!(self[target].inputs[inp_index], with);
+        debug_assert_ne!(self[target].inputs[inp_index], with, "{:?}", self[target]);
 
         let prev = self[target].inputs[inp_index];
         self[target].inputs[inp_index] = with;
@@ -1039,6 +1094,10 @@ impl Kind {
 
     fn ends_basic_block(&self) -> bool {
         matches!(self, Self::Return | Self::If | Self::End)
+    }
+
+    fn is_peeped(&self) -> bool {
+        !matches!(self, Self::End | Self::Arg)
     }
 }
 
@@ -4735,5 +4794,6 @@ mod tests {
         pointer_opts;
         conditional_stores;
         loop_stores;
+        dead_code_in_loop;
     }
 }

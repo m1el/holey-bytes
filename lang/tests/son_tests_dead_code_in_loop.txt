@@ -1,0 +1,6 @@
+main:
+    LI64 r1, 0d
+    JALA r0, r31, 0a
+code size: 29
+ret: 0
+status: Ok(())

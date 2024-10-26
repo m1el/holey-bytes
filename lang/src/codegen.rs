@@ -12,7 +12,7 @@ use {
         TypeParser, TypedReloc, Types,
     },
     alloc::{string::String, vec::Vec},
-    core::{assert_matches::debug_assert_matches, fmt::Display, usize},
+    core::{assert_matches::debug_assert_matches, fmt::Display},
 };
 
 type Offset = u32;

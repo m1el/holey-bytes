@@ -1100,3 +1100,19 @@ main := fn(): uint {
 	return *mem
 }
 ```
+
+#### dead_code_in_loop
+```hb
+main := fn(): uint {
+	n := 0
+
+	loop if n < 10 {
+		if n < 10 break
+		n += 1
+	} else break
+
+	loop if n == 0 return n
+
+	return 1
+}
+```
