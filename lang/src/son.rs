@@ -28,6 +28,7 @@ use {
     hashbrown::hash_map,
     hbbytecode::DisasmError,
     regalloc2::VReg,
+    std::panic,
 };
 
 const VOID: Nid = 0;
@@ -248,7 +249,9 @@ impl Nodes {
 
     fn remove_node_lookup(&mut self, target: Nid) {
         if !self[target].is_not_gvnd() {
-            self.lookup.remove(&target, &self.values).unwrap();
+            self.lookup
+                .remove(&target, &self.values)
+                .unwrap_or_else(|| panic!("{:?}", self[target]));
         }
     }
 
@@ -311,25 +314,43 @@ impl Nodes {
     }
 
     fn iter_peeps(&mut self, mut fuel: usize) {
-        let mut in_stack = BitSet::default();
-        in_stack.clear(self.values.len());
-        let mut stack =
-            self.iter().map(|(id, ..)| id).inspect(|&id| _ = in_stack.set(id)).collect::<Vec<_>>();
+        self.lock(NEVER);
+
+        for n in self[VOID].outputs.clone() {
+            if self[n].kind == Kind::Arg {
+                self.lock(n);
+            }
+        }
+
+        let mut stack = self.iter().map(|(id, ..)| id).collect::<Vec<_>>();
+        stack.iter().for_each(|&s| self.lock(s));
 
         while fuel != 0
             && let Some(node) = stack.pop()
         {
             fuel -= 1;
-            in_stack.unset(node);
+            if self.unlock_remove(node) {
+                continue;
+            }
             let new = self.late_peephole(node);
             if let Some(new) = new {
+                let prev_len = stack.len();
                 for &i in self[new].outputs.iter().chain(self[new].inputs.iter()) {
-                    if in_stack.set(i) {
+                    if self[i].lock_rc == 0 {
                         stack.push(i)
                     }
                 }
+                stack.iter().skip(prev_len).for_each(|&n| self.lock(n));
             }
         }
+
+        for n in self[VOID].outputs.clone() {
+            if self[n].kind == Kind::Arg {
+                self.unlock(n);
+            }
+        }
+
+        self.unlock(NEVER);
     }
 
     fn peephole(&mut self, target: Nid) -> Option<Nid> {
@@ -2029,7 +2050,7 @@ impl<'a> Codegen<'a> {
             self.ci.nodes[region].kind != Kind::Load || self.ci.nodes[region].ty.is_pointer(),
             "{:?} {} {}",
             self.ci.nodes.graphviz_in_browser(self.tys, self.files),
-            self.cfile().path,
+            self.file().path,
             self.ty_display(self.ci.nodes[region].ty)
         );
         debug_assert!(self.ci.nodes[region].kind != Kind::Stre);
@@ -3478,7 +3499,7 @@ impl<'a> Codegen<'a> {
     }
 
     fn ast_display(&self, ast: &'a Expr<'a>) -> parser::Display<'a> {
-        parser::Display::new(&self.cfile().file, ast)
+        parser::Display::new(&self.file().file, ast)
     }
 
     #[must_use]
@@ -3563,7 +3584,7 @@ impl<'a> Codegen<'a> {
     #[track_caller]
     fn report(&self, pos: Pos, msg: impl core::fmt::Display) {
         let mut buf = self.errors.borrow_mut();
-        write!(buf, "{}", self.cfile().report(pos, msg)).unwrap();
+        write!(buf, "{}", self.file().report(pos, msg)).unwrap();
     }
 
     #[track_caller]
@@ -3572,7 +3593,7 @@ impl<'a> Codegen<'a> {
         self.report(ast.pos(), fa!("compiler does not (yet) know how to handle ({hint})"));
     }
 
-    fn cfile(&self) -> &'a parser::Ast {
+    fn file(&self) -> &'a parser::Ast {
         &self.files[self.ci.file as usize]
     }
 }
