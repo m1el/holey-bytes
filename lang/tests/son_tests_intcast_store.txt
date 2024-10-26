@@ -15,17 +15,16 @@ main:
 set:
     ADDI64 r254, r254, -25d
     LI8 r7, 5b
-    ADDI64 r11, r254, 0d
     ST r7, r254, 0a, 1h
-    ANDI r11, r4, 4294967295d
-    ST r11, r254, 1a, 4h
-    LI32 r4, 8w
-    ST r4, r254, 5a, 4h
+    ANDI r10, r4, 4294967295d
+    ST r10, r254, 1a, 4h
+    LI32 r1, 8w
+    ST r1, r254, 5a, 4h
     ST r2, r254, 9a, 8h
     ST r3, r254, 17a, 8h
     LD r1, r254, 1a, 4h
     ADDI64 r254, r254, 25d
     JALA r0, r31, 0a
-code size: 295
+code size: 284
 ret: 1024
 status: Ok(())

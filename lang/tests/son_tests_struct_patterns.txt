@@ -35,20 +35,19 @@ main:
     ADDI64 r254, r254, -26d
     ST r31, r254, 2a, 24h
     LI8 r32, 10b
-    ADDI64 r3, r254, 0d
     ST r32, r254, 0a, 1h
     ST r32, r254, 1a, 1h
-    LD r7, r254, 0a, 1h
-    ANDI r2, r7, 255d
+    LD r5, r254, 0a, 1h
+    ANDI r2, r5, 255d
     JAL r31, r0, :fib
     CP r33, r1
     ANDI r2, r32, 255d
     JAL r31, r0, :fib_iter
-    CP r6, r33
-    SUB64 r1, r6, r1
+    CP r4, r33
+    SUB64 r1, r4, r1
     LD r31, r254, 2a, 24h
     ADDI64 r254, r254, 26d
     JALA r0, r31, 0a
-code size: 362
+code size: 351
 ret: 0
 status: Ok(())

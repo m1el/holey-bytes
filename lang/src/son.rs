@@ -4019,15 +4019,17 @@ impl<'a> Function<'a> {
                 self.add_instr(nid, ops);
             }
             Kind::Stck
-                if node.ty.loc(self.tys) == Loc::Reg && node.outputs.iter().all(|&n| {
-                    matches!(self.nodes[n].kind, Kind::Stre | Kind::Load)
+                if node.outputs.iter().all(|&n| {
+                    matches!(self.nodes[n].kind, Kind::Stre | Kind::Load
+                        if self.nodes[n].ty.loc(self.tys) == Loc::Reg)
                         || matches!(self.nodes[n].kind, Kind::BinOp { op: TokenKind::Add }
                     if self.nodes.is_const(self.nodes[n].inputs[2])
                         && self.nodes[n]
                             .outputs
                             .iter()
-                            .all(|&n| matches!(self.nodes[n].kind, Kind::Stre | Kind::Load)))
-                }) => {}
+                            .all(|&n| matches!(self.nodes[n].kind, Kind::Stre | Kind::Load
+                                if self.nodes[n].ty.loc(self.tys) == Loc::Reg)))
+                }) => self.nodes.lock(nid),
             Kind::Stck if self.tys.size_of(node.ty) == 0 => self.nodes.lock(nid),
             Kind::Stck => {
                 let ops = vec![self.drg(nid)];
