@@ -93,10 +93,6 @@ impl Nodes {
                 _ => "white",
             };
 
-            let dest = i;
-            //let mut index_override = None;
-
-            //if !matches!(node.kind, Kind::Then | Kind::Else) {
             if node.ty != ty::Id::VOID {
                 writeln!(
                     out,
@@ -107,24 +103,14 @@ impl Nodes {
             } else {
                 writeln!(out, " node{i}[label=\"{i} {}\" color={color}]", node.kind,)?;
             }
-            //} else {
-            //    dest = node.inputs[0];
-
-            //    index_override = if node.kind == Kind::Then { Some(0) } else { Some(1) };
-            //}
-
-            //if node.kind == Kind::If {
-            //    continue;
-            //}
 
             for (j, &o) in node.outputs.iter().enumerate() {
-                //let j = index_override.unwrap_or(j);
                 let color = if self.is_cfg(i) && self.is_cfg(o) { "red" } else { "lightgray" };
                 let index = self[o].inputs.iter().position(|&inp| i == inp).unwrap();
                 let style = if index == 0 && !self.is_cfg(o) { "style=dotted" } else { "" };
                 writeln!(
                     out,
-                    " node{o} -> node{dest}[color={color} taillabel={index} headlabel={j} {style}]",
+                    " node{o} -> node{i}[color={color} taillabel={index} headlabel={j} {style}]",
                 )?;
             }
         }
@@ -141,19 +127,19 @@ impl Nodes {
         log::info!("{out}");
     }
 
-    fn graphviz_in_browser(&self, _tys: &Types, _files: &[parser::Ast]) {
+    fn graphviz_in_browser(&self, tys: &Types, files: &[parser::Ast]) {
         #[cfg(all(debug_assertions, feature = "std"))]
         {
-            //     let out = &mut String::new();
-            //     _ = self.graphviz_low(tys, files, out);
-            //     if !std::process::Command::new("brave")
-            //         .arg(format!("https://dreampuf.github.io/GraphvizOnline/#{out}"))
-            //         .status()
-            //         .unwrap()
-            //         .success()
-            //     {
-            //         log::error!("{out}");
-            //     }
+            let out = &mut String::new();
+            _ = self.graphviz_low(tys, files, out);
+            if !std::process::Command::new("brave")
+                .arg(format!("https://dreampuf.github.io/GraphvizOnline/#{out}"))
+                .status()
+                .unwrap()
+                .success()
+            {
+                log::error!("{out}");
+            }
         }
     }
 
@@ -289,8 +275,6 @@ impl Nodes {
 
         self.remove_node_lookup(target);
         self.remove_low(target);
-
-        //std::println!("{target} {}", trace());
 
         true
     }
@@ -711,69 +695,12 @@ impl Nodes {
                 log::error!("outputs are empry {id} {:?}", node.kind);
                 failed = true;
             }
-
-            // let mut allowed_cfgs = 1 + (node.kind == Kind::If) as usize;
-            // for &o in node.outputs.iter() {
-            //     if self.is_cfg(i) {
-            //         if allowed_cfgs == 0 && self.is_cfg(o) {
-            //             log::err!(
-            //                 "multiple cfg outputs detected: {:?} -> {:?}",
-            //                 node.kind,
-            //                 self[o].kind
-            //             );
-            //             failed = true;
-            //         } else {
-            //             allowed_cfgs += self.is_cfg(o) as usize;
-            //         }
-            //     }
-
-            //     let other = match &self.values[o as usize] {
-            //         Ok(other) => other,
-            //         Err(_) => {
-            //             log::err!("the edge points to dropped node: {i} {:?} {o}", node.kind,);
-            //             failed = true;
-            //             continue;
-            //         }
-            //     };
-            //     let occurs = self[o].inputs.iter().filter(|&&el| el == i).count();
-            //     let self_occurs = self[i].outputs.iter().filter(|&&el| el == o).count();
-            //     if occurs != self_occurs {
-            //         log::err!(
-            //             "the edge is not bidirectional: {i} {:?} {self_occurs} {o} {:?} {occurs}",
-            //             node.kind,
-            //             other.kind
-            //         );
-            //         failed = true;
-            //     }
-            // }
         }
+
         if failed {
             self.graphviz_in_browser(tys, files);
             panic!()
         }
-    }
-
-    #[expect(dead_code)]
-    fn climb_expr(&mut self, from: Nid, mut for_each: impl FnMut(Nid, &Node) -> bool) -> bool {
-        fn climb_impl(
-            nodes: &mut Nodes,
-            from: Nid,
-            for_each: &mut impl FnMut(Nid, &Node) -> bool,
-        ) -> bool {
-            for i in 0..nodes[from].inputs.len() {
-                let n = nodes[from].inputs[i];
-                if n != Nid::MAX
-                    && nodes.visited.set(n)
-                    && !nodes.is_cfg(n)
-                    && (for_each(n, &nodes[n]) || climb_impl(nodes, n, for_each))
-                {
-                    return true;
-                }
-            }
-            false
-        }
-        self.visited.clear(self.values.len());
-        climb_impl(self, from, &mut for_each)
     }
 
     fn late_peephole(&mut self, target: Nid) -> Nid {
@@ -853,11 +780,6 @@ impl Nodes {
 
             dominated = idom(self, dominated);
         }
-    }
-
-    #[expect(dead_code)]
-    fn iter_mut(&mut self) -> impl Iterator<Item = &mut Node> {
-        self.values.iter_mut().flat_map(Result::as_mut)
     }
 
     #[allow(dead_code)]
@@ -1061,7 +983,6 @@ impl fmt::Display for Kind {
 }
 
 #[derive(Debug, Default, Clone)]
-//#[repr(align(64))]
 pub struct Node {
     kind: Kind,
     inputs: Vc,
@@ -1267,11 +1188,16 @@ impl ItemCtx {
         crate::emit(&mut self.code, instr);
     }
 
-    fn emit_body_code(&mut self, sig: Sig, tys: &Types, files: &[parser::Ast]) -> usize {
+    fn emit_body_code(
+        &mut self,
+        sig: Sig,
+        tys: &Types,
+        files: &[parser::Ast],
+        ralloc: &mut Regalloc,
+    ) -> usize {
         let mut nodes = core::mem::take(&mut self.nodes);
 
         let fuc = Function::new(&mut nodes, tys, sig);
-        let mut ralloc = Regalloc::default(); // TODO: reuse
         log::info!("{:?}", fuc);
         if self.call_count != 0 {
             core::mem::swap(
@@ -1600,7 +1526,13 @@ impl ItemCtx {
         saved_regs.len()
     }
 
-    fn emit_body(&mut self, tys: &mut Types, files: &[parser::Ast], sig: Sig) {
+    fn emit_body(
+        &mut self,
+        tys: &mut Types,
+        files: &[parser::Ast],
+        sig: Sig,
+        ralloc: &mut Regalloc,
+    ) {
         self.nodes.check_final_integrity(tys, files);
         self.nodes.graphviz(tys, files);
         self.nodes.gcm();
@@ -1638,7 +1570,7 @@ impl ItemCtx {
             self.nodes[MEM].outputs = mems;
         }
 
-        let saved = self.emit_body_code(sig, tys, files);
+        let saved = self.emit_body_code(sig, tys, files, ralloc);
 
         if let Some(last_ret) = self.ret_relocs.last()
             && last_ret.offset as usize == self.code.len() - 5
@@ -1722,8 +1654,6 @@ impl Ctx {
 struct Pool {
     cis: Vec<ItemCtx>,
     used_cis: usize,
-
-    #[expect(dead_code)]
     ralloc: Regalloc,
 }
 
@@ -1889,7 +1819,12 @@ impl<'a> Codegen<'a> {
             return 1;
         }
 
-        self.ci.emit_body(self.tys, self.files, Sig { args: Tuple::empty(), ret });
+        self.ci.emit_body(
+            self.tys,
+            self.files,
+            Sig { args: Tuple::empty(), ret },
+            &mut self.pool.ralloc,
+        );
         self.ci.code.truncate(self.ci.code.len() - instrs::jala(0, 0, 0).0);
         self.ci.emit(instrs::tx());
 
@@ -3425,7 +3360,7 @@ impl<'a> Codegen<'a> {
         self.ci.finalize();
 
         if self.errors.borrow().len() == prev_err_len {
-            self.ci.emit_body(self.tys, self.files, sig);
+            self.ci.emit_body(self.tys, self.files, sig, &mut self.pool.ralloc);
             self.tys.ins.funcs[id as usize].code.append(&mut self.ci.code);
             self.tys.ins.funcs[id as usize].relocs.append(&mut self.ci.relocs);
         }
