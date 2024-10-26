@@ -2041,7 +2041,10 @@ impl<'a> Codegen<'a> {
     }
 
     pub fn generate(&mut self, entry: FileId) {
-        self.find_type(0, entry, Err("main"), self.files);
+        self.find_type(0, entry, entry, Err("main"), self.files);
+        if self.tys.ins.funcs.is_empty() {
+            return;
+        }
         self.make_func_reachable(0);
         self.complete_call_graph();
     }
@@ -2107,7 +2110,7 @@ impl<'a> Codegen<'a> {
                 Some(Value::var(index).ty(var.ty))
             }
             Expr::Ident { id, pos, .. } => {
-                let decl = self.find_type(pos, self.ci.file, Ok(id), self.files);
+                let decl = self.find_type(pos, self.ci.file, self.ci.file, Ok(id), self.files);
                 match decl.expand() {
                     ty::Kind::Builtin(ty::NEVER) => Value::NEVER,
                     ty::Kind::Global(global) => {
@@ -2203,7 +2206,10 @@ impl<'a> Codegen<'a> {
                 let tty = vtarget.ty;
 
                 if let ty::Kind::Module(m) = tty.expand() {
-                    return match self.find_type(pos, m, Err(name), self.files).expand() {
+                    return match self
+                        .find_type(pos, self.ci.file, m, Err(name), self.files)
+                        .expand()
+                    {
                         ty::Kind::Builtin(ty::NEVER) => Value::NEVER,
                         ty::Kind::Global(global) => {
                             let gl = &self.tys.ins.globals[global as usize];
@@ -3645,8 +3651,9 @@ impl TypeParser for Codegen<'_> {
         ty.compress()
     }
 
-    fn report(&self, pos: Pos, msg: impl Display) -> ty::Id {
-        self.report(pos, msg);
+    fn report(&self, file: FileId, pos: Pos, msg: impl Display) -> ty::Id {
+        let mut buf = self.errors.borrow_mut();
+        write!(buf, "{}", self.files[file as usize].report(pos, msg)).unwrap();
         ty::Id::NEVER
     }
 
@@ -4677,6 +4684,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        nonexistent_ident_import;
         big_array_crash;
         returning_global_struct;
         small_struct_bitcast;

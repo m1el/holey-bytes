@@ -1,0 +1,7 @@
+foo.hb:4:1: redeclaration of identifier: foo
+foo := fn(): void {
+^
+
+foo.hb:7:23: undefined indentifier: mian
+main := @use("bar.hb").mian
+                      ^

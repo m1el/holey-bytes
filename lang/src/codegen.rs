@@ -12,7 +12,7 @@ use {
         TypeParser, TypedReloc, Types,
     },
     alloc::{string::String, vec::Vec},
-    core::{assert_matches::debug_assert_matches, fmt::Display},
+    core::{assert_matches::debug_assert_matches, fmt::Display, usize},
 };
 
 type Offset = u32;
@@ -756,8 +756,9 @@ impl TypeParser for Codegen {
         ty::Kind::Global(gid).compress()
     }
 
-    fn report(&self, pos: Pos, msg: impl Display) -> ty::Id {
-        self.report(pos, msg)
+    fn report(&self, file: FileId, pos: Pos, msg: impl Display) -> ty::Id {
+        log::error!("{}", self.files[file as usize].report(pos, msg));
+        unreachable!()
     }
 
     fn find_local_ty(&mut self, name: Ident) -> Option<ty::Id> {
@@ -785,7 +786,7 @@ impl Codegen {
     pub fn generate(&mut self, root: FileId) {
         self.ci.emit_entry_prelude();
         self.ci.file = root;
-        self.find_type(0, root, Err("main"), &self.files.clone());
+        self.find_type(0, root, root, Err("main"), &self.files.clone());
         self.make_func_reachable(0);
         self.complete_call_graph();
     }
@@ -1253,7 +1254,13 @@ impl Codegen {
                         match self.ty(target).expand() {
                             ty::Kind::Module(idx) => {
                                 match self
-                                    .find_type(pos, idx, Err(field), &self.files.clone())
+                                    .find_type(
+                                        pos,
+                                        self.ci.file,
+                                        idx,
+                                        Err(field),
+                                        &self.files.clone(),
+                                    )
                                     .expand()
                                 {
                                     ty::Kind::Global(idx) => self.handle_global(idx),
@@ -1448,7 +1455,10 @@ impl Codegen {
                 Some(Value { ty: self.ci.vars[var_index].value.ty, loc })
             }
             E::Ident { id, pos, .. } => {
-                match self.find_type(pos, self.ci.file, Ok(id), &self.files.clone()).expand() {
+                match self
+                    .find_type(pos, self.ci.file, self.ci.file, Ok(id), &self.files.clone())
+                    .expand()
+                {
                     ty::Kind::Global(id) => self.handle_global(id),
                     tk => Some(Value::ty(tk.compress())),
                 }

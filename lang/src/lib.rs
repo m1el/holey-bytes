@@ -992,11 +992,12 @@ trait TypeParser {
     fn eval_const(&mut self, file: FileId, expr: &Expr, ty: ty::Id) -> u64;
     fn eval_global(&mut self, file: FileId, name: Ident, expr: &Expr) -> ty::Id;
     fn infer_type(&mut self, expr: &Expr) -> ty::Id;
-    fn report(&self, pos: Pos, msg: impl Display) -> ty::Id;
+    fn report(&self, file: FileId, pos: Pos, msg: impl Display) -> ty::Id;
 
     fn find_type(
         &mut self,
         pos: Pos,
+        from_file: FileId,
         file: FileId,
         id: Result<Ident, &str>,
         files: &[parser::Ast],
@@ -1017,10 +1018,11 @@ trait TypeParser {
             let Some((Expr::BinOp { left, right, .. }, name)) = f.find_decl(id) else {
                 return match id {
                     Ok(name) => {
-                        let name = f.ident_str(name);
-                        self.report(pos, format_args!("undefined indentifier: {name}"))
+                        let name = files[from_file as usize].ident_str(name);
+                        self.report(from_file, pos, format_args!("undefined indentifier: {name}"))
                     }
                     Err("main") => self.report(
+                        from_file,
                         pos,
                         format_args!(
                             "missing main function in '{}', compiler can't \
@@ -1028,7 +1030,9 @@ trait TypeParser {
                             f.path
                         ),
                     ),
-                    Err(name) => self.report(pos, format_args!("undefined indentifier: {name}")),
+                    Err(name) => {
+                        self.report(from_file, pos, format_args!("undefined indentifier: {name}"))
+                    }
                 };
             };
 
@@ -1083,12 +1087,12 @@ trait TypeParser {
                 self.tys().make_ptr(base)
             }
             Expr::Ident { id, .. } if ident::is_null(id) => id.into(),
-            Expr::Ident { id, pos, .. } => self.find_type(pos, file, Ok(id), files),
+            Expr::Ident { id, pos, .. } => self.find_type(pos, file, file, Ok(id), files),
             Expr::Field { target, pos, name }
-                if let ty::Kind::Module(file) =
+                if let ty::Kind::Module(inside) =
                     self.parse_ty(file, target, None, files).expand() =>
             {
-                self.find_type(pos, file, Err(name), files)
+                self.find_type(pos, file, inside, Err(name), files)
             }
             Expr::Directive { name: "TypeOf", args: [expr], .. } => self.infer_type(expr),
             Expr::Slice { size: None, item, .. } => {
@@ -1159,7 +1163,7 @@ trait TypeParser {
                         }
 
                         let Some(args) = self.tys().pack_args(arg_base) else {
-                            return self.report(pos, "function has too many argumnets");
+                            return self.report(file, pos, "function has too many argumnets");
                         };
                         let ret = self.parse_ty(file, ret, None, files);
 
