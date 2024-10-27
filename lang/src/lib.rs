@@ -37,10 +37,9 @@ use {
         parser::{idfl, CommentOr, Expr, ExprRef, FileId, Pos},
         ty::ArrayLen,
     },
-    alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec},
+    alloc::{string::String, vec::Vec},
     core::{cell::Cell, fmt::Display, ops::Range},
     hashbrown::hash_map,
-    hbbytecode as instrs,
 };
 
 #[macro_use]
@@ -720,13 +719,8 @@ mod ty {
     }
 }
 
-type EncodedInstr = (usize, [u8; instrs::MAX_SIZE]);
 type Offset = u32;
 type Size = u32;
-
-fn emit(out: &mut Vec<u8>, (len, instr): EncodedInstr) {
-    out.extend_from_slice(&instr[..len]);
-}
 
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
 pub enum SymKey<'a> {
@@ -876,19 +870,6 @@ impl ParamAlloc {
     }
 }
 
-#[repr(packed)]
-#[expect(dead_code)]
-struct AbleOsExecutableHeader {
-    magic_number: [u8; 3],
-    executable_version: u32,
-
-    code_length: u64,
-    data_length: u64,
-    debug_length: u64,
-    config_length: u64,
-    metadata_length: u64,
-}
-
 impl ctx_map::CtxEntry for Ident {
     type Ctx = str;
     type Key<'a> = &'a str;
@@ -977,8 +958,6 @@ struct Types {
     tmp: TypesTmp,
     tasks: Vec<Option<FTask>>,
 }
-
-const HEADER_SIZE: usize = core::mem::size_of::<AbleOsExecutableHeader>();
 
 trait TypeParser {
     fn tys(&mut self) -> &mut Types;
@@ -1215,121 +1194,6 @@ impl Types {
         self.assemble(buf)
     }
 
-    fn assemble(&mut self, to: &mut Vec<u8>) {
-        to.extend([0u8; HEADER_SIZE]);
-
-        emit(to, instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
-        emit(to, instrs::tx());
-        let exe = self.dump_reachable(0, to);
-        Reloc::new(HEADER_SIZE, 3, 4).apply_jump(to, self.ins.funcs[0].offset, 0);
-
-        unsafe { *to.as_mut_ptr().cast::<AbleOsExecutableHeader>() = exe }
-    }
-
-    fn dump_reachable(&mut self, from: ty::Func, to: &mut Vec<u8>) -> AbleOsExecutableHeader {
-        debug_assert!(self.tmp.frontier.is_empty());
-        debug_assert!(self.tmp.funcs.is_empty());
-        debug_assert!(self.tmp.globals.is_empty());
-
-        self.tmp.frontier.push(ty::Kind::Func(from).compress());
-        while let Some(itm) = self.tmp.frontier.pop() {
-            match itm.expand() {
-                ty::Kind::Func(func) => {
-                    let fuc = &mut self.ins.funcs[func as usize];
-                    if task::is_done(fuc.offset) {
-                        continue;
-                    }
-                    fuc.offset = 0;
-                    self.tmp.funcs.push(func);
-                    self.tmp.frontier.extend(fuc.relocs.iter().map(|r| r.target));
-                }
-                ty::Kind::Global(glob) => {
-                    let glb = &mut self.ins.globals[glob as usize];
-                    if task::is_done(glb.offset) {
-                        continue;
-                    }
-                    glb.offset = 0;
-                    self.tmp.globals.push(glob);
-                }
-                _ => unreachable!(),
-            }
-        }
-
-        for &func in &self.tmp.funcs {
-            let fuc = &mut self.ins.funcs[func as usize];
-            fuc.offset = to.len() as _;
-            debug_assert!(!fuc.code.is_empty());
-            to.extend(&fuc.code);
-        }
-
-        let code_length = to.len();
-
-        for global in self.tmp.globals.drain(..) {
-            let global = &mut self.ins.globals[global as usize];
-            global.offset = to.len() as _;
-            to.extend(&global.data);
-        }
-
-        let data_length = to.len() - code_length;
-
-        for func in self.tmp.funcs.drain(..) {
-            let fuc = &self.ins.funcs[func as usize];
-            for rel in &fuc.relocs {
-                let offset = match rel.target.expand() {
-                    ty::Kind::Func(fun) => self.ins.funcs[fun as usize].offset,
-                    ty::Kind::Global(glo) => self.ins.globals[glo as usize].offset,
-                    _ => unreachable!(),
-                };
-                rel.reloc.apply_jump(to, offset, fuc.offset);
-            }
-        }
-
-        AbleOsExecutableHeader {
-            magic_number: [0x15, 0x91, 0xD2],
-            executable_version: 0,
-            code_length: code_length.saturating_sub(HEADER_SIZE) as _,
-            data_length: data_length as _,
-            debug_length: 0,
-            config_length: 0,
-            metadata_length: 0,
-        }
-    }
-
-    pub fn disasm<'a>(
-        &'a self,
-        mut sluce: &[u8],
-        files: &'a [parser::Ast],
-        output: &mut String,
-        eca_handler: impl FnMut(&mut &[u8]),
-    ) -> Result<(), hbbytecode::DisasmError<'a>> {
-        use instrs::DisasmItem;
-        let functions = self
-            .ins
-            .funcs
-            .iter()
-            .filter(|f| task::is_done(f.offset))
-            .map(|f| {
-                let name = if f.file != u32::MAX {
-                    let file = &files[f.file as usize];
-                    file.ident_str(f.name)
-                } else {
-                    "target_fn"
-                };
-                (f.offset, (name, f.code.len() as u32, DisasmItem::Func))
-            })
-            .chain(self.ins.globals.iter().filter(|g| task::is_done(g.offset)).map(|g| {
-                let name = if g.file == u32::MAX {
-                    core::str::from_utf8(&g.data).unwrap_or("invalid utf-8")
-                } else {
-                    let file = &files[g.file as usize];
-                    file.ident_str(g.name)
-                };
-                (g.offset, (name, g.data.len() as Size, DisasmItem::Global))
-            }))
-            .collect::<BTreeMap<_, _>>();
-        instrs::disasm(&mut sluce, &functions, output, eca_handler)
-    }
-
     fn parama(&self, ret: impl Into<ty::Id>) -> (Option<PLoc>, ParamAlloc) {
         let mut iter = ParamAlloc(1..12);
         let ret = iter.next(ret.into(), self);
@@ -1554,67 +1418,6 @@ impl Default for FnvHasher {
     }
 }
 
-const VM_STACK_SIZE: usize = 1024 * 64;
-
-pub struct Comptime {
-    pub vm: hbvm::Vm<LoggedMem, { 1024 * 10 }>,
-    stack: Box<[u8; VM_STACK_SIZE]>,
-    code: Vec<u8>,
-}
-
-impl Comptime {
-    fn run(&mut self, ret_loc: &mut [u8], offset: u32) -> u64 {
-        self.vm.write_reg(reg::RET, ret_loc.as_mut_ptr() as u64);
-        let prev_pc = self.push_pc(offset);
-        loop {
-            match self.vm.run().expect("TODO") {
-                hbvm::VmRunOk::End => break,
-                hbvm::VmRunOk::Timer => todo!(),
-                hbvm::VmRunOk::Ecall => todo!(),
-                hbvm::VmRunOk::Breakpoint => todo!(),
-            }
-        }
-        self.pop_pc(prev_pc);
-
-        if let len @ 1..=8 = ret_loc.len() {
-            ret_loc.copy_from_slice(&self.vm.read_reg(reg::RET).0.to_ne_bytes()[..len])
-        }
-
-        self.vm.read_reg(reg::RET).0
-    }
-
-    fn reset(&mut self) {
-        let ptr = unsafe { self.stack.as_mut_ptr().cast::<u8>().add(VM_STACK_SIZE) as u64 };
-        self.vm.registers.fill(hbvm::value::Value(0));
-        self.vm.write_reg(reg::STACK_PTR, ptr);
-        self.vm.pc = hbvm::mem::Address::new(self.code.as_ptr() as u64 + HEADER_SIZE as u64);
-    }
-
-    fn push_pc(&mut self, offset: Offset) -> hbvm::mem::Address {
-        let entry = &mut self.code[offset as usize] as *mut _ as _;
-        core::mem::replace(&mut self.vm.pc, hbvm::mem::Address::new(entry))
-            - self.code.as_ptr() as usize
-    }
-
-    fn pop_pc(&mut self, prev_pc: hbvm::mem::Address) {
-        self.vm.pc = prev_pc + self.code.as_ptr() as usize;
-    }
-
-    fn clear(&mut self) {
-        self.code.clear();
-    }
-}
-
-impl Default for Comptime {
-    fn default() -> Self {
-        let mut stack = Box::<[u8; VM_STACK_SIZE]>::new_uninit();
-        let mut vm = hbvm::Vm::default();
-        let ptr = unsafe { stack.as_mut_ptr().cast::<u8>().add(VM_STACK_SIZE) as u64 };
-        vm.write_reg(reg::STACK_PTR, ptr);
-        Self { vm, stack: unsafe { stack.assume_init() }, code: Default::default() }
-    }
-}
-
 #[cfg(test)]
 pub fn run_test(
     name: &'static str,
@@ -1764,146 +1567,6 @@ fn test_parse_files(
     )
 }
 
-#[cfg(test)]
-fn test_run_vm(out: &[u8], output: &mut String) {
-    use core::fmt::Write;
-
-    let mut stack = [0_u64; 1024 * 20];
-
-    let mut vm = unsafe {
-        hbvm::Vm::<_, { 1024 * 100 }>::new(
-            LoggedMem::default(),
-            hbvm::mem::Address::new(out.as_ptr() as u64).wrapping_add(HEADER_SIZE),
-        )
-    };
-
-    vm.write_reg(reg::STACK_PTR, unsafe { stack.as_mut_ptr().add(stack.len()) } as u64);
-
-    let stat = loop {
-        match vm.run() {
-            Ok(hbvm::VmRunOk::End) => break Ok(()),
-            Ok(hbvm::VmRunOk::Ecall) => match vm.read_reg(2).0 {
-                1 => writeln!(output, "ev: Ecall").unwrap(), // compatibility with a test
-                69 => {
-                    let [size, align] = [vm.read_reg(3).0 as usize, vm.read_reg(4).0 as usize];
-                    let layout = core::alloc::Layout::from_size_align(size, align).unwrap();
-                    let ptr = unsafe { alloc::alloc::alloc(layout) };
-                    vm.write_reg(1, ptr as u64);
-                }
-                96 => {
-                    let [ptr, size, align] = [
-                        vm.read_reg(3).0 as usize,
-                        vm.read_reg(4).0 as usize,
-                        vm.read_reg(5).0 as usize,
-                    ];
-
-                    let layout = core::alloc::Layout::from_size_align(size, align).unwrap();
-                    unsafe { alloc::alloc::dealloc(ptr as *mut u8, layout) };
-                }
-                3 => vm.write_reg(1, 42),
-                unknown => unreachable!("unknown ecall: {unknown:?}"),
-            },
-            Ok(hbvm::VmRunOk::Timer) => {
-                writeln!(output, "timed out").unwrap();
-                break Ok(());
-            }
-            Ok(ev) => writeln!(output, "ev: {:?}", ev).unwrap(),
-            Err(e) => break Err(e),
-        }
-    };
-
-    writeln!(output, "code size: {}", out.len() - HEADER_SIZE).unwrap();
-    writeln!(output, "ret: {:?}", vm.read_reg(1).0).unwrap();
-    writeln!(output, "status: {:?}", stat).unwrap();
-}
-
-#[derive(Default)]
-pub struct LoggedMem {
-    pub mem: hbvm::mem::HostMemory,
-    op_buf: Vec<hbbytecode::Oper>,
-    disp_buf: String,
-    prev_instr: Option<hbbytecode::Instr>,
-}
-
-impl LoggedMem {
-    unsafe fn display_instr<T>(&mut self, instr: hbbytecode::Instr, addr: hbvm::mem::Address) {
-        let novm: *const hbvm::Vm<Self, 0> = core::ptr::null();
-        let offset = core::ptr::addr_of!((*novm).memory) as usize;
-        let regs = unsafe {
-            &*core::ptr::addr_of!(
-                (*(((self as *mut _ as *mut u8).sub(offset)) as *const hbvm::Vm<Self, 0>))
-                    .registers
-            )
-        };
-
-        let mut bytes = core::slice::from_raw_parts(
-            (addr.get() - 1) as *const u8,
-            core::mem::size_of::<T>() + 1,
-        );
-        use core::fmt::Write;
-        hbbytecode::parse_args(&mut bytes, instr, &mut self.op_buf).unwrap();
-        debug_assert!(bytes.is_empty());
-        self.disp_buf.clear();
-        write!(self.disp_buf, "{:<10}", format!("{instr:?}")).unwrap();
-        for (i, op) in self.op_buf.drain(..).enumerate() {
-            if i != 0 {
-                write!(self.disp_buf, ", ").unwrap();
-            }
-            write!(self.disp_buf, "{op:?}").unwrap();
-            if let hbbytecode::Oper::R(r) = op {
-                write!(self.disp_buf, "({})", regs[r as usize].0).unwrap()
-            }
-        }
-        log::trace!("read-typed: {:x}: {}", addr.get(), self.disp_buf);
-    }
-}
-
-impl hbvm::mem::Memory for LoggedMem {
-    unsafe fn load(
-        &mut self,
-        addr: hbvm::mem::Address,
-        target: *mut u8,
-        count: usize,
-    ) -> Result<(), hbvm::mem::LoadError> {
-        log::trace!(
-            "load: {:x} {}",
-            addr.get(),
-            AsHex(core::slice::from_raw_parts(addr.get() as *const u8, count))
-        );
-        self.mem.load(addr, target, count)
-    }
-
-    unsafe fn store(
-        &mut self,
-        addr: hbvm::mem::Address,
-        source: *const u8,
-        count: usize,
-    ) -> Result<(), hbvm::mem::StoreError> {
-        log::trace!(
-            "store: {:x} {}",
-            addr.get(),
-            AsHex(core::slice::from_raw_parts(source, count))
-        );
-        self.mem.store(addr, source, count)
-    }
-
-    unsafe fn prog_read<T: Copy + 'static>(&mut self, addr: hbvm::mem::Address) -> T {
-        if log::log_enabled!(log::Level::Trace) {
-            if core::any::TypeId::of::<u8>() == core::any::TypeId::of::<T>() {
-                if let Some(instr) = self.prev_instr {
-                    self.display_instr::<()>(instr, addr);
-                }
-                self.prev_instr = hbbytecode::Instr::try_from(*(addr.get() as *const u8)).ok();
-            } else {
-                let instr = self.prev_instr.take().unwrap();
-                self.display_instr::<T>(instr, addr);
-            }
-        }
-
-        self.mem.prog_read(addr)
-    }
-}
-
 fn endoce_string(
     literal: &str,
     str: &mut Vec<u8>,
@@ -1961,17 +1624,6 @@ fn endoce_string(
     }
 
     Some(())
-}
-
-struct AsHex<'a>(&'a [u8]);
-
-impl core::fmt::Display for AsHex<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        for &b in self.0 {
-            write!(f, "{b:02x}")?;
-        }
-        Ok(())
-    }
 }
 
 pub fn quad_sort<T>(mut slice: &mut [T], mut cmp: impl FnMut(&T, &T) -> core::cmp::Ordering) {

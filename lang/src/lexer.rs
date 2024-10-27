@@ -1,5 +1,3 @@
-use crate::EncodedInstr;
-
 const fn ascii_mask(chars: &[u8]) -> u128 {
     let mut eq = 0;
     let mut i = 0;
@@ -178,86 +176,6 @@ impl core::fmt::Debug for TokenKind {
 }
 
 impl TokenKind {
-    #[expect(clippy::type_complexity)]
-    pub fn cond_op(self, signed: bool) -> Option<(fn(u8, u8, i16) -> EncodedInstr, bool)> {
-        use crate::instrs;
-        Some((
-            match self {
-                Self::Le if signed => instrs::jgts,
-                Self::Le => instrs::jgtu,
-                Self::Lt if signed => instrs::jlts,
-                Self::Lt => instrs::jltu,
-                Self::Ge if signed => instrs::jlts,
-                Self::Ge => instrs::jltu,
-                Self::Gt if signed => instrs::jgts,
-                Self::Gt => instrs::jgtu,
-                Self::Eq => instrs::jne,
-                Self::Ne => instrs::jeq,
-                _ => return None,
-            },
-            matches!(self, Self::Lt | TokenKind::Gt),
-        ))
-    }
-
-    pub fn binop(self, signed: bool, size: u32) -> Option<fn(u8, u8, u8) -> EncodedInstr> {
-        use crate::instrs::*;
-
-        macro_rules! div { ($($op:ident),*) => {[$(|a, b, c| $op(a, 0, b, c)),*]}; }
-        macro_rules! rem { ($($op:ident),*) => {[$(|a, b, c| $op(0, a, b, c)),*]}; }
-
-        let ops = match self {
-            Self::Add => [add8, add16, add32, add64],
-            Self::Sub => [sub8, sub16, sub32, sub64],
-            Self::Mul => [mul8, mul16, mul32, mul64],
-            Self::Div if signed => div!(dirs8, dirs16, dirs32, dirs64),
-            Self::Div => div!(diru8, diru16, diru32, diru64),
-            Self::Mod if signed => rem!(dirs8, dirs16, dirs32, dirs64),
-            Self::Mod => rem!(diru8, diru16, diru32, diru64),
-            Self::Band => return Some(and),
-            Self::Bor => return Some(or),
-            Self::Xor => return Some(xor),
-            Self::Shl => [slu8, slu16, slu32, slu64],
-            Self::Shr if signed => [srs8, srs16, srs32, srs64],
-            Self::Shr => [sru8, sru16, sru32, sru64],
-            _ => return None,
-        };
-
-        Some(ops[size.ilog2() as usize])
-    }
-
-    pub fn imm_binop(self, signed: bool, size: u32) -> Option<fn(u8, u8, u64) -> EncodedInstr> {
-        use crate::instrs::*;
-        macro_rules! def_op {
-            ($name:ident |$a:ident, $b:ident, $c:ident| $($tt:tt)*) => {
-                macro_rules! $name {
-                    ($$($$op:ident),*) => {
-                        [$$(
-                            |$a, $b, $c: u64| $$op($($tt)*),
-                        )*]
-                    }
-                }
-            };
-        }
-
-        def_op!(basic_op | a, b, c | a, b, c as _);
-        def_op!(sub_op | a, b, c | a, b, c.wrapping_neg() as _);
-
-        let ops = match self {
-            Self::Add => basic_op!(addi8, addi16, addi32, addi64),
-            Self::Sub => sub_op!(addi8, addi16, addi32, addi64),
-            Self::Mul => basic_op!(muli8, muli16, muli32, muli64),
-            Self::Band => return Some(andi),
-            Self::Bor => return Some(ori),
-            Self::Xor => return Some(xori),
-            Self::Shr if signed => basic_op!(srui8, srui16, srui32, srui64),
-            Self::Shr => basic_op!(srui8, srui16, srui32, srui64),
-            Self::Shl => basic_op!(slui8, slui16, slui32, slui64),
-            _ => return None,
-        };
-
-        Some(ops[size.ilog2() as usize])
-    }
-
     pub fn ass_op(self) -> Option<Self> {
         let id = (self as u8).saturating_sub(128);
         if ascii_mask(b"|+-*/%^&79") & (1u128 << id) == 0 {
@@ -308,13 +226,6 @@ impl TokenKind {
         self.precedence() != Self::Eq.precedence()
             && self.precedence() != Self::Gt.precedence()
             && self.precedence() != Self::Eof.precedence()
-    }
-
-    pub fn unop(&self) -> Option<fn(u8, u8) -> EncodedInstr> {
-        Some(match self {
-            Self::Sub => crate::instrs::neg,
-            _ => return None,
-        })
     }
 
     pub fn apply_unop(&self, value: i64) -> i64 {
