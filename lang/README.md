@@ -776,7 +776,7 @@ sqrt := fn(x: uint): uint {
 }
 ```
 
-#### structs_in_registers
+#### struct_in_register
 ```hb
 ColorBGRA := struct {b: u8, g: u8, r: u8, a: u8}
 MAGENTA := ColorBGRA.{b: 205, g: 0, r: 205, a: 255}

@@ -3684,7 +3684,7 @@ mod tests {
         different_types;
         struct_return_from_module_function;
         sort_something_viredly;
-        //structs_in_registers;
+        struct_in_register;
         comptime_function_from_another_file;
         inline_test;
         inlined_generic_functions;

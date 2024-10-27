@@ -3,7 +3,6 @@ create_back_buffer:
     ST r31, r254, 0a, 48h
     LI64 r32, 255d
     JGTS r2, r32, :0
-    AND r2, r2, r32
     JAL r31, r0, :request_page
     JMP :1
  0: CP r33, r2
@@ -21,7 +20,7 @@ create_back_buffer:
     CP r2, r34
     JAL r31, r0, :request_page
     JMP :4
- 3: AND r2, r33, r32
+ 3: CP r2, r33
     JAL r31, r0, :request_page
  4: SUB64 r33, r33, r32
     JMP :5
@@ -44,6 +43,6 @@ request_page:
     LI64 r2, 3d
     ECA 
     JALA r0, r31, 0a
-code size: 336
+code size: 331
 ret: 42
 status: Ok(())
