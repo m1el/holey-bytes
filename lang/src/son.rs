@@ -49,6 +49,24 @@ impl crate::ctx_map::CtxEntry for Nid {
     }
 }
 
+macro_rules! inference {
+    ($ty:ident, $ctx:expr, $self:expr, $pos:expr, $subject:literal, $example:literal) => {
+        let Some($ty) = $ctx.ty else {
+            $self.report(
+                $pos,
+                concat!(
+                    "resulting ",
+                    $subject,
+                    " cannot be inferred from context, consider using `",
+                    $example,
+                    "` to hint the type",
+                ),
+            );
+            return Value::NEVER;
+        };
+    };
+}
+
 #[derive(Clone)]
 struct Nodes {
     values: Vec<Result<Node, (Nid, debug::Trace)>>,
@@ -69,6 +87,287 @@ impl Default for Nodes {
 }
 
 impl Nodes {
+    fn loop_depth(&mut self, target: Nid) -> LoopDepth {
+        if self[target].loop_depth != 0 {
+            return self[target].loop_depth;
+        }
+
+        self[target].loop_depth = match self[target].kind {
+            Kind::Entry | Kind::Then | Kind::Else | Kind::Call { .. } | Kind::Return | Kind::If => {
+                let dpth = self.loop_depth(self[target].inputs[0]);
+                if self[target].loop_depth != 0 {
+                    return self[target].loop_depth;
+                }
+                dpth
+            }
+            Kind::Region => {
+                let l = self.loop_depth(self[target].inputs[0]);
+                let r = self.loop_depth(self[target].inputs[1]);
+                debug_assert_eq!(l, r);
+                l
+            }
+            Kind::Loop => {
+                let depth = Self::loop_depth(self, self[target].inputs[0]) + 1;
+                self[target].loop_depth = depth;
+                let mut cursor = self[target].inputs[1];
+                while cursor != target {
+                    self[cursor].loop_depth = depth;
+                    let next = if self[cursor].kind == Kind::Region {
+                        self.loop_depth(self[cursor].inputs[0]);
+                        self[cursor].inputs[1]
+                    } else {
+                        self.idom(cursor)
+                    };
+                    debug_assert_ne!(next, VOID);
+                    if matches!(self[cursor].kind, Kind::Then | Kind::Else) {
+                        let other = *self[next]
+                            .outputs
+                            .iter()
+                            .find(|&&n| self[n].kind != self[cursor].kind)
+                            .unwrap();
+                        if self[other].loop_depth == 0 {
+                            self[other].loop_depth = depth - 1;
+                        }
+                    }
+                    cursor = next;
+                }
+                depth
+            }
+            Kind::Start | Kind::End => 1,
+            u => unreachable!("{u:?}"),
+        };
+
+        self[target].loop_depth
+    }
+
+    fn idepth(&mut self, target: Nid) -> IDomDepth {
+        if target == VOID {
+            return 0;
+        }
+        if self[target].depth == 0 {
+            self[target].depth = match self[target].kind {
+                Kind::End | Kind::Start => unreachable!("{:?}", self[target].kind),
+                Kind::Region => {
+                    self.idepth(self[target].inputs[0]).max(self.idepth(self[target].inputs[1]))
+                }
+                _ => self.idepth(self[target].inputs[0]),
+            } + 1;
+        }
+        self[target].depth
+    }
+
+    fn fix_loops(&mut self) {
+        'o: for l in self[LOOPS].outputs.clone() {
+            let mut cursor = self[l].inputs[1];
+            while cursor != l {
+                if self[cursor].kind == Kind::If
+                    && self[cursor]
+                        .outputs
+                        .clone()
+                        .into_iter()
+                        .any(|b| self.loop_depth(b) < self.loop_depth(cursor))
+                {
+                    continue 'o;
+                }
+                cursor = self.idom(cursor);
+            }
+
+            self[l].outputs.push(NEVER);
+            self[NEVER].inputs.push(l);
+        }
+    }
+
+    fn push_up_impl(&mut self, node: Nid) {
+        if !self.visited.set(node) {
+            return;
+        }
+
+        for i in 1..self[node].inputs.len() {
+            let inp = self[node].inputs[i];
+            if !self[inp].kind.is_pinned() {
+                self.push_up_impl(inp);
+            }
+        }
+
+        if self[node].kind.is_pinned() {
+            return;
+        }
+
+        let mut deepest = VOID;
+        for i in 1..self[node].inputs.len() {
+            let inp = self[node].inputs[i];
+            if self.idepth(inp) > self.idepth(deepest) {
+                deepest = self.idom(inp);
+            }
+        }
+
+        if deepest == VOID {
+            return;
+        }
+
+        let index = self[0].outputs.iter().position(|&p| p == node).unwrap();
+        self[0].outputs.remove(index);
+        self[node].inputs[0] = deepest;
+        debug_assert!(
+            !self[deepest].outputs.contains(&node)
+                || matches!(self[deepest].kind, Kind::Call { .. }),
+            "{node} {:?} {deepest} {:?}",
+            self[node],
+            self[deepest]
+        );
+        self[deepest].outputs.push(node);
+    }
+
+    fn collect_rpo(&mut self, node: Nid, rpo: &mut Vec<Nid>) {
+        if !self.is_cfg(node) || !self.visited.set(node) {
+            return;
+        }
+
+        for i in 0..self[node].outputs.len() {
+            self.collect_rpo(self[node].outputs[i], rpo);
+        }
+        rpo.push(node);
+    }
+
+    fn push_up(&mut self, rpo: &mut Vec<Nid>) {
+        rpo.clear();
+        self.collect_rpo(VOID, rpo);
+
+        for &node in rpo.iter().rev() {
+            self.loop_depth(node);
+            for i in 0..self[node].inputs.len() {
+                self.push_up_impl(self[node].inputs[i]);
+            }
+
+            if matches!(self[node].kind, Kind::Loop | Kind::Region) {
+                for i in 0..self[node].outputs.len() {
+                    let usage = self[node].outputs[i];
+                    if self[usage].kind == Kind::Phi {
+                        self.push_up_impl(usage);
+                    }
+                }
+            }
+        }
+
+        debug_assert_eq!(
+            self.iter()
+                .map(|(n, _)| n)
+                .filter(|&n| !self.visited.get(n)
+                    && !matches!(self[n].kind, Kind::Arg | Kind::Mem | Kind::Loops))
+                .collect::<Vec<_>>(),
+            vec![],
+            "{:?}",
+            self.iter()
+                .filter(|&(n, nod)| !self.visited.get(n)
+                    && !matches!(nod.kind, Kind::Arg | Kind::Mem | Kind::Loops))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    fn better(&mut self, is: Nid, then: Nid) -> bool {
+        debug_assert_ne!(self.idepth(is), self.idepth(then), "{is} {then}");
+        self.loop_depth(is) < self.loop_depth(then)
+            || self.idepth(is) > self.idepth(then)
+            || self[then].kind == Kind::If
+    }
+
+    fn is_forward_edge(&mut self, usage: Nid, def: Nid) -> bool {
+        match self[usage].kind {
+            Kind::Phi => {
+                self[usage].inputs[2] != def || self[self[usage].inputs[0]].kind != Kind::Loop
+            }
+            Kind::Loop => self[usage].inputs[1] != def,
+            _ => true,
+        }
+    }
+
+    fn push_down(&mut self, node: Nid) {
+        if !self.visited.set(node) {
+            return;
+        }
+
+        for usage in self[node].outputs.clone() {
+            if self.is_forward_edge(usage, node) && self[node].kind == Kind::Stre {
+                self.push_down(usage);
+            }
+        }
+
+        for usage in self[node].outputs.clone() {
+            if self.is_forward_edge(usage, node) {
+                self.push_down(usage);
+            }
+        }
+
+        if self[node].kind.is_pinned() {
+            return;
+        }
+
+        let mut min = None::<Nid>;
+        for i in 0..self[node].outputs.len() {
+            let usage = self[node].outputs[i];
+            let ub = self.use_block(node, usage);
+            min = min.map(|m| self.common_dom(ub, m)).or(Some(ub));
+        }
+        let mut min = min.unwrap();
+
+        debug_assert!(self.dominates(self[node].inputs[0], min));
+
+        let mut cursor = min;
+        while cursor != self[node].inputs[0] {
+            cursor = self.idom(cursor);
+            if self.better(cursor, min) {
+                min = cursor;
+            }
+        }
+
+        if self[min].kind.ends_basic_block() {
+            min = self.idom(min);
+        }
+
+        self.check_dominance(node, min, true);
+
+        let prev = self[node].inputs[0];
+        debug_assert!(self.idepth(min) >= self.idepth(prev));
+        let index = self[prev].outputs.iter().position(|&p| p == node).unwrap();
+        self[prev].outputs.remove(index);
+        self[node].inputs[0] = min;
+        self[min].outputs.push(node);
+    }
+
+    fn use_block(&mut self, target: Nid, from: Nid) -> Nid {
+        if self[from].kind != Kind::Phi {
+            return self.idom(from);
+        }
+
+        let index = self[from].inputs.iter().position(|&n| n == target).unwrap();
+        self[self[from].inputs[0]].inputs[index - 1]
+    }
+
+    fn idom(&mut self, target: Nid) -> Nid {
+        match self[target].kind {
+            Kind::Start => VOID,
+            Kind::End => unreachable!(),
+            Kind::Region => {
+                let &[lcfg, rcfg] = self[target].inputs.as_slice() else { unreachable!() };
+                self.common_dom(lcfg, rcfg)
+            }
+            _ => self[target].inputs[0],
+        }
+    }
+
+    fn common_dom(&mut self, mut a: Nid, mut b: Nid) -> Nid {
+        while a != b {
+            let [ldepth, rdepth] = [self.idepth(a), self.idepth(b)];
+            if ldepth >= rdepth {
+                a = self.idom(a);
+            }
+            if ldepth <= rdepth {
+                b = self.idom(b);
+            }
+        }
+        a
+    }
+
     fn merge_scopes(
         &mut self,
         loops: &mut [Loop],
@@ -166,12 +465,12 @@ impl Nodes {
         }
     }
 
-    fn gcm(&mut self) {
-        fix_loops(self);
+    fn gcm(&mut self, rpo: &mut Vec<Nid>) {
+        self.fix_loops();
         self.visited.clear(self.values.len());
-        push_up(self);
+        self.push_up(rpo);
         self.visited.clear(self.values.len());
-        push_down(self, VOID);
+        self.push_down(VOID);
     }
 
     fn clear(&mut self) {
@@ -471,7 +770,7 @@ impl Nodes {
                                 break ty::Id::LEFT_UNREACHABLE;
                             }
 
-                            cursor = idom(self, cursor);
+                            cursor = self.idom(cursor);
                         };
 
                         return Some(self.new_node_nop(ty, K::If, [ctrl, cond]));
@@ -861,7 +1160,7 @@ impl Nodes {
 
         let node = self[nd].clone();
         for &i in node.inputs.iter() {
-            let dom = idom(self, i);
+            let dom = self.idom(i);
             debug_assert!(
                 self.dominates(dom, min),
                 "{dom} {min} {node:?} {:?}",
@@ -870,7 +1169,7 @@ impl Nodes {
         }
         if check_outputs {
             for &o in node.outputs.iter() {
-                let dom = use_block(nd, o, self);
+                let dom = self.use_block(nd, o);
                 debug_assert!(
                     self.dominates(min, dom),
                     "{min} {dom} {node:?} {:?}",
@@ -886,11 +1185,11 @@ impl Nodes {
                 break true;
             }
 
-            if idepth(self, dominator) > idepth(self, dominated) {
+            if self.idepth(dominator) > self.idepth(dominated) {
                 break false;
             }
 
-            dominated = idom(self, dominated);
+            dominated = self.idom(dominated);
         }
     }
 
@@ -1577,12 +1876,7 @@ impl<'a> Codegen<'a> {
             return 1;
         }
 
-        self.ci.emit_ct_body(
-            self.tys,
-            self.files,
-            Sig { args: Tuple::empty(), ret },
-            &mut self.pool.ralloc,
-        );
+        self.ci.emit_ct_body(self.tys, self.files, Sig { args: Tuple::empty(), ret }, self.pool);
 
         let func = Func {
             file,
@@ -1711,18 +2005,11 @@ impl<'a> Codegen<'a> {
         self.raw_expr_ctx(expr, Ctx::default())
     }
 
-    fn raw_expr_ctx(&mut self, expr: &Expr, ctx: Ctx) -> Option<Value> {
+    fn raw_expr_ctx(&mut self, expr: &Expr, mut ctx: Ctx) -> Option<Value> {
         // ordered by complexity of the expression
         match *expr {
             Expr::Null { pos } => {
-                let Some(ty) = ctx.ty else {
-                    self.report(
-                        pos,
-                        "resulting pointer cannot be inferred from context, \
-                        consider using `@as(^<ty>, null)` to hint the type",
-                    );
-                    return Value::NEVER;
-                };
+                inference!(ty, ctx, self, pos, "null pointer", "@as(^<ty>, null)");
 
                 if !ty.is_pointer() {
                     self.report(
@@ -1739,14 +2026,7 @@ impl<'a> Codegen<'a> {
                 Some(self.ci.nodes.new_node_lit(ty, Kind::CInt { value: 0 }, [VOID]))
             }
             Expr::Idk { pos } => {
-                let Some(ty) = ctx.ty else {
-                    self.report(
-                        pos,
-                        "resulting value cannot be inferred from context, \
-                        consider using `@as(<ty>, idk)` to hint the type",
-                    );
-                    return Value::NEVER;
-                };
+                inference!(ty, ctx, self, pos, "value", "@as(<ty>, idk)");
 
                 if matches!(ty.expand(), ty::Kind::Struct(_) | ty::Kind::Slice(_)) {
                     let stck = self.ci.nodes.new_node(ty, Kind::Stck, [VOID, MEM]);
@@ -1756,7 +2036,7 @@ impl<'a> Codegen<'a> {
                         pos,
                         fa!(
                             "type '{}' cannot be uninitialized, use a zero \
-                            value instead ('@bitcast(0)' in case of pointers)",
+                            value instead ('null' in case of pointers)",
                             self.ty_display(ty)
                         ),
                     );
@@ -2098,14 +2378,7 @@ impl<'a> Codegen<'a> {
                 let mut val = self.raw_expr(val)?;
                 self.strip_var(&mut val);
 
-                let Some(ty) = ctx.ty else {
-                    self.report(
-                        pos,
-                        "resulting type cannot be inferred from context, \
-                        consider using `@as(<ty>, @bitcast(<expr>))` to hint the type",
-                    );
-                    return Value::NEVER;
-                };
+                inference!(ty, ctx, self, pos, "type", "@as(<ty>, @bitcast(<expr>))");
 
                 let (got, expected) = (self.tys.size_of(val.ty), self.tys.size_of(ty));
                 if got != expected {
@@ -2148,14 +2421,7 @@ impl<'a> Codegen<'a> {
                     return Value::NEVER;
                 }
 
-                let Some(ty) = ctx.ty else {
-                    self.report(
-                        pos,
-                        "resulting integer cannot be inferred from context, \
-                        consider using `@as(<int_ty>, @intcast(<expr>))` to hint the type",
-                    );
-                    return Value::NEVER;
-                };
+                inference!(ty, ctx, self, pos, "integer", "@as(<ty>, @intcast(<expr>))");
 
                 if !ty.is_integer() {
                     self.report(
@@ -2183,14 +2449,7 @@ impl<'a> Codegen<'a> {
                 Some(val)
             }
             Expr::Directive { pos, name: "eca", args } => {
-                let Some(ty) = ctx.ty else {
-                    self.report(
-                        pos,
-                        "return type cannot be inferred from context, \
-                        consider using `@as(<return_ty>, @eca(<expr>...))` to hint the type",
-                    );
-                    return Value::NEVER;
-                };
+                inference!(ty, ctx, self, pos, "return type", "@as(<return_ty>, @eca(<expr>...))");
 
                 let mut inps = Vc::from([NEVER]);
                 let arg_base = self.tys.tmp.args.len();
@@ -2447,14 +2706,8 @@ impl<'a> Codegen<'a> {
                 })
             }
             Expr::Tupl { pos, ty, fields, .. } => {
-                let Some(sty) = ty.map(|ty| self.ty(ty)).or(ctx.ty) else {
-                    self.report(
-                        pos,
-                        "the type of struct cannot be inferred from context, \
-                        use an explicit type instead: <type>.{ ... }",
-                    );
-                    return Value::NEVER;
-                };
+                ctx.ty = ty.map(|ty| self.ty(ty)).or(ctx.ty);
+                inference!(sty, ctx, self, pos, "struct or slice", "<struct_ty>.(...)");
 
                 match sty.expand() {
                     ty::Kind::Struct(s) => {
@@ -2544,14 +2797,7 @@ impl<'a> Codegen<'a> {
                 Some(self.ci.nodes.new_node_lit(ty::Id::TYPE, Kind::CInt { value }, [VOID]))
             }
             Expr::Ctor { pos, ty, fields, .. } => {
-                let Some(sty) = ty.map(|ty| self.ty(ty)).or(ctx.ty) else {
-                    self.report(
-                        pos,
-                        "the type of struct cannot be inferred from context, \
-                        use an explicit type instead: <type>.{ ... }",
-                    );
-                    return Value::NEVER;
-                };
+                inference!(sty, ctx, self, pos, "struct", "<struct_ty>.{...}");
 
                 let ty::Kind::Struct(s) = sty.expand() else {
                     let inferred = if ty.is_some() { "" } else { "inferred " };
@@ -3136,7 +3382,7 @@ impl<'a> Codegen<'a> {
         self.ci.finalize(&mut self.pool.nid_stack);
 
         if self.errors.borrow().len() == prev_err_len {
-            self.ci.emit_body(self.tys, self.files, sig, &mut self.pool.ralloc);
+            self.ci.emit_body(self.tys, self.files, sig, self.pool);
             self.tys.ins.funcs[id as usize].code.append(&mut self.ci.code);
             self.tys.ins.funcs[id as usize].relocs.append(&mut self.ci.relocs);
         }
@@ -3341,290 +3587,6 @@ impl TypeParser for Codegen<'_> {
 }
 
 // FIXME: make this more efficient (allocated with arena)
-
-fn loop_depth(target: Nid, nodes: &mut Nodes) -> LoopDepth {
-    if nodes[target].loop_depth != 0 {
-        return nodes[target].loop_depth;
-    }
-
-    nodes[target].loop_depth = match nodes[target].kind {
-        Kind::Entry | Kind::Then | Kind::Else | Kind::Call { .. } | Kind::Return | Kind::If => {
-            let dpth = loop_depth(nodes[target].inputs[0], nodes);
-            if nodes[target].loop_depth != 0 {
-                return nodes[target].loop_depth;
-            }
-            dpth
-        }
-        Kind::Region => {
-            let l = loop_depth(nodes[target].inputs[0], nodes);
-            let r = loop_depth(nodes[target].inputs[1], nodes);
-            debug_assert_eq!(l, r);
-            l
-        }
-        Kind::Loop => {
-            let depth = loop_depth(nodes[target].inputs[0], nodes) + 1;
-            nodes[target].loop_depth = depth;
-            let mut cursor = nodes[target].inputs[1];
-            while cursor != target {
-                nodes[cursor].loop_depth = depth;
-                let next = if nodes[cursor].kind == Kind::Region {
-                    loop_depth(nodes[cursor].inputs[0], nodes);
-                    nodes[cursor].inputs[1]
-                } else {
-                    idom(nodes, cursor)
-                };
-                debug_assert_ne!(next, VOID);
-                if matches!(nodes[cursor].kind, Kind::Then | Kind::Else) {
-                    let other = *nodes[next]
-                        .outputs
-                        .iter()
-                        .find(|&&n| nodes[n].kind != nodes[cursor].kind)
-                        .unwrap();
-                    if nodes[other].loop_depth == 0 {
-                        nodes[other].loop_depth = depth - 1;
-                    }
-                }
-                cursor = next;
-            }
-            depth
-        }
-        Kind::Start | Kind::End => 1,
-        u => unreachable!("{u:?}"),
-    };
-
-    nodes[target].loop_depth
-}
-
-fn idepth(nodes: &mut Nodes, target: Nid) -> IDomDepth {
-    if target == VOID {
-        return 0;
-    }
-    if nodes[target].depth == 0 {
-        nodes[target].depth = match nodes[target].kind {
-            Kind::End | Kind::Start => unreachable!("{:?}", nodes[target].kind),
-            Kind::Region => {
-                idepth(nodes, nodes[target].inputs[0]).max(idepth(nodes, nodes[target].inputs[1]))
-            }
-            _ => idepth(nodes, nodes[target].inputs[0]),
-        } + 1;
-    }
-    nodes[target].depth
-}
-
-fn fix_loops(nodes: &mut Nodes) {
-    'o: for l in nodes[LOOPS].outputs.clone() {
-        let mut cursor = nodes[l].inputs[1];
-        while cursor != l {
-            if nodes[cursor].kind == Kind::If
-                && nodes[cursor]
-                    .outputs
-                    .clone()
-                    .into_iter()
-                    .any(|b| loop_depth(b, nodes) < loop_depth(cursor, nodes))
-            {
-                continue 'o;
-            }
-            cursor = idom(nodes, cursor);
-        }
-
-        nodes[l].outputs.push(NEVER);
-        nodes[NEVER].inputs.push(l);
-    }
-}
-
-fn push_up(nodes: &mut Nodes) {
-    fn collect_rpo(node: Nid, nodes: &mut Nodes, rpo: &mut Vec<Nid>) {
-        if !nodes.is_cfg(node) || !nodes.visited.set(node) {
-            return;
-        }
-
-        for i in 0..nodes[node].outputs.len() {
-            collect_rpo(nodes[node].outputs[i], nodes, rpo);
-        }
-        rpo.push(node);
-    }
-
-    fn push_up_impl(node: Nid, nodes: &mut Nodes) {
-        if !nodes.visited.set(node) {
-            return;
-        }
-
-        for i in 1..nodes[node].inputs.len() {
-            let inp = nodes[node].inputs[i];
-            if !nodes[inp].kind.is_pinned() {
-                push_up_impl(inp, nodes);
-            }
-        }
-
-        if nodes[node].kind.is_pinned() {
-            return;
-        }
-
-        let mut deepest = VOID;
-        for i in 1..nodes[node].inputs.len() {
-            let inp = nodes[node].inputs[i];
-            if idepth(nodes, inp) > idepth(nodes, deepest) {
-                deepest = idom(nodes, inp);
-            }
-        }
-
-        if deepest == VOID {
-            return;
-        }
-
-        let index = nodes[0].outputs.iter().position(|&p| p == node).unwrap();
-        nodes[0].outputs.remove(index);
-        nodes[node].inputs[0] = deepest;
-        debug_assert!(
-            !nodes[deepest].outputs.contains(&node)
-                || matches!(nodes[deepest].kind, Kind::Call { .. }),
-            "{node} {:?} {deepest} {:?}",
-            nodes[node],
-            nodes[deepest]
-        );
-        nodes[deepest].outputs.push(node);
-    }
-
-    let mut rpo = vec![];
-
-    collect_rpo(VOID, nodes, &mut rpo);
-
-    for node in rpo.into_iter().rev() {
-        loop_depth(node, nodes);
-        for i in 0..nodes[node].inputs.len() {
-            push_up_impl(nodes[node].inputs[i], nodes);
-        }
-
-        if matches!(nodes[node].kind, Kind::Loop | Kind::Region) {
-            for i in 0..nodes[node].outputs.len() {
-                let usage = nodes[node].outputs[i];
-                if nodes[usage].kind == Kind::Phi {
-                    push_up_impl(usage, nodes);
-                }
-            }
-        }
-    }
-
-    debug_assert_eq!(
-        nodes
-            .iter()
-            .map(|(n, _)| n)
-            .filter(|&n| !nodes.visited.get(n)
-                && !matches!(nodes[n].kind, Kind::Arg | Kind::Mem | Kind::Loops))
-            .collect::<Vec<_>>(),
-        vec![],
-        "{:?}",
-        nodes
-            .iter()
-            .filter(|&(n, nod)| !nodes.visited.get(n)
-                && !matches!(nod.kind, Kind::Arg | Kind::Mem | Kind::Loops))
-            .collect::<Vec<_>>()
-    );
-}
-
-fn push_down(nodes: &mut Nodes, node: Nid) {
-    fn is_forward_edge(usage: Nid, def: Nid, nodes: &mut Nodes) -> bool {
-        match nodes[usage].kind {
-            Kind::Phi => {
-                nodes[usage].inputs[2] != def || nodes[nodes[usage].inputs[0]].kind != Kind::Loop
-            }
-            Kind::Loop => nodes[usage].inputs[1] != def,
-            _ => true,
-        }
-    }
-
-    fn better(nodes: &mut Nodes, is: Nid, then: Nid) -> bool {
-        debug_assert_ne!(idepth(nodes, is), idepth(nodes, then), "{is} {then}");
-        loop_depth(is, nodes) < loop_depth(then, nodes)
-            || idepth(nodes, is) > idepth(nodes, then)
-            || nodes[then].kind == Kind::If
-    }
-
-    if !nodes.visited.set(node) {
-        return;
-    }
-
-    for usage in nodes[node].outputs.clone() {
-        if is_forward_edge(usage, node, nodes) && nodes[node].kind == Kind::Stre {
-            push_down(nodes, usage);
-        }
-    }
-
-    for usage in nodes[node].outputs.clone() {
-        if is_forward_edge(usage, node, nodes) {
-            push_down(nodes, usage);
-        }
-    }
-
-    if nodes[node].kind.is_pinned() {
-        return;
-    }
-
-    let mut min = None::<Nid>;
-    for i in 0..nodes[node].outputs.len() {
-        let usage = nodes[node].outputs[i];
-        let ub = use_block(node, usage, nodes);
-        min = min.map(|m| common_dom(ub, m, nodes)).or(Some(ub));
-    }
-    let mut min = min.unwrap();
-
-    debug_assert!(nodes.dominates(nodes[node].inputs[0], min));
-
-    let mut cursor = min;
-    while cursor != nodes[node].inputs[0] {
-        cursor = idom(nodes, cursor);
-        if better(nodes, cursor, min) {
-            min = cursor;
-        }
-    }
-
-    if nodes[min].kind.ends_basic_block() {
-        min = idom(nodes, min);
-    }
-
-    nodes.check_dominance(node, min, true);
-
-    let prev = nodes[node].inputs[0];
-    debug_assert!(idepth(nodes, min) >= idepth(nodes, prev));
-    let index = nodes[prev].outputs.iter().position(|&p| p == node).unwrap();
-    nodes[prev].outputs.remove(index);
-    nodes[node].inputs[0] = min;
-    nodes[min].outputs.push(node);
-}
-
-fn use_block(target: Nid, from: Nid, nodes: &mut Nodes) -> Nid {
-    if nodes[from].kind != Kind::Phi {
-        return idom(nodes, from);
-    }
-
-    let index = nodes[from].inputs.iter().position(|&n| n == target).unwrap();
-    nodes[nodes[from].inputs[0]].inputs[index - 1]
-}
-
-fn idom(nodes: &mut Nodes, target: Nid) -> Nid {
-    match nodes[target].kind {
-        Kind::Start => VOID,
-        Kind::End => unreachable!(),
-        Kind::Region => {
-            let &[lcfg, rcfg] = nodes[target].inputs.as_slice() else { unreachable!() };
-            common_dom(lcfg, rcfg, nodes)
-        }
-        _ => nodes[target].inputs[0],
-    }
-}
-
-fn common_dom(mut a: Nid, mut b: Nid, nodes: &mut Nodes) -> Nid {
-    while a != b {
-        let [ldepth, rdepth] = [idepth(nodes, a), idepth(nodes, b)];
-        if ldepth >= rdepth {
-            a = idom(nodes, a);
-        }
-        if ldepth <= rdepth {
-            b = idom(nodes, b);
-        }
-    }
-    a
-}
 
 #[cfg(test)]
 mod tests {

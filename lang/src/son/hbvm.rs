@@ -1,5 +1,5 @@
 use {
-    super::{ItemCtx, Nid, Nodes, RallocBRef, Regalloc, ARG_START, NEVER, VOID},
+    super::{ItemCtx, Nid, Nodes, Pool, RallocBRef, Regalloc, ARG_START, NEVER, VOID},
     crate::{
         lexer::TokenKind,
         parser, reg,
@@ -475,23 +475,17 @@ impl ItemCtx {
         tys: &mut Types,
         files: &[parser::Ast],
         sig: Sig,
-        ralloc: &mut Regalloc,
+        pool: &mut Pool,
     ) {
-        self.emit_body(tys, files, sig, ralloc);
+        self.emit_body(tys, files, sig, pool);
         self.code.truncate(self.code.len() - instrs::jala(0, 0, 0).0);
         self.emit(instrs::tx());
     }
 
-    pub fn emit_body(
-        &mut self,
-        tys: &mut Types,
-        files: &[parser::Ast],
-        sig: Sig,
-        ralloc: &mut Regalloc,
-    ) {
+    pub fn emit_body(&mut self, tys: &mut Types, files: &[parser::Ast], sig: Sig, pool: &mut Pool) {
         self.nodes.check_final_integrity(tys, files);
         self.nodes.graphviz(tys, files);
-        self.nodes.gcm();
+        self.nodes.gcm(&mut pool.nid_stack);
         self.nodes.basic_blocks();
         self.nodes.graphviz(tys, files);
 
@@ -526,7 +520,7 @@ impl ItemCtx {
             self.nodes[MEM].outputs = mems;
         }
 
-        let saved = self.emit_body_code(sig, tys, files, ralloc);
+        let saved = self.emit_body_code(sig, tys, files, &mut pool.ralloc);
 
         if let Some(last_ret) = self.ret_relocs.last()
             && last_ret.offset as usize == self.code.len() - 5
