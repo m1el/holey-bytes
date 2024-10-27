@@ -2,9 +2,7 @@ use {
     self::strong_ref::StrongRef,
     crate::{
         ctx_map::CtxEntry,
-        debug,
-        ident::Ident,
-        instrs,
+        debug, instrs,
         lexer::{self, TokenKind},
         parser::{
             self,
@@ -14,8 +12,8 @@ use {
         reg, task,
         ty::{self, Arg, ArrayLen, Loc, Tuple},
         vc::{BitSet, Vc},
-        Comptime, FTask, Func, Global, HashMap, Offset, OffsetIter, PLoc, Reloc, Sig, StringRef,
-        SymKey, TypeParser, TypedReloc, Types,
+        Comptime, FTask, Func, Global, HashMap, Ident, Offset, OffsetIter, PLoc, Reloc, Sig,
+        StringRef, SymKey, TypeParser, TypedReloc, Types,
     },
     alloc::{borrow::ToOwned, string::String, vec::Vec},
     core::{
@@ -28,7 +26,6 @@ use {
     hashbrown::hash_map,
     hbbytecode::DisasmError,
     regalloc2::VReg,
-    std::panic,
 };
 
 const VOID: Nid = 0;
@@ -146,26 +143,25 @@ impl Nodes {
         Ok(())
     }
 
-    #[allow(dead_code)]
     fn graphviz(&self, tys: &Types, files: &[parser::Ast]) {
         let out = &mut String::new();
         _ = self.graphviz_low(tys, files, out);
         log::info!("{out}");
     }
 
-    fn graphviz_in_browser(&self, tys: &Types, files: &[parser::Ast]) {
+    fn graphviz_in_browser(&self, _tys: &Types, _files: &[parser::Ast]) {
         #[cfg(all(debug_assertions, feature = "std"))]
         {
-            //     let out = &mut String::new();
-            //     _ = self.graphviz_low(tys, files, out);
-            //     if !std::process::Command::new("brave")
-            //         .arg(format!("https://dreampuf.github.io/GraphvizOnline/#{out}"))
-            //         .status()
-            //         .unwrap()
-            //         .success()
-            //     {
-            //         log::error!("{out}");
-            //     }
+            let out = &mut String::new();
+            _ = self.graphviz_low(_tys, _files, out);
+            if !std::process::Command::new("brave")
+                .arg(format!("https://dreampuf.github.io/GraphvizOnline/#{out}"))
+                .status()
+                .unwrap()
+                .success()
+            {
+                log::error!("{out}");
+            }
         }
     }
 
@@ -175,18 +171,6 @@ impl Nodes {
         push_up(self);
         self.visited.clear(self.values.len());
         push_down(self, VOID);
-    }
-
-    fn remove_low(&mut self, id: Nid) -> Node {
-        if cfg!(debug_assertions) {
-            let value =
-                mem::replace(&mut self.values[id as usize], Err((self.free, debug::trace())))
-                    .unwrap();
-            self.free = id;
-            value
-        } else {
-            mem::replace(&mut self.values[id as usize], Err((Nid::MAX, debug::trace()))).unwrap()
-        }
     }
 
     fn clear(&mut self) {
@@ -257,25 +241,21 @@ impl Nodes {
         }
     }
 
-    fn new_node_low(&mut self, ty: ty::Id, kind: Kind, inps: impl Into<Vc>) -> (Nid, bool) {
+    fn new_node(&mut self, ty: ty::Id, kind: Kind, inps: impl Into<Vc>) -> Nid {
         let id = self.new_node_nop(ty, kind, inps);
         if let Some(opt) = self.peephole(id) {
             debug_assert_ne!(opt, id);
             self.lock(opt);
             self.remove(id);
             self.unlock(opt);
-            (opt, true)
+            opt
         } else {
-            (id, false)
+            id
         }
     }
 
-    fn new_node(&mut self, ty: ty::Id, kind: Kind, inps: impl Into<Vc>) -> Nid {
-        self.new_node_low(ty, kind, inps).0
-    }
-
     fn new_node_lit(&mut self, ty: ty::Id, kind: Kind, inps: impl Into<Vc>) -> Value {
-        Value::new(self.new_node_low(ty, kind, inps).0).ty(ty)
+        Value::new(self.new_node(ty, kind, inps)).ty(ty)
     }
 
     fn lock(&mut self, target: Nid) {
@@ -292,8 +272,6 @@ impl Nodes {
             return false;
         }
 
-        debug_assert!(!matches!(self[target].kind, Kind::Call { .. }), "{:?}", self[target]);
-
         for i in 0..self[target].inputs.len() {
             let inp = self[target].inputs[i];
             let index = self[inp].outputs.iter().position(|&p| p == target).unwrap();
@@ -302,7 +280,15 @@ impl Nodes {
         }
 
         self.remove_node_lookup(target);
-        self.remove_low(target);
+
+        if cfg!(debug_assertions) {
+            mem::replace(&mut self.values[target as usize], Err((Nid::MAX, debug::trace())))
+                .unwrap();
+        } else {
+            mem::replace(&mut self.values[target as usize], Err((self.free, debug::trace())))
+                .unwrap();
+            self.free = target;
+        }
 
         true
     }
@@ -664,7 +650,7 @@ impl Nodes {
         self.values.iter().enumerate().filter_map(|(i, s)| Some((i as _, s.as_ref().ok()?)))
     }
 
-    #[allow(clippy::format_in_format_args)]
+    #[expect(clippy::format_in_format_args)]
     fn basic_blocks_instr(&mut self, out: &mut String, node: Nid) -> core::fmt::Result {
         if self[node].kind != Kind::Loop && self[node].kind != Kind::Region {
             write!(out, "  {node:>2}-c{:>2}: ", self[node].ralloc_backref)?;
@@ -913,7 +899,6 @@ impl Nodes {
         }
     }
 
-    #[allow(dead_code)]
     fn eliminate_stack_temporaries(&mut self) {
         'o: for stack in self[MEM].outputs.clone() {
             if self.values[stack as usize].is_err() || self[stack].kind != Kind::Stck {
@@ -1385,7 +1370,8 @@ impl ItemCtx {
         let loops = self.nodes.new_node(ty::Id::VOID, Kind::Loops, [VOID]);
         debug_assert_eq!(loops, LOOPS);
         self.nodes.lock(loops);
-        self.scope.store = Variable::new(0, ty::Id::VOID, false, MEM, &mut self.nodes);
+        self.scope.store =
+            Variable::new(Ident::default(), ty::Id::VOID, false, MEM, &mut self.nodes);
     }
 
     fn finalize(&mut self, stack: &mut Vec<Nid>) {
@@ -2033,6 +2019,18 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_and_eval(&mut self, file: FileId, ret: ty::Id, ret_loc: &mut [u8]) -> u64 {
+        let mut rets =
+            self.ci.nodes[NEVER].inputs.iter().filter(|&&i| self.ci.nodes[i].kind == Kind::Return);
+        if let Some(&ret) = rets.next()
+            && rets.next().is_none()
+            && let Kind::CInt { value } = self.ci.nodes[self.ci.nodes[ret].inputs[1]].kind
+        {
+            if let len @ 1..=8 = ret_loc.len() {
+                ret_loc.copy_from_slice(&value.to_ne_bytes()[..len])
+            }
+            return value as _;
+        }
+
         if !self.complete_call_graph() {
             return 1;
         }
@@ -2048,7 +2046,6 @@ impl<'a> Codegen<'a> {
 
         let func = Func {
             file,
-            name: 0,
             relocs: mem::take(&mut self.ci.relocs),
             code: mem::take(&mut self.ci.code),
             ..Default::default()
@@ -2143,6 +2140,13 @@ impl<'a> Codegen<'a> {
         }
         self.make_func_reachable(0);
         self.complete_call_graph();
+    }
+
+    pub fn assemble_comptime(&mut self) -> Comptime {
+        self.ct.code.clear();
+        self.tys.reassemble(&mut self.ct.code);
+        self.ct.reset();
+        core::mem::take(self.ct)
     }
 
     pub fn assemble(&mut self, buf: &mut Vec<u8>) {
@@ -2450,11 +2454,7 @@ impl<'a> Codegen<'a> {
                         self.strip_var(&mut rhs);
                         let ty = self.binop_ty(pos, &mut lhs, &mut rhs, op);
                         let inps = [VOID, lhs.id, rhs.id];
-                        Some(self.ci.nodes.new_node_lit(
-                            ty::bin_ret(ty, op),
-                            Kind::BinOp { op },
-                            inps,
-                        ))
+                        Some(self.ci.nodes.new_node_lit(ty.bin_ret(op), Kind::BinOp { op }, inps))
                     }
                     ty::Kind::Struct(s) if op.is_homogenous() => {
                         self.ci.nodes.lock(lhs.id);
@@ -3598,7 +3598,7 @@ impl<'a> Codegen<'a> {
     #[must_use]
     #[track_caller]
     fn binop_ty(&mut self, pos: Pos, lhs: &mut Value, rhs: &mut Value, op: TokenKind) -> ty::Id {
-        if let Some(upcasted) = lhs.ty.try_upcast(rhs.ty, ty::TyCheck::BinOp) {
+        if let Some(upcasted) = lhs.ty.try_upcast(rhs.ty) {
             let to_correct = if lhs.ty != upcasted {
                 Some(lhs)
             } else if rhs.ty != upcasted {
@@ -3641,7 +3641,7 @@ impl<'a> Codegen<'a> {
         expected: ty::Id,
         hint: impl fmt::Display,
     ) -> bool {
-        if let Some(upcasted) = src.ty.try_upcast(expected, ty::TyCheck::Assign)
+        if let Some(upcasted) = src.ty.try_upcast(expected)
             && upcasted == expected
         {
             if src.ty != upcasted {
@@ -3999,7 +3999,7 @@ impl<'a> Function<'a> {
 
                 let (ret, mut parama) = self.tys.parama(self.sig.ret);
                 let mut typs = self.sig.args.args();
-                #[allow(clippy::unnecessary_to_owned)]
+                #[expect(clippy::unnecessary_to_owned)]
                 let mut args = self.nodes[VOID].outputs[ARG_START..].to_owned().into_iter();
                 while let Some(ty) = typs.next_value(self.tys) {
                     let arg = args.next().unwrap();

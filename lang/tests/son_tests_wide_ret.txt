@@ -6,10 +6,10 @@ main:
     CP r3, r4
     JAL r31, r0, :maina
     ST r1, r254, 0a, 16h
-    LD r9, r254, 12a, 1h
-    LD r8, r254, 3a, 1h
-    SUB8 r12, r8, r9
-    ANDI r1, r12, 255d
+    LD r8, r254, 12a, 1h
+    LD r9, r254, 3a, 1h
+    SUB8 r11, r9, r8
+    ANDI r1, r11, 255d
     LD r31, r254, 16a, 8h
     ADDI64 r254, r254, 24d
     JALA r0, r31, 0a

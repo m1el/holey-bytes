@@ -1,6 +1,5 @@
 use {
     crate::{
-        codegen,
         parser::{self, Ast, Ctx, FileKind},
         son,
     },
@@ -39,6 +38,7 @@ pub struct Options {
     pub fmt: bool,
     pub fmt_stdout: bool,
     pub dump_asm: bool,
+    #[deprecated = "no longer has any effect"]
     pub optimize: bool,
     pub extra_threads: usize,
 }
@@ -53,7 +53,6 @@ impl Options {
 
         Ok(Options {
             fmt: args.contains(&"--fmt"),
-            optimize: args.contains(&"--optimize"),
             fmt_stdout: args.contains(&"--fmt-stdout"),
             dump_asm: args.contains(&"--dump-asm"),
             extra_threads: args
@@ -67,6 +66,7 @@ impl Options {
                 .transpose()?
                 .map_or(1, NonZeroUsize::get)
                 - 1,
+            ..Default::default()
         })
     }
 }
@@ -81,11 +81,6 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
         Ok(())
     }
 
-    if !options.optimize && !parsed.errors.is_empty() {
-        log::error!("{}", parsed.errors);
-        return Err(std::io::Error::other("parsing failed"));
-    }
-
     if options.fmt {
         for parsed in parsed.ast {
             format_ast(parsed)?;
@@ -93,7 +88,7 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
     } else if options.fmt_stdout {
         let ast = parsed.ast.into_iter().next().unwrap();
         write!(out, "{ast}").unwrap();
-    } else if options.optimize {
+    } else {
         let mut ctx = crate::son::CodegenCtx::default();
         *ctx.parser.errors.get_mut() = parsed.errors;
         let mut codegen = son::Codegen::new(&parsed.ast, &mut ctx);
@@ -106,19 +101,6 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
             return Err(std::io::Error::other("compilation faoled"));
         }
 
-        if options.dump_asm {
-            codegen
-                .disasm(unsafe { std::mem::transmute::<&mut Vec<u8>, &mut String>(out) })
-                .map_err(|e| io::Error::other(e.to_string()))?;
-        } else {
-            codegen.assemble(out);
-        }
-    } else {
-        let mut codegen = codegen::Codegen::default();
-        codegen.files = parsed.ast;
-        codegen.push_embeds(parsed.embeds);
-
-        codegen.generate(0);
         if options.dump_asm {
             codegen
                 .disasm(unsafe { std::mem::transmute::<&mut Vec<u8>, &mut String>(out) })

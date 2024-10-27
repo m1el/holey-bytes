@@ -4,7 +4,10 @@
 
 use {
     alloc::{string::String, vec::Vec},
-    hblang::{codegen::Codegen, parser::FileId},
+    hblang::{
+        parser::FileId,
+        son::{Codegen, CodegenCtx},
+    },
 };
 
 extern crate alloc;
@@ -74,8 +77,8 @@ unsafe fn compile_and_run(mut fuel: usize) {
     };
 
     let mut ct = {
-        let mut c = Codegen::default();
-        c.files = files;
+        let mut ctx = CodegenCtx::default();
+        let mut c = Codegen::new(&files, &mut ctx);
         c.generate(root as FileId);
         c.assemble_comptime()
     };

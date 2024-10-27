@@ -2,26 +2,26 @@ main:
     ADDI64 r254, r254, -10240d
     LI8 r6, 64b
     LI64 r7, 1024d
-    LI64 r9, 1d
-    LI64 r8, 0d
+    LI64 r8, 1d
+    LI64 r9, 0d
     ADDI64 r5, r254, 0d
- 4: JLTU r8, r7, :0
-    LI64 r6, 10d
-    CP r7, r9
- 3: JLTU r7, r6, :1
-    LD r12, r254, 2048a, 1h
-    ANDI r1, r12, 255d
+ 4: JLTU r9, r7, :0
+    LI64 r4, 10d
+    CP r6, r8
+ 3: JLTU r6, r4, :1
+    LD r10, r254, 2048a, 1h
+    ANDI r1, r10, 255d
     JMP :2
- 1: ADD64 r2, r7, r9
-    MULI64 r1, r7, 1024d
-    ADD64 r7, r5, r1
-    BMC r5, r7, 1024h
-    CP r7, r2
+ 1: ADD64 r12, r6, r8
+    MULI64 r1, r6, 1024d
+    ADD64 r6, r5, r1
+    BMC r5, r6, 1024h
+    CP r6, r12
     JMP :3
- 0: ADD64 r2, r8, r9
-    ADD64 r8, r5, r8
-    ST r6, r8, 0a, 1h
-    CP r8, r2
+ 0: ADD64 r1, r9, r8
+    ADD64 r10, r5, r9
+    ST r6, r10, 0a, 1h
+    CP r9, r1
     JMP :4
  2: ADDI64 r254, r254, 10240d
     JALA r0, r31, 0a

@@ -104,7 +104,7 @@ pub struct ArenaAllocator<const SIZE: usize> {
 }
 
 impl<const SIZE: usize> ArenaAllocator<SIZE> {
-    #[allow(clippy::new_without_default)]
+    #[expect(clippy::new_without_default)]
     pub const fn new() -> Self {
         ArenaAllocator {
             arena: UnsafeCell::new([0; SIZE]),
@@ -112,7 +112,7 @@ impl<const SIZE: usize> ArenaAllocator<SIZE> {
         }
     }
 
-    #[allow(clippy::missing_safety_doc)]
+    #[expect(clippy::missing_safety_doc)]
     pub unsafe fn reset(&self) {
         (*self.head.get()) = self.arena.get().cast::<u8>().add(SIZE);
     }

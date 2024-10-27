@@ -32,14 +32,14 @@ structs:
     ST r7, r254, 16a, 8h
     LD r11, r254, 0a, 8h
     LD r1, r254, 8a, 8h
-    ADD64 r5, r1, r11
-    SUB64 r5, r5, r7
+    ADD64 r3, r1, r11
+    SUB64 r5, r3, r7
     ST r5, r254, 24a, 8h
     ST r4, r254, 32a, 8h
     LD r9, r254, 40a, 8h
     LD r11, r254, 24a, 8h
-    ADD64 r2, r11, r9
-    SUB64 r1, r2, r4
+    ADD64 r1, r11, r9
+    SUB64 r1, r1, r4
     ADDI64 r254, r254, 48d
     JALA r0, r31, 0a
 code size: 373

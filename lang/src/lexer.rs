@@ -178,7 +178,7 @@ impl core::fmt::Debug for TokenKind {
 }
 
 impl TokenKind {
-    #[allow(clippy::type_complexity)]
+    #[expect(clippy::type_complexity)]
     pub fn cond_op(self, signed: bool) -> Option<(fn(u8, u8, i16) -> EncodedInstr, bool)> {
         use crate::instrs;
         Some((
@@ -225,7 +225,6 @@ impl TokenKind {
         Some(ops[size.ilog2() as usize])
     }
 
-    #[allow(clippy::type_complexity)]
     pub fn imm_binop(self, signed: bool, size: u32) -> Option<fn(u8, u8, u64) -> EncodedInstr> {
         use crate::instrs::*;
         macro_rules! def_op {

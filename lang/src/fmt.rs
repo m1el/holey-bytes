@@ -1,6 +1,5 @@
 use {
     crate::{
-        ident,
         lexer::{self, Lexer, TokenKind},
         parser::{self, CommentOr, CtorField, Expr, Poser, Radix, StructField},
     },
@@ -256,7 +255,7 @@ impl<'a> Formatter<'a> {
                     fields,
                     |s: &mut Self, CtorField { name, value, .. }: &_, f| {
                         f.write_str(name)?;
-                        if !matches!(value, &Expr::Ident { id, .. } if *name == &self.source[ident::range(id)]) {
+                        if !matches!(value, &Expr::Ident { id, .. } if *name == &self.source[id.range()]) {
                             f.write_str(": ")?;
                             s.fmt(value, f)?;
                         }

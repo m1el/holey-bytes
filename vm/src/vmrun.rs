@@ -17,9 +17,8 @@ use {
 
 macro_rules! handler {
     ($self:expr, |$ty:ident ($($ident:pat),* $(,)?)| $expr:expr) => {{
-        #[allow(unused_unsafe)]
-        let $ty($($ident),*) = unsafe { $self.decode::<$ty>() };
-        #[allow(clippy::no_effect)] let e = $expr;
+        let $ty($($ident),*) = $self.decode::<$ty>();
+        let e = $expr;
         $self.bump_pc::<$ty>();
         e
     }};
@@ -475,22 +474,24 @@ where
     /// Fused division-remainder
     #[inline(always)]
     unsafe fn dir<T: ValueVariant + CheckedDivRem>(&mut self) {
-        handler!(self, |OpsRRRR(td, tr, a0, a1)| {
-            let a0 = self.read_reg(a0).cast::<T>();
-            let a1 = self.read_reg(a1).cast::<T>();
+        unsafe {
+            handler!(self, |OpsRRRR(td, tr, a0, a1)| {
+                let a0 = self.read_reg(a0).cast::<T>();
+                let a1 = self.read_reg(a1).cast::<T>();
 
-            if let Some(div) = a0.checked_div(a1) {
-                self.write_reg(td, div);
-            } else {
-                self.write_reg(td, -1_i64);
-            }
+                if let Some(div) = a0.checked_div(a1) {
+                    self.write_reg(td, div);
+                } else {
+                    self.write_reg(td, -1_i64);
+                }
 
-            if let Some(rem) = a0.checked_rem(a1) {
-                self.write_reg(tr, rem);
-            } else {
-                self.write_reg(tr, a0);
-            }
-        });
+                if let Some(rem) = a0.checked_rem(a1) {
+                    self.write_reg(tr, rem);
+                } else {
+                    self.write_reg(tr, a0);
+                }
+            });
+        }
     }
 
     /// Fused multiply-add
@@ -499,22 +500,26 @@ where
     where
         T: ValueVariant + core::ops::Mul<Output = T> + core::ops::Add<Output = T>,
     {
-        handler!(self, |OpsRRRR(tg, a0, a1, a2)| {
-            let a0 = self.read_reg(a0).cast::<T>();
-            let a1 = self.read_reg(a1).cast::<T>();
-            let a2 = self.read_reg(a2).cast::<T>();
-            self.write_reg(tg, a0 * a1 + a2)
-        });
+        unsafe {
+            handler!(self, |OpsRRRR(tg, a0, a1, a2)| {
+                let a0 = self.read_reg(a0).cast::<T>();
+                let a1 = self.read_reg(a1).cast::<T>();
+                let a2 = self.read_reg(a2).cast::<T>();
+                self.write_reg(tg, a0 * a1 + a2)
+            });
+        }
     }
 
     /// Float comparsion
     #[inline(always)]
     unsafe fn fcmp<T: PartialOrd + ValueVariant>(&mut self, nan: Ordering) {
-        handler!(self, |OpsRRR(tg, a0, a1)| {
-            let a0 = self.read_reg(a0).cast::<T>();
-            let a1 = self.read_reg(a1).cast::<T>();
-            self.write_reg(tg, (a0.partial_cmp(&a1).unwrap_or(nan) as i8 + 1) as u8)
-        });
+        unsafe {
+            handler!(self, |OpsRRR(tg, a0, a1)| {
+                let a0 = self.read_reg(a0).cast::<T>();
+                let a1 = self.read_reg(a1).cast::<T>();
+                self.write_reg(tg, (a0.partial_cmp(&a1).unwrap_or(nan) as i8 + 1) as u8)
+            });
+        }
     }
 
     /// Calculate pc-relative address

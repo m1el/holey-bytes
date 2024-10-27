@@ -25,15 +25,15 @@ main:
     JEQ r2, r11, :2
     LI64 r1, 64d
     JMP :1
- 2: LD r10, r254, 0a, 1h
+ 2: LD r11, r254, 0a, 1h
     LD r9, r254, 4a, 4h
-    LD r11, r254, 8a, 4h
+    LD r12, r254, 8a, 4h
     LD r5, r254, 1a, 1h
-    ANDI r4, r10, 255d
-    ADD32 r6, r11, r9
+    ANDI r4, r11, 255d
+    ADD32 r3, r12, r9
     LD r11, r254, 2a, 1h
     ANDI r10, r5, 255d
-    ADD32 r9, r6, r4
+    ADD32 r9, r3, r4
     LD r5, r254, 3a, 1h
     ANDI r4, r11, 255d
     ADD32 r3, r9, r10

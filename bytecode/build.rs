@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn gen_instrs(generated: &mut String) -> Result<(), Box<dyn std::error::Error>> {
-    writeln!(generated, "#![allow(dead_code)] #![allow(clippy::upper_case_acronyms)]")?;
+    writeln!(generated, "#![expect(dead_code)]")?;
     writeln!(generated, "use crate::*;")?;
 
     '_opcode_structs: {

@@ -15,19 +15,19 @@ main:
     ADDI64 r2, r254, 32d
     JAL r31, r0, :foo
     ST r1, r254, 32a, 16h
-    ADDI64 r8, r254, 16d
+    ADDI64 r7, r254, 16d
     JAL r31, r0, :foo
     ST r1, r254, 16a, 16h
     ADDI64 r2, r254, 0d
     JAL r31, r0, :foo
     ST r1, r254, 0a, 16h
-    LD r2, r254, 24a, 4h
+    LD r1, r254, 24a, 4h
     LD r7, r254, 12a, 4h
-    ANDI r5, r2, 4294967295d
+    ANDI r4, r1, 4294967295d
     LD r1, r254, 32a, 8h
     ANDI r11, r7, 4294967295d
-    ADD64 r10, r1, r5
-    ADD64 r2, r10, r11
+    ADD64 r8, r1, r4
+    ADD64 r2, r8, r11
     LI64 r3, 7d
     SUB64 r1, r3, r2
     LD r31, r254, 48a, 8h

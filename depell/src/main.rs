@@ -665,7 +665,6 @@ mod db {
         ($vis:vis struct $name:ident {
             $($qname:ident: $code:expr,)*
         }) => {
-            #[allow(dead_code)]
             $vis struct $name<'a> {
                 $($vis $qname: rusqlite::Statement<'a>,)*
             }

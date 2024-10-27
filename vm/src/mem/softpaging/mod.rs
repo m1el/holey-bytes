@@ -99,7 +99,6 @@ impl<PfH: HandlePageFault, const OUT_PROG_EXEC: bool> SoftPagedMem<'_, PfH, OUT_
     /// to a specified function.
     ///
     /// If page is not found, execute page fault trap handler.
-    #[allow(clippy::too_many_arguments)] // Silence peasant
     fn memory_access(
         &mut self,
         reason: MemoryAccessReason,

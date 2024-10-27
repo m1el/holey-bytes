@@ -22,18 +22,17 @@
     ptr_sub_ptr,
     slice_from_ptr_range,
     is_sorted,
-    iter_next_chunk
+    iter_next_chunk,
+    pointer_is_aligned_to
 )]
-#![feature(pointer_is_aligned_to)]
 #![warn(clippy::dbg_macro)]
-#![allow(stable_features, internal_features)]
+#![expect(stable_features, internal_features)]
 #![no_std]
 
 #[cfg(feature = "std")]
 pub use fs::*;
 use {
     self::{
-        ident::Ident,
         lexer::TokenKind,
         parser::{idfl, CommentOr, Expr, ExprRef, FileId, Pos},
         ty::ArrayLen,
@@ -63,22 +62,17 @@ macro_rules! run_tests {
     )*};
 }
 
-pub mod codegen;
 pub mod fmt;
 #[cfg(any(feature = "std", test))]
 pub mod fs;
+pub mod fuzz;
+pub mod lexer;
 pub mod parser;
-#[cfg(feature = "opts")]
 pub mod son;
 
-pub mod lexer;
-#[cfg(feature = "opts")]
 mod vc;
 
-pub mod fuzz;
-
 mod debug {
-
     pub fn panicking() -> bool {
         #[cfg(feature = "std")]
         {
@@ -185,12 +179,10 @@ mod ctx_map {
                 .map(|(k, _)| &k.value)
         }
 
-        #[cfg_attr(not(feature = "opts"), expect(dead_code))]
         pub fn clear(&mut self) {
             self.inner.clear();
         }
 
-        #[cfg_attr(not(feature = "opts"), expect(dead_code))]
         pub fn remove(&mut self, value: &T, ctx: &T::Ctx) -> Option<T> {
             let (entry, _) = self.entry(value.key(ctx), ctx);
             match entry {
@@ -241,46 +233,55 @@ mod task {
         unpack(offset).is_ok()
     }
 
-    #[cfg_attr(not(feature = "opts"), expect(dead_code))]
     pub fn id(index: usize) -> Offset {
         1 << 31 | index as u32
     }
 }
 
-mod ident {
-    pub type Ident = u32;
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Debug)]
+pub struct Ident(u32);
 
+impl Ident {
+    pub const INVALID: Self = Self(u32::MAX);
     const LEN_BITS: u32 = 6;
 
-    pub fn len(ident: u32) -> u32 {
-        ident & ((1 << LEN_BITS) - 1)
+    pub fn len(self) -> u32 {
+        self.0 & ((1 << Self::LEN_BITS) - 1)
     }
 
-    pub fn is_null(ident: u32) -> bool {
-        (ident >> LEN_BITS) == 0
+    pub fn is_empty(self) -> bool {
+        self.len() == 0
     }
 
-    pub fn pos(ident: u32) -> u32 {
-        (ident >> LEN_BITS).saturating_sub(1)
+    pub fn is_null(self) -> bool {
+        (self.0 >> Self::LEN_BITS) == 0
     }
 
-    pub fn new(pos: u32, len: u32) -> Option<u32> {
-        (len < (1 << LEN_BITS)).then_some(((pos + 1) << LEN_BITS) | len)
+    pub fn pos(self) -> u32 {
+        (self.0 >> Self::LEN_BITS).saturating_sub(1)
     }
 
-    pub fn range(ident: u32) -> core::ops::Range<usize> {
-        let (len, pos) = (len(ident) as usize, pos(ident) as usize);
+    pub fn new(pos: u32, len: u32) -> Option<Self> {
+        (len < (1 << Self::LEN_BITS)).then_some(((pos + 1) << Self::LEN_BITS) | len).map(Self)
+    }
+
+    pub fn range(self) -> core::ops::Range<usize> {
+        let (len, pos) = (self.len() as usize, self.pos() as usize);
         pos..pos + len
+    }
+
+    fn builtin(builtin: u32) -> Ident {
+        debug_assert!(Self(builtin).is_null());
+        Self(builtin)
     }
 }
 
 mod ty {
     use {
         crate::{
-            ident,
             lexer::TokenKind,
-            parser::{self, Pos},
-            Size, Types,
+            parser::{self, FileId, Pos},
+            Ident, Size, Types,
         },
         core::{num::NonZeroU32, ops::Range},
     };
@@ -385,7 +386,9 @@ mod ty {
                     crate::SymKey::Decl(gb.file, gb.name)
                 }
                 Kind::Slice(s) => crate::SymKey::Array(&ctx.slices[s as usize]),
-                Kind::Module(_) | Kind::Builtin(_) => crate::SymKey::Decl(u32::MAX, u32::MAX),
+                Kind::Module(_) | Kind::Builtin(_) => {
+                    crate::SymKey::Decl(FileId::MAX, Ident::INVALID)
+                }
             }
         }
     }
@@ -399,16 +402,24 @@ mod ty {
     impl Id {
         pub const DEFAULT_INT: Self = Self::UINT;
 
+        pub fn bin_ret(self, op: TokenKind) -> Id {
+            use TokenKind as T;
+            match op {
+                T::Lt | T::Gt | T::Le | T::Ge | T::Ne | T::Eq => BOOL.into(),
+                _ => self,
+            }
+        }
+
         pub fn is_signed(self) -> bool {
-            (I8..=INT).contains(&self.repr()) || self.is_never()
+            matches!(self.repr(), I8..=INT) || self.is_never()
         }
 
         pub fn is_unsigned(self) -> bool {
-            (U8..=UINT).contains(&self.repr()) || self.is_never()
+            matches!(self.repr(), U8..=UINT) || self.is_never()
         }
 
         pub fn is_integer(self) -> bool {
-            (U8..=INT).contains(&self.repr()) || self.is_never()
+            matches!(self.repr(), U8..=INT) || self.is_never()
         }
 
         pub fn is_never(self) -> bool {
@@ -426,7 +437,7 @@ mod ty {
             matches!(self.expand(), Kind::Ptr(_)) || self.is_never()
         }
 
-        pub fn try_upcast(self, ob: Self, kind: TyCheck) -> Option<Self> {
+        pub fn try_upcast(self, ob: Self) -> Option<Self> {
             let (oa, ob) = (Self(self.0.min(ob.0)), Self(self.0.max(ob.0)));
             let (a, b) = (oa.strip_pointer(), ob.strip_pointer());
             Some(match () {
@@ -437,7 +448,7 @@ mod ty {
                 _ if a.is_signed() && b.is_signed() || a.is_unsigned() && b.is_unsigned() => ob,
                 _ if a.is_unsigned() && b.is_signed() && a.repr() - U8 < b.repr() - I8 => ob,
                 _ if a.is_unsigned() && b.is_signed() && a.repr() - U8 > b.repr() - I8 => oa,
-                _ if oa.is_integer() && ob.is_pointer() && kind == TyCheck::BinOp => ob,
+                _ if oa.is_integer() && ob.is_pointer() => ob,
                 _ => return None,
             })
         }
@@ -498,13 +509,6 @@ mod ty {
         Stack,
     }
 
-    #[derive(PartialEq, Eq, Default, Debug, Clone, Copy)]
-    pub enum TyCheck {
-        BinOp,
-        #[default]
-        Assign,
-    }
-
     impl From<u64> for Id {
         fn from(id: u64) -> Self {
             Self(unsafe { NonZeroU32::new_unchecked(id as _) })
@@ -544,7 +548,7 @@ mod ty {
                 };)*
             }
 
-            #[allow(dead_code)]
+            #[expect(dead_code)]
             impl Id {
                 $(pub const $name: Self = Kind::Builtin($name).compress();)*
             }
@@ -673,7 +677,7 @@ mod ty {
                 }
                 TK::Struct(idx) => {
                     let record = &self.tys.ins.structs[idx as usize];
-                    if ident::is_null(record.name) {
+                    if record.name.is_null() {
                         f.write_str("[")?;
                         idx.fmt(f)?;
                         f.write_str("]{")?;
@@ -714,15 +718,6 @@ mod ty {
             }
         }
     }
-
-    #[cfg_attr(not(feature = "opts"), expect(dead_code))]
-    pub fn bin_ret(ty: Id, op: TokenKind) -> Id {
-        use TokenKind as T;
-        match op {
-            T::Lt | T::Gt | T::Le | T::Ge | T::Ne | T::Eq => BOOL.into(),
-            _ => ty,
-        }
-    }
 }
 
 type EncodedInstr = (usize, [u8; instrs::MAX_SIZE]);
@@ -752,7 +747,6 @@ struct Func {
     file: FileId,
     name: Ident,
     base: Option<ty::Func>,
-    computed: Option<ty::Id>,
     expr: ExprRef,
     sig: Option<Sig>,
     offset: Offset,
@@ -765,9 +759,8 @@ impl Default for Func {
     fn default() -> Self {
         Self {
             file: u32::MAX,
-            name: 0,
+            name: Default::default(),
             base: None,
-            computed: None,
             expr: Default::default(),
             sig: None,
             offset: u32::MAX,
@@ -799,7 +792,7 @@ impl Default for Global {
             offset: u32::MAX,
             data: Default::default(),
             file: u32::MAX,
-            name: 0,
+            name: Default::default(),
         }
     }
 }
@@ -884,7 +877,7 @@ impl ParamAlloc {
 }
 
 #[repr(packed)]
-#[allow(dead_code)]
+#[expect(dead_code)]
 struct AbleOsExecutableHeader {
     magic_number: [u8; 3],
     executable_version: u32,
@@ -901,7 +894,7 @@ impl ctx_map::CtxEntry for Ident {
     type Key<'a> = &'a str;
 
     fn key<'a>(&self, ctx: &'a Self::Ctx) -> Self::Key<'a> {
-        unsafe { ctx.get_unchecked(ident::range(*self)) }
+        unsafe { ctx.get_unchecked(self.range()) }
     }
 }
 
@@ -917,7 +910,7 @@ impl IdentInterner {
         match entry {
             hash_map::RawEntryMut::Occupied(o) => o.get_key_value().0.value,
             hash_map::RawEntryMut::Vacant(v) => {
-                let id = ident::new(self.strings.len() as _, ident.len() as _).unwrap();
+                let id = Ident::new(self.strings.len() as _, ident.len() as _).unwrap();
                 self.strings.push_str(ident);
                 v.insert(ctx_map::Key { hash, value: id }, ());
                 id
@@ -926,7 +919,7 @@ impl IdentInterner {
     }
 
     fn ident_str(&self, ident: Ident) -> &str {
-        &self.strings[ident::range(ident)]
+        &self.strings[ident.range()]
     }
 
     fn project(&self, ident: &str) -> Option<Ident> {
@@ -1052,9 +1045,9 @@ trait TypeParser {
                     ty::Kind::Struct(s) => &mut tys.ins.structs[s as usize].name,
                     ty::Kind::Func(s) => &mut tys.ins.funcs[s as usize].name,
                     ty::Kind::Global(s) => &mut tys.ins.globals[s as usize].name,
-                    _ => &mut 0,
+                    _ => &mut Ident::default(),
                 };
-                if *nm == 0 {
+                if nm.is_null() {
                     *nm = name;
                 }
                 tys.syms.insert(SymKey::Decl(file, name), ty, &tys.ins);
@@ -1088,7 +1081,7 @@ trait TypeParser {
                 let base = self.parse_ty(file, val, None, files);
                 self.tys().make_ptr(base)
             }
-            Expr::Ident { id, .. } if ident::is_null(id) => id.into(),
+            Expr::Ident { id, .. } if id.is_null() => id.len().into(),
             Expr::Ident { id, pos, .. } => self.find_type(pos, file, file, Ok(id), files),
             Expr::Field { target, pos, name }
                 if let ty::Kind::Module(inside) =
@@ -1136,7 +1129,7 @@ trait TypeParser {
                 tys.ins.structs.push(Struct {
                     file,
                     pos,
-                    name: name.unwrap_or(0),
+                    name: name.unwrap_or_default(),
                     field_start: tys.ins.fields.len() as _,
                     explicit_alignment: packed.then_some(1),
                     ..Default::default()
@@ -1466,7 +1459,6 @@ impl Types {
         }
     }
 
-    #[cfg_attr(not(feature = "opts"), expect(dead_code))]
     fn find_struct_field(&self, s: ty::Struct, name: &str) -> Option<usize> {
         let name = self.names.project(name)?;
         self.struct_fields(s).iter().position(|f| f.name == name)
@@ -1536,7 +1528,6 @@ impl OffsetIter {
     }
 }
 
-#[cfg(any(feature = "opts", feature = "std"))]
 type HashMap<K, V> = hashbrown::HashMap<K, V, FnvBuildHasher>;
 type FnvBuildHasher = core::hash::BuildHasherDefault<FnvHasher>;
 

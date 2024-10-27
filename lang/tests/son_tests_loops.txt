@@ -5,8 +5,9 @@ fib:
     CP r10, r4
  2: JNE r2, r5, :0
     JMP :1
- 0: ADD64 r3, r10, r1
+ 0: ADD64 r1, r10, r1
     SUB64 r2, r2, r4
+    CP r3, r1
     CP r1, r10
     CP r10, r3
     JMP :2
@@ -19,6 +20,6 @@ main:
     LD r31, r254, 0a, 8h
     ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
-code size: 150
+code size: 153
 ret: 55
 status: Ok(())

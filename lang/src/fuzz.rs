@@ -4,8 +4,8 @@ use {
         parser,
         son::{Codegen, CodegenCtx},
     },
+    alloc::string::String,
     core::{fmt::Write, hash::BuildHasher, ops::Range},
-    std::string::String,
 };
 
 #[derive(Default)]

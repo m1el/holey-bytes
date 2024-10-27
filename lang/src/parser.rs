@@ -1,8 +1,8 @@
 use {
     crate::{
         fmt::Formatter,
-        ident::{self, Ident},
         lexer::{self, Lexer, Token, TokenKind},
+        Ident,
     },
     alloc::{boxed::Box, string::String, vec::Vec},
     core::{
@@ -126,11 +126,8 @@ impl<'a, 'b> Parser<'a, 'b> {
             let mut idents = core::mem::take(&mut self.ctx.idents);
             for id in idents.drain(..) {
                 self.report(
-                    ident::pos(id.ident),
-                    format_args!(
-                        "undeclared identifier: {}",
-                        self.lexer.slice(ident::range(id.ident))
-                    ),
+                    id.ident.pos(),
+                    format_args!("undeclared identifier: {}", self.lexer.slice(id.ident.range())),
                 );
             }
             self.ctx.idents = idents;
@@ -217,7 +214,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 pos,
                 format_args!(
                     "out of order declaration not allowed: {}",
-                    self.lexer.slice(ident::range(id))
+                    self.lexer.slice(id.range())
                 ),
             );
         }
@@ -229,7 +226,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         if core::mem::replace(&mut self.ctx.idents[index].declared, true) {
             self.report(
                 pos,
-                format_args!("redeclaration of identifier: {}", self.lexer.slice(ident::range(id))),
+                format_args!("redeclaration of identifier: {}", self.lexer.slice(id.range())),
             );
             return;
         }
@@ -242,7 +239,7 @@ impl<'a, 'b> Parser<'a, 'b> {
         let name = self.lexer.slice(token.range());
 
         if let Some(builtin) = crate::ty::from_str(name) {
-            return (builtin, false);
+            return (Ident::builtin(builtin), false);
         }
 
         let (i, id, bl) = match self
@@ -250,14 +247,14 @@ impl<'a, 'b> Parser<'a, 'b> {
             .idents
             .iter_mut()
             .enumerate()
-            .rfind(|(_, elem)| self.lexer.slice(ident::range(elem.ident)) == name)
+            .rfind(|(_, elem)| self.lexer.slice(elem.ident.range()) == name)
         {
             Some((i, elem)) => (i, elem, false),
             None => {
-                let ident = match ident::new(token.start, name.len() as _) {
+                let ident = match Ident::new(token.start, name.len() as _) {
                     None => {
                         self.report(token.start, "identifier can at most have 64 characters");
-                        ident::new(token.start, 64).unwrap()
+                        Ident::new(token.start, 63).unwrap()
                     }
                     Some(id) => id,
                 };
@@ -725,7 +722,7 @@ macro_rules! generate_expr {
             }
 
             pub fn pos(&self) -> Pos {
-                #[allow(unused_variables)]
+                #[expect(unused_variables)]
                 match self {
                     $(Self::$variant { $($field),* } => generate_expr!(@first $(($field),)*).posi(),)*
                 }
@@ -914,7 +911,7 @@ generate_expr! {
 impl Expr<'_> {
     pub fn declares(&self, iden: Result<Ident, &str>, source: &str) -> Option<Ident> {
         match *self {
-            Self::Ident { id, .. } if iden == Ok(id) || iden == Err(&source[ident::range(id)]) => {
+            Self::Ident { id, .. } if iden == Ok(id) || iden == Err(&source[id.range()]) => {
                 Some(id)
             }
             Self::Ctor { fields, .. } => fields.iter().find_map(|f| f.value.declares(iden, source)),
@@ -1192,7 +1189,7 @@ impl Ast {
     }
 
     pub fn ident_str(&self, ident: Ident) -> &str {
-        &self.file[ident::range(ident)]
+        &self.file[ident.range()]
     }
 }
 
