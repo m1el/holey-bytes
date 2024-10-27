@@ -2151,15 +2151,23 @@ impl<'a> Codegen<'a> {
                     );
                 }
 
-                if self.tys.size_of(val.ty) <= self.tys.size_of(ty) {
-                    val.ty = ty;
-                    return Some(val);
+                match self.tys.size_of(val.ty).cmp(&self.tys.size_of(ty)) {
+                    core::cmp::Ordering::Less => {
+                        self.extend(&mut val, ty);
+                        Some(val)
+                    }
+                    core::cmp::Ordering::Equal => Some(val.ty(ty)),
+                    core::cmp::Ordering::Greater => {
+                        let value = (1i64 << (self.tys.size_of(ty) * 8)) - 1;
+                        let mask = self.ci.nodes.new_node_nop(val.ty, Kind::CInt { value }, [VOID]);
+                        let inps = [VOID, val.id, mask];
+                        Some(self.ci.nodes.new_node_lit(
+                            ty,
+                            Kind::BinOp { op: TokenKind::Band },
+                            inps,
+                        ))
+                    }
                 }
-
-                let value = (1i64 << (self.tys.size_of(ty) * 8)) - 1;
-                let mask = self.ci.nodes.new_node_nop(val.ty, Kind::CInt { value }, [VOID]);
-                let inps = [VOID, val.id, mask];
-                Some(self.ci.nodes.new_node_lit(ty, Kind::BinOp { op: TokenKind::Band }, inps))
             }
             Expr::Directive { name: "as", args: [ty, expr], .. } => {
                 let ty = self.ty(ty);
@@ -3156,9 +3164,7 @@ impl<'a> Codegen<'a> {
             };
 
             if let Some(oper) = to_correct {
-                self.strip_ptr(oper);
-                oper.ty = upcasted;
-                oper.id = self.ci.nodes.new_node(upcasted, Kind::Extend, [VOID, oper.id]);
+                self.extend(oper, upcasted);
                 if matches!(op, TokenKind::Add | TokenKind::Sub)
                     && let Some(elem) = self.tys.base_of(upcasted)
                 {
@@ -3205,9 +3211,7 @@ impl<'a> Codegen<'a> {
                     self.ty_display(src.ty),
                     self.ty_display(upcasted)
                 );
-                self.strip_ptr(src);
-                src.ty = upcasted;
-                src.id = self.ci.nodes.new_node(upcasted, Kind::Extend, [VOID, src.id]);
+                self.extend(src, upcasted);
             }
             true
         } else {
@@ -3216,6 +3220,12 @@ impl<'a> Codegen<'a> {
             self.report(pos, fa!("expected {hint} to be of type {expected}, got {ty}"));
             false
         }
+    }
+
+    fn extend(&mut self, value: &mut Value, to: ty::Id) {
+        self.strip_ptr(value);
+        value.ty = to;
+        value.id = self.ci.nodes.new_node(to, Kind::Extend, [VOID, value.id]);
     }
 
     #[track_caller]

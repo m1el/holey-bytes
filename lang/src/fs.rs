@@ -4,7 +4,7 @@ use {
         son,
     },
     alloc::{string::String, vec::Vec},
-    core::{fmt::Write, num::NonZeroUsize},
+    core::{fmt::Write, num::NonZeroUsize, ops::Deref},
     hashbrown::hash_map,
     std::{
         collections::VecDeque,
@@ -77,7 +77,9 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
     fn format_ast(ast: parser::Ast) -> std::io::Result<()> {
         let mut output = String::new();
         write!(output, "{ast}").unwrap();
-        std::fs::write(&*ast.path, output)?;
+        if ast.file.deref() != output.as_str() {
+            std::fs::write(&*ast.path, output)?;
+        }
         Ok(())
     }
 
