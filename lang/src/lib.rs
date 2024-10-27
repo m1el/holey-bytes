@@ -75,6 +75,8 @@ pub mod lexer;
 #[cfg(feature = "opts")]
 mod vc;
 
+pub mod fuzz;
+
 mod debug {
 
     pub fn panicking() -> bool {

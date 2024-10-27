@@ -1011,6 +1011,11 @@ main := fn(): uint {
 		return 6
 	}
 
+	infinite_loop()
+	return 0
+}
+
+infinite_loop := fn(): void {
 	f := 0
 	loop {
 		if f == 1 {
@@ -1122,5 +1127,17 @@ main := fn(): uint {
 	loop if n == 0 return n
 
 	return 1
+}
+```
+
+#### infinite_loop_after_peephole
+```hb
+main := fn(): uint {
+	n := 0
+	f := 0
+	loop if n != 0 break else {
+		f += 1
+	}
+	return f
 }
 ```

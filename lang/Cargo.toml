@@ -7,6 +7,10 @@ edition = "2021"
 name = "hbc"
 path = "src/main.rs"
 
+[[bin]]
+name = "fuzz"
+path = "src/fuzz_main.rs"
+
 [dependencies]
 hashbrown = { version = "0.15.0", default-features = false, features = ["raw-entry", "allocator-api2"] }
 hbbytecode = { workspace = true, features = ["disasm"] }

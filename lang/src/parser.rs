@@ -1147,8 +1147,18 @@ fn report_to(file: &str, path: &str, pos: Pos, msg: &dyn fmt::Display, out: &mut
         ..file[pos as usize..].find('\n').map_or(file.len(), |i| i + pos as usize)];
     col += line.matches('\t').count() * 3;
 
-    _ = writeln!(out, "{}", line.replace("\t", "    "));
-    _ = writeln!(out, "{}^", " ".repeat(col - 1));
+    for char in line.chars() {
+        if char == '\t' {
+            _ = out.write_str("    ");
+        } else {
+            _ = out.write_char(char);
+        }
+    }
+    _ = out.write_char('\n');
+    for _ in 0..col - 1 {
+        _ = out.write_str(" ");
+    }
+    _ = out.write_str("^\n");
 }
 
 #[derive(PartialEq, Eq, Hash)]

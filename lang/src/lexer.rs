@@ -277,6 +277,7 @@ impl TokenKind {
             Self::Add => a.wrapping_add(b),
             Self::Sub => a.wrapping_sub(b),
             Self::Mul => a.wrapping_mul(b),
+            Self::Div if b == 0 => 0,
             Self::Div => a.wrapping_div(b),
             Self::Shl => a.wrapping_shl(b as _),
             Self::Eq => (a == b) as i64,

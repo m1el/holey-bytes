@@ -1,0 +1,9 @@
+main:
+    LI64 r2, 0d
+ 0: ADDI64 r2, r2, 1d
+    JMP :0
+    JALA r0, r31, 0a
+timed out
+code size: 45
+ret: 0
+status: Ok(())

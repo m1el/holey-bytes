@@ -7,30 +7,29 @@ main:
     CP r9, r4
  6: JNE r9, r6, :0
     LI64 r6, 2d
-    CP r7, r4
- 4: JNE r7, r8, :1
+    ADDI64 r7, r254, 32d
+    CP r9, r4
+ 4: JNE r9, r8, :1
     LD r1, r254, 0a, 8h
     JMP :2
- 1: CP r10, r4
- 5: ADD64 r9, r7, r8
-    JNE r10, r6, :3
-    CP r7, r9
+ 1: MUL64 r12, r9, r6
+    ADD64 r9, r9, r8
+    SUB64 r10, r6, r9
+    MUL64 r10, r10, r6
+    CP r3, r4
+ 5: JNE r3, r6, :3
     JMP :4
- 3: ADD64 r3, r10, r8
-    MUL64 r12, r7, r6
-    SUB64 r11, r6, r9
-    ADD64 r9, r12, r10
-    MUL64 r11, r11, r6
-    MULI64 r9, r9, 8d
-    ADD64 r11, r11, r10
-    ADD64 r9, r5, r9
-    MULI64 r11, r11, 8d
-    ADDI64 r10, r254, 32d
-    ADD64 r11, r5, r11
-    BMC r9, r10, 8h
-    BMC r11, r9, 8h
-    BMC r10, r11, 8h
-    CP r10, r3
+ 3: ADD64 r11, r3, r8
+    ADD64 r1, r12, r3
+    MULI64 r1, r1, 8d
+    ADD64 r2, r10, r3
+    ADD64 r1, r5, r1
+    MULI64 r2, r2, 8d
+    ADD64 r2, r5, r2
+    BMC r1, r7, 8h
+    BMC r2, r1, 8h
+    BMC r7, r2, 8h
+    CP r3, r11
     JMP :5
  0: ADD64 r2, r9, r8
     MULI64 r12, r9, 8d
@@ -40,6 +39,6 @@ main:
     JMP :6
  2: ADDI64 r254, r254, 40d
     JALA r0, r31, 0a
-code size: 274
+code size: 271
 ret: 2
 status: Ok(())

@@ -23,7 +23,7 @@ hbjit = { path = "jit" }
 
 [profile.release]
 lto = true
-#debug = true
+debug = true
 #strip = true
 codegen-units = 1
 panic = "abort"
@@ -41,4 +41,10 @@ panic = "abort"
 inherits = "dev"
 opt-level = "z"
 strip = "debuginfo"
+panic = "abort"
+
+[profile.fuzz]
+inherits = "dev"
+debug = true
+opt-level = 3
 panic = "abort"

@@ -35,6 +35,8 @@ const VOID: Nid = 0;
 const NEVER: Nid = 1;
 const ENTRY: Nid = 2;
 const MEM: Nid = 3;
+const LOOPS: Nid = 4;
+const ARG_START: usize = 3;
 
 type Nid = u16;
 
@@ -154,23 +156,23 @@ impl Nodes {
     fn graphviz_in_browser(&self, tys: &Types, files: &[parser::Ast]) {
         #[cfg(all(debug_assertions, feature = "std"))]
         {
-            let out = &mut String::new();
-            _ = self.graphviz_low(tys, files, out);
-            if !std::process::Command::new("brave")
-                .arg(format!("https://dreampuf.github.io/GraphvizOnline/#{out}"))
-                .status()
-                .unwrap()
-                .success()
-            {
-                log::error!("{out}");
-            }
+            //     let out = &mut String::new();
+            //     _ = self.graphviz_low(tys, files, out);
+            //     if !std::process::Command::new("brave")
+            //         .arg(format!("https://dreampuf.github.io/GraphvizOnline/#{out}"))
+            //         .status()
+            //         .unwrap()
+            //         .success()
+            //     {
+            //         log::error!("{out}");
+            //     }
         }
     }
 
     fn gcm(&mut self) {
+        fix_loops(self);
         self.visited.clear(self.values.len());
         push_up(self);
-        // TODO: handle infinte loops
         self.visited.clear(self.values.len());
         push_down(self, VOID);
     }
@@ -313,13 +315,12 @@ impl Nodes {
         None
     }
 
-    fn iter_peeps(&mut self, mut fuel: usize) {
-        self.lock(NEVER);
+    fn iter_peeps(&mut self, mut fuel: usize, stack: &mut Vec<Nid>) {
+        stack.clear();
 
-        let mut stack = self
-            .iter()
+        self.iter()
             .filter_map(|(id, node)| node.kind.is_peeped().then_some(id))
-            .collect::<Vec<_>>();
+            .collect_into(stack);
         stack.iter().for_each(|&s| self.lock(s));
 
         while fuel != 0
@@ -340,8 +341,6 @@ impl Nodes {
                 stack.iter().skip(prev_len).for_each(|&n| self.lock(n));
             }
         }
-
-        self.unlock(NEVER);
     }
 
     fn peephole(&mut self, target: Nid) -> Option<Nid> {
@@ -524,6 +523,11 @@ impl Nodes {
 
                 return Some(ctrl);
             }
+            K::Call { .. } | K::Return => {
+                if self[target].inputs[0] == NEVER {
+                    return Some(NEVER);
+                }
+            }
             K::Phi => {
                 let &[ctrl, lhs, rhs] = self[target].inputs.as_slice() else { unreachable!() };
 
@@ -667,7 +671,7 @@ impl Nodes {
         }
         match self[node].kind {
             Kind::Start => unreachable!(),
-            Kind::End => unreachable!(),
+            Kind::End => return Ok(()),
             Kind::If => write!(out, "  if:      "),
             Kind::Region | Kind::Loop => writeln!(out, "      goto: {node}"),
             Kind::Return => write!(out, " ret:      "),
@@ -692,6 +696,7 @@ impl Nodes {
             Kind::Load => write!(out, "load:      "),
             Kind::Stre => write!(out, "stre:      "),
             Kind::Mem => write!(out, " mem:      "),
+            Kind::Loops => write!(out, " loops:      "),
             Kind::Extend => write!(out, " ext:      "),
         }?;
 
@@ -819,8 +824,14 @@ impl Nodes {
                 log::error!("{} {} {:?}", node.lock_rc, 0, node.kind);
                 failed = true;
             }
-            if !matches!(node.kind, Kind::End | Kind::Mem | Kind::Arg) && node.outputs.is_empty() {
+            if !matches!(node.kind, Kind::End | Kind::Mem | Kind::Arg | Kind::Loops)
+                && node.outputs.is_empty()
+            {
                 log::error!("outputs are empry {id} {:?}", node.kind);
+                failed = true;
+            }
+            if node.inputs.first() == Some(&NEVER) && id != NEVER {
+                log::error!("is unreachable but still present {id} {:?}", node.kind);
                 failed = true;
             }
         }
@@ -1021,7 +1032,10 @@ pub enum Kind {
     Start,
     // [ctrl]
     Entry,
+    // [VOID]
     Mem,
+    // [VOID]
+    Loops,
     // [terms...]
     End,
     // [ctrl, cond]
@@ -1070,7 +1084,7 @@ pub enum Kind {
 
 impl Kind {
     fn is_pinned(&self) -> bool {
-        self.is_cfg() || matches!(self, Self::Phi | Self::Arg | Self::Mem)
+        self.is_cfg() || matches!(self, Self::Phi | Self::Arg | Self::Mem | Self::Loops)
     }
 
     fn is_cfg(&self) -> bool {
@@ -1140,7 +1154,7 @@ impl Node {
 
     fn is_not_gvnd(&self) -> bool {
         (self.kind == Kind::Phi && self.inputs[2] == 0)
-            || matches!(self.kind, Kind::Arg | Kind::Stck)
+            || matches!(self.kind, Kind::Arg | Kind::Stck | Kind::End)
     }
 
     fn is_mem(&self) -> bool {
@@ -1368,16 +1382,20 @@ impl ItemCtx {
         let mem = self.nodes.new_node(ty::Id::VOID, Kind::Mem, [VOID]);
         debug_assert_eq!(mem, MEM);
         self.nodes.lock(mem);
+        let loops = self.nodes.new_node(ty::Id::VOID, Kind::Loops, [VOID]);
+        debug_assert_eq!(loops, LOOPS);
+        self.nodes.lock(loops);
         self.scope.store = Variable::new(0, ty::Id::VOID, false, MEM, &mut self.nodes);
     }
 
-    fn finalize(&mut self) {
+    fn finalize(&mut self, stack: &mut Vec<Nid>) {
         self.scope.clear(&mut self.nodes);
-        self.nodes.unlock(NEVER);
         mem::take(&mut self.ctrl).soft_remove(&mut self.nodes);
-        self.nodes.unlock(MEM);
         self.nodes.eliminate_stack_temporaries();
-        self.nodes.iter_peeps(1000);
+        self.nodes.iter_peeps(1000, stack);
+        self.nodes.unlock(MEM);
+        self.nodes.unlock(NEVER);
+        self.nodes.unlock(LOOPS);
     }
 
     fn emit(&mut self, instr: (usize, [u8; instrs::MAX_SIZE])) {
@@ -1438,7 +1456,7 @@ impl ItemCtx {
 
         let (retl, mut parama) = tys.parama(sig.ret);
         let mut typs = sig.args.args();
-        let mut args = fuc.nodes[VOID].outputs[2..].iter();
+        let mut args = fuc.nodes[VOID].outputs[ARG_START..].iter();
         while let Some(aty) = typs.next(tys) {
             let Arg::Value(ty) = aty else { continue };
             let Some(loc) = parama.next(ty, tys) else { continue };
@@ -1710,6 +1728,7 @@ impl ItemCtx {
                     | Kind::Entry
                     | Kind::Mem
                     | Kind::End
+                    | Kind::Loops
                     | Kind::Then
                     | Kind::Else
                     | Kind::Phi
@@ -1852,6 +1871,7 @@ struct Pool {
     cis: Vec<ItemCtx>,
     used_cis: usize,
     ralloc: Regalloc,
+    nid_stack: Vec<Nid>,
 }
 
 impl Pool {
@@ -2840,7 +2860,7 @@ impl<'a> Codegen<'a> {
                 let prev_file = mem::replace(&mut self.ci.file, file);
                 self.ci.inline_depth += 1;
 
-                if self.expr(body).is_some() && sig.ret == ty::Id::VOID {
+                if self.expr(body).is_some() && sig.ret != ty::Id::VOID {
                     self.report(
                         body.pos(),
                         "expected all paths in the fucntion to return \
@@ -3052,7 +3072,11 @@ impl<'a> Codegen<'a> {
             }
             Expr::Loop { body, .. } => {
                 self.ci.ctrl.set(
-                    self.ci.nodes.new_node(ty::Id::VOID, Kind::Loop, [self.ci.ctrl.get(); 2]),
+                    self.ci.nodes.new_node(ty::Id::VOID, Kind::Loop, [
+                        self.ci.ctrl.get(),
+                        self.ci.ctrl.get(),
+                        LOOPS,
+                    ]),
                     &mut self.ci.nodes,
                 );
                 self.ci.loops.push(Loop {
@@ -3121,6 +3145,7 @@ impl<'a> Codegen<'a> {
                     }
                     scope.clear(&mut self.ci.nodes);
                     self.ci.ctrl.set(NEVER, &mut self.ci.nodes);
+
                     return None;
                 };
 
@@ -3182,9 +3207,9 @@ impl<'a> Codegen<'a> {
                     self.ci.nodes.new_node(ty::Id::VOID, Kind::If, [self.ci.ctrl.get(), cnd.id]);
 
                 'b: {
-                    let branch = match self.tof(if_node).expand().inner() {
-                        ty::LEFT_UNREACHABLE => else_,
-                        ty::RIGHT_UNREACHABLE => Some(then),
+                    let branch = match self.ci.nodes[if_node].ty {
+                        ty::Id::LEFT_UNREACHABLE => else_,
+                        ty::Id::RIGHT_UNREACHABLE => Some(then),
                         _ => break 'b,
                     };
 
@@ -3471,11 +3496,6 @@ impl<'a> Codegen<'a> {
         None
     }
 
-    #[inline(always)]
-    fn tof(&self, id: Nid) -> ty::Id {
-        self.ci.nodes[id].ty
-    }
-
     fn complete_call_graph(&mut self) -> bool {
         let prev_err_len = self.errors.borrow().len();
         while self.ci.task_base < self.tys.tasks.len()
@@ -3535,17 +3555,24 @@ impl<'a> Codegen<'a> {
             }
         }
 
-        if self.expr(body).is_some() && sig.ret == ty::Id::VOID {
-            self.report(
-                body.pos(),
-                "expected all paths in the fucntion to return \
-                or the return type to be 'void'",
-            );
+        if self.expr(body).is_some() {
+            if sig.ret == ty::Id::VOID {
+                self.expr(&Expr::Return { pos: body.pos(), val: None });
+            } else {
+                self.report(
+                    body.pos(),
+                    fa!(
+                        "expected all paths in the fucntion to return \
+                        or the return type to be 'void' (return type is '{}')",
+                        self.ty_display(sig.ret),
+                    ),
+                );
+            }
         }
 
         self.ci.scope.vars.drain(..).for_each(|v| v.remove_ignore_arg(&mut self.ci.nodes));
 
-        self.ci.finalize();
+        self.ci.finalize(&mut self.pool.nid_stack);
 
         if self.errors.borrow().len() == prev_err_len {
             self.ci.emit_body(self.tys, self.files, sig, &mut self.pool.ralloc);
@@ -3675,7 +3702,7 @@ impl TypeParser for Codegen<'_> {
         self.expr(&Expr::Return { pos: expr.pos(), val: Some(expr) });
 
         scope = mem::take(&mut self.ci.scope.vars);
-        self.ci.finalize();
+        self.ci.finalize(&mut self.pool.nid_stack);
 
         let res = if self.errors.borrow().len() == prev_err_len {
             self.emit_and_eval(file, ret, &mut [])
@@ -3719,7 +3746,7 @@ impl TypeParser for Codegen<'_> {
 
         self.expr(&(Expr::Return { pos: expr.pos(), val: Some(expr) }));
 
-        self.ci.finalize();
+        self.ci.finalize(&mut self.pool.nid_stack);
 
         let ret = self.ci.ret.expect("for return type to be infered");
         if self.errors.borrow().len() == prev_err_len {
@@ -3881,7 +3908,6 @@ impl<'a> Function<'a> {
                 debug_assert_matches!(self.nodes[node.outputs[0]].kind, Kind::Entry);
                 self.emit_node(node.outputs[0], VOID)
             }
-            Kind::End => {}
             Kind::If => {
                 self.nodes[nid].ralloc_backref = self.nodes[prev].ralloc_backref;
 
@@ -3974,7 +4000,7 @@ impl<'a> Function<'a> {
                 let (ret, mut parama) = self.tys.parama(self.sig.ret);
                 let mut typs = self.sig.args.args();
                 #[allow(clippy::unnecessary_to_owned)]
-                let mut args = self.nodes[VOID].outputs[2..].to_owned().into_iter();
+                let mut args = self.nodes[VOID].outputs[ARG_START..].to_owned().into_iter();
                 while let Some(ty) = typs.next_value(self.tys) {
                     let arg = args.next().unwrap();
                     match parama.next(ty, self.tys) {
@@ -4136,7 +4162,8 @@ impl<'a> Function<'a> {
                 let ops = vec![self.drg(nid)];
                 self.add_instr(nid, ops);
             }
-            Kind::Phi | Kind::Arg | Kind::Mem => {}
+            Kind::End |
+            Kind::Phi | Kind::Arg | Kind::Mem | Kind::Loops  => {}
             Kind::Load { .. } if node.ty.loc(self.tys) == Loc::Stack => {
                 self.nodes.lock(nid)
             }
@@ -4414,6 +4441,27 @@ fn idepth(nodes: &mut Nodes, target: Nid) -> IDomDepth {
     nodes[target].depth
 }
 
+fn fix_loops(nodes: &mut Nodes) {
+    'o: for l in nodes[LOOPS].outputs.clone() {
+        let mut cursor = nodes[l].inputs[1];
+        while cursor != l {
+            if nodes[cursor].kind == Kind::If
+                && nodes[cursor]
+                    .outputs
+                    .clone()
+                    .into_iter()
+                    .any(|b| loop_depth(b, nodes) < loop_depth(cursor, nodes))
+            {
+                continue 'o;
+            }
+            cursor = idom(nodes, cursor);
+        }
+
+        nodes[l].outputs.push(NEVER);
+        nodes[NEVER].inputs.push(l);
+    }
+}
+
 fn push_up(nodes: &mut Nodes) {
     fn collect_rpo(node: Nid, nodes: &mut Nodes, rpo: &mut Vec<Nid>) {
         if !nodes.is_cfg(node) || !nodes.visited.set(node) {
@@ -4491,13 +4539,15 @@ fn push_up(nodes: &mut Nodes) {
         nodes
             .iter()
             .map(|(n, _)| n)
-            .filter(|&n| !nodes.visited.get(n) && !matches!(nodes[n].kind, Kind::Arg | Kind::Mem))
+            .filter(|&n| !nodes.visited.get(n)
+                && !matches!(nodes[n].kind, Kind::Arg | Kind::Mem | Kind::Loops))
             .collect::<Vec<_>>(),
         vec![],
         "{:?}",
         nodes
             .iter()
-            .filter(|&(n, nod)| !nodes.visited.get(n) && !matches!(nod.kind, Kind::Arg | Kind::Mem))
+            .filter(|&(n, nod)| !nodes.visited.get(n)
+                && !matches!(nod.kind, Kind::Arg | Kind::Mem | Kind::Loops))
             .collect::<Vec<_>>()
     );
 }
@@ -4609,99 +4659,10 @@ fn common_dom(mut a: Nid, mut b: Nid, nodes: &mut Nodes) -> Nid {
 #[cfg(test)]
 mod tests {
     use {
-        super::{Codegen, CodegenCtx},
-        crate::{
-            lexer::TokenKind,
-            parser::{self},
-        },
+        super::CodegenCtx,
         alloc::{string::String, vec::Vec},
-        core::{fmt::Write, hash::BuildHasher, ops::Range},
+        core::fmt::Write,
     };
-
-    #[derive(Default)]
-    struct Rand(pub u64);
-
-    impl Rand {
-        pub fn next(&mut self) -> u64 {
-            self.0 = crate::FnvBuildHasher::default().hash_one(self.0);
-            self.0
-        }
-
-        pub fn range(&mut self, min: u64, max: u64) -> u64 {
-            self.next() % (max - min) + min
-        }
-    }
-
-    #[derive(Default)]
-    struct FuncGen {
-        rand: Rand,
-        buf: String,
-    }
-
-    impl FuncGen {
-        fn gen(&mut self, seed: u64) -> &str {
-            self.rand = Rand(seed);
-            self.buf.clear();
-            self.buf.push_str("main := fn(): void { return ");
-            self.expr().unwrap();
-            self.buf.push('}');
-            &self.buf
-        }
-
-        fn expr(&mut self) -> core::fmt::Result {
-            match self.rand.range(0, 100) {
-                0..80 => {
-                    write!(self.buf, "{}", self.rand.next())
-                }
-                80..100 => {
-                    self.expr()?;
-                    let ops = [
-                        TokenKind::Add,
-                        TokenKind::Sub,
-                        TokenKind::Mul,
-                        TokenKind::Div,
-                        TokenKind::Shl,
-                        TokenKind::Eq,
-                        TokenKind::Ne,
-                        TokenKind::Lt,
-                        TokenKind::Gt,
-                        TokenKind::Le,
-                        TokenKind::Ge,
-                        TokenKind::Band,
-                        TokenKind::Bor,
-                        TokenKind::Xor,
-                        TokenKind::Mod,
-                        TokenKind::Shr,
-                    ];
-                    let op = ops[self.rand.range(0, ops.len() as u64) as usize];
-                    write!(self.buf, " {op} ")?;
-                    self.expr()
-                }
-                _ => unreachable!(),
-            }
-        }
-    }
-
-    fn fuzz(seed_range: Range<u64>) {
-        let mut gen = FuncGen::default();
-        let mut ctx = CodegenCtx::default();
-        for i in seed_range {
-            ctx.clear();
-            let src = gen.gen(i);
-            let parsed = parser::Ast::new("fuzz", src, &mut ctx.parser, &mut parser::no_loader);
-
-            let mut cdg = Codegen::new(core::slice::from_ref(&parsed), &mut ctx);
-            cdg.generate(0);
-        }
-    }
-
-    #[test]
-    #[ignore]
-    fn fuzz_test() {
-        _ = log::set_logger(&crate::fs::Logger);
-        log::set_max_level(log::LevelFilter::Info);
-        fuzz(0..10000);
-    }
 
     fn generate(ident: &'static str, input: &'static str, output: &mut String) {
         _ = log::set_logger(&crate::fs::Logger);
@@ -4795,5 +4756,6 @@ mod tests {
         conditional_stores;
         loop_stores;
         dead_code_in_loop;
+        infinite_loop_after_peephole;
     }
 }
