@@ -3,7 +3,7 @@ use {
         lexer::{self, Lexer, TokenKind},
         parser::{self, CommentOr, CtorField, Expr, Poser, Radix, StructField},
     },
-    core::fmt,
+    core::fmt::{self},
 };
 
 pub fn display_radix(radix: Radix, mut value: u64, buf: &mut [u8; 64]) -> &str {
@@ -263,6 +263,20 @@ impl<'a> Formatter<'a> {
                     },
                 )
             }
+            Expr::Tupl {
+                pos,
+                ty: Some(&Expr::Slice { pos: spos, size: Some(&Expr::Number { value, .. }), item }),
+                fields,
+                trailing_comma,
+            } if value as usize == fields.len() => self.fmt(
+                &Expr::Tupl {
+                    pos,
+                    ty: Some(&Expr::Slice { pos: spos, size: None, item }),
+                    fields,
+                    trailing_comma,
+                },
+                f,
+            ),
             Expr::Tupl { ty, fields, trailing_comma, .. } => {
                 if let Some(ty) = ty {
                     self.fmt_paren(ty, f, unary)?;

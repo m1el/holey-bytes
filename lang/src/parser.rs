@@ -155,9 +155,7 @@ impl<'a, 'b> Parser<'a, 'b> {
 
     fn bin_expr(&mut self, mut fold: Expr<'a>, min_prec: u8, top_level: bool) -> Option<Expr<'a>> {
         loop {
-            let Some(prec) = self.token.kind.precedence() else {
-                break;
-            };
+            let Some(prec) = self.token.kind.precedence() else { break };
 
             if prec <= min_prec {
                 break;
