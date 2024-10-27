@@ -18,7 +18,6 @@ Holey-Bytes-Language (hblang for short) (*.hb) is the only true language targeti
 
 hblang knows what it isn't, because it knows what it is, hblang computes this by sub...
 
-
 ## Examples
 
 Examples are also used in tests. To add an example that runs during testing add:
@@ -30,9 +29,9 @@ Examples are also used in tests. To add an example that runs during testing add:
 </pre>
 and also:
 ```rs
-<name> => README;
+<name>;
 ```
-to the `run_tests` macro at the bottom of the `src/codegen.rs`.
+to the `run_tests` macro at the bottom of the `src/son.rs`.
 
 ### Tour Examples
 
@@ -129,6 +128,9 @@ fib := fn(n: uint): uint {
 #### pointers
 ```hb
 main := fn(): uint {
+	n := @as(^uint, null)
+	if n != null return 9001
+
 	a := 1
 	b := &a
 
@@ -289,14 +291,14 @@ foo := fn(): uint return 0
 arbitrary text
 ```
 
-- `@use(<string>)`: imports a module based of string, the string is passed to a loader that can be customized, default loader uses following syntax:
-	- `((rel:|)(<path>)|git:<git-addr>:<path>)`: `rel:` and `''` prefixes both mean module is located at `path` relavive to the current file, `git:` takes a git url without `https://` passed as `git-addr`, `path` then refers to file within the repository
+- `@use(<string>)`: imports a module based on relative path, cycles are allowed when importing
 - `@TypeOf(<expr>)`: results into literal type of whatever the type of `<expr>` is, `<expr>` is not included in final binary
-- `@as(<ty>, <expr>)`: huint to the compiler that  `@TypeOf(<expr>) == <ty>`
+- `@as(<ty>, <expr>)`: hint to the compiler that  `@TypeOf(<expr>) == <ty>`
 - `@intcast(<expr>)`: needs to be used when conversion of `@TypeOf(<expr>)` would loose precision (widening of integers is implicit)
-- `@sizeof(<ty>), @alignof(<ty>)`: I think explaining this would insult your intelligence
-- `@bitcast(<expr>)`: tell compiler to assume `@TypeOf(<expr>)` is whatever is inferred, so long as size and alignment did not change
-- `@eca(<ty>, ...<expr>)`: invoke `eca` instruction, where `<ty>` is the type this will return and `<expr>...` are arguments passed to the call
+- `@sizeof(<ty>), @alignof(<ty>)`: get size and align of a type in bytes
+- `@bitcast(<expr>)`: tell compiler to assume `@TypeOf(<expr>)` is whatever is inferred, so long as size matches
+- `@eca(...<expr>)`: invoke `eca` instruction, where return type is inferred and `<expr>...` are arguments passed to the call in the standard call convention
+- `@embed(<string>)`: include relative file as an array of bytes
 - `@inline(<func>, ...<args>)`: equivalent to `<func>(...<args>)` but function is guaranteed to inline, compiler will otherwise never inline
 
 #### c_strings
@@ -396,6 +398,7 @@ main := fn(): uint {
 	return big_array[42]
 }
 ```
+note: this does not work on scalar values
 
 #### generic_functions
 ```hb

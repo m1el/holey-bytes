@@ -131,6 +131,7 @@ pub enum TokenKind {
     Packed,
     True,
     False,
+    Null,
     Idk,
 
     Ctor,
@@ -267,7 +268,8 @@ gen_token_kind! {
         Packed    = b"packed",
         True      = b"true",
         False     = b"false",
-        Idk = b"idk",
+        Null      = b"null",
+        Idk       = b"idk",
         #[punkt]
         Ctor   = ".{",
         Tupl   = ".(",

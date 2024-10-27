@@ -335,6 +335,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             },
             T::True => E::Bool { pos, value: true },
             T::False => E::Bool { pos, value: false },
+            T::Null => E::Null { pos },
             T::Idk => E::Idk { pos },
             T::DQuote => E::String { pos, literal: self.tok_str(token) },
             T::Packed => {
@@ -880,6 +881,10 @@ generate_expr! {
         Bool {
             pos:   Pos,
             value: bool,
+        },
+        /// `'null'`
+        Null {
+            pos: Pos,
         },
         /// `'idk'`
         Idk {

@@ -1714,6 +1714,30 @@ impl<'a> Codegen<'a> {
     fn raw_expr_ctx(&mut self, expr: &Expr, ctx: Ctx) -> Option<Value> {
         // ordered by complexity of the expression
         match *expr {
+            Expr::Null { pos } => {
+                let Some(ty) = ctx.ty else {
+                    self.report(
+                        pos,
+                        "resulting pointer cannot be inferred from context, \
+                        consider using `@as(^<ty>, null)` to hint the type",
+                    );
+                    return Value::NEVER;
+                };
+
+                if !ty.is_pointer() {
+                    self.report(
+                        pos,
+                        fa!(
+                            "'null' expression was inferred to be '{}',
+                            which is not a pointer (and that is not supported yet)",
+                            self.ty_display(ty)
+                        ),
+                    );
+                    return Value::NEVER;
+                }
+
+                Some(self.ci.nodes.new_node_lit(ty, Kind::CInt { value: 0 }, [VOID]))
+            }
             Expr::Idk { pos } => {
                 let Some(ty) = ctx.ty else {
                     self.report(
@@ -2812,7 +2836,7 @@ impl<'a> Codegen<'a> {
             }
             ref e => {
                 self.report_unhandled_ast(e, "bruh");
-                Some(Value::VOID)
+                Value::NEVER
             }
         }
     }
