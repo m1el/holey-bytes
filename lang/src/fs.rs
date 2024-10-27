@@ -38,8 +38,6 @@ pub struct Options {
     pub fmt: bool,
     pub fmt_stdout: bool,
     pub dump_asm: bool,
-    #[deprecated = "no longer has any effect"]
-    pub optimize: bool,
     pub extra_threads: usize,
 }
 
@@ -66,7 +64,6 @@ impl Options {
                 .transpose()?
                 .map_or(1, NonZeroUsize::get)
                 - 1,
-            ..Default::default()
         })
     }
 }
