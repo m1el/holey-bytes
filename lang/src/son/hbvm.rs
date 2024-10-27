@@ -312,12 +312,6 @@ impl ItemCtx {
                         4 => instrs::li32(atr(allocs[0]), value as _),
                         _ => instrs::li64(atr(allocs[0]), value as _),
                     }),
-                    Kind::Extend => {
-                        let base = fuc.nodes[node.inputs[1]].ty;
-                        let dest = node.ty;
-
-                        self.emit(extend(base, dest, 1, 0))
-                    }
                     Kind::UnOp { op } => {
                         let op = op.unop().expect("TODO: unary operator not supported");
                         let &[dst, oper] = allocs else { unreachable!() };
@@ -810,10 +804,6 @@ impl<'a> Function<'a> {
             }
             Kind::CInt { .. } => {
                 let ops = vec![self.drg(nid)];
-                self.add_instr(nid, ops);
-            }
-            Kind::Extend => {
-                let ops = vec![self.drg(nid), self.urg(node.inputs[1])];
                 self.add_instr(nid, ops);
             }
             Kind::Entry => {

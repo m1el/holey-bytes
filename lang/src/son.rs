@@ -567,11 +567,6 @@ impl Nodes {
                     return Some(self[self[target].inputs[2]].inputs[1]);
                 }
             }
-            K::Extend => {
-                if self[target].ty.simple_size() == self[self[target].inputs[1]].ty.simple_size() {
-                    return Some(self[target].inputs[1]);
-                }
-            }
             K::Loop => {
                 if self[target].inputs[0] == NEVER {
                     return Some(NEVER);
@@ -684,7 +679,6 @@ impl Nodes {
             Kind::Stre => write!(out, "stre:      "),
             Kind::Mem => write!(out, " mem:      "),
             Kind::Loops => write!(out, " loops:      "),
-            Kind::Extend => write!(out, " ext:      "),
         }?;
 
         if self[node].kind != Kind::Loop && self[node].kind != Kind::Region {
@@ -1041,8 +1035,6 @@ pub enum Kind {
     // [ctrl, lhs, rhs]
     Phi,
     Arg,
-    // [ctrl, oper]
-    Extend,
     // [ctrl, oper]
     UnOp {
         op: lexer::TokenKind,
@@ -2151,22 +2143,11 @@ impl<'a> Codegen<'a> {
                     );
                 }
 
-                match self.tys.size_of(val.ty).cmp(&self.tys.size_of(ty)) {
-                    core::cmp::Ordering::Less => {
-                        self.extend(&mut val, ty);
-                        Some(val)
-                    }
-                    core::cmp::Ordering::Equal => Some(val.ty(ty)),
-                    core::cmp::Ordering::Greater => {
-                        let value = (1i64 << (self.tys.size_of(ty) * 8)) - 1;
-                        let mask = self.ci.nodes.new_node_nop(val.ty, Kind::CInt { value }, [VOID]);
-                        let inps = [VOID, val.id, mask];
-                        Some(self.ci.nodes.new_node_lit(
-                            ty,
-                            Kind::BinOp { op: TokenKind::Band },
-                            inps,
-                        ))
-                    }
+                if self.tys.size_of(val.ty) < self.tys.size_of(ty) {
+                    self.extend(&mut val, ty);
+                    Some(val)
+                } else {
+                    Some(val.ty(ty))
                 }
             }
             Expr::Directive { name: "as", args: [ty, expr], .. } => {
@@ -3164,7 +3145,9 @@ impl<'a> Codegen<'a> {
             };
 
             if let Some(oper) = to_correct {
-                self.extend(oper, upcasted);
+                if self.tys.size_of(upcasted) > self.tys.size_of(oper.ty) {
+                    self.extend(oper, upcasted);
+                }
                 if matches!(op, TokenKind::Add | TokenKind::Sub)
                     && let Some(elem) = self.tys.base_of(upcasted)
                 {
@@ -3224,8 +3207,11 @@ impl<'a> Codegen<'a> {
 
     fn extend(&mut self, value: &mut Value, to: ty::Id) {
         self.strip_ptr(value);
+        let val = (1i64 << (self.tys.size_of(value.ty) * 8)) - 1;
         value.ty = to;
-        value.id = self.ci.nodes.new_node(to, Kind::Extend, [VOID, value.id]);
+        let mask = self.ci.nodes.new_node_nop(to, Kind::CInt { value: val }, [VOID]);
+        let inps = [VOID, value.id, mask];
+        *value = self.ci.nodes.new_node_lit(to, Kind::BinOp { op: TokenKind::Band }, inps);
     }
 
     #[track_caller]
