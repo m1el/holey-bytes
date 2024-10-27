@@ -74,7 +74,7 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
     fn format_ast(ast: parser::Ast) -> std::io::Result<()> {
         let mut output = String::new();
         write!(output, "{ast}").unwrap();
-        if ast.file.deref() != output.as_str() {
+        if ast.file.deref().trim() != output.as_str().trim() {
             std::fs::write(&*ast.path, output)?;
         }
         Ok(())
