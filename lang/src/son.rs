@@ -45,7 +45,7 @@ impl crate::ctx_map::CtxEntry for Nid {
     type Key<'a> = (Kind, &'a [Nid], ty::Id);
 
     fn key<'a>(&self, ctx: &'a Self::Ctx) -> Self::Key<'a> {
-        ctx[*self as usize].as_ref().unwrap().key()
+        ctx[*self as usize].as_ref().unwrap_or_else(|(_, t)| panic!("{t:#?}")).key()
     }
 }
 
@@ -73,6 +73,7 @@ struct Nodes {
     visited: BitSet,
     free: Nid,
     lookup: Lookup,
+    complete: bool,
 }
 
 impl Default for Nodes {
@@ -82,6 +83,7 @@ impl Default for Nodes {
             free: Nid::MAX,
             lookup: Default::default(),
             visited: Default::default(),
+            complete: false,
         }
     }
 }
@@ -230,7 +232,7 @@ impl Nodes {
     }
 
     fn push_up(&mut self, rpo: &mut Vec<Nid>) {
-        rpo.clear();
+        debug_assert!(rpo.is_empty());
         self.collect_rpo(VOID, rpo);
 
         for &node in rpo.iter().rev() {
@@ -262,6 +264,8 @@ impl Nodes {
                     && !matches!(nod.kind, Kind::Arg | Kind::Mem | Kind::Loops))
                 .collect::<Vec<_>>()
         );
+
+        rpo.clear();
     }
 
     fn better(&mut self, is: Nid, then: Nid) -> bool {
@@ -491,6 +495,7 @@ impl Nodes {
         self.values.clear();
         self.lookup.clear();
         self.free = Nid::MAX;
+        self.complete = false;
     }
 
     fn new_node_nop(&mut self, ty: ty::Id, kind: Kind, inps: impl Into<Vc>) -> Nid {
@@ -610,13 +615,16 @@ impl Nodes {
     fn late_peephole(&mut self, target: Nid) -> Option<Nid> {
         if let Some(id) = self.peephole(target) {
             self.replace(target, id);
-            return Some(id);
+            return None;
         }
         None
     }
 
     fn iter_peeps(&mut self, mut fuel: usize, stack: &mut Vec<Nid>) {
-        stack.clear();
+        debug_assert!(!self.complete);
+        debug_assert!(stack.is_empty());
+
+        self.complete = true;
 
         self.iter()
             .filter_map(|(id, node)| node.kind.is_peeped().then_some(id))
@@ -630,16 +638,42 @@ impl Nodes {
             if self.unlock_remove(node) {
                 continue;
             }
-            let new = self.late_peephole(node);
-            if let Some(new) = new {
-                let prev_len = stack.len();
-                for &i in self[new].outputs.iter().chain(self[new].inputs.iter()) {
-                    if self[i].kind.is_peeped() && self[i].lock_rc == 0 {
-                        stack.push(i);
-                    }
-                }
-                stack.iter().skip(prev_len).for_each(|&n| self.lock(n));
+
+            if let Some(new) = self.peephole(node) {
+                self.replace(node, new);
+                self.push_adjacent_nodes(new, stack);
             }
+
+            debug_assert_matches!(
+                self.iter()
+                    .find(|(i, n)| n.lock_rc != 0 && n.kind.is_peeped() && !stack.contains(i)),
+                None
+            );
+        }
+
+        stack.drain(..).for_each(|s| _ = self.unlock_remove(s));
+    }
+
+    fn push_adjacent_nodes(&mut self, of: Nid, stack: &mut Vec<Nid>) {
+        let prev_len = stack.len();
+        for &i in self[of].outputs.iter().chain(self[of].inputs.iter()) {
+            if self[i].kind.is_peeped() && self[i].lock_rc == 0 {
+                stack.push(i);
+            }
+        }
+        stack.iter().skip(prev_len).for_each(|&n| self.lock(n));
+    }
+
+    pub fn aclass_index(&self, mut region: Nid) -> (usize, Nid) {
+        loop {
+            region = match self[region].kind {
+                Kind::BinOp { op: TokenKind::Add | TokenKind::Sub } => self[region].inputs[1],
+                Kind::Phi => {
+                    debug_assert_eq!(self[region].inputs[2], 0);
+                    self[region].inputs[1]
+                }
+                _ => break (self[region].aclass, region),
+            };
         }
     }
 
@@ -823,9 +857,40 @@ impl Nodes {
 
                 return Some(ctrl);
             }
-            K::Call { .. } | K::Return => {
+            K::Call { .. } => {
                 if self[target].inputs[0] == NEVER {
                     return Some(NEVER);
+                }
+            }
+            K::Return => {
+                if self[target].inputs[0] == NEVER {
+                    return Some(NEVER);
+                }
+
+                let mut new_inps = Vc::from(&self[target].inputs[..2]);
+                'a: for &n in self[target].inputs.clone().iter().skip(2) {
+                    if self[n].kind != Kind::Stre || self[n].inputs.len() != 4 {
+                        new_inps.push(n);
+                        continue;
+                    }
+
+                    let mut cursor = n;
+                    let class = self.aclass_index(self[cursor].inputs[2]);
+
+                    cursor = self[cursor].inputs[3];
+                    while cursor != MEM {
+                        if self.aclass_index(self[cursor].inputs[2]) != class
+                            || self[cursor].inputs.len() != 4
+                        {
+                            new_inps.push(n);
+                            continue 'a;
+                        }
+                        cursor = self[cursor].inputs[3];
+                    }
+                }
+
+                if new_inps.as_slice() != self[target].inputs.as_slice() {
+                    return Some(self.new_node_nop(ty::Id::VOID, Kind::Return, new_inps));
                 }
             }
             K::Phi => {
@@ -857,18 +922,123 @@ impl Nodes {
                 }
             }
             K::Stre => {
-                if self[target].inputs[1] != VOID
+                let &[_, value, region, store, ..] = self[target].inputs.as_slice() else {
+                    unreachable!()
+                };
+
+                'eliminate: {
+                    break 'eliminate;
+                    if self[value].kind != Kind::Load || self[value].outputs.as_slice() != [target]
+                    {
+                        break 'eliminate;
+                    }
+
+                    let &[_, stack, last_store] = self[value].inputs.as_slice() else {
+                        unreachable!()
+                    };
+
+                    if self[stack].ty != self[value].ty || self[stack].kind != Kind::Stck {
+                        break 'eliminate;
+                    }
+
+                    let mut unidentifed = self[stack].outputs.clone();
+                    let load_idx = unidentifed.iter().position(|&n| n == value).unwrap();
+                    unidentifed.swap_remove(load_idx);
+
+                    let mut saved = Vc::default();
+                    let mut cursor = last_store;
+                    let mut first_store = last_store;
+                    while cursor != MEM && self[cursor].kind == Kind::Stre {
+                        let mut contact_point = cursor;
+                        let mut region = self[cursor].inputs[2];
+                        if let Kind::BinOp { op } = self[region].kind {
+                            debug_assert_matches!(op, TokenKind::Add | TokenKind::Sub);
+                            contact_point = region;
+                            region = self[region].inputs[1]
+                        }
+
+                        if region != stack {
+                            break;
+                        }
+                        let Some(index) = unidentifed.iter().position(|&n| n == contact_point)
+                        else {
+                            break 'eliminate;
+                        };
+                        unidentifed.remove(index);
+                        saved.push(contact_point);
+                        first_store = cursor;
+                        cursor = *self[cursor].inputs.get(3).unwrap_or(&MEM);
+
+                        if unidentifed.is_empty() {
+                            break;
+                        }
+                    }
+
+                    // TODO: this can be an offset already due to previous peeps so handle that
+                    if let &[mcall] = unidentifed.as_slice()
+                        && matches!(self[mcall].kind, Kind::Call { .. })
+                        && self[mcall].inputs.last() == Some(&stack)
+                    {
+                        self.modify_input(mcall, self[mcall].inputs.len() - 1, region);
+
+                        return Some(last_store);
+                    } else {
+                        debug_assert_matches!(
+                            self[last_store].kind,
+                            Kind::Stre | Kind::Mem,
+                            "{:?}",
+                            self[last_store]
+                        );
+                        debug_assert_matches!(
+                            self[first_store].kind,
+                            Kind::Stre | Kind::Mem,
+                            "{:?}",
+                            self[first_store]
+                        );
+
+                        if !unidentifed.is_empty() {
+                            break 'eliminate;
+                        }
+
+                        // FIXME: when the loads and stores become parallel we will need to get saved
+                        // differently
+                        let mut prev_store = store;
+                        for mut oper in saved.into_iter().rev() {
+                            let mut region = region;
+                            if let Kind::BinOp { op } = self[oper].kind {
+                                debug_assert_eq!(self[oper].outputs.len(), 1);
+                                debug_assert_eq!(self[self[oper].outputs[0]].kind, Kind::Stre);
+                                region = self.new_node(self[oper].ty, Kind::BinOp { op }, [
+                                    VOID,
+                                    region,
+                                    self[oper].inputs[2],
+                                ]);
+                                oper = self[oper].outputs[0];
+                            }
+
+                            let mut inps = self[oper].inputs.clone();
+                            debug_assert_eq!(inps.len(), 4);
+                            inps[2] = region;
+                            inps[3] = prev_store;
+                            prev_store = self.new_node(self[oper].ty, Kind::Stre, inps);
+                        }
+
+                        return Some(prev_store);
+                    }
+                }
+
+                if value != VOID
                     && self[target].inputs.len() == 4
-                    && self[self[target].inputs[1]].kind != Kind::Load
-                    && self[self[target].inputs[3]].kind == Kind::Stre
-                    && self[self[target].inputs[3]].lock_rc == 0
-                    && self[self[target].inputs[3]].inputs[2] == self[target].inputs[2]
+                    && self[value].kind != Kind::Load
+                    && self[store].kind == Kind::Stre
+                    && self[store].lock_rc == 0
+                    && self[store].inputs[2] == region
                 {
-                    return Some(self.modify_input(
-                        self[target].inputs[3],
-                        1,
-                        self[target].inputs[1],
-                    ));
+                    if self[store].inputs[1] == value {
+                        return Some(store);
+                    }
+
+                    return Some(self.modify_input(store, 1, self[target].inputs[1]));
                 }
             }
             K::Load => {
@@ -908,43 +1078,45 @@ impl Nodes {
 
     fn replace(&mut self, target: Nid, with: Nid) {
         debug_assert_ne!(target, with, "{:?}", self[target]);
-        let mut back_press = 0;
-        for i in 0..self[target].outputs.len() {
-            let out = self[target].outputs[i - back_press];
+        for out in self[target].outputs.clone() {
             let index = self[out].inputs.iter().position(|&p| p == target).unwrap();
-            self.lock(target);
-            let prev_len = self[target].outputs.len();
             self.modify_input(out, index, with);
-            back_press += (self[target].outputs.len() != prev_len) as usize;
-            self.unlock(target);
         }
-
-        self.remove(target);
     }
 
     fn modify_input(&mut self, target: Nid, inp_index: usize, with: Nid) -> Nid {
         self.remove_node_lookup(target);
         debug_assert_ne!(self[target].inputs[inp_index], with, "{:?}", self[target]);
 
-        let prev = self[target].inputs[inp_index];
-        self[target].inputs[inp_index] = with;
-        let (entry, hash) = self.lookup.entry(target.key(&self.values), &self.values);
-        match entry {
-            hash_map::RawEntryMut::Occupied(other) => {
-                let rpl = other.get_key_value().0.value;
-                self[target].inputs[inp_index] = prev;
-                self.lookup.insert(target.key(&self.values), target, &self.values);
-                self.replace(target, rpl);
-                rpl
-            }
-            hash_map::RawEntryMut::Vacant(slot) => {
-                slot.insert(crate::ctx_map::Key { value: target, hash }, ());
-                let index = self[prev].outputs.iter().position(|&o| o == target).unwrap();
-                self[prev].outputs.swap_remove(index);
-                self[with].outputs.push(target);
-                self.remove(prev);
+        if self[target].is_not_gvnd() && (self[target].kind != Kind::Phi || with == 0) {
+            let prev = self[target].inputs[inp_index];
+            self[target].inputs[inp_index] = with;
+            self[with].outputs.push(target);
+            let index = self[prev].outputs.iter().position(|&o| o == target).unwrap();
+            self[prev].outputs.swap_remove(index);
+            self.remove(prev);
+            target
+        } else {
+            let prev = self[target].inputs[inp_index];
+            self[target].inputs[inp_index] = with;
+            let (entry, hash) = self.lookup.entry(target.key(&self.values), &self.values);
+            match entry {
+                hash_map::RawEntryMut::Occupied(other) => {
+                    let rpl = other.get_key_value().0.value;
+                    self[target].inputs[inp_index] = prev;
+                    self.lookup.insert(target.key(&self.values), target, &self.values);
+                    self.replace(target, rpl);
+                    rpl
+                }
+                hash_map::RawEntryMut::Vacant(slot) => {
+                    slot.insert(crate::ctx_map::Key { value: target, hash }, ());
+                    let index = self[prev].outputs.iter().position(|&o| o == target).unwrap();
+                    self[prev].outputs.swap_remove(index);
+                    self[with].outputs.push(target);
+                    self.remove(prev);
 
-                target
+                    target
+                }
             }
         }
     }
@@ -1121,7 +1293,7 @@ impl Nodes {
             if !matches!(node.kind, Kind::End | Kind::Mem | Kind::Arg | Kind::Loops)
                 && node.outputs.is_empty()
             {
-                log::error!("outputs are empry {id} {:?}", node.kind);
+                log::error!("outputs are empry {id} {:?}", node);
                 failed = true;
             }
             if node.inputs.first() == Some(&NEVER) && id != NEVER {
@@ -1275,6 +1447,8 @@ impl Nodes {
                 && self[mcall].inputs.last() == Some(&stack)
             {
                 self.modify_input(mcall, self[mcall].inputs.len() - 1, region);
+
+                self.replace(dst, last_store);
             } else {
                 debug_assert_matches!(
                     self[last_store].kind,
@@ -1295,6 +1469,7 @@ impl Nodes {
 
                 // FIXME: when the loads and stores become parallel we will need to get saved
                 // differently
+                let mut prev_store = self[dst].inputs[3];
                 for mut oper in saved.into_iter().rev() {
                     let mut region = region;
                     if let Kind::BinOp { op } = self[oper].kind {
@@ -1308,24 +1483,14 @@ impl Nodes {
                         oper = self[oper].outputs[0];
                     }
 
-                    self.modify_input(oper, 2, region);
+                    let mut inps = self[oper].inputs.clone();
+                    debug_assert_eq!(inps.len(), 4);
+                    inps[2] = region;
+                    inps[3] = prev_store;
+                    prev_store = self.new_node(self[oper].ty, Kind::Stre, inps);
                 }
-            }
 
-            // self[first_store].lock_rc = u16::MAX - 1;
-            // self[last_store].lock_rc = u16::MAX - 1;
-
-            let prev_store = self[dst].inputs[3];
-            if prev_store != MEM && first_store != MEM {
-                self.modify_input(first_store, 3, prev_store);
-            }
-
-            self.replace(dst, last_store);
-            if self.values[stack as usize].is_ok() {
-                self.lock(stack);
-            }
-            if self.values[dst as usize].is_ok() {
-                self.lock(dst);
+                self.replace(dst, prev_store);
             }
         }
     }
@@ -1426,7 +1591,7 @@ impl Kind {
     }
 
     fn is_peeped(&self) -> bool {
-        !matches!(self, Self::End | Self::Arg)
+        !matches!(self, Self::End | Self::Arg | Self::Mem | Self::Loops)
     }
 }
 
@@ -1473,7 +1638,8 @@ impl Node {
 
     fn is_not_gvnd(&self) -> bool {
         (self.kind == Kind::Phi && self.inputs[2] == 0)
-            || matches!(self.kind, Kind::Arg | Kind::Stck | Kind::End)
+            || matches!(self.kind, Kind::Arg | Kind::Stck)
+            || self.kind.is_cfg()
     }
 
     fn is_mem(&self) -> bool {
@@ -1724,11 +1890,13 @@ impl ItemCtx {
         self.scope.aclasses.push(AClass::new(&mut self.nodes));
     }
 
-    fn finalize(&mut self, stack: &mut Vec<Nid>) {
+    fn finalize(&mut self, stack: &mut Vec<Nid>, _tys: &Types, _files: &[parser::Ast]) {
         self.scope.clear(&mut self.nodes);
         mem::take(&mut self.ctrl).soft_remove(&mut self.nodes);
+
         self.nodes.eliminate_stack_temporaries();
         self.nodes.iter_peeps(1000, stack);
+
         self.nodes.unlock(MEM);
         self.nodes.unlock(NEVER);
         self.nodes.unlock(LOOPS);
@@ -1993,7 +2161,7 @@ impl<'a> Codegen<'a> {
         );
         debug_assert!(self.ci.nodes[region].kind != Kind::Stre);
 
-        let (value_index, value_region) = self.aclass_index(value);
+        let (value_index, value_region) = self.ci.nodes.aclass_index(value);
         if value_index != 0 {
             // simply switch the class to the default one
             let aclass = &mut self.ci.scope.aclasses[value_index];
@@ -2018,7 +2186,7 @@ impl<'a> Codegen<'a> {
             self.ci.nodes[value_region].aclass = 0;
         }
 
-        let (index, _) = self.aclass_index(region);
+        let (index, _) = self.ci.nodes.aclass_index(region);
         let aclass = &mut self.ci.scope.aclasses[index];
         self.ci.nodes.load_loop_aclass(index, aclass, &mut self.ci.loops);
         let mut vc = Vc::from([VOID, value, region, aclass.last_store.get()]);
@@ -2052,28 +2220,13 @@ impl<'a> Codegen<'a> {
             self.ty_display(self.ci.nodes[region].ty)
         );
         debug_assert!(self.ci.nodes[region].kind != Kind::Stre);
-        let (index, _) = self.aclass_index(region);
+        let (index, _) = self.ci.nodes.aclass_index(region);
         let aclass = &mut self.ci.scope.aclasses[index];
         self.ci.nodes.load_loop_aclass(index, aclass, &mut self.ci.loops);
         let vc = [VOID, region, aclass.last_store.get()];
         let load = self.ci.nodes.new_node(ty, Kind::Load, vc);
         aclass.loads.push(StrongRef::new(load, &mut self.ci.nodes));
         load
-    }
-
-    pub fn aclass_index(&mut self, mut region: Nid) -> (usize, Nid) {
-        loop {
-            region = match self.ci.nodes[region].kind {
-                Kind::BinOp { op: TokenKind::Add | TokenKind::Sub } => {
-                    self.ci.nodes[region].inputs[1]
-                }
-                Kind::Phi => {
-                    debug_assert_eq!(self.ci.nodes[region].inputs[2], 0);
-                    self.ci.nodes[region].inputs[1]
-                }
-                _ => break (self.ci.nodes[region].aclass, region),
-            };
-        }
     }
 
     pub fn generate(&mut self, entry: FileId) {
@@ -2229,7 +2382,7 @@ impl<'a> Codegen<'a> {
                     }
 
                     self.ci.ctrl.set(
-                        self.ci.nodes.new_node(ty::Id::VOID, Kind::Return, inps),
+                        self.ci.nodes.new_node_nop(ty::Id::VOID, Kind::Return, inps),
                         &mut self.ci.nodes,
                     );
 
@@ -2567,7 +2720,7 @@ impl<'a> Codegen<'a> {
                 for arg in args {
                     let value = self.expr(arg)?;
                     if let Some(base) = self.tys.base_of(value.ty) {
-                        clobbered_aliases.push(self.aclass_index(value.id).0);
+                        clobbered_aliases.push(self.ci.nodes.aclass_index(value.id).0);
                         if base.has_pointers(self.tys) {
                             clobbered_aliases.push(0);
                         }
@@ -2674,7 +2827,7 @@ impl<'a> Codegen<'a> {
                     self.assert_ty(arg.pos(), &mut value, ty, fa!("argument {}", carg.name));
 
                     if let Some(base) = self.tys.base_of(value.ty) {
-                        clobbered_aliases.push(self.aclass_index(value.id).0);
+                        clobbered_aliases.push(self.ci.nodes.aclass_index(value.id).0);
                         if base.has_pointers(self.tys) {
                             clobbered_aliases.push(0);
                         }
@@ -3600,7 +3753,7 @@ impl<'a> Codegen<'a> {
 
         self.ci.scope.vars.drain(..).for_each(|v| v.remove_ignore_arg(&mut self.ci.nodes));
 
-        self.ci.finalize(&mut self.pool.nid_stack);
+        self.ci.finalize(&mut self.pool.nid_stack, self.tys, self.files);
 
         if self.errors.borrow().len() == prev_err_len {
             self.ci.emit_body(self.tys, self.files, sig, self.pool);
@@ -3737,7 +3890,7 @@ impl TypeParser for Codegen<'_> {
         self.expr(&Expr::Return { pos: expr.pos(), val: Some(expr) });
 
         scope = mem::take(&mut self.ci.scope.vars);
-        self.ci.finalize(&mut self.pool.nid_stack);
+        self.ci.finalize(&mut self.pool.nid_stack, self.tys, self.files);
 
         let res = if self.errors.borrow().len() == prev_err_len {
             self.emit_and_eval(file, ret, &mut [])
@@ -3781,7 +3934,7 @@ impl TypeParser for Codegen<'_> {
 
         self.expr(&(Expr::Return { pos: expr.pos(), val: Some(expr) }));
 
-        self.ci.finalize(&mut self.pool.nid_stack);
+        self.ci.finalize(&mut self.pool.nid_stack, self.tys, self.files);
 
         let ret = self.ci.ret.expect("for return type to be infered");
         if self.errors.borrow().len() == prev_err_len {

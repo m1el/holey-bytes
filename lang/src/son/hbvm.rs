@@ -809,6 +809,7 @@ impl<'a> Function<'a> {
                 let mut args = self.nodes[VOID].outputs[ARG_START..].to_owned().into_iter();
                 while let Some(ty) = typs.next_value(self.tys) {
                     let arg = args.next().unwrap();
+                    debug_assert_eq!(self.nodes[arg].kind, Kind::Arg);
                     match parama.next(ty, self.tys) {
                         None => {}
                         Some(PLoc::Reg(r, _) | PLoc::WideReg(r, _) | PLoc::Ref(r, _)) => {
