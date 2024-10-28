@@ -16,28 +16,28 @@ main:
 maina:
     ADDI64 r254, r254, -44d
     ST r31, r254, 36a, 8h
-    ADDI64 r6, r254, 16d
+    ADDI64 r6, r254, 32d
     JAL r31, r0, :small_struct
-    ST r1, r254, 16a, 4h
+    ST r1, r254, 32a, 4h
     LI8 r11, 0b
-    ADDI64 r10, r254, 0d
-    ST r11, r254, 0a, 1h
-    ST r11, r254, 1a, 1h
-    ST r11, r254, 2a, 1h
+    ADDI64 r10, r254, 24d
+    ST r11, r254, 24a, 1h
+    ST r11, r254, 25a, 1h
+    ST r11, r254, 26a, 1h
     LI8 r4, 3b
-    ST r4, r254, 3a, 1h
+    ST r4, r254, 27a, 1h
     LI8 r7, 1b
-    ST r7, r254, 4a, 1h
-    ST r11, r254, 5a, 1h
-    ST r11, r254, 6a, 1h
-    ST r11, r254, 7a, 1h
-    ADDI64 r1, r254, 8d
-    BMC r10, r1, 8h
-    ADDI64 r4, r254, 20d
+    ST r7, r254, 28a, 1h
+    ST r11, r254, 29a, 1h
+    ST r11, r254, 30a, 1h
+    ST r11, r254, 31a, 1h
+    ADDI64 r2, r254, 0d
+    BMC r10, r2, 8h
+    ADDI64 r5, r2, 8d
+    ADDI64 r4, r254, 16d
+    BMC r10, r5, 8h
     BMC r10, r4, 8h
-    ADDI64 r7, r4, 8d
-    BMC r1, r7, 8h
-    LD r1, r4, 0a, 16h
+    LD r1, r2, 0a, 16h
     LD r31, r254, 36a, 8h
     ADDI64 r254, r254, 44d
     JALA r0, r31, 0a

@@ -9,7 +9,7 @@ use {
             idfl::{self},
             CtorField, Expr, FileId, Pos,
         },
-        reg, task,
+        task,
         ty::{self, Arg, ArrayLen, Loc, Tuple},
         vc::{BitSet, Vc},
         FTask, Func, Global, Ident, Offset, OffsetIter, Reloc, Sig, StringRef, SymKey, TypeParser,
@@ -857,7 +857,7 @@ impl Nodes {
                 }
             }
             K::Stre => {
-                if self[target].inputs[2] != VOID
+                if self[target].inputs[1] != VOID
                     && self[target].inputs.len() == 4
                     && self[self[target].inputs[1]].kind != Kind::Load
                     && self[self[target].inputs[3]].kind == Kind::Stre
@@ -1311,6 +1311,9 @@ impl Nodes {
                     self.modify_input(oper, 2, region);
                 }
             }
+
+            // self[first_store].lock_rc = u16::MAX - 1;
+            // self[last_store].lock_rc = u16::MAX - 1;
 
             let prev_store = self[dst].inputs[3];
             if prev_store != MEM && first_store != MEM {
@@ -1973,6 +1976,13 @@ impl<'a> Codegen<'a> {
             .collect();
     }
 
+    fn new_stack(&mut self, ty: ty::Id) -> Nid {
+        let stck = self.ci.nodes.new_node_nop(ty, Kind::Stck, [VOID, MEM]);
+        self.ci.nodes[stck].aclass = self.ci.scope.aclasses.len();
+        self.ci.scope.aclasses.push(AClass::new(&mut self.ci.nodes));
+        stck
+    }
+
     fn store_mem(&mut self, region: Nid, ty: ty::Id, value: Nid) -> Nid {
         if value == NEVER {
             return NEVER;
@@ -2029,7 +2039,11 @@ impl<'a> Codegen<'a> {
     pub fn aclass_index(&mut self, mut region: Nid) -> usize {
         loop {
             region = match self.ci.nodes[region].kind {
-                Kind::BinOp { op: TokenKind::Add | TokenKind::Sub } | Kind::Phi => {
+                Kind::BinOp { op: TokenKind::Add | TokenKind::Sub } => {
+                    self.ci.nodes[region].inputs[1]
+                }
+                Kind::Phi => {
+                    debug_assert_eq!(self.ci.nodes[region].inputs[2], 0);
                     self.ci.nodes[region].inputs[1]
                 }
                 _ => break self.ci.nodes[region].aclass,
@@ -2099,8 +2113,7 @@ impl<'a> Codegen<'a> {
                 inference!(ty, ctx, self, pos, "value", "@as(<ty>, idk)");
 
                 if matches!(ty.expand(), ty::Kind::Struct(_) | ty::Kind::Slice(_)) {
-                    let stck = self.ci.nodes.new_node(ty, Kind::Stck, [VOID, MEM]);
-                    Some(Value::ptr(stck).ty(ty))
+                    Some(Value::ptr(self.new_stack(ty)).ty(ty))
                 } else {
                     self.report(
                         pos,
@@ -2127,7 +2140,7 @@ impl<'a> Codegen<'a> {
                 if let Some(index) = self.ci.scope.vars.iter().rposition(|v| v.id == id) =>
             {
                 let var = &mut self.ci.scope.vars[index];
-                self.ci.nodes.load_loop_var(index + 1, var, &mut self.ci.loops);
+                self.ci.nodes.load_loop_var(index, var, &mut self.ci.loops);
 
                 Some(Value::var(index).ty(var.ty))
             }
@@ -2290,7 +2303,7 @@ impl<'a> Codegen<'a> {
                     return Some(val);
                 }
 
-                let stack = self.ci.nodes.new_node_nop(val.ty, Kind::Stck, [VOID, MEM]);
+                let stack = self.new_stack(val.ty);
                 self.store_mem(stack, val.ty, val.id);
 
                 Some(Value::new(stack).ty(self.tys.make_ptr(val.ty)))
@@ -2322,7 +2335,7 @@ impl<'a> Codegen<'a> {
                 let mut right = self.expr(right)?;
 
                 if right.ty.loc(self.tys) == Loc::Stack {
-                    let stck = self.ci.nodes.new_node_nop(right.ty, Kind::Stck, [VOID, MEM]);
+                    let stck = self.new_stack(right.ty);
                     self.store_mem(stck, right.ty, right.id);
                     right.id = stck;
                     right.ptr = true;
@@ -2379,7 +2392,7 @@ impl<'a> Codegen<'a> {
                         let mut rhs = rhs?;
                         self.strip_var(&mut rhs);
                         self.assert_ty(pos, &mut rhs, lhs.ty, "struct operand");
-                        let dst = self.ci.nodes.new_node(lhs.ty, Kind::Stck, [VOID, MEM]);
+                        let dst = self.new_stack(lhs.ty);
                         self.struct_op(left.pos(), op, s, dst, lhs.id, rhs.id);
                         Some(Value::ptr(dst).ty(lhs.ty))
                     }
@@ -2468,7 +2481,7 @@ impl<'a> Codegen<'a> {
                 match ty.loc(self.tys) {
                     Loc::Reg if mem::take(&mut val.ptr) => val.id = self.load_mem(val.id, ty),
                     Loc::Stack if !val.ptr => {
-                        let stack = self.ci.nodes.new_node_nop(ty, Kind::Stck, [VOID, MEM]);
+                        let stack = self.new_stack(ty);
                         self.store_mem(stack, val.ty, val.id);
                         val.id = stack;
                         val.ptr = true;
@@ -2525,7 +2538,6 @@ impl<'a> Codegen<'a> {
 
                 let mut inps = Vc::from([NEVER]);
                 let arg_base = self.tys.tmp.args.len();
-                let mut has_ptr_arg = false;
                 let mut clobbered_aliases = vec![];
                 for arg in args {
                     let value = self.expr(arg)?;
@@ -2568,7 +2580,7 @@ impl<'a> Codegen<'a> {
                 let alt_value = match ty.loc(self.tys) {
                     Loc::Reg => None,
                     Loc::Stack => {
-                        let stck = self.ci.nodes.new_node_nop(ty, Kind::Stck, [VOID, MEM]);
+                        let stck = self.new_stack(ty);
                         inps.push(stck);
                         Some(Value::ptr(stck).ty(ty))
                     }
@@ -2579,6 +2591,14 @@ impl<'a> Codegen<'a> {
                     self.ci.nodes.new_node(ty, Kind::Call { func: ty::ECA, args }, inps),
                     &mut self.ci.nodes,
                 );
+
+                for &clobbered in clobbered_aliases.iter() {
+                    if clobbered == 0 {
+                        continue;
+                    }
+                    let aclass = self.ci.scope.aclasses[clobbered].last_store.get();
+                    self.store_mem(self.ci.nodes[aclass].inputs[2], ty::Id::VOID, VOID);
+                }
 
                 alt_value.or(Some(Value::new(self.ci.ctrl.get()).ty(ty)))
             }
@@ -2618,7 +2638,6 @@ impl<'a> Codegen<'a> {
                 let mut tys = sig.args.args();
                 let mut cargs = cargs.iter();
                 let mut args = args.iter();
-                let mut has_ptr_arg = false;
                 let mut clobbered_aliases = vec![];
                 while let Some(ty) = tys.next(self.tys) {
                     let carg = cargs.next().unwrap();
@@ -2665,7 +2684,7 @@ impl<'a> Codegen<'a> {
                 let alt_value = match sig.ret.loc(self.tys) {
                     Loc::Reg => None,
                     Loc::Stack => {
-                        let stck = self.ci.nodes.new_node_nop(sig.ret, Kind::Stck, [VOID, MEM]);
+                        let stck = self.new_stack(sig.ret);
                         inps.push(stck);
                         Some(Value::ptr(stck).ty(sig.ret))
                     }
@@ -2676,6 +2695,14 @@ impl<'a> Codegen<'a> {
                     self.ci.nodes.new_node(sig.ret, Kind::Call { func: fu, args: sig.args }, inps),
                     &mut self.ci.nodes,
                 );
+
+                for &clobbered in clobbered_aliases.iter() {
+                    if clobbered == 0 {
+                        continue;
+                    }
+                    let aclass = self.ci.scope.aclasses[clobbered].last_store.get();
+                    self.store_mem(self.ci.nodes[aclass].inputs[2], ty::Id::VOID, VOID);
+                }
 
                 alt_value.or(Some(Value::new(self.ci.ctrl.get()).ty(sig.ret)))
             }
@@ -2794,7 +2821,7 @@ impl<'a> Codegen<'a> {
 
                 match sty.expand() {
                     ty::Kind::Struct(s) => {
-                        let mem = self.ci.nodes.new_node(sty, Kind::Stck, [VOID, MEM]);
+                        let mem = self.new_stack(sty);
                         let mut offs = OffsetIter::new(s, self.tys);
                         for field in fields {
                             let Some((ty, offset)) = offs.next_ty(self.tys) else {
@@ -2848,7 +2875,7 @@ impl<'a> Codegen<'a> {
                             return Value::NEVER;
                         }
 
-                        let mem = self.ci.nodes.new_node(aty, Kind::Stck, [VOID, MEM]);
+                        let mem = self.new_stack(aty);
 
                         for (field, offset) in
                             fields.iter().zip((0u32..).step_by(elem_size as usize))
@@ -2901,7 +2928,7 @@ impl<'a> Codegen<'a> {
                     .into_iter(self.tys)
                     .map(|(f, o)| (f.ty, o))
                     .collect::<Vec<_>>();
-                let mem = self.ci.nodes.new_node(sty, Kind::Stck, [VOID, MEM]);
+                let mem = self.new_stack(sty);
                 for field in fields {
                     let Some(index) = self.tys.find_struct_field(s, field.name) else {
                         self.report(
@@ -3514,6 +3541,10 @@ impl<'a> Codegen<'a> {
                         value,
                         &mut self.ci.nodes,
                     ));
+                    if ty.loc(self.tys) == Loc::Stack {
+                        self.ci.nodes[value].aclass = self.ci.scope.aclasses.len();
+                        self.ci.scope.aclasses.push(AClass::new(&mut self.ci.nodes));
+                    }
                 }
             }
         }

@@ -423,7 +423,7 @@ impl ItemCtx {
                             self.emit(instrs::ld(atr(allocs[0]), base, offset as _, size as _));
                         }
                     }
-                    Kind::Stre if node.inputs[2] == VOID => {}
+                    Kind::Stre if node.inputs[1] == VOID => {}
                     Kind::Stre => {
                         let mut region = node.inputs[2];
                         let mut offset = 0;
@@ -987,7 +987,7 @@ impl<'a> Function<'a> {
                 };
                 self.add_instr(nid, ops);
             }
-            Kind::Stre if node.inputs[2] == VOID => self.nodes.lock(nid),
+            Kind::Stre if node.inputs[1] == VOID => self.nodes.lock(nid),
             Kind::Stre => {
                 let mut region = node.inputs[2];
                 if self.nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
