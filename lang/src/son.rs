@@ -2971,6 +2971,7 @@ impl<'a> Codegen<'a> {
             }
             Expr::Block { stmts, .. } => {
                 let base = self.ci.scope.vars.len();
+                let aclass_base = self.ci.scope.aclasses.len();
 
                 let mut ret = Some(Value::VOID);
                 for stmt in stmts {
@@ -2984,6 +2985,10 @@ impl<'a> Codegen<'a> {
 
                 for var in self.ci.scope.vars.drain(base..) {
                     var.remove(&mut self.ci.nodes);
+                }
+
+                for aclass in self.ci.scope.aclasses.drain(aclass_base..) {
+                    aclass.remove(&mut self.ci.nodes);
                 }
 
                 ret
@@ -3480,6 +3485,10 @@ impl<'a> Codegen<'a> {
             loob.ctrl_scope[id]
                 .vars
                 .drain(loob.scope.vars.len()..)
+                .for_each(|v| v.remove(&mut self.ci.nodes));
+            loob.ctrl_scope[id]
+                .aclasses
+                .drain(loob.scope.aclasses.len()..)
                 .for_each(|v| v.remove(&mut self.ci.nodes));
         }
 
