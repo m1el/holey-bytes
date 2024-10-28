@@ -1993,7 +1993,32 @@ impl<'a> Codegen<'a> {
         );
         debug_assert!(self.ci.nodes[region].kind != Kind::Stre);
 
-        let index = self.aclass_index(region);
+        let (value_index, value_region) = self.aclass_index(value);
+        if value_index != 0 {
+            // simply switch the class to the default one
+            let aclass = &mut self.ci.scope.aclasses[value_index];
+            let loads = mem::take(&mut aclass.loads);
+            self.ci.nodes.load_loop_aclass(value_index, aclass, &mut self.ci.loops);
+            let last_store = aclass.last_store.get();
+            let mut cursor = last_store;
+            let mut first_store = cursor;
+            while cursor != MEM {
+                first_store = cursor;
+                cursor = self.ci.nodes[cursor].inputs[3];
+            }
+
+            if last_store != MEM {
+                let base_class = self.ci.scope.aclasses[0].last_store.get();
+                if base_class != MEM {
+                    self.ci.nodes.modify_input(first_store, 3, base_class);
+                }
+                self.ci.scope.aclasses[0].last_store.set(last_store, &mut self.ci.nodes);
+            }
+            self.ci.scope.aclasses[0].loads.extend(loads);
+            self.ci.nodes[value_region].aclass = 0;
+        }
+
+        let (index, _) = self.aclass_index(region);
         let aclass = &mut self.ci.scope.aclasses[index];
         self.ci.nodes.load_loop_aclass(index, aclass, &mut self.ci.loops);
         let mut vc = Vc::from([VOID, value, region, aclass.last_store.get()]);
@@ -2027,7 +2052,7 @@ impl<'a> Codegen<'a> {
             self.ty_display(self.ci.nodes[region].ty)
         );
         debug_assert!(self.ci.nodes[region].kind != Kind::Stre);
-        let index = self.aclass_index(region);
+        let (index, _) = self.aclass_index(region);
         let aclass = &mut self.ci.scope.aclasses[index];
         self.ci.nodes.load_loop_aclass(index, aclass, &mut self.ci.loops);
         let vc = [VOID, region, aclass.last_store.get()];
@@ -2036,7 +2061,7 @@ impl<'a> Codegen<'a> {
         load
     }
 
-    pub fn aclass_index(&mut self, mut region: Nid) -> usize {
+    pub fn aclass_index(&mut self, mut region: Nid) -> (usize, Nid) {
         loop {
             region = match self.ci.nodes[region].kind {
                 Kind::BinOp { op: TokenKind::Add | TokenKind::Sub } => {
@@ -2046,7 +2071,7 @@ impl<'a> Codegen<'a> {
                     debug_assert_eq!(self.ci.nodes[region].inputs[2], 0);
                     self.ci.nodes[region].inputs[1]
                 }
-                _ => break self.ci.nodes[region].aclass,
+                _ => break (self.ci.nodes[region].aclass, region),
             };
         }
     }
@@ -2542,7 +2567,7 @@ impl<'a> Codegen<'a> {
                 for arg in args {
                     let value = self.expr(arg)?;
                     if let Some(base) = self.tys.base_of(value.ty) {
-                        clobbered_aliases.push(self.aclass_index(value.id));
+                        clobbered_aliases.push(self.aclass_index(value.id).0);
                         if base.has_pointers(self.tys) {
                             clobbered_aliases.push(0);
                         }
@@ -2649,7 +2674,7 @@ impl<'a> Codegen<'a> {
                     self.assert_ty(arg.pos(), &mut value, ty, fa!("argument {}", carg.name));
 
                     if let Some(base) = self.tys.base_of(value.ty) {
-                        clobbered_aliases.push(self.aclass_index(value.id));
+                        clobbered_aliases.push(self.aclass_index(value.id).0);
                         if base.has_pointers(self.tys) {
                             clobbered_aliases.push(0);
                         }
