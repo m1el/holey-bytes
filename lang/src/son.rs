@@ -1219,11 +1219,10 @@ impl Nodes {
                 }
             }
 
-            let Some((dst, o)) = full_read_into else { continue };
+            let Some((dst, last_store)) = full_read_into else { continue };
 
             let mut saved = Vc::default();
-            let mut cursor = dst;
-            cursor = *self[cursor].inputs.get(3).unwrap_or(&MEM);
+            let mut cursor = last_store;
             while cursor != MEM && self[cursor].kind == Kind::Stre {
                 let mut contact_point = cursor;
                 let mut region = self[cursor].inputs[2];
