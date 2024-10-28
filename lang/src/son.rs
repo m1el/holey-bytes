@@ -9,7 +9,7 @@ use {
             idfl::{self},
             CtorField, Expr, FileId, Pos,
         },
-        task,
+        reg, task,
         ty::{self, Arg, ArrayLen, Loc, Tuple},
         vc::{BitSet, Vc},
         FTask, Func, Global, Ident, Offset, OffsetIter, Reloc, Sig, StringRef, SymKey, TypeParser,
@@ -375,7 +375,8 @@ impl Nodes {
         to: &mut Scope,
         from: &mut Scope,
     ) {
-        for (i, (to_value, from_value)) in to.iter_mut().zip(from.iter_mut()).enumerate() {
+        for (i, (to_value, from_value)) in to.vars.iter_mut().zip(from.vars.iter_mut()).enumerate()
+        {
             debug_assert_eq!(to_value.ty, from_value.ty);
             if to_value.value() != from_value.value() {
                 self.load_loop_var(i, from_value, loops);
@@ -387,8 +388,21 @@ impl Nodes {
             }
         }
 
-        to.loads.drain(..).for_each(|l| _ = l.remove(self));
-        from.loads.drain(..).for_each(|l| _ = l.remove(self));
+        for (i, (to_class, from_class)) in
+            to.aclasses.iter_mut().zip(from.aclasses.iter_mut()).enumerate()
+        {
+            if to_class.last_store.get() != from_class.last_store.get() {
+                self.load_loop_aclass(i, from_class, loops);
+                self.load_loop_aclass(i, to_class, loops);
+                if to_class.last_store.get() != from_class.last_store.get() {
+                    let inps = [ctrl.get(), from_class.last_store.get(), to_class.last_store.get()];
+                    to_class
+                        .last_store
+                        .set_remove(self.new_node(ty::Id::VOID, Kind::Phi, inps), self);
+                    to_class.loads.drain(..).for_each(|d| _ = d.remove(self));
+                }
+            }
+        }
     }
 
     fn graphviz_low(
@@ -1122,35 +1136,40 @@ impl Nodes {
         }
     }
 
-    fn load_loop_var(&mut self, index: usize, value: &mut Variable, loops: &mut [Loop]) {
-        self.load_loop_value(&mut |l| l.scope.iter_mut().nth(index).unwrap(), value, loops);
-    }
-
-    fn load_loop_store(&mut self, value: &mut Variable, loops: &mut [Loop]) {
-        self.load_loop_value(&mut |l| &mut l.scope.store, value, loops);
-    }
-
-    fn load_loop_value(
-        &mut self,
-        get_lvalue: &mut impl FnMut(&mut Loop) -> &mut Variable,
-        var: &mut Variable,
-        loops: &mut [Loop],
-    ) {
+    fn load_loop_var(&mut self, index: usize, var: &mut Variable, loops: &mut [Loop]) {
         if var.value() != VOID {
             return;
         }
 
         let [loops @ .., loob] = loops else { unreachable!() };
         let node = loob.node;
-        let lvar = get_lvalue(loob);
+        let lvar = &mut loob.scope.vars[index];
 
-        self.load_loop_value(get_lvalue, lvar, loops);
+        self.load_loop_var(index, lvar, loops);
 
         if !self[lvar.value()].is_lazy_phi(node) {
             let inps = [node, lvar.value(), VOID];
             lvar.set_value(self.new_node_nop(lvar.ty, Kind::Phi, inps), self);
         }
         var.set_value(lvar.value(), self);
+    }
+
+    fn load_loop_aclass(&mut self, index: usize, var: &mut AClass, loops: &mut [Loop]) {
+        if var.last_store.get() != VOID {
+            return;
+        }
+
+        let [loops @ .., loob] = loops else { unreachable!() };
+        let node = loob.node;
+        let lvar = &mut loob.scope.aclasses[index];
+
+        self.load_loop_aclass(index, lvar, loops);
+
+        if !self[lvar.last_store.get()].is_lazy_phi(node) {
+            let inps = [node, lvar.last_store.get(), VOID];
+            lvar.last_store.set(self.new_node_nop(ty::Id::VOID, Kind::Phi, inps), self);
+        }
+        var.last_store.set(lvar.last_store.get(), self);
     }
 
     fn check_dominance(&mut self, nd: Nid, min: Nid, check_outputs: bool) {
@@ -1223,6 +1242,7 @@ impl Nodes {
 
             let mut saved = Vc::default();
             let mut cursor = last_store;
+            let mut first_store = last_store;
             while cursor != MEM && self[cursor].kind == Kind::Stre {
                 let mut contact_point = cursor;
                 let mut region = self[cursor].inputs[2];
@@ -1240,6 +1260,7 @@ impl Nodes {
                 };
                 unidentifed.remove(index);
                 saved.push(contact_point);
+                first_store = cursor;
                 cursor = *self[cursor].inputs.get(3).unwrap_or(&MEM);
 
                 if unidentifed.is_empty() {
@@ -1255,6 +1276,19 @@ impl Nodes {
             {
                 self.modify_input(mcall, self[mcall].inputs.len() - 1, region);
             } else {
+                debug_assert_matches!(
+                    self[last_store].kind,
+                    Kind::Stre | Kind::Mem,
+                    "{:?}",
+                    self[last_store]
+                );
+                debug_assert_matches!(
+                    self[first_store].kind,
+                    Kind::Stre | Kind::Mem,
+                    "{:?}",
+                    self[first_store]
+                );
+
                 if !unidentifed.is_empty() {
                     continue;
                 }
@@ -1278,7 +1312,12 @@ impl Nodes {
                 }
             }
 
-            self.replace(dst, *self[dst].inputs.get(3).unwrap_or(&MEM));
+            let prev_store = self[dst].inputs[3];
+            if prev_store != MEM && first_store != MEM {
+                self.modify_input(first_store, 3, prev_store);
+            }
+
+            self.replace(dst, last_store);
             if self.values[stack as usize].is_ok() {
                 self.lock(stack);
             }
@@ -1413,6 +1452,7 @@ pub struct Node {
     depth: IDomDepth,
     lock_rc: LockRc,
     loop_depth: LoopDepth,
+    aclass: usize,
 }
 
 impl Node {
@@ -1584,29 +1624,46 @@ impl Variable {
 }
 
 #[derive(Default, Clone)]
+pub struct AClass {
+    last_store: StrongRef,
+    loads: Vec<StrongRef>,
+}
+
+impl AClass {
+    fn dup(&self, nodes: &mut Nodes) -> Self {
+        Self {
+            last_store: self.last_store.dup(nodes),
+            loads: self.loads.iter().map(|v| v.dup(nodes)).collect(),
+        }
+    }
+
+    fn remove(mut self, nodes: &mut Nodes) {
+        self.last_store.remove(nodes);
+        self.loads.drain(..).for_each(|n| _ = n.remove(nodes));
+    }
+
+    fn new(nodes: &mut Nodes) -> Self {
+        Self { last_store: StrongRef::new(MEM, nodes), loads: Default::default() }
+    }
+}
+
+#[derive(Default, Clone)]
 pub struct Scope {
     vars: Vec<Variable>,
-    loads: Vec<StrongRef>,
-    store: Variable,
+    aclasses: Vec<AClass>,
 }
 
 impl Scope {
-    fn iter_mut(&mut self) -> impl Iterator<Item = &mut Variable> {
-        core::iter::once(&mut self.store).chain(self.vars.iter_mut())
-    }
-
     fn dup(&self, nodes: &mut Nodes) -> Self {
         Self {
             vars: self.vars.iter().map(|v| v.dup(nodes)).collect(),
-            loads: self.loads.iter().map(|l| l.dup(nodes)).collect(),
-            store: self.store.dup(nodes),
+            aclasses: self.aclasses.iter().map(|v| v.dup(nodes)).collect(),
         }
     }
 
     fn clear(&mut self, nodes: &mut Nodes) {
         self.vars.drain(..).for_each(|n| n.remove(nodes));
-        self.loads.drain(..).for_each(|l| _ = l.remove(nodes));
-        mem::take(&mut self.store).remove(nodes);
+        self.aclasses.drain(..).for_each(|l| l.remove(nodes));
     }
 }
 
@@ -1661,8 +1718,7 @@ impl ItemCtx {
         let loops = self.nodes.new_node(ty::Id::VOID, Kind::Loops, [VOID]);
         debug_assert_eq!(loops, LOOPS);
         self.nodes.lock(loops);
-        self.scope.store =
-            Variable::new(Ident::default(), ty::Id::VOID, false, MEM, &mut self.nodes);
+        self.scope.aclasses.push(AClass::new(&mut self.nodes));
     }
 
     fn finalize(&mut self, stack: &mut Vec<Nid>) {
@@ -1927,9 +1983,11 @@ impl<'a> Codegen<'a> {
         );
         debug_assert!(self.ci.nodes[region].kind != Kind::Stre);
 
-        self.ci.nodes.load_loop_store(&mut self.ci.scope.store, &mut self.ci.loops);
-        let mut vc = Vc::from([VOID, value, region, self.ci.scope.store.value()]);
-        for load in self.ci.scope.loads.drain(..) {
+        let index = self.aclass_index(region);
+        let aclass = &mut self.ci.scope.aclasses[index];
+        self.ci.nodes.load_loop_aclass(index, aclass, &mut self.ci.loops);
+        let mut vc = Vc::from([VOID, value, region, aclass.last_store.get()]);
+        for load in aclass.loads.drain(..) {
             if load.get() == value {
                 load.soft_remove(&mut self.ci.nodes);
                 continue;
@@ -1939,9 +1997,9 @@ impl<'a> Codegen<'a> {
             }
         }
         let store = self.ci.nodes.new_node_nop(ty, Kind::Stre, vc);
-        self.ci.scope.store.set_value(store, &mut self.ci.nodes);
+        aclass.last_store.set(store, &mut self.ci.nodes);
         let opted = self.ci.nodes.late_peephole(store).unwrap_or(store);
-        self.ci.scope.store.set_value_remove(opted, &mut self.ci.nodes);
+        aclass.last_store.set_remove(opted, &mut self.ci.nodes);
         opted
     }
 
@@ -1959,11 +2017,24 @@ impl<'a> Codegen<'a> {
             self.ty_display(self.ci.nodes[region].ty)
         );
         debug_assert!(self.ci.nodes[region].kind != Kind::Stre);
-        self.ci.nodes.load_loop_store(&mut self.ci.scope.store, &mut self.ci.loops);
-        let vc = [VOID, region, self.ci.scope.store.value()];
+        let index = self.aclass_index(region);
+        let aclass = &mut self.ci.scope.aclasses[index];
+        self.ci.nodes.load_loop_aclass(index, aclass, &mut self.ci.loops);
+        let vc = [VOID, region, aclass.last_store.get()];
         let load = self.ci.nodes.new_node(ty, Kind::Load, vc);
-        self.ci.scope.loads.push(StrongRef::new(load, &mut self.ci.nodes));
+        aclass.loads.push(StrongRef::new(load, &mut self.ci.nodes));
         load
+    }
+
+    pub fn aclass_index(&mut self, mut region: Nid) -> usize {
+        loop {
+            region = match self.ci.nodes[region].kind {
+                Kind::BinOp { op: TokenKind::Add | TokenKind::Sub } | Kind::Phi => {
+                    self.ci.nodes[region].inputs[1]
+                }
+                _ => break self.ci.nodes[region].aclass,
+            };
+        }
     }
 
     pub fn generate(&mut self, entry: FileId) {
@@ -2114,8 +2185,10 @@ impl<'a> Codegen<'a> {
                 if self.ci.inline_depth == 0 {
                     debug_assert_ne!(self.ci.ctrl.get(), VOID);
                     let mut inps = Vc::from([self.ci.ctrl.get(), value.id]);
-                    self.ci.nodes.load_loop_store(&mut self.ci.scope.store, &mut self.ci.loops);
-                    inps.push(self.ci.scope.store.value());
+                    for (i, aclass) in self.ci.scope.aclasses.iter_mut().enumerate() {
+                        self.ci.nodes.load_loop_aclass(i, aclass, &mut self.ci.loops);
+                        inps.push(aclass.last_store.get());
+                    }
 
                     self.ci.ctrl.set(
                         self.ci.nodes.new_node(ty::Id::VOID, Kind::Return, inps),
@@ -2453,9 +2526,17 @@ impl<'a> Codegen<'a> {
                 let mut inps = Vc::from([NEVER]);
                 let arg_base = self.tys.tmp.args.len();
                 let mut has_ptr_arg = false;
+                let mut clobbered_aliases = vec![];
                 for arg in args {
                     let value = self.expr(arg)?;
-                    has_ptr_arg |= value.ty.has_pointers(self.tys);
+                    if let Some(base) = self.tys.base_of(value.ty) {
+                        clobbered_aliases.push(self.aclass_index(value.id));
+                        if base.has_pointers(self.tys) {
+                            clobbered_aliases.push(0);
+                        }
+                    } else if value.ty.has_pointers(self.tys) {
+                        clobbered_aliases.push(0);
+                    }
                     self.tys.tmp.args.push(value.ty);
                     debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
                     self.ci.nodes.lock(value.id);
@@ -2468,9 +2549,10 @@ impl<'a> Codegen<'a> {
                     self.ci.nodes.unlock(n);
                 }
 
-                if has_ptr_arg {
-                    inps.push(self.ci.scope.store.value());
-                    self.ci.scope.loads.retain_mut(|load| {
+                for &clobbered in clobbered_aliases.iter() {
+                    let aclass = &mut self.ci.scope.aclasses[clobbered];
+                    inps.push(aclass.last_store.get());
+                    aclass.loads.retain_mut(|load| {
                         if inps.contains(&load.get()) {
                             return true;
                         }
@@ -2497,10 +2579,6 @@ impl<'a> Codegen<'a> {
                     self.ci.nodes.new_node(ty, Kind::Call { func: ty::ECA, args }, inps),
                     &mut self.ci.nodes,
                 );
-
-                if has_ptr_arg {
-                    self.store_mem(VOID, ty::Id::VOID, VOID);
-                }
 
                 alt_value.or(Some(Value::new(self.ci.ctrl.get()).ty(ty)))
             }
@@ -2541,15 +2619,24 @@ impl<'a> Codegen<'a> {
                 let mut cargs = cargs.iter();
                 let mut args = args.iter();
                 let mut has_ptr_arg = false;
+                let mut clobbered_aliases = vec![];
                 while let Some(ty) = tys.next(self.tys) {
                     let carg = cargs.next().unwrap();
                     let Some(arg) = args.next() else { break };
                     let Arg::Value(ty) = ty else { continue };
-                    has_ptr_arg |= ty.has_pointers(self.tys);
 
                     let mut value = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
                     debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
                     self.assert_ty(arg.pos(), &mut value, ty, fa!("argument {}", carg.name));
+
+                    if let Some(base) = self.tys.base_of(value.ty) {
+                        clobbered_aliases.push(self.aclass_index(value.id));
+                        if base.has_pointers(self.tys) {
+                            clobbered_aliases.push(0);
+                        }
+                    } else if value.ty.has_pointers(self.tys) {
+                        clobbered_aliases.push(0);
+                    }
 
                     self.ci.nodes.lock(value.id);
                     inps.push(value.id);
@@ -2559,9 +2646,10 @@ impl<'a> Codegen<'a> {
                     self.ci.nodes.unlock(n);
                 }
 
-                if has_ptr_arg {
-                    inps.push(self.ci.scope.store.value());
-                    self.ci.scope.loads.retain_mut(|load| {
+                for &clobbered in clobbered_aliases.iter() {
+                    let aclass = &mut self.ci.scope.aclasses[clobbered];
+                    inps.push(aclass.last_store.get());
+                    aclass.loads.retain_mut(|load| {
                         if inps.contains(&load.get()) {
                             return true;
                         }
@@ -2588,10 +2676,6 @@ impl<'a> Codegen<'a> {
                     self.ci.nodes.new_node(sig.ret, Kind::Call { func: fu, args: sig.args }, inps),
                     &mut self.ci.nodes,
                 );
-
-                if has_ptr_arg {
-                    self.store_mem(VOID, ty::Id::VOID, VOID);
-                }
 
                 alt_value.or(Some(Value::new(self.ci.ctrl.get()).ty(sig.ret)))
             }
@@ -2893,8 +2977,12 @@ impl<'a> Codegen<'a> {
                     scope: self.ci.scope.dup(&mut self.ci.nodes),
                 });
 
-                for var in &mut self.ci.scope.iter_mut() {
+                for var in self.ci.scope.vars.iter_mut() {
                     var.set_value(VOID, &mut self.ci.nodes);
+                }
+
+                for aclass in self.ci.scope.aclasses.iter_mut() {
+                    aclass.last_store.set(VOID, &mut self.ci.nodes);
                 }
 
                 self.expr(body);
@@ -2931,7 +3019,9 @@ impl<'a> Codegen<'a> {
                 }
 
                 let Some(bre) = bre.unwrap(&mut self.ci.nodes) else {
-                    for (loop_var, scope_var) in self.ci.scope.iter_mut().zip(scope.iter_mut()) {
+                    for (loop_var, scope_var) in
+                        self.ci.scope.vars.iter_mut().zip(scope.vars.iter_mut())
+                    {
                         if self.ci.nodes[scope_var.value()].is_lazy_phi(node) {
                             if loop_var.value() != scope_var.value() {
                                 scope_var.set_value(
@@ -2950,6 +3040,29 @@ impl<'a> Codegen<'a> {
                             }
                         }
                     }
+
+                    for (loop_class, scope_class) in
+                        self.ci.scope.aclasses.iter_mut().zip(scope.aclasses.iter_mut())
+                    {
+                        if self.ci.nodes[scope_class.last_store.get()].is_lazy_phi(node) {
+                            if loop_class.last_store.get() != scope_class.last_store.get() {
+                                scope_class.last_store.set(
+                                    self.ci.nodes.modify_input(
+                                        scope_class.last_store.get(),
+                                        2,
+                                        loop_class.last_store.get(),
+                                    ),
+                                    &mut self.ci.nodes,
+                                );
+                            } else {
+                                let phi = &self.ci.nodes[scope_class.last_store.get()];
+                                let prev = phi.inputs[1];
+                                self.ci.nodes.replace(scope_class.last_store.get(), prev);
+                                scope_class.last_store.set(prev, &mut self.ci.nodes);
+                            }
+                        }
+                    }
+
                     scope.clear(&mut self.ci.nodes);
                     self.ci.ctrl.set(NEVER, &mut self.ci.nodes);
 
@@ -2965,8 +3078,13 @@ impl<'a> Codegen<'a> {
 
                 self.ci.nodes.lock(node);
 
-                for ((dest_var, scope_var), loop_var) in
-                    self.ci.scope.iter_mut().zip(scope.iter_mut()).zip(bres.iter_mut())
+                for ((dest_var, scope_var), loop_var) in self
+                    .ci
+                    .scope
+                    .vars
+                    .iter_mut()
+                    .zip(scope.vars.iter_mut())
+                    .zip(bres.vars.iter_mut())
                 {
                     if self.ci.nodes[scope_var.value()].is_lazy_phi(node) {
                         if loop_var.value() != scope_var.value() {
@@ -2992,9 +3110,44 @@ impl<'a> Codegen<'a> {
                     debug_assert!(!self.ci.nodes[dest_var.value()].is_lazy_phi(node));
                 }
 
+                for ((dest_class, scope_class), loop_class) in self
+                    .ci
+                    .scope
+                    .aclasses
+                    .iter_mut()
+                    .zip(scope.aclasses.iter_mut())
+                    .zip(bres.aclasses.iter_mut())
+                {
+                    if self.ci.nodes[scope_class.last_store.get()].is_lazy_phi(node) {
+                        if loop_class.last_store.get() != scope_class.last_store.get() {
+                            scope_class.last_store.set(
+                                self.ci.nodes.modify_input(
+                                    scope_class.last_store.get(),
+                                    2,
+                                    loop_class.last_store.get(),
+                                ),
+                                &mut self.ci.nodes,
+                            );
+                        } else {
+                            if dest_class.last_store.get() == scope_class.last_store.get() {
+                                dest_class.last_store.set(VOID, &mut self.ci.nodes);
+                            }
+                            let phi = &self.ci.nodes[scope_class.last_store.get()];
+                            let prev = phi.inputs[1];
+                            self.ci.nodes.replace(scope_class.last_store.get(), prev);
+                            scope_class.last_store.set(prev, &mut self.ci.nodes);
+                        }
+                    }
+
+                    if dest_class.last_store.get() == VOID {
+                        dest_class.last_store.set(scope_class.last_store.get(), &mut self.ci.nodes);
+                    }
+
+                    debug_assert!(!self.ci.nodes[dest_class.last_store.get()].is_lazy_phi(node));
+                }
+
                 scope.clear(&mut self.ci.nodes);
                 bres.clear(&mut self.ci.nodes);
-                self.ci.scope.loads.drain(..).for_each(|l| _ = l.remove(&mut self.ci.nodes));
 
                 self.ci.nodes.unlock(node);
                 let rpl = self.ci.nodes.late_peephole(node).unwrap_or(node);
@@ -3029,8 +3182,11 @@ impl<'a> Codegen<'a> {
                     }
                 }
 
-                self.ci.nodes.load_loop_store(&mut self.ci.scope.store, &mut self.ci.loops);
-                let orig_store = self.ci.scope.store.dup(&mut self.ci.nodes);
+                let mut orig_classes = vec![];
+                for (i, aclass) in self.ci.scope.aclasses.iter_mut().enumerate() {
+                    self.ci.nodes.load_loop_aclass(i, aclass, &mut self.ci.loops);
+                    orig_classes.push(aclass.dup(&mut self.ci.nodes));
+                }
                 let else_scope = self.ci.scope.dup(&mut self.ci.nodes);
 
                 self.ci.ctrl.set(
@@ -3050,7 +3206,7 @@ impl<'a> Codegen<'a> {
                     self.ci.ctrl.get()
                 };
 
-                orig_store.remove(&mut self.ci.nodes);
+                orig_classes.into_iter().for_each(|c| c.remove(&mut self.ci.nodes));
 
                 if lcntrl == Nid::MAX && rcntrl == Nid::MAX {
                     then_scope.clear(&mut self.ci.nodes);

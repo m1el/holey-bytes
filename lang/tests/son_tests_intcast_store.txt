@@ -1,11 +1,11 @@
 main:
     ADDI64 r254, r254, -24d
     ST r31, r254, 16a, 8h
+    ADDI64 r3, r254, 0d
     ADDI64 r2, r254, 8d
     LI64 r4, 0d
-    ST r4, r254, 8a, 8h
-    ADDI64 r3, r254, 0d
     ST r4, r254, 0a, 8h
+    ST r4, r254, 8a, 8h
     LI64 r4, 1024d
     JAL r31, r0, :set
     ANDI r1, r1, 4294967295d
