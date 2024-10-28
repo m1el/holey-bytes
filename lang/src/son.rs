@@ -1211,7 +1211,7 @@ impl Nodes {
                             && let Some(&n) = full_stores.next()
                             && full_stores.next().is_none() =>
                     {
-                        if full_read_into.replace(n).is_some() {
+                        if full_read_into.replace((n, self[o].inputs[2])).is_some() {
                             continue 'o;
                         }
                     }
@@ -1219,7 +1219,7 @@ impl Nodes {
                 }
             }
 
-            let Some(dst) = full_read_into else { continue };
+            let Some((dst, o)) = full_read_into else { continue };
 
             let mut saved = Vc::default();
             let mut cursor = dst;
@@ -2797,6 +2797,7 @@ impl<'a> Codegen<'a> {
                 Some(self.ci.nodes.new_node_lit(ty::Id::TYPE, Kind::CInt { value }, [VOID]))
             }
             Expr::Ctor { pos, ty, fields, .. } => {
+                ctx.ty = ty.map(|ty| self.ty(ty)).or(ctx.ty);
                 inference!(sty, ctx, self, pos, "struct", "<struct_ty>.{...}");
 
                 let ty::Kind::Struct(s) = sty.expand() else {
