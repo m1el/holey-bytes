@@ -3885,5 +3885,6 @@ mod tests {
         loop_stores;
         dead_code_in_loop;
         infinite_loop_after_peephole;
+        aliasing_overoptimization;
     }
 }

@@ -1144,3 +1144,15 @@ main := fn(): uint {
 	return f
 }
 ```
+
+#### aliasing_overoptimization
+```hb
+Foo := struct {ptr: ^uint, rnd: uint}
+
+main := fn(): uint {
+	mem := &2
+	stru := Foo.(mem, 0);
+	*stru.ptr = 0
+	return *mem
+}
+```

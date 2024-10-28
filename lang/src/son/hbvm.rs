@@ -675,7 +675,7 @@ impl<'a> Function<'a> {
             "{:?}",
             self.nodes[nid]
         );
-        debug_assert_eq!(self.nodes[nid].lock_rc, 0, "{:?}", self.nodes[nid]);
+        debug_assert_eq!(self.nodes[nid].lock_rc, 0, "{nid} {:?}", self.nodes[nid]);
         debug_assert!(self.nodes[nid].kind != Kind::Phi || self.nodes[nid].ty != ty::Id::VOID);
         regalloc2::VReg::new(nid as _, regalloc2::RegClass::Int)
     }
@@ -953,15 +953,18 @@ impl<'a> Function<'a> {
             }
             Kind::Stck | Kind::Arg
                 if node.outputs.iter().all(|&n| {
-                    matches!(self.nodes[n].kind, Kind::Stre | Kind::Load
-                        if self.nodes[n].ty.loc(self.tys) == Loc::Reg)
-                        || matches!(self.nodes[n].kind, Kind::BinOp { op: TokenKind::Add }
-                    if self.nodes.is_const(self.nodes[n].inputs[2])
-                        && self.nodes[n]
-                            .outputs
-                            .iter()
-                            .all(|&n| matches!(self.nodes[n].kind, Kind::Stre | Kind::Load
-                                if self.nodes[n].ty.loc(self.tys) == Loc::Reg)))
+                    matches!(self.nodes[n].kind,  Kind::Load
+                        if self.nodes[n].ty.loc(self.tys) == Loc::Reg) 
+                    || matches!(self.nodes[n].kind, Kind::Stre 
+                        if self.nodes[n].ty.loc(self.tys) == Loc::Reg
+                        &&  self.nodes[n].inputs[1] != nid)
+                    || matches!(self.nodes[n].kind, Kind::BinOp { op: TokenKind::Add }
+                        if self.nodes.is_const(self.nodes[n].inputs[2])
+                            && self.nodes[n]
+                                .outputs
+                                .iter()
+                                .all(|&n| matches!(self.nodes[n].kind, Kind::Stre | Kind::Load
+                                    if self.nodes[n].ty.loc(self.tys) == Loc::Reg)))
                 }) => self.nodes.lock(nid),
             Kind::Stck if self.tys.size_of(node.ty) == 0 => self.nodes.lock(nid),
             Kind::Stck => {
