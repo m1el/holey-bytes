@@ -1002,57 +1002,47 @@ impl Nodes {
                         }
                     }
 
-                    // TODO: this can be an offset already due to previous peeps so handle that
-                    if let &[mcall] = unidentifed.as_slice()
-                        && matches!(self[mcall].kind, Kind::Call { .. })
-                        && self[mcall].inputs.last() == Some(&stack)
-                    {
-                        self.modify_input(mcall, self[mcall].inputs.len() - 1, region);
+                    debug_assert_matches!(
+                        self[last_store].kind,
+                        Kind::Stre | Kind::Mem,
+                        "{:?}",
+                        self[last_store]
+                    );
+                    debug_assert_matches!(
+                        self[first_store].kind,
+                        Kind::Stre | Kind::Mem,
+                        "{:?}",
+                        self[first_store]
+                    );
 
-                        return Some(last_store);
-                    } else {
-                        debug_assert_matches!(
-                            self[last_store].kind,
-                            Kind::Stre | Kind::Mem,
-                            "{:?}",
-                            self[last_store]
-                        );
-                        debug_assert_matches!(
-                            self[first_store].kind,
-                            Kind::Stre | Kind::Mem,
-                            "{:?}",
-                            self[first_store]
-                        );
-
-                        if !unidentifed.is_empty() {
-                            break 'eliminate;
-                        }
-
-                        // FIXME: when the loads and stores become parallel we will need to get saved
-                        // differently
-                        let mut prev_store = store;
-                        for mut oper in saved.into_iter().rev() {
-                            let mut region = region;
-                            if let Kind::BinOp { op } = self[oper].kind {
-                                debug_assert_eq!(self[oper].outputs.len(), 1);
-                                debug_assert_eq!(self[self[oper].outputs[0]].kind, Kind::Stre);
-                                region = self.new_node(self[oper].ty, Kind::BinOp { op }, [
-                                    VOID,
-                                    region,
-                                    self[oper].inputs[2],
-                                ]);
-                                oper = self[oper].outputs[0];
-                            }
-
-                            let mut inps = self[oper].inputs.clone();
-                            debug_assert_eq!(inps.len(), 4);
-                            inps[2] = region;
-                            inps[3] = prev_store;
-                            prev_store = self.new_node(self[oper].ty, Kind::Stre, inps);
-                        }
-
-                        return Some(prev_store);
+                    if !unidentifed.is_empty() {
+                        break 'eliminate;
                     }
+
+                    // FIXME: when the loads and stores become parallel we will need to get saved
+                    // differently
+                    let mut prev_store = store;
+                    for mut oper in saved.into_iter().rev() {
+                        let mut region = region;
+                        if let Kind::BinOp { op } = self[oper].kind {
+                            debug_assert_eq!(self[oper].outputs.len(), 1);
+                            debug_assert_eq!(self[self[oper].outputs[0]].kind, Kind::Stre);
+                            region = self.new_node(self[oper].ty, Kind::BinOp { op }, [
+                                VOID,
+                                region,
+                                self[oper].inputs[2],
+                            ]);
+                            oper = self[oper].outputs[0];
+                        }
+
+                        let mut inps = self[oper].inputs.clone();
+                        debug_assert_eq!(inps.len(), 4);
+                        inps[2] = region;
+                        inps[3] = prev_store;
+                        prev_store = self.new_node(self[oper].ty, Kind::Stre, inps);
+                    }
+
+                    return Some(prev_store);
                 }
 
                 if value != VOID
@@ -4080,5 +4070,6 @@ mod tests {
         infinite_loop_after_peephole;
         aliasing_overoptimization;
         global_aliasing_overptimization;
+        overwrite_aliasing_overoptimization;
     }
 }

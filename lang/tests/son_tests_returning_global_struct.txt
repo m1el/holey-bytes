@@ -1,27 +1,29 @@
 main:
-    ADDI64 r254, r254, -12d
-    ST r31, r254, 4a, 8h
-    ADDI64 r2, r254, 0d
+    ADDI64 r254, r254, -24d
+    ST r31, r254, 8a, 16h
+    ADDI64 r32, r254, 4d
     JAL r31, r0, :random_color
-    ST r1, r254, 0a, 4h
-    LD r5, r254, 0a, 1h
-    LD r8, r254, 1a, 1h
-    LD r12, r254, 2a, 1h
-    ANDI r9, r5, 255d
-    ANDI r1, r8, 255d
-    LD r6, r254, 3a, 1h
-    ANDI r5, r12, 255d
-    ADD64 r4, r1, r9
-    ANDI r10, r6, 255d
-    ADD64 r9, r4, r5
-    ADD64 r1, r9, r10
-    LD r31, r254, 4a, 8h
-    ADDI64 r254, r254, 12d
+    ST r1, r254, 4a, 4h
+    ADDI64 r5, r254, 0d
+    BMC r32, r5, 4h
+    LD r8, r254, 0a, 1h
+    LD r11, r254, 1a, 1h
+    LD r3, r254, 2a, 1h
+    ANDI r12, r8, 255d
+    ANDI r4, r11, 255d
+    LD r9, r254, 3a, 1h
+    ANDI r8, r3, 255d
+    ADD64 r7, r4, r12
+    ANDI r1, r9, 255d
+    ADD64 r12, r7, r8
+    ADD64 r1, r12, r1
+    LD r31, r254, 8a, 16h
+    ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
 random_color:
     LRA r1, r0, :white
     LD r1, r1, 0a, 4h
     JALA r0, r31, 0a
-code size: 241
+code size: 257
 ret: 1020
 status: Ok(())

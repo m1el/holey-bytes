@@ -1,17 +1,20 @@
 deinit:
-    ADDI64 r254, r254, -16d
-    ST r31, r254, 0a, 16h
-    CP r32, r2
+    ADDI64 r254, r254, -48d
+    ST r31, r254, 24a, 24h
     LD r5, r2, 16a, 8h
+    CP r32, r2
     LI64 r4, 8d
     MUL64 r3, r5, r4
     CP r5, r32
     LD r2, r5, 0a, 8h
     JAL r31, r0, :free
-    CP r1, r32
+    ADDI64 r33, r254, 0d
+    CP r1, r33
     JAL r31, r0, :new
-    LD r31, r254, 0a, 16h
-    ADDI64 r254, r254, 16d
+    CP r2, r32
+    BMC r33, r2, 24h
+    LD r31, r254, 24a, 24h
+    ADDI64 r254, r254, 48d
     JALA r0, r31, 0a
 free:
     CP r10, r2
@@ -23,21 +26,23 @@ free:
     ECA 
     JALA r0, r31, 0a
 main:
-    ADDI64 r254, r254, -48d
-    ST r31, r254, 24a, 24h
-    ADDI64 r32, r254, 0d
+    ADDI64 r254, r254, -80d
+    ST r31, r254, 48a, 32h
+    ADDI64 r32, r254, 24d
     CP r1, r32
     JAL r31, r0, :new
+    ADDI64 r33, r254, 0d
+    BMC r32, r33, 24h
     LI64 r3, 69d
-    CP r2, r32
+    CP r2, r33
     JAL r31, r0, :push
-    LD r9, r254, 0a, 8h
-    LD r33, r9, 0a, 8h
-    CP r2, r32
+    LD r12, r254, 0a, 8h
+    LD r34, r12, 0a, 8h
+    CP r2, r33
     JAL r31, r0, :deinit
-    CP r1, r33
-    LD r31, r254, 24a, 24h
-    ADDI64 r254, r254, 48d
+    CP r1, r34
+    LD r31, r254, 48a, 32h
+    ADDI64 r254, r254, 80d
     JALA r0, r31, 0a
 malloc:
     CP r9, r2
@@ -121,6 +126,6 @@ push:
  4: LD r31, r254, 0a, 72h
     ADDI64 r254, r254, 72d
     JALA r0, r31, 0a
-code size: 945
+code size: 980
 ret: 69
 status: Ok(())

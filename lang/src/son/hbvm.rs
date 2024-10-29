@@ -985,14 +985,17 @@ impl<'a> Function<'a> {
                         if self.nodes[n].ty.loc(self.tys) == Loc::Reg)
                     || matches!(self.nodes[n].kind, Kind::Stre
                         if self.nodes[n].ty.loc(self.tys) == Loc::Reg
-                        &&  self.nodes[n].inputs[1] != nid)
+                        && self.nodes[n].inputs[1] != nid)
                     || matches!(self.nodes[n].kind, Kind::BinOp { op: TokenKind::Add }
                         if self.nodes.is_const(self.nodes[n].inputs[2])
                             && self.nodes[n]
                                 .outputs
                                 .iter()
-                                .all(|&n| matches!(self.nodes[n].kind, Kind::Stre | Kind::Load
-                                    if self.nodes[n].ty.loc(self.tys) == Loc::Reg)))
+                                .all(|&n| matches!(self.nodes[n].kind, Kind::Load
+                                    if self.nodes[n].ty.loc(self.tys) == Loc::Reg)
+                                || matches!(self.nodes[n].kind, Kind::Stre
+                                    if self.nodes[n].ty.loc(self.tys) == Loc::Reg
+                                && self.nodes[n].inputs[1] != nid)))
                 }) => self.nodes.lock(nid),
             Kind::Stck if self.tys.size_of(node.ty) == 0 => self.nodes.lock(nid),
             Kind::Stck => {

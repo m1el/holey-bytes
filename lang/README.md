@@ -1181,3 +1181,18 @@ clobber := fn(): void {
 	var = 0
 }
 ```
+
+#### overwrite_aliasing_overoptimization
+```hb
+Foo := struct {a: int, b: int}
+Bar := struct {f: Foo, b: int}
+
+main := fn(): int {
+	value := Bar.{b: 1, f: .(4, 1)}
+	value.f = opaque()
+	return value.f.a - value.f.b - value.b
+}
+
+opaque := fn(): Foo {
+	return .(3, 2)
+}
