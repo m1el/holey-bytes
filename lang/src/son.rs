@@ -621,10 +621,7 @@ impl Nodes {
     }
 
     fn iter_peeps(&mut self, mut fuel: usize, stack: &mut Vec<Nid>) {
-        debug_assert!(!self.complete);
         debug_assert!(stack.is_empty());
-
-        self.complete = true;
 
         self.iter()
             .filter_map(|(id, node)| node.kind.is_peeped().then_some(id))
@@ -635,6 +632,11 @@ impl Nodes {
             && let Some(node) = stack.pop()
         {
             fuel -= 1;
+
+            if self[node].outputs.is_empty() {
+                self.push_adjacent_nodes(node, stack);
+            }
+
             if self.unlock_remove(node) {
                 continue;
             }
@@ -656,11 +658,18 @@ impl Nodes {
 
     fn push_adjacent_nodes(&mut self, of: Nid, stack: &mut Vec<Nid>) {
         let prev_len = stack.len();
-        for &i in self[of].outputs.iter().chain(self[of].inputs.iter()) {
-            if self[i].kind.is_peeped() && self[i].lock_rc == 0 {
+        for &i in self[of]
+            .outputs
+            .iter()
+            .chain(self[of].inputs.iter())
+            .chain(self[of].peep_triggers.iter())
+        {
+            if self.values[i as usize].is_ok() && self[i].kind.is_peeped() && self[i].lock_rc == 0 {
                 stack.push(i);
             }
         }
+
+        self[of].peep_triggers = Vc::default();
         stack.iter().skip(prev_len).for_each(|&n| self.lock(n));
     }
 
@@ -877,6 +886,11 @@ impl Nodes {
                     let mut cursor = n;
                     let class = self.aclass_index(self[cursor].inputs[2]);
 
+                    if self[class.1].kind != Kind::Stck {
+                        new_inps.push(n);
+                        continue;
+                    }
+
                     cursor = self[cursor].inputs[3];
                     while cursor != MEM {
                         if self.aclass_index(self[cursor].inputs[2]) != class
@@ -927,9 +941,15 @@ impl Nodes {
                 };
 
                 'eliminate: {
-                    break 'eliminate;
+                    if self[target].outputs.is_empty() {
+                        break 'eliminate;
+                    }
+
                     if self[value].kind != Kind::Load || self[value].outputs.as_slice() != [target]
                     {
+                        for &ele in self[value].outputs.clone().iter().filter(|&&n| n != target) {
+                            self[ele].peep_triggers.push(target);
+                        }
                         break 'eliminate;
                     }
 
@@ -1038,7 +1058,7 @@ impl Nodes {
                         return Some(store);
                     }
 
-                    return Some(self.modify_input(store, 1, self[target].inputs[1]));
+                    return Some(self.modify_input(store, 1, value));
                 }
             }
             K::Load => {
@@ -1383,117 +1403,6 @@ impl Nodes {
             dominated = self.idom(dominated);
         }
     }
-
-    fn eliminate_stack_temporaries(&mut self) {
-        'o: for stack in self[MEM].outputs.clone() {
-            if self.values[stack as usize].is_err() || self[stack].kind != Kind::Stck {
-                continue;
-            }
-            let mut full_read_into = None;
-            let mut unidentifed = Vc::default();
-            for &o in self[stack].outputs.iter() {
-                match self[o].kind {
-                    Kind::Load
-                        if self[o].ty == self[stack].ty
-                            && self[o].outputs.iter().all(|&n| self[n].kind == Kind::Stre)
-                            && let mut full_stores = self[o].outputs.iter().filter(|&&n| {
-                                self[n].kind == Kind::Stre && self[n].inputs[1] == o
-                            })
-                            && let Some(&n) = full_stores.next()
-                            && full_stores.next().is_none() =>
-                    {
-                        if full_read_into.replace((n, self[o].inputs[2])).is_some() {
-                            continue 'o;
-                        }
-                    }
-                    _ => unidentifed.push(o),
-                }
-            }
-
-            let Some((dst, last_store)) = full_read_into else { continue };
-
-            let mut saved = Vc::default();
-            let mut cursor = last_store;
-            let mut first_store = last_store;
-            while cursor != MEM && self[cursor].kind == Kind::Stre {
-                let mut contact_point = cursor;
-                let mut region = self[cursor].inputs[2];
-                if let Kind::BinOp { op } = self[region].kind {
-                    debug_assert_matches!(op, TokenKind::Add | TokenKind::Sub);
-                    contact_point = region;
-                    region = self[region].inputs[1]
-                }
-
-                if region != stack {
-                    break;
-                }
-                let Some(index) = unidentifed.iter().position(|&n| n == contact_point) else {
-                    continue 'o;
-                };
-                unidentifed.remove(index);
-                saved.push(contact_point);
-                first_store = cursor;
-                cursor = *self[cursor].inputs.get(3).unwrap_or(&MEM);
-
-                if unidentifed.is_empty() {
-                    break;
-                }
-            }
-
-            let region = self[dst].inputs[2];
-            // TODO: this can be an offset already due to previous peeps so handle that
-            if let &[mcall] = unidentifed.as_slice()
-                && matches!(self[mcall].kind, Kind::Call { .. })
-                && self[mcall].inputs.last() == Some(&stack)
-            {
-                self.modify_input(mcall, self[mcall].inputs.len() - 1, region);
-
-                self.replace(dst, last_store);
-            } else {
-                debug_assert_matches!(
-                    self[last_store].kind,
-                    Kind::Stre | Kind::Mem,
-                    "{:?}",
-                    self[last_store]
-                );
-                debug_assert_matches!(
-                    self[first_store].kind,
-                    Kind::Stre | Kind::Mem,
-                    "{:?}",
-                    self[first_store]
-                );
-
-                if !unidentifed.is_empty() {
-                    continue;
-                }
-
-                // FIXME: when the loads and stores become parallel we will need to get saved
-                // differently
-                let mut prev_store = self[dst].inputs[3];
-                for mut oper in saved.into_iter().rev() {
-                    let mut region = region;
-                    if let Kind::BinOp { op } = self[oper].kind {
-                        debug_assert_eq!(self[oper].outputs.len(), 1);
-                        debug_assert_eq!(self[self[oper].outputs[0]].kind, Kind::Stre);
-                        region = self.new_node(self[oper].ty, Kind::BinOp { op }, [
-                            VOID,
-                            region,
-                            self[oper].inputs[2],
-                        ]);
-                        oper = self[oper].outputs[0];
-                    }
-
-                    let mut inps = self[oper].inputs.clone();
-                    debug_assert_eq!(inps.len(), 4);
-                    inps[2] = region;
-                    inps[3] = prev_store;
-                    prev_store = self.new_node(self[oper].ty, Kind::Stre, inps);
-                }
-
-                self.replace(dst, prev_store);
-            }
-        }
-    }
 }
 
 impl ops::Index<Nid> for Nodes {
@@ -1614,6 +1523,7 @@ pub struct Node {
     kind: Kind,
     inputs: Vc,
     outputs: Vc,
+    peep_triggers: Vc,
     ty: ty::Id,
     offset: Offset,
     ralloc_backref: RallocBRef,
@@ -1894,7 +1804,6 @@ impl ItemCtx {
         self.scope.clear(&mut self.nodes);
         mem::take(&mut self.ctrl).soft_remove(&mut self.nodes);
 
-        self.nodes.eliminate_stack_temporaries();
         self.nodes.iter_peeps(1000, stack);
 
         self.nodes.unlock(MEM);
@@ -2199,11 +2108,10 @@ impl<'a> Codegen<'a> {
                 vc.push(load);
             }
         }
-        let store = self.ci.nodes.new_node_nop(ty, Kind::Stre, vc);
-        aclass.last_store.set(store, &mut self.ci.nodes);
-        let opted = self.ci.nodes.late_peephole(store).unwrap_or(store);
-        aclass.last_store.set_remove(opted, &mut self.ci.nodes);
-        opted
+        mem::take(&mut aclass.last_store).soft_remove(&mut self.ci.nodes);
+        let store = self.ci.nodes.new_node(ty, Kind::Stre, vc);
+        aclass.last_store = StrongRef::new(store, &mut self.ci.nodes);
+        store
     }
 
     fn load_mem(&mut self, region: Nid, ty: ty::Id) -> Nid {

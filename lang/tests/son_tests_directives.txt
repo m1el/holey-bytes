@@ -1,23 +1,19 @@
 main:
-    ADDI64 r254, r254, -31d
+    ADDI64 r254, r254, -16d
     LI64 r1, 10d
-    ADDI64 r4, r254, 15d
-    ST r1, r254, 15a, 8h
+    ADDI64 r4, r254, 0d
+    ST r1, r254, 0a, 8h
     LI64 r7, 20d
-    ST r7, r254, 23a, 8h
+    ST r7, r254, 8a, 8h
     LI64 r6, 6d
     LI64 r5, 5d
     LI64 r2, 1d
     LD r3, r4, 0a, 16h
     ECA 
-    LRA r5, r0, :arbitrary text
-
-    ADDI64 r7, r254, 0d
-    BMC r5, r7, 15h
     LI64 r1, 0d
-    ADDI64 r254, r254, 31d
+    ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
 ev: Ecall
-code size: 190
+code size: 152
 ret: 0
 status: Ok(())
