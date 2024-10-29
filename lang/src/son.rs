@@ -2748,14 +2748,7 @@ impl<'a> Codegen<'a> {
                 let mut clobbered_aliases = vec![GLOBAL_ACLASS];
                 for arg in args {
                     let value = self.expr(arg)?;
-                    if let Some(base) = self.tys.base_of(value.ty) {
-                        clobbered_aliases.push(self.ci.nodes.aclass_index(value.id).0);
-                        if base.has_pointers(self.tys) {
-                            clobbered_aliases.push(0);
-                        }
-                    } else if value.ty.has_pointers(self.tys) {
-                        clobbered_aliases.push(0);
-                    }
+                    self.add_clobbers(value, &mut clobbered_aliases);
                     self.tys.tmp.args.push(value.ty);
                     debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
                     self.ci.nodes.lock(value.id);
@@ -2768,22 +2761,7 @@ impl<'a> Codegen<'a> {
                     self.ci.nodes.unlock(n);
                 }
 
-                for &clobbered in clobbered_aliases.iter() {
-                    let aclass = &mut self.ci.scope.aclasses[clobbered];
-                    self.ci.nodes.load_loop_aclass(clobbered, aclass, &mut self.ci.loops);
-                    inps.push(aclass.last_store.get());
-                    aclass.loads.retain_mut(|load| {
-                        if inps.contains(&load.get()) {
-                            return true;
-                        }
-
-                        if let Some(load) = mem::take(load).remove(&mut self.ci.nodes) {
-                            inps.push(load);
-                        }
-
-                        false
-                    });
-                }
+                self.append_clobbers(&mut inps, &clobbered_aliases);
 
                 let alt_value = match ty.loc(self.tys) {
                     Loc::Reg => None,
@@ -2800,16 +2778,7 @@ impl<'a> Codegen<'a> {
                     &mut self.ci.nodes,
                 );
 
-                for &clobbered in clobbered_aliases.iter() {
-                    if clobbered == DEFAULT_ACLASS {
-                        continue;
-                    }
-                    let aclass = self.ci.scope.aclasses[clobbered].last_store.get();
-                    if aclass == MEM {
-                        continue;
-                    }
-                    self.store_mem(self.ci.nodes[aclass].inputs[2], ty::Id::VOID, VOID);
-                }
+                self.add_clobber_stores(&clobbered_aliases);
 
                 alt_value.or(Some(Value::new(self.ci.ctrl.get()).ty(ty)))
             }
@@ -2858,15 +2827,7 @@ impl<'a> Codegen<'a> {
                     let mut value = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
                     debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
                     self.assert_ty(arg.pos(), &mut value, ty, fa!("argument {}", carg.name));
-
-                    if let Some(base) = self.tys.base_of(value.ty) {
-                        clobbered_aliases.push(self.ci.nodes.aclass_index(value.id).0);
-                        if base.has_pointers(self.tys) {
-                            clobbered_aliases.push(0);
-                        }
-                    } else if value.ty.has_pointers(self.tys) {
-                        clobbered_aliases.push(0);
-                    }
+                    self.add_clobbers(value, &mut clobbered_aliases);
 
                     self.ci.nodes.lock(value.id);
                     inps.push(value.id);
@@ -2876,22 +2837,7 @@ impl<'a> Codegen<'a> {
                     self.ci.nodes.unlock(n);
                 }
 
-                for &clobbered in clobbered_aliases.iter() {
-                    let aclass = &mut self.ci.scope.aclasses[clobbered];
-                    self.ci.nodes.load_loop_aclass(clobbered, aclass, &mut self.ci.loops);
-                    inps.push(aclass.last_store.get());
-                    aclass.loads.retain_mut(|load| {
-                        if inps.contains(&load.get()) {
-                            return true;
-                        }
-
-                        if let Some(load) = mem::take(load).remove(&mut self.ci.nodes) {
-                            inps.push(load);
-                        }
-
-                        false
-                    });
-                }
+                self.append_clobbers(&mut inps, &clobbered_aliases);
 
                 let alt_value = match sig.ret.loc(self.tys) {
                     Loc::Reg => None,
@@ -2908,16 +2854,7 @@ impl<'a> Codegen<'a> {
                     &mut self.ci.nodes,
                 );
 
-                for &clobbered in clobbered_aliases.iter() {
-                    if clobbered == DEFAULT_ACLASS {
-                        continue;
-                    }
-                    let aclass = self.ci.scope.aclasses[clobbered].last_store.get();
-                    if aclass == MEM {
-                        continue;
-                    }
-                    self.store_mem(self.ci.nodes[aclass].inputs[2], ty::Id::VOID, VOID);
-                }
+                self.add_clobber_stores(&clobbered_aliases);
 
                 alt_value.or(Some(Value::new(self.ci.ctrl.get()).ty(sig.ret)))
             }
@@ -3484,6 +3421,49 @@ impl<'a> Codegen<'a> {
                 self.report_unhandled_ast(e, "bruh");
                 Value::NEVER
             }
+        }
+    }
+
+    fn add_clobbers(&mut self, value: Value, clobbered_aliases: &mut Vec<usize>) {
+        if let Some(base) = self.tys.base_of(value.ty) {
+            clobbered_aliases.push(self.ci.nodes.aclass_index(value.id).0);
+            if base.has_pointers(self.tys) {
+                clobbered_aliases.push(0);
+            }
+        } else if value.ty.has_pointers(self.tys) {
+            clobbered_aliases.push(0);
+        }
+    }
+
+    fn append_clobbers(&mut self, inps: &mut Vc, clobbered_aliases: &[usize]) {
+        for &clobbered in clobbered_aliases.iter() {
+            let aclass = &mut self.ci.scope.aclasses[clobbered];
+            self.ci.nodes.load_loop_aclass(clobbered, aclass, &mut self.ci.loops);
+            inps.push(aclass.last_store.get());
+            aclass.loads.retain_mut(|load| {
+                if inps.contains(&load.get()) {
+                    return true;
+                }
+
+                if let Some(load) = mem::take(load).remove(&mut self.ci.nodes) {
+                    inps.push(load);
+                }
+
+                false
+            });
+        }
+    }
+
+    fn add_clobber_stores(&mut self, clobbered_aliases: &[usize]) {
+        for &clobbered in clobbered_aliases.iter() {
+            if clobbered == DEFAULT_ACLASS {
+                continue;
+            }
+            let aclass = self.ci.scope.aclasses[clobbered].last_store.get();
+            if aclass == MEM {
+                continue;
+            }
+            self.store_mem(self.ci.nodes[aclass].inputs[2], ty::Id::VOID, VOID);
         }
     }
 
