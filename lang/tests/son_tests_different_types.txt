@@ -22,23 +22,9 @@ main:
     JEQ r10, r9, :2
     LI64 r1, 64d
     JMP :1
- 2: LD r4, r254, 0a, 1h
-    LD r7, r254, 1a, 1h
-    ANDI r8, r4, 255d
-    LD r6, r254, 4a, 4h
-    LD r1, r254, 2a, 1h
-    ANDI r2, r7, 255d
-    ADD32 r7, r6, r8
-    LD r5, r254, 3a, 1h
-    ANDI r6, r1, 255d
-    ADD32 r11, r7, r2
-    ANDI r9, r5, 255d
-    ADD32 r2, r11, r6
-    ADD32 r4, r2, r9
-    ADD32 r6, r4, r12
-    ANDI r1, r6, 4294967295d
+ 2: LI64 r1, 512d
  1: ADDI64 r254, r254, 12d
     JALA r0, r31, 0a
-code size: 387
+code size: 257
 ret: 512
 status: Ok(())

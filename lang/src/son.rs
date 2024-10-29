@@ -22,7 +22,6 @@ use {
         fmt::{self, Debug, Display, Write},
         format_args as fa, mem,
         ops::{self, Deref},
-        usize,
     },
     hashbrown::hash_map,
     hbbytecode::DisasmError,
@@ -678,10 +677,7 @@ impl Nodes {
         loop {
             region = match self[region].kind {
                 Kind::BinOp { op: TokenKind::Add | TokenKind::Sub } => self[region].inputs[1],
-                Kind::Phi => {
-                    debug_assert_eq!(self[region].inputs[2], 0);
-                    self[region].inputs[1]
-                }
+                Kind::Phi if self[region].inputs[2] == 0 => self[region].inputs[1],
                 _ => break (self[region].aclass, region),
             };
         }
@@ -1064,12 +1060,27 @@ impl Nodes {
                 }
             }
             K::Load => {
-                if self[target].inputs.len() == 3
-                    && self[self[target].inputs[2]].kind == Kind::Stre
-                    && self[self[target].inputs[2]].inputs[2] == self[target].inputs[1]
-                    && self[self[target].inputs[2]].ty == self[target].ty
+                let &[_, region, store] = self[target].inputs.as_slice() else { unreachable!() };
+
+                if self[store].kind == Kind::Stre
+                    && self[store].inputs[2] == region
+                    && self[store].ty == self[target].ty
                 {
-                    return Some(self[self[target].inputs[2]].inputs[1]);
+                    return Some(self[store].inputs[1]);
+                }
+
+                let (index, reg) = self.aclass_index(region);
+                if index != 0 && self[reg].kind == Kind::Stck {
+                    let mut cursor = store;
+                    while cursor != MEM
+                        && self[cursor].kind == Kind::Stre
+                        && self[cursor].inputs[1] != VOID
+                    {
+                        if self[cursor].inputs[2] == region && self[cursor].ty == self[target].ty {
+                            return Some(self[cursor].inputs[1]);
+                        }
+                        cursor = self[cursor].inputs[3];
+                    }
                 }
             }
             K::Loop => {
@@ -1537,7 +1548,7 @@ pub struct Node {
 
 impl Node {
     fn is_dangling(&self) -> bool {
-        self.outputs.len() + self.lock_rc as usize == 0
+        self.outputs.len() + self.lock_rc as usize == 0 && self.kind != Kind::Arg
     }
 
     fn key(&self) -> (Kind, &[Nid], ty::Id) {
