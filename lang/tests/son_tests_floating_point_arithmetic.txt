@@ -1,0 +1,6 @@
+main:
+    LI32 r1, 3212836864w
+    JALA r0, r31, 0a
+code size: 25
+ret: 3212836864
+status: Ok(())

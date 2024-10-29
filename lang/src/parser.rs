@@ -472,6 +472,14 @@ impl<'a, 'b> Parser<'a, 'b> {
                     radix,
                 }
             }
+            T::Float => E::Float {
+                pos,
+                value: match <f64 as core::str::FromStr>::from_str(self.lexer.slice(token.range()))
+                {
+                    Ok(f) => f.to_bits(),
+                    Err(e) => self.report(token.start, format_args!("invalid float: {e}"))?,
+                },
+            },
             T::LParen => {
                 let expr = self.expr()?;
                 self.expect_advance(T::RParen)?;
@@ -810,6 +818,11 @@ generate_expr! {
             pos:   Pos,
             value: i64,
             radix: Radix,
+        },
+        /// `'[0-9]+.[0-9]*'`
+        Float {
+            pos:   Pos,
+            value: u64,
         },
         /// node: precedence defined in `OP` applies
         /// `Expr OP Expr`

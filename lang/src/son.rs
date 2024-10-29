@@ -692,12 +692,16 @@ impl Nodes {
                 };
                 let ty = self[target].ty;
 
+                let is_float = self[lhs].ty.is_float();
+
                 if let (&K::CInt { value: a }, &K::CInt { value: b }) =
                     (&self[lhs].kind, &self[rhs].kind)
                 {
-                    return Some(
-                        self.new_node(ty, K::CInt { value: op.apply_binop(a, b) }, [ctrl]),
-                    );
+                    return Some(self.new_node(
+                        ty,
+                        K::CInt { value: op.apply_binop(a, b, is_float) },
+                        [ctrl],
+                    ));
                 }
 
                 if lhs == rhs {
@@ -734,10 +738,11 @@ impl Nodes {
                         && let K::CInt { value: bv } = self[rhs].kind
                     {
                         // (a op #b) op #c => a op (#b op #c)
-                        let new_rhs =
-                            self.new_node_nop(ty, K::CInt { value: op.apply_binop(av, bv) }, [
-                                ctrl,
-                            ]);
+                        let new_rhs = self.new_node_nop(
+                            ty,
+                            K::CInt { value: op.apply_binop(av, bv, is_float) },
+                            [ctrl],
+                        );
                         return Some(self.new_node(ty, K::BinOp { op }, [ctrl, a, new_rhs]));
                     }
 
@@ -2235,6 +2240,11 @@ impl<'a> Codegen<'a> {
                 Kind::CInt { value },
                 [VOID],
             )),
+            Expr::Float { value, .. } => Some(self.ci.nodes.new_node_lit(
+                ctx.ty.filter(|ty| ty.is_float()).unwrap_or(ty::Id::F32),
+                Kind::CInt { value: value as _ },
+                [VOID],
+            )),
             Expr::Ident { id, .. }
                 if let Some(index) = self.ci.scope.vars.iter().rposition(|v| v.id == id) =>
             {
@@ -2425,10 +2435,21 @@ impl<'a> Codegen<'a> {
             Expr::UnOp { pos, op: op @ TokenKind::Sub, val } => {
                 let val =
                     self.expr_ctx(val, Ctx::default().with_ty(ctx.ty.unwrap_or(ty::Id::INT)))?;
-                if !val.ty.is_integer() {
+                if val.ty.is_integer() {
+                    Some(self.ci.nodes.new_node_lit(val.ty, Kind::UnOp { op }, [VOID, val.id]))
+                } else if val.ty.is_float() {
+                    let value = self.ci.nodes.new_node_nop(
+                        val.ty,
+                        Kind::CInt { value: (-1f64).to_bits() as _ },
+                        [VOID],
+                    );
+                    Some(self.ci.nodes.new_node_lit(val.ty, Kind::BinOp { op: TokenKind::Mul }, [
+                        VOID, val.id, value,
+                    ]))
+                } else {
                     self.report(pos, fa!("cant negate '{}'", self.ty_display(val.ty)));
+                    Value::NEVER
                 }
-                Some(self.ci.nodes.new_node_lit(val.ty, Kind::UnOp { op }, [VOID, val.id]))
             }
             Expr::BinOp { left, op: TokenKind::Decl, right, .. } => {
                 let mut right = self.expr(right)?;
@@ -2473,7 +2494,11 @@ impl<'a> Codegen<'a> {
                 self.strip_var(&mut lhs);
 
                 match lhs.ty.expand() {
-                    _ if lhs.ty.is_pointer() || lhs.ty.is_integer() || lhs.ty == ty::Id::BOOL => {
+                    _ if lhs.ty.is_pointer()
+                        || lhs.ty.is_integer()
+                        || lhs.ty == ty::Id::BOOL
+                        || (lhs.ty.is_float() && op.is_supported_float_op()) =>
+                    {
                         self.strip_ptr(&mut lhs);
                         self.ci.nodes.lock(lhs.id);
                         let rhs = self.expr_ctx(right, Ctx::default().with_ty(lhs.ty));
@@ -3924,6 +3949,7 @@ mod tests {
         // Tour Examples
         main_fn;
         arithmetic;
+        floating_point_arithmetic;
         functions;
         comments;
         if_statements;

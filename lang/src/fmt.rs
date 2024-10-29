@@ -366,6 +366,9 @@ impl<'a> Formatter<'a> {
                 let mut buf = [0u8; 64];
                 f.write_str(display_radix(radix, value as u64, &mut buf))
             }
+            Expr::Float { pos, .. } => {
+                f.write_str(&self.source[Lexer::restore(self.source, pos).eat().range()])
+            }
             Expr::Bool { value, .. } => f.write_str(if value { "true" } else { "false" }),
             Expr::Idk { .. } => f.write_str("idk"),
             Expr::Null { .. } => f.write_str("null"),
@@ -475,7 +478,8 @@ pub mod test {
         let len = crate::fmt::minify(&mut minned);
         minned.truncate(len);
 
-        let ast = parser::Ast::new(ident, minned, &mut Ctx::default(), &mut parser::no_loader);
+        let mut ctx = Ctx::default();
+        let ast = parser::Ast::new(ident, minned, &mut ctx, &mut parser::no_loader);
         //log::error!(
         //    "{} / {} = {} | {} / {} = {}",
         //    ast.mem.size(),

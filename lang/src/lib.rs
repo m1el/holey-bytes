@@ -409,6 +409,10 @@ mod ty {
             }
         }
 
+        pub fn is_float(self) -> bool {
+            matches!(self.repr(), F32 | F64) || self.is_never()
+        }
+
         pub fn is_signed(self) -> bool {
             matches!(self.repr(), I8..=INT) || self.is_never()
         }
@@ -465,8 +469,8 @@ mod ty {
                 Kind::Ptr(_) => 8,
                 Kind::Builtin(VOID) => 0,
                 Kind::Builtin(NEVER) => 0,
-                Kind::Builtin(INT | UINT) => 8,
-                Kind::Builtin(I32 | U32 | TYPE) => 4,
+                Kind::Builtin(INT | UINT | F64) => 8,
+                Kind::Builtin(I32 | U32 | TYPE | F32) => 4,
                 Kind::Builtin(I16 | U16) => 2,
                 Kind::Builtin(I8 | U8 | BOOL) => 1,
                 _ => return None,
@@ -547,7 +551,6 @@ mod ty {
                 };)*
             }
 
-            #[expect(dead_code)]
             impl Id {
                 $(pub const $name: Self = Kind::Builtin($name).compress();)*
             }
@@ -584,7 +587,8 @@ mod ty {
         I16;
         I32;
         INT;
-
+        F32;
+        F64;
     }
 
     macro_rules! type_kind {

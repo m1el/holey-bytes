@@ -51,6 +51,13 @@ main := fn(): uint {
 }
 ```
 
+#### floating_point_arithmetic
+```hb
+main := fn(): f32 {
+	return 10. - 20. / 2. + 4. * (2. + 2.) - 4. * 4. + -1.
+}
+```
+
 #### functions
 ```hb
 main := fn(): uint {

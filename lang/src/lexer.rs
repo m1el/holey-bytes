@@ -116,6 +116,7 @@ pub enum TokenKind {
 
     Ident,
     Number,
+    Float,
     Eof,
 
     Ct,
@@ -190,7 +191,43 @@ impl TokenKind {
         matches!(self, S::Eq | S::Ne | S::Bor | S::Xor | S::Band | S::Add | S::Mul)
     }
 
-    pub fn apply_binop(self, a: i64, b: i64) -> i64 {
+    pub fn is_supported_float_op(self) -> bool {
+        matches!(
+            self,
+            Self::Add
+                | Self::Sub
+                | Self::Mul
+                | Self::Div
+                | Self::Eq
+                | Self::Ne
+                | Self::Le
+                | Self::Ge
+                | Self::Lt
+                | Self::Gt
+        )
+    }
+
+    pub fn apply_binop(self, a: i64, b: i64, float: bool) -> i64 {
+        if float {
+            debug_assert!(self.is_supported_float_op());
+            let [a, b] = [f64::from_bits(a as _), f64::from_bits(b as _)];
+            let res = match self {
+                Self::Add => a + b,
+                Self::Sub => a - b,
+                Self::Mul => a * b,
+                Self::Div => a / b,
+                Self::Eq => return (a == b) as i64,
+                Self::Ne => return (a != b) as i64,
+                Self::Lt => return (a < b) as i64,
+                Self::Gt => return (a > b) as i64,
+                Self::Le => return (a >= b) as i64,
+                Self::Ge => return (a <= b) as i64,
+                _ => todo!("floating point op: {self}"),
+            };
+
+            return res.to_bits() as _;
+        }
+
         match self {
             Self::Add => a.wrapping_add(b),
             Self::Sub => a.wrapping_sub(b),
@@ -212,15 +249,6 @@ impl TokenKind {
             Self::Shr => a.wrapping_shr(b as _),
             s => todo!("{s}"),
         }
-    }
-
-    pub fn cmp_against(self) -> Option<u64> {
-        Some(match self {
-            TokenKind::Le | TokenKind::Gt => 1,
-            TokenKind::Ne | TokenKind::Eq => 0,
-            TokenKind::Ge | TokenKind::Lt => (-1i64) as _,
-            _ => return None,
-        })
     }
 
     pub fn is_homogenous(&self) -> bool {
@@ -254,6 +282,7 @@ gen_token_kind! {
         CtIdent,
         Ident,
         Number,
+        Float,
         Eof,
         Directive,
         #[keywords]
@@ -418,7 +447,15 @@ impl<'a> Lexer<'a> {
                     while let Some(b'0'..=b'9') = self.peek() {
                         self.advance();
                     }
-                    T::Number
+
+                    if self.advance_if(b'.') {
+                        while let Some(b'0'..=b'9') = self.peek() {
+                            self.advance();
+                        }
+                        T::Float
+                    } else {
+                        T::Number
+                    }
                 }
                 b'a'..=b'z' | b'A'..=b'Z' | b'_' | 127.. => {
                     advance_ident(self);

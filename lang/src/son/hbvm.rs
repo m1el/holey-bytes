@@ -247,7 +247,7 @@ impl ItemCtx {
                         let &[_, cnd] = node.inputs.as_slice() else { unreachable!() };
                         if let Kind::BinOp { op } = fuc.nodes[cnd].kind
                             && let Some((op, swapped)) =
-                                op.cond_op(fuc.nodes[fuc.nodes[cnd].inputs[1]].ty.is_signed())
+                                op.cond_op(fuc.nodes[fuc.nodes[cnd].inputs[1]].ty)
                         {
                             let &[lhs, rhs] = allocs else { unreachable!() };
                             let &[_, lh, rh] = fuc.nodes[cnd].inputs.as_slice() else {
@@ -306,6 +306,16 @@ impl ItemCtx {
                             self.emit(instrs::jmp(0));
                         }
                     }
+                    Kind::CInt { value } if node.ty.is_float() => {
+                        self.emit(match node.ty {
+                            ty::Id::F32 => instrs::li32(
+                                atr(allocs[0]),
+                                (f64::from_bits(value as _) as f32).to_bits(),
+                            ),
+                            ty::Id::F64 => instrs::li64(atr(allocs[0]), value as _),
+                            _ => unreachable!(),
+                        });
+                    }
                     Kind::CInt { value } => self.emit(match tys.size_of(node.ty) {
                         1 => instrs::li8(atr(allocs[0]), value as _),
                         2 => instrs::li16(atr(allocs[0]), value as _),
@@ -319,33 +329,48 @@ impl ItemCtx {
                     }
                     Kind::BinOp { .. } if node.lock_rc != 0 => {}
                     Kind::BinOp { op } => {
-                        let &[.., rhs] = node.inputs.as_slice() else { unreachable!() };
+                        let &[.., lh, rh] = node.inputs.as_slice() else { unreachable!() };
 
-                        if let Kind::CInt { value } = fuc.nodes[rhs].kind
-                            && fuc.nodes[rhs].lock_rc != 0
-                            && let Some(op) =
-                                op.imm_binop(node.ty.is_signed(), fuc.tys.size_of(node.ty))
+                        if let Kind::CInt { value } = fuc.nodes[rh].kind
+                            && fuc.nodes[rh].lock_rc != 0
+                            && let Some(op) = op.imm_binop(node.ty)
                         {
                             let &[dst, lhs] = allocs else { unreachable!() };
                             self.emit(op(atr(dst), atr(lhs), value as _));
                         } else if let Some(op) =
-                            op.binop(node.ty.is_signed(), fuc.tys.size_of(node.ty))
+                            op.binop(node.ty).or(op.float_cmp(fuc.nodes[lh].ty))
                         {
                             let &[dst, lhs, rhs] = allocs else { unreachable!() };
                             self.emit(op(atr(dst), atr(lhs), atr(rhs)));
                         } else if let Some(against) = op.cmp_against() {
-                            let &[_, lh, rh] = node.inputs.as_slice() else { unreachable!() };
+                            let op_ty = fuc.nodes[lh].ty;
+
                             self.emit(extend(fuc.nodes[lh].ty, fuc.nodes[lh].ty.extend(), 0, 0));
                             self.emit(extend(fuc.nodes[rh].ty, fuc.nodes[rh].ty.extend(), 1, 1));
-
-                            let signed = fuc.nodes[lh].ty.is_signed();
-                            let op_fn = if signed { instrs::cmps } else { instrs::cmpu };
                             let &[dst, lhs, rhs] = allocs else { unreachable!() };
-                            self.emit(op_fn(atr(dst), atr(lhs), atr(rhs)));
-                            self.emit(instrs::cmpui(atr(dst), atr(dst), against));
-                            if matches!(op, TokenKind::Eq | TokenKind::Lt | TokenKind::Gt) {
+
+                            if op_ty.is_float() && matches!(op, TokenKind::Le | TokenKind::Ge) {
+                                let opop = match op {
+                                    TokenKind::Le => TokenKind::Gt,
+                                    TokenKind::Ge => TokenKind::Lt,
+                                    _ => unreachable!(),
+                                };
+                                let op_fn = opop.float_cmp(op_ty).unwrap();
+                                self.emit(op_fn(atr(dst), atr(lhs), atr(rhs)));
                                 self.emit(instrs::not(atr(dst), atr(dst)));
+                            } else if op_ty.is_integer() {
+                                let op_fn =
+                                    if op_ty.is_signed() { instrs::cmps } else { instrs::cmpu };
+                                self.emit(op_fn(atr(dst), atr(lhs), atr(rhs)));
+                                self.emit(instrs::cmpui(atr(dst), atr(dst), against));
+                                if matches!(op, TokenKind::Eq | TokenKind::Lt | TokenKind::Gt) {
+                                    self.emit(instrs::not(atr(dst), atr(dst)));
+                                }
+                            } else {
+                                todo!("unhandled operator: {op}");
                             }
+                        } else {
+                            todo!("unhandled operator: {op}");
                         }
                     }
                     Kind::Call { args, func } => {
@@ -725,7 +750,7 @@ impl<'a> Function<'a> {
                 let &[mut then, mut else_] = node.outputs.as_slice() else { unreachable!() };
 
                 if let Kind::BinOp { op } = self.nodes[cond].kind
-                    && let Some((_, swapped)) = op.cond_op(node.ty.is_signed())
+                    && let Some((_, swapped)) = op.cond_op(node.ty)
                 {
                     if swapped {
                         mem::swap(&mut then, &mut else_);
@@ -789,9 +814,9 @@ impl<'a> Function<'a> {
                 if node.outputs.iter().all(|&o| {
                     let ond = &self.nodes[o];
                     matches!(ond.kind, Kind::BinOp { op }
-                        if op.imm_binop(ond.ty.is_signed(), 8).is_some()
+                        if op.imm_binop(ond.ty).is_some()
                             && self.nodes.is_const(ond.inputs[2])
-                            && op.cond_op(ond.ty.is_signed()).is_none())
+                            && op.cond_op(ond.ty).is_none())
                 }) =>
             {
                 self.nodes.lock(nid)
@@ -853,7 +878,7 @@ impl<'a> Function<'a> {
                 self.nodes.lock(nid)
             }
             Kind::BinOp { op }
-                if op.cond_op(node.ty.is_signed()).is_some()
+                if op.cond_op(node.ty).is_some()
                     && node.outputs.iter().all(|&n| self.nodes[n].kind == Kind::If) =>
             {
                 self.nodes.lock(nid)
@@ -955,8 +980,8 @@ impl<'a> Function<'a> {
             Kind::Stck | Kind::Arg
                 if node.outputs.iter().all(|&n| {
                     matches!(self.nodes[n].kind,  Kind::Load
-                        if self.nodes[n].ty.loc(self.tys) == Loc::Reg) 
-                    || matches!(self.nodes[n].kind, Kind::Stre 
+                        if self.nodes[n].ty.loc(self.tys) == Loc::Reg)
+                    || matches!(self.nodes[n].kind, Kind::Stre
                         if self.nodes[n].ty.loc(self.tys) == Loc::Reg
                         &&  self.nodes[n].inputs[1] != nid)
                     || matches!(self.nodes[n].kind, Kind::BinOp { op: TokenKind::Add }
@@ -1183,8 +1208,36 @@ impl regalloc2::Function for Function<'_> {
 }
 
 impl TokenKind {
+    pub fn cmp_against(self) -> Option<u64> {
+        Some(match self {
+            TokenKind::Le | TokenKind::Gt => 1,
+            TokenKind::Ne | TokenKind::Eq => 0,
+            TokenKind::Ge | TokenKind::Lt => (-1i64) as _,
+            _ => return None,
+        })
+    }
+
+    pub fn float_cmp(self, ty: ty::Id) -> Option<fn(u8, u8, u8) -> EncodedInstr> {
+        if !ty.is_float() {
+            return None;
+        }
+        let size = ty.simple_size().unwrap();
+
+        let ops = match self {
+            TokenKind::Gt => [instrs::fcmpgt32, instrs::fcmpgt64],
+            TokenKind::Lt => [instrs::fcmplt32, instrs::fcmplt64],
+            _ => return None,
+        };
+
+        Some(ops[size.ilog2() as usize - 2])
+    }
+
     #[expect(clippy::type_complexity)]
-    fn cond_op(self, signed: bool) -> Option<(fn(u8, u8, i16) -> EncodedInstr, bool)> {
+    fn cond_op(self, ty: ty::Id) -> Option<(fn(u8, u8, i16) -> EncodedInstr, bool)> {
+        if ty.is_float() {
+            return None;
+        }
+        let signed = ty.is_signed();
         Some((
             match self {
                 Self::Le if signed => instrs::jgts,
@@ -1203,31 +1256,45 @@ impl TokenKind {
         ))
     }
 
-    fn binop(self, signed: bool, size: u32) -> Option<fn(u8, u8, u8) -> EncodedInstr> {
-        macro_rules! div { ($($op:ident),*) => {[$(|a, b, c| $op(a, 0, b, c)),*]}; }
-        macro_rules! rem { ($($op:ident),*) => {[$(|a, b, c| $op(0, a, b, c)),*]}; }
+    fn binop(self, ty: ty::Id) -> Option<fn(u8, u8, u8) -> EncodedInstr> {
+        let size = ty.simple_size().unwrap();
+        if ty.is_integer() || ty == ty::Id::BOOL || ty.is_pointer() {
+            macro_rules! div { ($($op:ident),*) => {[$(|a, b, c| $op(a, 0, b, c)),*]}; }
+            macro_rules! rem { ($($op:ident),*) => {[$(|a, b, c| $op(0, a, b, c)),*]}; }
+            let signed = ty.is_signed();
 
-        let ops = match self {
-            Self::Add => [add8, add16, add32, add64],
-            Self::Sub => [sub8, sub16, sub32, sub64],
-            Self::Mul => [mul8, mul16, mul32, mul64],
-            Self::Div if signed => div!(dirs8, dirs16, dirs32, dirs64),
-            Self::Div => div!(diru8, diru16, diru32, diru64),
-            Self::Mod if signed => rem!(dirs8, dirs16, dirs32, dirs64),
-            Self::Mod => rem!(diru8, diru16, diru32, diru64),
-            Self::Band => return Some(and),
-            Self::Bor => return Some(or),
-            Self::Xor => return Some(xor),
-            Self::Shl => [slu8, slu16, slu32, slu64],
-            Self::Shr if signed => [srs8, srs16, srs32, srs64],
-            Self::Shr => [sru8, sru16, sru32, sru64],
-            _ => return None,
-        };
+            let ops = match self {
+                Self::Add => [add8, add16, add32, add64],
+                Self::Sub => [sub8, sub16, sub32, sub64],
+                Self::Mul => [mul8, mul16, mul32, mul64],
+                Self::Div if signed => div!(dirs8, dirs16, dirs32, dirs64),
+                Self::Div => div!(diru8, diru16, diru32, diru64),
+                Self::Mod if signed => rem!(dirs8, dirs16, dirs32, dirs64),
+                Self::Mod => rem!(diru8, diru16, diru32, diru64),
+                Self::Band => return Some(and),
+                Self::Bor => return Some(or),
+                Self::Xor => return Some(xor),
+                Self::Shl => [slu8, slu16, slu32, slu64],
+                Self::Shr if signed => [srs8, srs16, srs32, srs64],
+                Self::Shr => [sru8, sru16, sru32, sru64],
+                _ => return None,
+            };
 
-        Some(ops[size.ilog2() as usize])
+            Some(ops[size.ilog2() as usize])
+        } else {
+            debug_assert!(ty.is_float(), "{self} {ty:?}");
+            let ops = match self {
+                Self::Add => [fadd32, fadd64],
+                Self::Sub => [fsub32, fsub64],
+                Self::Mul => [fmul32, fmul64],
+                Self::Div => [fdiv32, fdiv64],
+                _ => return None,
+            };
+            Some(ops[size.ilog2() as usize - 2])
+        }
     }
 
-    fn imm_binop(self, signed: bool, size: u32) -> Option<fn(u8, u8, u64) -> EncodedInstr> {
+    fn imm_binop(self, ty: ty::Id) -> Option<fn(u8, u8, u64) -> EncodedInstr> {
         macro_rules! def_op {
             ($name:ident |$a:ident, $b:ident, $c:ident| $($tt:tt)*) => {
                 macro_rules! $name {
@@ -1240,9 +1307,14 @@ impl TokenKind {
             };
         }
 
+        if ty.is_float() {
+            return None;
+        }
+
         def_op!(basic_op | a, b, c | a, b, c as _);
         def_op!(sub_op | a, b, c | a, b, c.wrapping_neg() as _);
 
+        let signed = ty.is_signed();
         let ops = match self {
             Self::Add => basic_op!(addi8, addi16, addi32, addi64),
             Self::Sub => sub_op!(addi8, addi16, addi32, addi64),
@@ -1256,6 +1328,7 @@ impl TokenKind {
             _ => return None,
         };
 
+        let size = ty.simple_size().unwrap();
         Some(ops[size.ilog2() as usize])
     }
 
