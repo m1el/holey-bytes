@@ -1,14 +1,12 @@
 main:
     ADDI64 r254, r254, -4d
-    LRA r1, r0, :black
+    LRA r2, r0, :white
     ADDI64 r3, r254, 0d
-    LRA r5, r0, :white
-    BMC r1, r3, 4h
-    BMC r5, r3, 4h
-    LD r9, r254, 3a, 1h
-    ANDI r1, r9, 255d
+    BMC r2, r3, 4h
+    LD r6, r254, 3a, 1h
+    ANDI r1, r6, 255d
     ADDI64 r254, r254, 4d
     JALA r0, r31, 0a
-code size: 108
+code size: 92
 ret: 255
 status: Ok(())

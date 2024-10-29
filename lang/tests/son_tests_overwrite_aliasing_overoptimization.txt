@@ -1,25 +1,22 @@
 main:
-    ADDI64 r254, r254, -72d
-    ST r31, r254, 56a, 16h
-    ADDI64 r32, r254, 0d
+    ADDI64 r254, r254, -56d
+    ST r31, r254, 40a, 16h
+    LI64 r4, 4d
+    ADDI64 r3, r254, 24d
+    ADDI64 r6, r254, 0d
+    ST r4, r254, 24a, 8h
+    LI64 r32, 1d
+    ST r32, r254, 32a, 8h
+    ST r32, r254, 16a, 8h
+    BMC r3, r6, 16h
     JAL r31, r0, :opaque
     ST r1, r254, 0a, 16h
-    LI64 r6, 4d
-    ADDI64 r5, r254, 40d
-    ADDI64 r8, r254, 16d
-    ST r6, r254, 40a, 8h
-    LI64 r7, 1d
-    ST r7, r254, 48a, 8h
-    ST r7, r254, 32a, 8h
-    BMC r5, r8, 16h
-    BMC r32, r8, 16h
-    LD r7, r254, 24a, 8h
-    LD r9, r254, 32a, 8h
-    ADD64 r11, r9, r7
-    LD r9, r254, 16a, 8h
-    SUB64 r1, r9, r11
-    LD r31, r254, 56a, 16h
-    ADDI64 r254, r254, 72d
+    LD r4, r254, 8a, 8h
+    ADD64 r7, r4, r32
+    LD r5, r254, 0a, 8h
+    SUB64 r1, r5, r7
+    LD r31, r254, 40a, 16h
+    ADDI64 r254, r254, 56d
     JALA r0, r31, 0a
 opaque:
     ADDI64 r254, r254, -16d
@@ -31,6 +28,6 @@ opaque:
     LD r1, r2, 0a, 16h
     ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
-code size: 339
+code size: 310
 ret: 0
 status: Ok(())

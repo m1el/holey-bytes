@@ -943,10 +943,50 @@ impl Nodes {
                     return Some(self.new_node(self[lhs].ty, Kind::Stre, vc));
                 }
             }
+            K::Stck => {
+                if let &[mut a, mut b] = self[target].outputs.as_slice() {
+                    if self[a].kind == Kind::Load {
+                        mem::swap(&mut a, &mut b);
+                    }
+
+                    if matches!(self[a].kind, Kind::Call { .. })
+                        && self[a].inputs.last() == Some(&target)
+                        && self[b].kind == Kind::Load
+                        && let &[store] = self[b].outputs.as_slice()
+                        && self[store].kind == Kind::Stre
+                    {
+                        let len = self[a].inputs.len();
+                        let stre = self[store].inputs[3];
+                        if stre != MEM {
+                            self[a].inputs.push(stre);
+                            self[a].inputs.swap(len - 2, len - 1);
+                            self[stre].outputs.push(a);
+                        }
+                        return Some(self[store].inputs[2]);
+                    }
+                }
+            }
             K::Stre => {
                 let &[_, value, region, store, ..] = self[target].inputs.as_slice() else {
                     unreachable!()
                 };
+
+                if self[value].kind == Kind::Load && self[value].inputs[1] == region {
+                    return Some(store);
+                }
+
+                let mut cursor = target;
+                while self[cursor].kind == Kind::Stre
+                    && self[cursor].inputs[1] != VOID
+                    && let &[next_store] = self[cursor].outputs.as_slice()
+                {
+                    if self[next_store].inputs[2] == region
+                        && self[next_store].ty == self[target].ty
+                    {
+                        return Some(store);
+                    }
+                    cursor = next_store;
+                }
 
                 'eliminate: {
                     if self[target].outputs.is_empty() {
