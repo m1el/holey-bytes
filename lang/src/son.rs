@@ -22,6 +22,7 @@ use {
         fmt::{self, Debug, Display, Write},
         format_args as fa, mem,
         ops::{self, Deref},
+        usize,
     },
     hashbrown::hash_map,
     hbbytecode::DisasmError,
@@ -1051,14 +1052,15 @@ impl Nodes {
                     && self[target].inputs.len() == 4
                     && self[value].kind != Kind::Load
                     && self[store].kind == Kind::Stre
-                    && self[store].lock_rc == 0
                     && self[store].inputs[2] == region
                 {
                     if self[store].inputs[1] == value {
                         return Some(store);
                     }
 
-                    return Some(self.modify_input(store, 1, value));
+                    let mut inps = self[target].inputs.clone();
+                    inps[3] = self[store].inputs[3];
+                    return Some(self.new_node_nop(self[target].ty, Kind::Stre, inps));
                 }
             }
             K::Load => {
@@ -3163,7 +3165,9 @@ impl<'a> Codegen<'a> {
                         self.ci.scope.aclasses.iter_mut().zip(scope.aclasses.iter_mut())
                     {
                         if self.ci.nodes[scope_class.last_store.get()].is_lazy_phi(node) {
-                            if loop_class.last_store.get() != scope_class.last_store.get() {
+                            if loop_class.last_store.get() != scope_class.last_store.get()
+                                && loop_class.last_store.get() != 0
+                            {
                                 scope_class.last_store.set(
                                     self.ci.nodes.modify_input(
                                         scope_class.last_store.get(),
@@ -3237,7 +3241,9 @@ impl<'a> Codegen<'a> {
                     .zip(bres.aclasses.iter_mut())
                 {
                     if self.ci.nodes[scope_class.last_store.get()].is_lazy_phi(node) {
-                        if loop_class.last_store.get() != scope_class.last_store.get() {
+                        if loop_class.last_store.get() != scope_class.last_store.get()
+                            && loop_class.last_store.get() != 0
+                        {
                             scope_class.last_store.set(
                                 self.ci.nodes.modify_input(
                                     scope_class.last_store.get(),
@@ -3300,11 +3306,6 @@ impl<'a> Codegen<'a> {
                     }
                 }
 
-                let mut orig_classes = vec![];
-                for (i, aclass) in self.ci.scope.aclasses.iter_mut().enumerate() {
-                    self.ci.nodes.load_loop_aclass(i, aclass, &mut self.ci.loops);
-                    orig_classes.push(aclass.dup(&mut self.ci.nodes));
-                }
                 let else_scope = self.ci.scope.dup(&mut self.ci.nodes);
 
                 self.ci.ctrl.set(
@@ -3323,8 +3324,6 @@ impl<'a> Codegen<'a> {
                 } else {
                     self.ci.ctrl.get()
                 };
-
-                orig_classes.into_iter().for_each(|c| c.remove(&mut self.ci.nodes));
 
                 if lcntrl == Nid::MAX && rcntrl == Nid::MAX {
                     then_scope.clear(&mut self.ci.nodes);
