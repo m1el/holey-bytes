@@ -33,6 +33,8 @@ const ENTRY: Nid = 2;
 const MEM: Nid = 3;
 const LOOPS: Nid = 4;
 const ARG_START: usize = 3;
+const DEFAULT_ACLASS: usize = 0;
+const GLOBAL_ACLASS: usize = 1;
 
 pub mod hbvm;
 
@@ -1819,7 +1821,8 @@ impl ItemCtx {
         let loops = self.nodes.new_node(ty::Id::VOID, Kind::Loops, [VOID]);
         debug_assert_eq!(loops, LOOPS);
         self.nodes.lock(loops);
-        self.scope.aclasses.push(AClass::new(&mut self.nodes));
+        self.scope.aclasses.push(AClass::new(&mut self.nodes)); // DEFAULT
+        self.scope.aclasses.push(AClass::new(&mut self.nodes)); // GLOBAL
     }
 
     fn finalize(&mut self, stack: &mut Vec<Nid>, _tys: &Types, _files: &[parser::Ast]) {
@@ -2264,6 +2267,7 @@ impl<'a> Codegen<'a> {
                     ty::Kind::Global(global) => {
                         let gl = &self.tys.ins.globals[global as usize];
                         let value = self.ci.nodes.new_node(gl.ty, Kind::Global { global }, [VOID]);
+                        self.ci.nodes[value].aclass = GLOBAL_ACLASS;
                         Some(Value::ptr(value).ty(gl.ty))
                     }
                     _ => Some(Value::new(Nid::MAX).ty(decl)),
@@ -2296,6 +2300,7 @@ impl<'a> Codegen<'a> {
                     }
                 };
                 let global = self.ci.nodes.new_node(ty, Kind::Global { global }, [VOID]);
+                self.ci.nodes[global].aclass = GLOBAL_ACLASS;
                 Some(Value::new(global).ty(ty))
             }
             Expr::Return { pos, val } => {
@@ -2365,6 +2370,7 @@ impl<'a> Codegen<'a> {
                             let gl = &self.tys.ins.globals[global as usize];
                             let value =
                                 self.ci.nodes.new_node(gl.ty, Kind::Global { global }, [VOID]);
+                            self.ci.nodes[value].aclass = GLOBAL_ACLASS;
                             Some(Value::ptr(value).ty(gl.ty))
                         }
                         v => Some(Value::new(Nid::MAX).ty(v.compress())),
@@ -2739,7 +2745,7 @@ impl<'a> Codegen<'a> {
 
                 let mut inps = Vc::from([NEVER]);
                 let arg_base = self.tys.tmp.args.len();
-                let mut clobbered_aliases = vec![];
+                let mut clobbered_aliases = vec![GLOBAL_ACLASS];
                 for arg in args {
                     let value = self.expr(arg)?;
                     if let Some(base) = self.tys.base_of(value.ty) {
@@ -2764,6 +2770,7 @@ impl<'a> Codegen<'a> {
 
                 for &clobbered in clobbered_aliases.iter() {
                     let aclass = &mut self.ci.scope.aclasses[clobbered];
+                    self.ci.nodes.load_loop_aclass(clobbered, aclass, &mut self.ci.loops);
                     inps.push(aclass.last_store.get());
                     aclass.loads.retain_mut(|load| {
                         if inps.contains(&load.get()) {
@@ -2794,10 +2801,13 @@ impl<'a> Codegen<'a> {
                 );
 
                 for &clobbered in clobbered_aliases.iter() {
-                    if clobbered == 0 {
+                    if clobbered == DEFAULT_ACLASS {
                         continue;
                     }
                     let aclass = self.ci.scope.aclasses[clobbered].last_store.get();
+                    if aclass == MEM {
+                        continue;
+                    }
                     self.store_mem(self.ci.nodes[aclass].inputs[2], ty::Id::VOID, VOID);
                 }
 
@@ -2839,7 +2849,7 @@ impl<'a> Codegen<'a> {
                 let mut tys = sig.args.args();
                 let mut cargs = cargs.iter();
                 let mut args = args.iter();
-                let mut clobbered_aliases = vec![];
+                let mut clobbered_aliases = vec![GLOBAL_ACLASS];
                 while let Some(ty) = tys.next(self.tys) {
                     let carg = cargs.next().unwrap();
                     let Some(arg) = args.next() else { break };
@@ -2868,6 +2878,7 @@ impl<'a> Codegen<'a> {
 
                 for &clobbered in clobbered_aliases.iter() {
                     let aclass = &mut self.ci.scope.aclasses[clobbered];
+                    self.ci.nodes.load_loop_aclass(clobbered, aclass, &mut self.ci.loops);
                     inps.push(aclass.last_store.get());
                     aclass.loads.retain_mut(|load| {
                         if inps.contains(&load.get()) {
@@ -2898,10 +2909,13 @@ impl<'a> Codegen<'a> {
                 );
 
                 for &clobbered in clobbered_aliases.iter() {
-                    if clobbered == 0 {
+                    if clobbered == DEFAULT_ACLASS {
                         continue;
                     }
                     let aclass = self.ci.scope.aclasses[clobbered].last_store.get();
+                    if aclass == MEM {
+                        continue;
+                    }
                     self.store_mem(self.ci.nodes[aclass].inputs[2], ty::Id::VOID, VOID);
                 }
 
@@ -4085,5 +4099,6 @@ mod tests {
         dead_code_in_loop;
         infinite_loop_after_peephole;
         aliasing_overoptimization;
+        global_aliasing_overptimization;
     }
 }

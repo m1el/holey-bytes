@@ -1166,3 +1166,18 @@ main := fn(): uint {
 	return *mem
 }
 ```
+
+#### global_aliasing_overptimization
+```hb
+var := 0
+
+main := fn(): uint {
+	var = 2
+	clobber()
+	return var
+}
+
+clobber := fn(): void {
+	var = 0
+}
+```
