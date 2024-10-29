@@ -323,7 +323,9 @@ impl ItemCtx {
                         _ => instrs::li64(atr(allocs[0]), value as _),
                     }),
                     Kind::UnOp { op } => {
-                        let op = op.unop().expect("TODO: unary operator not supported");
+                        let op = op
+                            .unop(node.ty, fuc.nodes[node.inputs[1]].ty)
+                            .expect("TODO: unary operator not supported");
                         let &[dst, oper] = allocs else { unreachable!() };
                         self.emit(op(atr(dst), atr(oper)));
                     }
@@ -1332,9 +1334,19 @@ impl TokenKind {
         Some(ops[size.ilog2() as usize])
     }
 
-    pub fn unop(&self) -> Option<fn(u8, u8) -> EncodedInstr> {
+    pub fn unop(&self, dst: ty::Id, src: ty::Id) -> Option<fn(u8, u8) -> EncodedInstr> {
+        let src_idx = src.simple_size().unwrap().ilog2() as usize - 2;
         Some(match self {
             Self::Sub => instrs::neg,
+            Self::Float if dst.is_float() && src.is_integer() => {
+                [instrs::itf32, instrs::itf64][src_idx]
+            }
+            Self::Number if src.is_float() && dst.is_integer() => {
+                [|a, b| instrs::fti32(a, b, 1), |a, b| instrs::fti64(a, b, 1)][src_idx]
+            }
+            Self::Float if dst.is_float() && src.is_float() => {
+                [instrs::fc32t64, |a, b| instrs::fc64t32(a, b, 1)][src_idx]
+            }
             _ => return None,
         })
     }

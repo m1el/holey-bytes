@@ -257,9 +257,16 @@ impl TokenKind {
             && self.precedence() != Self::Eof.precedence()
     }
 
-    pub fn apply_unop(&self, value: i64) -> i64 {
+    pub fn apply_unop(&self, value: i64, float: bool) -> i64 {
         match self {
+            Self::Sub if float => (-f64::from_bits(value as _)).to_bits() as _,
             Self::Sub => value.wrapping_neg(),
+            Self::Float if float => value,
+            Self::Float => (value as f64).to_bits() as _,
+            Self::Number => {
+                debug_assert!(float);
+                f64::from_bits(value as _).to_bits() as _
+            }
             s => todo!("{s}"),
         }
     }

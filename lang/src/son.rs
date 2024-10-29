@@ -792,10 +792,14 @@ impl Nodes {
                 let &[ctrl, oper] = self[target].inputs.as_slice() else { unreachable!() };
                 let ty = self[target].ty;
 
+                let is_float = self[oper].ty.is_float();
+
                 if let K::CInt { value } = self[oper].kind {
-                    return Some(
-                        self.new_node(ty, K::CInt { value: op.apply_unop(value) }, [ctrl]),
-                    );
+                    return Some(self.new_node(
+                        ty,
+                        K::CInt { value: op.apply_unop(value, is_float) },
+                        [ctrl],
+                    ));
                 }
             }
             K::If => {
@@ -2648,6 +2652,79 @@ impl<'a> Codegen<'a> {
                 } else {
                     Some(val.ty(ty))
                 }
+            }
+            Expr::Directive { pos, name: "floatcast", args: [expr] } => {
+                let val = self.expr(expr)?;
+
+                if !val.ty.is_float() {
+                    self.report(
+                        expr.pos(),
+                        fa!(
+                            "only floats can be truncated ('{}' is not a float)",
+                            self.ty_display(val.ty)
+                        ),
+                    );
+                    return Value::NEVER;
+                }
+
+                inference!(ty, ctx, self, pos, "float", "@as(<floaty>, @floatcast(<expr>))");
+
+                if !ty.is_float() {
+                    self.report(
+                        expr.pos(),
+                        fa!(
+                            "floatcast is inferred to output '{}', which is not a float",
+                            self.ty_display(ty)
+                        ),
+                    );
+                }
+
+                if self.tys.size_of(val.ty) < self.tys.size_of(ty) {
+                    Some(
+                        self.ci
+                            .nodes
+                            .new_node_lit(ty, Kind::UnOp { op: TokenKind::Float }, [VOID, val.id]),
+                    )
+                } else {
+                    Some(val.ty(ty))
+                }
+            }
+            Expr::Directive { name: "fti", args: [expr], .. } => {
+                let val = self.expr(expr)?;
+
+                let ret_ty = match val.ty {
+                    ty::Id::F64 => ty::Id::INT,
+                    ty::Id::F32 => ty::Id::I32,
+                    _ => {
+                        self.report(
+                            expr.pos(),
+                            fa!("expected float ('{}' is not a float)", self.ty_display(val.ty)),
+                        );
+                        return Value::NEVER;
+                    }
+                };
+
+                Some(
+                    self.ci
+                        .nodes
+                        .new_node_lit(ret_ty, Kind::UnOp { op: TokenKind::Number }, [VOID, val.id]),
+                )
+            }
+            Expr::Directive { name: "itf", args: [expr], .. } => {
+                let mut val = self.expr(expr)?;
+
+                let (ret_ty, expected) = match val.ty.simple_size().unwrap() {
+                    8 => (ty::Id::F64, ty::Id::INT),
+                    _ => (ty::Id::F32, ty::Id::I32),
+                };
+
+                self.assert_ty(expr.pos(), &mut val, expected, "converted integer");
+
+                Some(
+                    self.ci
+                        .nodes
+                        .new_node_lit(ret_ty, Kind::UnOp { op: TokenKind::Float }, [VOID, val.id]),
+                )
             }
             Expr::Directive { name: "as", args: [ty, expr], .. } => {
                 let ty = self.ty(ty);
