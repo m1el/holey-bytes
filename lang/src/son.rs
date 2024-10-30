@@ -1065,7 +1065,8 @@ impl Nodes {
                         break 'eliminate;
                     }
 
-                    if self[value].kind != Kind::Load || self[value].outputs.as_slice() != [target]
+                    if self[value].kind != Kind::Load
+                        || self[value].outputs.iter().any(|&n| self[n].kind != Kind::Stre)
                     {
                         for &ele in self[value].outputs.clone().iter().filter(|&&n| n != target) {
                             self[ele].peep_triggers.push(target);

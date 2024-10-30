@@ -1,37 +1,6 @@
 main:
-    ADDI64 r254, r254, -64d
-    LI64 r3, 1d
-    ADDI64 r2, r254, 32d
-    ST r3, r254, 32a, 8h
-    LI64 r6, 2d
-    ST r6, r254, 40a, 8h
-    LI64 r6, -3d
-    ADDI64 r5, r254, 0d
-    ADDI64 r11, r254, 48d
-    ST r6, r254, 0a, 8h
-    LI64 r6, -4d
-    BMC r2, r11, 16h
-    ST r6, r254, 8a, 8h
-    ADDI64 r3, r5, 16d
-    LD r9, r254, 56a, 8h
-    LI64 r8, 4d
-    LD r10, r254, 48a, 8h
-    LI64 r11, 3d
-    BMC r2, r3, 16h
-    SUB64 r4, r8, r9
-    LD r12, r254, 24a, 8h
-    ADD64 r7, r10, r11
-    LD r1, r254, 0a, 8h
-    SUB64 r8, r11, r10
-    LD r2, r254, 16a, 8h
-    ADD64 r6, r12, r4
-    ADD64 r3, r1, r7
-    ADD64 r10, r2, r8
-    ADD64 r12, r9, r6
-    ADD64 r9, r10, r3
-    ADD64 r1, r9, r12
-    ADDI64 r254, r254, 64d
+    LI64 r1, 10d
     JALA r0, r31, 0a
-code size: 308
+code size: 29
 ret: 10
 status: Ok(())
