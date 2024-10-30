@@ -11,7 +11,7 @@ use {
         },
         task,
         ty::{self, Arg, ArrayLen, Loc, Tuple},
-        vc::{BitSet, Vc},
+        utils::{BitSet, Vc},
         FTask, Func, Global, Ident, Offset, OffsetIter, Reloc, Sig, StringRef, SymKey, TypeParser,
         TypedReloc, Types,
     },
@@ -39,6 +39,7 @@ const GLOBAL_ACLASS: usize = 1;
 pub mod hbvm;
 
 type Nid = u16;
+type AClassId = u16;
 
 type Lookup = crate::ctx_map::CtxMap<Nid>;
 
@@ -360,7 +361,7 @@ impl Nodes {
         let mut cursor = min;
         while cursor != self[load].inputs[0] {
             self[cursor].antidep = load;
-            if self[cursor].clobbers.contains(&aclass) {
+            if self[cursor].clobbers.get(aclass as _) {
                 min = self[cursor].inputs[0];
                 break;
             }
@@ -754,7 +755,7 @@ impl Nodes {
     }
 
     pub fn aclass_index(&self, region: Nid) -> (usize, Nid) {
-        (self[region].aclass, self[region].mem)
+        (self[region].aclass as _, self[region].mem)
     }
 
     fn peephole(&mut self, target: Nid) -> Option<Nid> {
@@ -1662,14 +1663,14 @@ pub struct Node {
     inputs: Vc,
     outputs: Vc,
     peep_triggers: Vc,
-    clobbers: Vec<usize>,
+    clobbers: BitSet,
     ty: ty::Id,
     offset: Offset,
     ralloc_backref: RallocBRef,
     depth: IDomDepth,
     lock_rc: LockRc,
     loop_depth: LoopDepth,
-    aclass: usize,
+    aclass: AClassId,
     mem: Nid,
     antidep: Nid,
 }
@@ -2194,7 +2195,7 @@ impl<'a> Codegen<'a> {
 
     fn new_stack(&mut self, ty: ty::Id) -> Nid {
         let stck = self.ci.nodes.new_node_nop(ty, Kind::Stck, [VOID, MEM]);
-        self.ci.nodes[stck].aclass = self.ci.scope.aclasses.len();
+        self.ci.nodes[stck].aclass = self.ci.scope.aclasses.len() as _;
         self.ci.nodes[stck].mem = stck;
         self.ci.scope.aclasses.push(AClass::new(&mut self.ci.nodes));
         stck
@@ -2369,7 +2370,7 @@ impl<'a> Codegen<'a> {
                     ty::Kind::Global(global) => {
                         let gl = &self.tys.ins.globals[global as usize];
                         let value = self.ci.nodes.new_node(gl.ty, Kind::Global { global }, [VOID]);
-                        self.ci.nodes[value].aclass = GLOBAL_ACLASS;
+                        self.ci.nodes[value].aclass = GLOBAL_ACLASS as _;
                         Some(Value::ptr(value).ty(gl.ty))
                     }
                     _ => Some(Value::new(Nid::MAX).ty(decl)),
@@ -2402,7 +2403,7 @@ impl<'a> Codegen<'a> {
                     }
                 };
                 let global = self.ci.nodes.new_node(ty, Kind::Global { global }, [VOID]);
-                self.ci.nodes[global].aclass = GLOBAL_ACLASS;
+                self.ci.nodes[global].aclass = GLOBAL_ACLASS as _;
                 Some(Value::new(global).ty(ty))
             }
             Expr::Return { pos, val } => {
@@ -2472,7 +2473,7 @@ impl<'a> Codegen<'a> {
                             let gl = &self.tys.ins.globals[global as usize];
                             let value =
                                 self.ci.nodes.new_node(gl.ty, Kind::Global { global }, [VOID]);
-                            self.ci.nodes[value].aclass = GLOBAL_ACLASS;
+                            self.ci.nodes[value].aclass = GLOBAL_ACLASS as _;
                             Some(Value::ptr(value).ty(gl.ty))
                         }
                         v => Some(Value::new(Nid::MAX).ty(v.compress())),
@@ -2621,7 +2622,7 @@ impl<'a> Codegen<'a> {
                         let inps = [VOID, lhs.id, rhs.id];
                         let bop =
                             self.ci.nodes.new_node_lit(ty.bin_ret(op), Kind::BinOp { op }, inps);
-                        self.ci.nodes[bop.id].aclass = aclass;
+                        self.ci.nodes[bop.id].aclass = aclass as _;
                         self.ci.nodes[bop.id].mem = mem;
                         Some(bop)
                     }
@@ -2677,7 +2678,7 @@ impl<'a> Codegen<'a> {
                 let inps = [VOID, bs.id, offset];
                 let ptr =
                     self.ci.nodes.new_node(ty::Id::INT, Kind::BinOp { op: TokenKind::Add }, inps);
-                self.ci.nodes[ptr].aclass = aclass;
+                self.ci.nodes[ptr].aclass = aclass as _;
                 self.ci.nodes[ptr].mem = mem;
 
                 Some(Value::ptr(ptr).ty(elem))
@@ -2855,7 +2856,7 @@ impl<'a> Codegen<'a> {
 
                 let mut inps = Vc::from([NEVER]);
                 let arg_base = self.tys.tmp.args.len();
-                let mut clobbered_aliases = vec![GLOBAL_ACLASS];
+                let mut clobbered_aliases = BitSet::default();
                 for arg in args {
                     let value = self.expr(arg)?;
                     self.add_clobbers(value, &mut clobbered_aliases);
@@ -2871,7 +2872,7 @@ impl<'a> Codegen<'a> {
                     self.ci.nodes.unlock(n);
                 }
 
-                self.append_clobbers(&mut inps, &clobbered_aliases);
+                self.append_clobbers(&mut inps, &mut clobbered_aliases);
 
                 let alt_value = match ty.loc(self.tys) {
                     Loc::Reg => None,
@@ -2928,7 +2929,7 @@ impl<'a> Codegen<'a> {
                 let mut tys = sig.args.args();
                 let mut cargs = cargs.iter();
                 let mut args = args.iter();
-                let mut clobbered_aliases = vec![GLOBAL_ACLASS];
+                let mut clobbered_aliases = BitSet::default();
                 while let Some(ty) = tys.next(self.tys) {
                     let carg = cargs.next().unwrap();
                     let Some(arg) = args.next() else { break };
@@ -2947,7 +2948,7 @@ impl<'a> Codegen<'a> {
                     self.ci.nodes.unlock(n);
                 }
 
-                self.append_clobbers(&mut inps, &clobbered_aliases);
+                self.append_clobbers(&mut inps, &mut clobbered_aliases);
 
                 let alt_value = match sig.ret.loc(self.tys) {
                     Loc::Reg => None,
@@ -3534,27 +3535,28 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn add_clobbers(&mut self, value: Value, clobbered_aliases: &mut Vec<usize>) {
+    fn add_clobbers(&mut self, value: Value, clobbered_aliases: &mut BitSet) {
         if let Some(base) = self.tys.base_of(value.ty) {
-            clobbered_aliases.push(self.ci.nodes.aclass_index(value.id).0);
+            clobbered_aliases.set(self.ci.nodes.aclass_index(value.id).0 as _);
             if base.has_pointers(self.tys) {
-                clobbered_aliases.push(DEFAULT_ACLASS);
+                clobbered_aliases.set(DEFAULT_ACLASS as _);
             }
         } else if value.ty.has_pointers(self.tys) {
-            clobbered_aliases.push(DEFAULT_ACLASS);
+            clobbered_aliases.set(DEFAULT_ACLASS as _);
         }
     }
 
-    fn append_clobbers(&mut self, inps: &mut Vc, clobbered_aliases: &[usize]) {
-        for &clobbered in clobbered_aliases.iter() {
+    fn append_clobbers(&mut self, inps: &mut Vc, clobbered_aliases: &mut BitSet) {
+        clobbered_aliases.set(GLOBAL_ACLASS as _);
+        for clobbered in clobbered_aliases.iter() {
             let aclass = &mut self.ci.scope.aclasses[clobbered];
             self.ci.nodes.load_loop_aclass(clobbered, aclass, &mut self.ci.loops);
             inps.push(aclass.last_store.get());
         }
     }
 
-    fn add_clobber_stores(&mut self, clobbered_aliases: Vec<usize>) {
-        for &clobbered in clobbered_aliases.iter() {
+    fn add_clobber_stores(&mut self, clobbered_aliases: BitSet) {
+        for clobbered in clobbered_aliases.iter() {
             self.ci.scope.aclasses[clobbered].clobber.set(self.ci.ctrl.get(), &mut self.ci.nodes);
         }
         self.ci.nodes[self.ci.ctrl.get()].clobbers = clobbered_aliases;
@@ -3731,7 +3733,7 @@ impl<'a> Codegen<'a> {
         let (aclass, mem) = self.ci.nodes.aclass_index(val);
         let inps = [VOID, val, off];
         let seted = self.ci.nodes.new_node(ty::Id::INT, Kind::BinOp { op: TokenKind::Add }, inps);
-        self.ci.nodes[seted].aclass = aclass;
+        self.ci.nodes[seted].aclass = aclass as _;
         self.ci.nodes[seted].mem = mem;
         seted
     }
@@ -3840,7 +3842,7 @@ impl<'a> Codegen<'a> {
                         &mut self.ci.nodes,
                     ));
                     if ty.loc(self.tys) == Loc::Stack {
-                        self.ci.nodes[value].aclass = self.ci.scope.aclasses.len();
+                        self.ci.nodes[value].aclass = self.ci.scope.aclasses.len() as _;
                         self.ci.scope.aclasses.push(AClass::new(&mut self.ci.nodes));
                     }
                 }
@@ -3919,7 +3921,11 @@ impl<'a> Codegen<'a> {
                         self.ci.nodes.new_node(upcasted, Kind::BinOp { op: TokenKind::Mul }, [
                             VOID, oper.id, cnst,
                         ]);
-                    return (upcasted, self.ci.nodes[other.id].aclass, self.ci.nodes[other.id].mem);
+                    return (
+                        upcasted,
+                        self.ci.nodes[other.id].aclass as _,
+                        self.ci.nodes[other.id].mem,
+                    );
                 }
             }
 

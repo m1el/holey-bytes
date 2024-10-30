@@ -6,7 +6,7 @@ use {
         son::{write_reloc, Kind, MEM},
         task,
         ty::{self, Arg, Loc},
-        vc::{BitSet, Vc},
+        utils::{BitSet, Vc},
         HashMap, Offset, PLoc, Reloc, Sig, Size, TypedReloc, Types,
     },
     alloc::{borrow::ToOwned, string::String, vec::Vec},

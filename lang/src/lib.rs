@@ -23,7 +23,8 @@
     slice_from_ptr_range,
     is_sorted,
     iter_next_chunk,
-    pointer_is_aligned_to
+    pointer_is_aligned_to,
+    maybe_uninit_fill
 )]
 #![warn(clippy::dbg_macro)]
 #![expect(stable_features, internal_features)]
@@ -69,7 +70,7 @@ pub mod lexer;
 pub mod parser;
 pub mod son;
 
-mod vc;
+mod utils;
 
 mod debug {
     pub fn panicking() -> bool {
