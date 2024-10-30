@@ -408,12 +408,20 @@ impl ItemCtx {
                         }
 
                         if let Some(PLoc::WideReg(r, size)) = ret {
+                            debug_assert_eq!(
+                                fuc.nodes[*node.inputs.last().unwrap()].kind,
+                                Kind::Stck
+                            );
                             let stck = fuc.nodes[*node.inputs.last().unwrap()].offset;
                             self.emit(instrs::st(r, reg::STACK_PTR, stck as _, size));
                         }
                         if let Some(PLoc::Reg(r, size)) = ret
                             && node.ty.loc(tys) == Loc::Stack
                         {
+                            debug_assert_eq!(
+                                fuc.nodes[*node.inputs.last().unwrap()].kind,
+                                Kind::Stck
+                            );
                             let stck = fuc.nodes[*node.inputs.last().unwrap()].offset;
                             self.emit(instrs::st(r, reg::STACK_PTR, stck as _, size));
                         }

@@ -8,8 +8,8 @@ main:
  6: JNE r8, r7, :0
     LI64 r7, 2d
     CP r8, r4
- 4: JNE r8, r6, :1
-    LD r1, r254, 0a, 8h
+ 4: LD r1, r254, 0a, 8h
+    JNE r8, r6, :1
     JMP :2
  1: MUL64 r10, r8, r7
     ADD64 r8, r8, r6
@@ -19,14 +19,14 @@ main:
  5: JNE r2, r7, :3
     JMP :4
  3: ADD64 r1, r2, r6
-    ADD64 r11, r10, r2
-    ADD64 r12, r9, r2
-    MULI64 r2, r11, 8d
+    ADD64 r11, r9, r2
+    MULI64 r3, r11, 8d
+    ADD64 r12, r10, r2
+    ADD64 r11, r5, r3
     MULI64 r12, r12, 8d
-    ADD64 r11, r5, r2
     ADD64 r12, r5, r12
-    BMC r12, r11, 8h
     BMC r11, r12, 8h
+    BMC r12, r11, 8h
     CP r2, r1
     JMP :5
  0: ADD64 r11, r8, r6

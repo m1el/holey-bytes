@@ -8,9 +8,9 @@ main:
  4: JLTU r9, r8, :0
     LI64 r4, 10d
     CP r7, r6
- 3: JLTU r7, r4, :1
-    LD r10, r254, 2048a, 1h
-    ANDI r1, r10, 255d
+ 3: LD r9, r254, 2048a, 1h
+    JLTU r7, r4, :1
+    ANDI r1, r9, 255d
     JMP :2
  1: ADD64 r12, r7, r6
     MULI64 r1, r7, 1024d

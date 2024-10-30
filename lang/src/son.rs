@@ -198,14 +198,18 @@ impl Nodes {
         }
 
         let mut deepest = VOID;
-        for i in 1..self[node].inputs.len() {
+        for i in 0..self[node].inputs.len() {
             let inp = self[node].inputs[i];
             if self.idepth(inp) > self.idepth(deepest) {
-                deepest = self.idom(inp);
+                if matches!(self[inp].kind, Kind::Call { .. }) {
+                    deepest = inp;
+                } else {
+                    deepest = self.idom(inp);
+                }
             }
         }
 
-        if deepest == VOID {
+        if deepest == self[node].inputs[0] {
             return;
         }
 
@@ -326,6 +330,14 @@ impl Nodes {
             }
         }
 
+        if self[node].kind == Kind::Load {
+            min = self.find_antideps(node, min);
+        }
+
+        if self[node].kind == Kind::Stre {
+            self[node].antidep = self[node].inputs[0];
+        }
+
         if self[min].kind.ends_basic_block() {
             min = self.idom(min);
         }
@@ -338,6 +350,67 @@ impl Nodes {
         self[prev].outputs.remove(index);
         self[node].inputs[0] = min;
         self[min].outputs.push(node);
+    }
+
+    fn find_antideps(&mut self, load: Nid, mut min: Nid) -> Nid {
+        debug_assert!(self[load].kind == Kind::Load);
+
+        let (aclass, _) = self.aclass_index(self[load].inputs[1]);
+
+        let mut cursor = min;
+        while cursor != self[load].inputs[0] {
+            self[cursor].antidep = load;
+            if self[cursor].clobbers.contains(&aclass) {
+                min = self[cursor].inputs[0];
+                break;
+            }
+            cursor = self.idom(cursor);
+        }
+
+        if self[load].inputs[2] == MEM {
+            return min;
+        }
+
+        for out in self[self[load].inputs[2]].outputs.clone() {
+            match self[out].kind {
+                Kind::Stre => {
+                    let mut cursor = self[out].inputs[0];
+                    while cursor != self[out].antidep {
+                        if self[cursor].antidep == load {
+                            min = self.common_dom(min, cursor);
+                            if min == cursor {
+                                self.bind(load, out);
+                            }
+                            break;
+                        }
+                        cursor = self.idom(cursor);
+                    }
+                    break;
+                }
+                Kind::Phi => {
+                    let n = self[out].inputs[1..]
+                        .iter()
+                        .position(|&n| n == self[load].inputs[2])
+                        .unwrap();
+                    let mut cursor = self[self[out].inputs[0]].inputs[n];
+                    while cursor != self[out].antidep {
+                        if self[cursor].antidep == load {
+                            min = self.common_dom(min, cursor);
+                            break;
+                        }
+                        cursor = self.idom(cursor);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        min
+    }
+
+    fn bind(&mut self, from: Nid, to: Nid) {
+        self[from].outputs.push(to);
+        self[to].inputs.push(from);
     }
 
     fn use_block(&mut self, target: Nid, from: Nid) -> Nid {
@@ -405,7 +478,6 @@ impl Nodes {
                     to_class
                         .last_store
                         .set_remove(self.new_node(ty::Id::VOID, Kind::Phi, inps), self);
-                    to_class.loads.drain(..).for_each(|d| _ = d.remove(self));
                 }
             }
         }
@@ -439,12 +511,18 @@ impl Nodes {
             if node.ty != ty::Id::VOID {
                 writeln!(
                     out,
-                    " node{i}[label=\"{i} {} {}\" color={color}]",
+                    " node{i}[label=\"{i} {} {} {} {}\" color={color}]",
                     node.kind,
-                    ty::Display::new(tys, files, node.ty)
+                    ty::Display::new(tys, files, node.ty),
+                    node.aclass,
+                    node.mem,
                 )?;
             } else {
-                writeln!(out, " node{i}[label=\"{i} {}\" color={color}]", node.kind,)?;
+                writeln!(
+                    out,
+                    " node{i}[label=\"{i} {} {} {}\" color={color}]",
+                    node.kind, node.aclass, node.mem,
+                )?;
             }
 
             for (j, &o) in node.outputs.iter().enumerate() {
@@ -675,14 +753,8 @@ impl Nodes {
         stack.iter().skip(prev_len).for_each(|&n| self.lock(n));
     }
 
-    pub fn aclass_index(&self, mut region: Nid) -> (usize, Nid) {
-        loop {
-            region = match self[region].kind {
-                Kind::BinOp { op: TokenKind::Add | TokenKind::Sub } => self[region].inputs[1],
-                Kind::Phi if self[region].inputs[2] == 0 => self[region].inputs[1],
-                _ => break (self[region].aclass, region),
-            };
-        }
+    pub fn aclass_index(&self, region: Nid) -> (usize, Nid) {
+        (self[region].aclass, self[region].mem)
     }
 
     fn peephole(&mut self, target: Nid) -> Option<Nid> {
@@ -959,7 +1031,7 @@ impl Nodes {
                         let stre = self[store].inputs[3];
                         if stre != MEM {
                             self[a].inputs.push(stre);
-                            self[a].inputs.swap(len - 2, len - 1);
+                            self[a].inputs.swap(len - 1, len);
                             self[stre].outputs.push(a);
                         }
                         return Some(self[store].inputs[2]);
@@ -1106,6 +1178,10 @@ impl Nodes {
                 if self[store].kind == Kind::Stre
                     && self[store].inputs[2] == region
                     && self[store].ty == self[target].ty
+                    && self[store]
+                        .outputs
+                        .iter()
+                        .all(|&n| !matches!(self[n].kind, Kind::Call { .. }))
                 {
                     return Some(self[store].inputs[1]);
                 }
@@ -1116,6 +1192,10 @@ impl Nodes {
                     while cursor != MEM
                         && self[cursor].kind == Kind::Stre
                         && self[cursor].inputs[1] != VOID
+                        && self[cursor]
+                            .outputs
+                            .iter()
+                            .all(|&n| !matches!(self[n].kind, Kind::Call { .. }))
                     {
                         if self[cursor].inputs[2] == region && self[cursor].ty == self[target].ty {
                             return Some(self[cursor].inputs[1]);
@@ -1394,8 +1474,11 @@ impl Nodes {
         self.load_loop_var(index, lvar, loops);
 
         if !self[lvar.value()].is_lazy_phi(node) {
-            let inps = [node, lvar.value(), VOID];
+            let lvalue = lvar.value();
+            let inps = [node, lvalue, VOID];
             lvar.set_value(self.new_node_nop(lvar.ty, Kind::Phi, inps), self);
+            self[lvar.value()].aclass = self[lvalue].aclass;
+            self[lvar.value()].mem = self[lvalue].mem;
         }
         var.set_value(lvar.value(), self);
     }
@@ -1578,6 +1661,7 @@ pub struct Node {
     inputs: Vc,
     outputs: Vc,
     peep_triggers: Vc,
+    clobbers: Vec<usize>,
     ty: ty::Id,
     offset: Offset,
     ralloc_backref: RallocBRef,
@@ -1585,6 +1669,8 @@ pub struct Node {
     lock_rc: LockRc,
     loop_depth: LoopDepth,
     aclass: usize,
+    mem: Nid,
+    antidep: Nid,
 }
 
 impl Node {
@@ -1602,7 +1688,7 @@ impl Node {
 
     fn is_not_gvnd(&self) -> bool {
         (self.kind == Kind::Phi && self.inputs[2] == 0)
-            || matches!(self.kind, Kind::Arg | Kind::Stck)
+            || matches!(self.kind, Kind::Arg | Kind::Stck | Kind::Stre)
             || self.kind.is_cfg()
     }
 
@@ -1759,24 +1845,21 @@ impl Variable {
 #[derive(Default, Clone)]
 pub struct AClass {
     last_store: StrongRef,
-    loads: Vec<StrongRef>,
+    clobber: StrongRef,
 }
 
 impl AClass {
     fn dup(&self, nodes: &mut Nodes) -> Self {
-        Self {
-            last_store: self.last_store.dup(nodes),
-            loads: self.loads.iter().map(|v| v.dup(nodes)).collect(),
-        }
+        Self { last_store: self.last_store.dup(nodes), clobber: self.clobber.dup(nodes) }
     }
 
-    fn remove(mut self, nodes: &mut Nodes) {
+    fn remove(self, nodes: &mut Nodes) {
         self.last_store.remove(nodes);
-        self.loads.drain(..).for_each(|n| _ = n.remove(nodes));
+        self.clobber.remove(nodes);
     }
 
     fn new(nodes: &mut Nodes) -> Self {
-        Self { last_store: StrongRef::new(MEM, nodes), loads: Default::default() }
+        Self { last_store: StrongRef::new(MEM, nodes), clobber: StrongRef::new(VOID, nodes) }
     }
 }
 
@@ -2111,6 +2194,7 @@ impl<'a> Codegen<'a> {
     fn new_stack(&mut self, ty: ty::Id) -> Nid {
         let stck = self.ci.nodes.new_node_nop(ty, Kind::Stck, [VOID, MEM]);
         self.ci.nodes[stck].aclass = self.ci.scope.aclasses.len();
+        self.ci.nodes[stck].mem = stck;
         self.ci.scope.aclasses.push(AClass::new(&mut self.ci.nodes));
         stck
     }
@@ -2129,7 +2213,6 @@ impl<'a> Codegen<'a> {
         if value_index != 0 {
             // simply switch the class to the default one
             let aclass = &mut self.ci.scope.aclasses[value_index];
-            let loads = mem::take(&mut aclass.loads);
             self.ci.nodes.load_loop_aclass(value_index, aclass, &mut self.ci.loops);
             let last_store = aclass.last_store.get();
             let mut cursor = last_store;
@@ -2146,23 +2229,13 @@ impl<'a> Codegen<'a> {
                 }
                 self.ci.scope.aclasses[0].last_store.set(last_store, &mut self.ci.nodes);
             }
-            self.ci.scope.aclasses[0].loads.extend(loads);
             self.ci.nodes[value_region].aclass = 0;
         }
 
         let (index, _) = self.ci.nodes.aclass_index(region);
         let aclass = &mut self.ci.scope.aclasses[index];
         self.ci.nodes.load_loop_aclass(index, aclass, &mut self.ci.loops);
-        let mut vc = Vc::from([VOID, value, region, aclass.last_store.get()]);
-        for load in aclass.loads.drain(..) {
-            if load.get() == value {
-                load.soft_remove(&mut self.ci.nodes);
-                continue;
-            }
-            if let Some(load) = load.remove(&mut self.ci.nodes) {
-                vc.push(load);
-            }
-        }
+        let vc = Vc::from([aclass.clobber.get(), value, region, aclass.last_store.get()]);
         mem::take(&mut aclass.last_store).soft_remove(&mut self.ci.nodes);
         let store = self.ci.nodes.new_node(ty, Kind::Stre, vc);
         aclass.last_store = StrongRef::new(store, &mut self.ci.nodes);
@@ -2186,10 +2259,8 @@ impl<'a> Codegen<'a> {
         let (index, _) = self.ci.nodes.aclass_index(region);
         let aclass = &mut self.ci.scope.aclasses[index];
         self.ci.nodes.load_loop_aclass(index, aclass, &mut self.ci.loops);
-        let vc = [VOID, region, aclass.last_store.get()];
-        let load = self.ci.nodes.new_node(ty, Kind::Load, vc);
-        aclass.loads.push(StrongRef::new(load, &mut self.ci.nodes));
-        load
+        let vc = [aclass.clobber.get(), region, aclass.last_store.get()];
+        self.ci.nodes.new_node(ty, Kind::Load, vc)
     }
 
     pub fn generate(&mut self, entry: FileId) {
@@ -2545,9 +2616,13 @@ impl<'a> Codegen<'a> {
                         self.ci.nodes.unlock(lhs.id);
                         let mut rhs = rhs?;
                         self.strip_var(&mut rhs);
-                        let ty = self.binop_ty(pos, &mut lhs, &mut rhs, op);
+                        let (ty, aclass, mem) = self.binop_ty(pos, &mut lhs, &mut rhs, op);
                         let inps = [VOID, lhs.id, rhs.id];
-                        Some(self.ci.nodes.new_node_lit(ty.bin_ret(op), Kind::BinOp { op }, inps))
+                        let bop =
+                            self.ci.nodes.new_node_lit(ty.bin_ret(op), Kind::BinOp { op }, inps);
+                        self.ci.nodes[bop.id].aclass = aclass;
+                        self.ci.nodes[bop.id].mem = mem;
+                        Some(bop)
                     }
                     ty::Kind::Struct(s) if op.is_homogenous() => {
                         self.ci.nodes.lock(lhs.id);
@@ -2597,9 +2672,13 @@ impl<'a> Codegen<'a> {
                 let inps = [VOID, idx.id, size];
                 let offset =
                     self.ci.nodes.new_node(ty::Id::INT, Kind::BinOp { op: TokenKind::Mul }, inps);
+                let (aclass, mem) = self.ci.nodes.aclass_index(bs.id);
                 let inps = [VOID, bs.id, offset];
                 let ptr =
                     self.ci.nodes.new_node(ty::Id::INT, Kind::BinOp { op: TokenKind::Add }, inps);
+                self.ci.nodes[ptr].aclass = aclass;
+                self.ci.nodes[ptr].mem = mem;
+
                 Some(Value::ptr(ptr).ty(elem))
             }
             Expr::Embed { id, .. } => {
@@ -2808,7 +2887,7 @@ impl<'a> Codegen<'a> {
                     &mut self.ci.nodes,
                 );
 
-                self.add_clobber_stores(&clobbered_aliases);
+                self.add_clobber_stores(clobbered_aliases);
 
                 alt_value.or(Some(Value::new(self.ci.ctrl.get()).ty(ty)))
             }
@@ -2884,7 +2963,7 @@ impl<'a> Codegen<'a> {
                     &mut self.ci.nodes,
                 );
 
-                self.add_clobber_stores(&clobbered_aliases);
+                self.add_clobber_stores(clobbered_aliases);
 
                 alt_value.or(Some(Value::new(self.ci.ctrl.get()).ty(sig.ret)))
             }
@@ -3458,10 +3537,10 @@ impl<'a> Codegen<'a> {
         if let Some(base) = self.tys.base_of(value.ty) {
             clobbered_aliases.push(self.ci.nodes.aclass_index(value.id).0);
             if base.has_pointers(self.tys) {
-                clobbered_aliases.push(0);
+                clobbered_aliases.push(DEFAULT_ACLASS);
             }
         } else if value.ty.has_pointers(self.tys) {
-            clobbered_aliases.push(0);
+            clobbered_aliases.push(DEFAULT_ACLASS);
         }
     }
 
@@ -3470,31 +3549,14 @@ impl<'a> Codegen<'a> {
             let aclass = &mut self.ci.scope.aclasses[clobbered];
             self.ci.nodes.load_loop_aclass(clobbered, aclass, &mut self.ci.loops);
             inps.push(aclass.last_store.get());
-            aclass.loads.retain_mut(|load| {
-                if inps.contains(&load.get()) {
-                    return true;
-                }
-
-                if let Some(load) = mem::take(load).remove(&mut self.ci.nodes) {
-                    inps.push(load);
-                }
-
-                false
-            });
         }
     }
 
-    fn add_clobber_stores(&mut self, clobbered_aliases: &[usize]) {
+    fn add_clobber_stores(&mut self, clobbered_aliases: Vec<usize>) {
         for &clobbered in clobbered_aliases.iter() {
-            if clobbered == DEFAULT_ACLASS {
-                continue;
-            }
-            let aclass = self.ci.scope.aclasses[clobbered].last_store.get();
-            if aclass == MEM {
-                continue;
-            }
-            self.store_mem(self.ci.nodes[aclass].inputs[2], ty::Id::VOID, VOID);
+            self.ci.scope.aclasses[clobbered].clobber.set(self.ci.ctrl.get(), &mut self.ci.nodes);
         }
+        self.ci.nodes[self.ci.ctrl.get()].clobbers = clobbered_aliases;
     }
 
     fn struct_op(
@@ -3665,8 +3727,12 @@ impl<'a> Codegen<'a> {
         }
 
         let off = self.ci.nodes.new_node_nop(ty::Id::INT, Kind::CInt { value: off as i64 }, [VOID]);
+        let (aclass, mem) = self.ci.nodes.aclass_index(val);
         let inps = [VOID, val, off];
-        self.ci.nodes.new_node(ty::Id::INT, Kind::BinOp { op: TokenKind::Add }, inps)
+        let seted = self.ci.nodes.new_node(ty::Id::INT, Kind::BinOp { op: TokenKind::Add }, inps);
+        self.ci.nodes[seted].aclass = aclass;
+        self.ci.nodes[seted].mem = mem;
+        seted
     }
 
     fn strip_var(&mut self, n: &mut Value) {
@@ -3822,17 +3888,23 @@ impl<'a> Codegen<'a> {
 
     #[must_use]
     #[track_caller]
-    fn binop_ty(&mut self, pos: Pos, lhs: &mut Value, rhs: &mut Value, op: TokenKind) -> ty::Id {
+    fn binop_ty(
+        &mut self,
+        pos: Pos,
+        lhs: &mut Value,
+        rhs: &mut Value,
+        op: TokenKind,
+    ) -> (ty::Id, usize, Nid) {
         if let Some(upcasted) = lhs.ty.try_upcast(rhs.ty) {
             let to_correct = if lhs.ty != upcasted {
-                Some(lhs)
+                Some((lhs, rhs))
             } else if rhs.ty != upcasted {
-                Some(rhs)
+                Some((rhs, lhs))
             } else {
                 None
             };
 
-            if let Some(oper) = to_correct {
+            if let Some((oper, other)) = to_correct {
                 if self.tys.size_of(upcasted) > self.tys.size_of(oper.ty) {
                     self.extend(oper, upcasted);
                 }
@@ -3846,15 +3918,16 @@ impl<'a> Codegen<'a> {
                         self.ci.nodes.new_node(upcasted, Kind::BinOp { op: TokenKind::Mul }, [
                             VOID, oper.id, cnst,
                         ]);
+                    return (upcasted, self.ci.nodes[other.id].aclass, self.ci.nodes[other.id].mem);
                 }
             }
 
-            upcasted
+            (upcasted, DEFAULT_ACLASS, VOID)
         } else {
             let ty = self.ty_display(lhs.ty);
             let expected = self.ty_display(rhs.ty);
             self.report(pos, fa!("'{ty} {op} {expected}' is not supported"));
-            ty::Id::NEVER
+            (ty::Id::NEVER, DEFAULT_ACLASS, VOID)
         }
     }
 

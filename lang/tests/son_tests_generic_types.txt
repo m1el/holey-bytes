@@ -87,12 +87,12 @@ push:
     LD r12, r38, 0a, 8h
     ADD64 r11, r12, r8
     CP r3, r39
- 9: JNE r11, r12, :5
+ 9: LD r2, r38, 0a, 8h
     LD r8, r38, 8a, 8h
+    JNE r11, r12, :5
     JEQ r8, r1, :6
     CP r4, r37
     MUL64 r3, r8, r4
-    LD r2, r38, 0a, 8h
     JAL r31, r0, :free
     CP r5, r39
     JMP :7
