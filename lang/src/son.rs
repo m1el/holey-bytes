@@ -654,6 +654,14 @@ impl Nodes {
         }
     }
 
+    fn new_const(&mut self, ty: ty::Id, value: impl Into<i64>) -> Nid {
+        self.new_node_nop(ty, Kind::CInt { value: value.into() }, [VOID])
+    }
+
+    fn new_const_lit(&mut self, ty: ty::Id, value: impl Into<i64>) -> Value {
+        self.new_node_lit(ty, Kind::CInt { value: value.into() }, [VOID])
+    }
+
     fn new_node_lit(&mut self, ty: ty::Id, kind: Kind, inps: impl Into<Vc>) -> Value {
         Value::new(self.new_node(ty, kind, inps)).ty(ty)
     }
@@ -772,18 +780,14 @@ impl Nodes {
                 if let (&K::CInt { value: a }, &K::CInt { value: b }) =
                     (&self[lhs].kind, &self[rhs].kind)
                 {
-                    return Some(self.new_node(
-                        ty,
-                        K::CInt { value: op.apply_binop(a, b, is_float) },
-                        [ctrl],
-                    ));
+                    return Some(self.new_const(ty, op.apply_binop(a, b, is_float)));
                 }
 
                 if lhs == rhs {
                     match op {
-                        T::Sub => return Some(self.new_node(ty, K::CInt { value: 0 }, [ctrl])),
+                        T::Sub => return Some(self.new_const(ty, 0)),
                         T::Add => {
-                            let rhs = self.new_node_nop(ty, K::CInt { value: 2 }, [ctrl]);
+                            let rhs = self.new_const(ty, 2);
                             return Some(
                                 self.new_node(ty, K::BinOp { op: T::Mul }, [ctrl, lhs, rhs]),
                             );
@@ -813,11 +817,7 @@ impl Nodes {
                         && let K::CInt { value: bv } = self[rhs].kind
                     {
                         // (a op #b) op #c => a op (#b op #c)
-                        let new_rhs = self.new_node_nop(
-                            ty,
-                            K::CInt { value: op.apply_binop(av, bv, is_float) },
-                            [ctrl],
-                        );
+                        let new_rhs = self.new_const(ty, op.apply_binop(av, bv, is_float));
                         return Some(self.new_node(ty, K::BinOp { op }, [ctrl, a, new_rhs]));
                     }
 
@@ -834,7 +834,7 @@ impl Nodes {
                     && let K::CInt { value } = self[self[lhs].inputs[2]].kind
                 {
                     // a * #n + a => a * (#n + 1)
-                    let new_rhs = self.new_node_nop(ty, K::CInt { value: value + 1 }, [ctrl]);
+                    let new_rhs = self.new_const(ty, value + 1);
                     return Some(self.new_node(ty, K::BinOp { op: T::Mul }, [ctrl, rhs, new_rhs]));
                 }
 
@@ -843,7 +843,7 @@ impl Nodes {
                     && let K::CInt { value: a } = self[rhs].kind
                     && let K::CInt { value: b } = self[self[lhs].inputs[2]].kind
                 {
-                    let new_rhs = self.new_node_nop(ty, K::CInt { value: b - a }, [ctrl]);
+                    let new_rhs = self.new_const(ty, b - a);
                     return Some(self.new_node(ty, K::BinOp { op: T::Add }, [
                         ctrl,
                         self[lhs].inputs[1],
@@ -864,17 +864,13 @@ impl Nodes {
                 }
             }
             K::UnOp { op } => {
-                let &[ctrl, oper] = self[target].inputs.as_slice() else { unreachable!() };
+                let &[_, oper] = self[target].inputs.as_slice() else { unreachable!() };
                 let ty = self[target].ty;
 
                 let is_float = self[oper].ty.is_float();
 
                 if let K::CInt { value } = self[oper].kind {
-                    return Some(self.new_node(
-                        ty,
-                        K::CInt { value: op.apply_unop(value, is_float) },
-                        [ctrl],
-                    ));
+                    return Some(self.new_const(ty, op.apply_unop(value, is_float)));
                 }
             }
             K::If => {
@@ -2307,21 +2303,31 @@ impl<'a> Codegen<'a> {
         // ordered by complexity of the expression
         match *expr {
             Expr::Null { pos } => {
-                inference!(ty, ctx, self, pos, "null pointer", "@as(^<ty>, null)");
+                inference!(oty, ctx, self, pos, "null pointer", "@as(^<ty>, null)");
 
-                if !ty.is_pointer() {
+                let Some(ty) = self.tys.inner_of(oty) else {
                     self.report(
                         pos,
                         fa!(
                             "'null' expression was inferred to be '{}',
-                            which is not a pointer (and that is not supported yet)",
-                            self.ty_display(ty)
+                            which is not optional",
+                            self.ty_display(oty)
                         ),
                     );
                     return Value::NEVER;
-                }
+                };
 
-                Some(self.ci.nodes.new_node_lit(ty, Kind::CInt { value: 0 }, [VOID]))
+                match oty.loc(self.tys) {
+                    Loc::Reg => Some(self.ci.nodes.new_const_lit(oty, 0)),
+                    Loc::Stack => {
+                        let (off, flag_ty) = self.tys.opt_flag_field(ty);
+                        let stack = self.new_stack(oty);
+                        let offset = self.offset(stack, off);
+                        let value = self.ci.nodes.new_const(flag_ty, 0);
+                        self.store_mem(offset, flag_ty, value);
+                        Some(Value::ptr(stack).ty(oty))
+                    }
+                }
             }
             Expr::Idk { pos } => {
                 inference!(ty, ctx, self, pos, "value", "@as(<ty>, idk)");
@@ -2340,20 +2346,14 @@ impl<'a> Codegen<'a> {
                     Value::NEVER
                 }
             }
-            Expr::Bool { value, .. } => Some(self.ci.nodes.new_node_lit(
-                ty::Id::BOOL,
-                Kind::CInt { value: value as i64 },
-                [VOID],
-            )),
-            Expr::Number { value, .. } => Some(self.ci.nodes.new_node_lit(
+            Expr::Bool { value, .. } => Some(self.ci.nodes.new_const_lit(ty::Id::BOOL, value)),
+            Expr::Number { value, .. } => Some(self.ci.nodes.new_const_lit(
                 ctx.ty.filter(|ty| ty.is_integer()).unwrap_or(ty::Id::DEFAULT_INT),
-                Kind::CInt { value },
-                [VOID],
+                value,
             )),
-            Expr::Float { value, .. } => Some(self.ci.nodes.new_node_lit(
+            Expr::Float { value, .. } => Some(self.ci.nodes.new_const_lit(
                 ctx.ty.filter(|ty| ty.is_float()).unwrap_or(ty::Id::F32),
-                Kind::CInt { value: value as _ },
-                [VOID],
+                value as i64,
             )),
             Expr::Ident { id, .. }
                 if let Some(index) = self.ci.scope.vars.iter().rposition(|v| v.id == id) =>
@@ -2551,11 +2551,7 @@ impl<'a> Codegen<'a> {
                 if val.ty.is_integer() {
                     Some(self.ci.nodes.new_node_lit(val.ty, Kind::UnOp { op }, [VOID, val.id]))
                 } else if val.ty.is_float() {
-                    let value = self.ci.nodes.new_node_nop(
-                        val.ty,
-                        Kind::CInt { value: (-1f64).to_bits() as _ },
-                        [VOID],
-                    );
+                    let value = self.ci.nodes.new_const(val.ty, (-1f64).to_bits() as i64);
                     Some(self.ci.nodes.new_node_lit(val.ty, Kind::BinOp { op: TokenKind::Mul }, [
                         VOID, val.id, value,
                     ]))
@@ -2669,8 +2665,7 @@ impl<'a> Codegen<'a> {
                 let elem = self.tys.ins.slices[s as usize].elem;
                 let mut idx = self.expr_ctx(index, Ctx::default().with_ty(ty::Id::DEFAULT_INT))?;
                 self.assert_ty(index.pos(), &mut idx, ty::Id::DEFAULT_INT, "subscript");
-                let value = self.tys.size_of(elem) as i64;
-                let size = self.ci.nodes.new_node_nop(ty::Id::INT, Kind::CInt { value }, [VOID]);
+                let size = self.ci.nodes.new_const(ty::Id::INT, self.tys.size_of(elem));
                 let inps = [VOID, idx.id, size];
                 let offset =
                     self.ci.nodes.new_node(ty::Id::INT, Kind::BinOp { op: TokenKind::Mul }, inps);
@@ -2690,18 +2685,16 @@ impl<'a> Codegen<'a> {
             }
             Expr::Directive { name: "sizeof", args: [ty], .. } => {
                 let ty = self.ty(ty);
-                Some(self.ci.nodes.new_node_lit(
+                Some(self.ci.nodes.new_const_lit(
                     ctx.ty.filter(|ty| ty.is_integer()).unwrap_or(ty::Id::DEFAULT_INT),
-                    Kind::CInt { value: self.tys.size_of(ty) as _ },
-                    [VOID],
+                    self.tys.size_of(ty),
                 ))
             }
             Expr::Directive { name: "alignof", args: [ty], .. } => {
                 let ty = self.ty(ty);
-                Some(self.ci.nodes.new_node_lit(
+                Some(self.ci.nodes.new_const_lit(
                     ctx.ty.filter(|ty| ty.is_integer()).unwrap_or(ty::Id::DEFAULT_INT),
-                    Kind::CInt { value: self.tys.align_of(ty) as _ },
-                    [VOID],
+                    self.tys.align_of(ty),
                 ))
             }
             Expr::Directive { name: "bitcast", args: [val], pos } => {
@@ -3166,8 +3159,8 @@ impl<'a> Codegen<'a> {
                 }
             }
             Expr::Struct { .. } => {
-                let value = self.ty(expr).repr() as i64;
-                Some(self.ci.nodes.new_node_lit(ty::Id::TYPE, Kind::CInt { value }, [VOID]))
+                let value = self.ty(expr).repr();
+                Some(self.ci.nodes.new_const_lit(ty::Id::TYPE, value))
             }
             Expr::Ctor { pos, ty, fields, .. } => {
                 ctx.ty = ty.map(|ty| self.ty(ty)).or(ctx.ty);
@@ -3729,7 +3722,7 @@ impl<'a> Codegen<'a> {
             return val;
         }
 
-        let off = self.ci.nodes.new_node_nop(ty::Id::INT, Kind::CInt { value: off as i64 }, [VOID]);
+        let off = self.ci.nodes.new_const(ty::Id::INT, off);
         let (aclass, mem) = self.ci.nodes.aclass_index(val);
         let inps = [VOID, val, off];
         let seted = self.ci.nodes.new_node(ty::Id::INT, Kind::BinOp { op: TokenKind::Add }, inps);
@@ -3914,9 +3907,7 @@ impl<'a> Codegen<'a> {
                 if matches!(op, TokenKind::Add | TokenKind::Sub)
                     && let Some(elem) = self.tys.base_of(upcasted)
                 {
-                    let value = self.tys.size_of(elem) as i64;
-                    let cnst =
-                        self.ci.nodes.new_node_nop(ty::Id::INT, Kind::CInt { value }, [VOID]);
+                    let cnst = self.ci.nodes.new_const(ty::Id::INT, self.tys.size_of(elem));
                     oper.id =
                         self.ci.nodes.new_node(upcasted, Kind::BinOp { op: TokenKind::Mul }, [
                             VOID, oper.id, cnst,
@@ -3975,9 +3966,8 @@ impl<'a> Codegen<'a> {
 
     fn extend(&mut self, value: &mut Value, to: ty::Id) {
         self.strip_ptr(value);
-        let val = (1i64 << (self.tys.size_of(value.ty) * 8)) - 1;
         value.ty = to;
-        let mask = self.ci.nodes.new_node_nop(to, Kind::CInt { value: val }, [VOID]);
+        let mask = self.ci.nodes.new_const(to, (1i64 << (self.tys.size_of(value.ty) * 8)) - 1);
         let inps = [VOID, value.id, mask];
         *value = self.ci.nodes.new_node_lit(to, Kind::BinOp { op: TokenKind::Band }, inps);
     }
@@ -4137,6 +4127,7 @@ mod tests {
         variables;
         loops;
         pointers;
+        nullable_types;
         structs;
         hex_octal_binary_literals;
         struct_operators;

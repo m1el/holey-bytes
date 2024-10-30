@@ -290,6 +290,7 @@ mod ty {
 
     pub type Builtin = u32;
     pub type Struct = u32;
+    pub type Opt = u32;
     pub type Ptr = u32;
     pub type Func = u32;
     pub type Global = u32;
@@ -373,6 +374,7 @@ mod ty {
                     crate::SymKey::Struct(st.file, st.pos, st.captures)
                 }
                 Kind::Ptr(p) => crate::SymKey::Pointer(&ctx.ptrs[p as usize]),
+                Kind::Opt(p) => crate::SymKey::Optional(&ctx.opts[p as usize]),
                 Kind::Func(f) => {
                     let fc = &ctx.funcs[f as usize];
                     if let Some(base) = fc.base {
@@ -441,6 +443,10 @@ mod ty {
             matches!(self.expand(), Kind::Ptr(_)) || self.is_never()
         }
 
+        pub fn is_optional(self) -> bool {
+            matches!(self.expand(), Kind::Opt(_)) || self.is_never()
+        }
+
         pub fn try_upcast(self, ob: Self) -> Option<Self> {
             let (oa, ob) = (Self(self.0.min(ob.0)), Self(self.0.max(ob.0)));
             let (a, b) = (oa.strip_pointer(), ob.strip_pointer());
@@ -490,9 +496,16 @@ mod ty {
 
         pub(crate) fn loc(&self, tys: &Types) -> Loc {
             match self.expand() {
+                Kind::Opt(o)
+                    if let ty = tys.ins.opts[o as usize].base
+                        && ty.loc(tys) == Loc::Reg
+                        && (ty.is_pointer() || tys.size_of(ty) < 8) =>
+                {
+                    Loc::Reg
+                }
                 Kind::Ptr(_) | Kind::Builtin(_) => Loc::Reg,
                 Kind::Struct(_) if tys.size_of(*self) == 0 => Loc::Reg,
-                Kind::Struct(_) | Kind::Slice(_) => Loc::Stack,
+                Kind::Struct(_) | Kind::Slice(_) | Kind::Opt(_) => Loc::Stack,
                 Kind::Func(_) | Kind::Global(_) | Kind::Module(_) => unreachable!(),
             }
         }
@@ -633,6 +646,7 @@ mod ty {
         pub enum Kind {
             Builtin,
             Struct,
+            Opt,
             Ptr,
             Func,
             Global,
@@ -675,6 +689,10 @@ mod ty {
                     f.write_str("]")
                 }
                 TK::Builtin(ty) => f.write_str(to_str(ty)),
+                TK::Opt(ty) => {
+                    f.write_str("?")?;
+                    self.rety(self.tys.ins.opts[ty as usize].base).fmt(f)
+                }
                 TK::Ptr(ty) => {
                     f.write_str("^")?;
                     self.rety(self.tys.ins.ptrs[ty as usize].base).fmt(f)
@@ -730,6 +748,7 @@ type Size = u32;
 #[derive(PartialEq, Eq, Hash, Clone, Copy)]
 pub enum SymKey<'a> {
     Pointer(&'a Ptr),
+    Optional(&'a Opt),
     Struct(FileId, Pos, ty::Tuple),
     FuncInst(ty::Func, ty::Tuple),
     Decl(FileId, Ident),
@@ -840,7 +859,12 @@ struct Struct {
     field_start: u32,
 }
 
-#[derive(PartialEq, Eq, Hash)]
+#[derive(PartialEq, Eq, Hash, Clone, Copy)]
+pub struct Opt {
+    base: ty::Id,
+}
+
+#[derive(PartialEq, Eq, Hash, Clone, Copy)]
 pub struct Ptr {
     base: ty::Id,
 }
@@ -935,6 +959,7 @@ pub struct TypeIns {
     structs: Vec<Struct>,
     fields: Vec<Field>,
     ptrs: Vec<Ptr>,
+    opts: Vec<Opt>,
     slices: Vec<Array>,
 }
 
@@ -1064,6 +1089,10 @@ trait TypeParser {
             Expr::UnOp { op: TokenKind::Xor, val, .. } => {
                 let base = self.parse_ty(file, val, None, files);
                 self.tys().make_ptr(base)
+            }
+            Expr::UnOp { op: TokenKind::Que, val, .. } => {
+                let base = self.parse_ty(file, val, None, files);
+                self.tys().make_opt(base)
             }
             Expr::Ident { id, .. } if id.is_null() => id.len().into(),
             Expr::Ident { id, pos, .. } => self.find_type(pos, file, file, Ok(id), files),
@@ -1206,64 +1235,44 @@ impl Types {
         (ret, iter)
     }
 
+    fn make_opt(&mut self, base: ty::Id) -> ty::Id {
+        self.make_generic_ty(
+            Opt { base },
+            |ins| &mut ins.opts,
+            |e| SymKey::Optional(e),
+            ty::Kind::Opt,
+        )
+    }
+
     fn make_ptr(&mut self, base: ty::Id) -> ty::Id {
-        ty::Kind::Ptr(self.make_ptr_low(base)).compress()
+        self.make_generic_ty(
+            Ptr { base },
+            |ins| &mut ins.ptrs,
+            |e| SymKey::Pointer(e),
+            ty::Kind::Ptr,
+        )
     }
 
-    fn make_ptr_low(&mut self, base: ty::Id) -> ty::Ptr {
-        let ptr = Ptr { base };
-        let (entry, hash) = self.syms.entry(SymKey::Pointer(&ptr), &self.ins);
-        match entry {
-            hash_map::RawEntryMut::Occupied(o) => o.get_key_value().0.value,
-            hash_map::RawEntryMut::Vacant(v) => {
-                self.ins.ptrs.push(ptr);
-                v.insert(
-                    ctx_map::Key {
-                        value: ty::Kind::Ptr(self.ins.ptrs.len() as u32 - 1).compress(),
-                        hash,
-                    },
-                    (),
-                )
-                .0
-                .value
-            }
-        }
-        .expand()
-        .inner()
+    fn make_array(&mut self, elem: ty::Id, len: ArrayLen) -> ty::Id {
+        self.make_generic_ty(
+            Array { elem, len },
+            |ins| &mut ins.slices,
+            |e| SymKey::Array(e),
+            ty::Kind::Slice,
+        )
     }
 
-    fn make_array(&mut self, ty: ty::Id, len: ArrayLen) -> ty::Id {
-        ty::Kind::Slice(self.make_array_low(ty, len)).compress()
-    }
-
-    fn make_array_low(&mut self, ty: ty::Id, len: ArrayLen) -> ty::Slice {
-        self.syms
-            .get_or_insert(SymKey::Array(&Array { elem: ty, len }), &mut self.ins, |ins| {
-                ins.slices.push(Array { elem: ty, len });
-                ty::Kind::Slice(ins.slices.len() as u32 - 1).compress()
-            })
-            .expand()
-            .inner()
-
-        //let array = Array { ty, len };
-        //let (entry, hash) = self.syms.entry(SymKey::Array(&array), &self.ins);
-        //match entry {
-        //    hash_map::RawEntryMut::Occupied(o) => o.get_key_value().0.value,
-        //    hash_map::RawEntryMut::Vacant(v) => {
-        //        self.ins.arrays.push(array);
-        //        v.insert(
-        //            ctx_map::Key {
-        //                value: ty::Kind::Slice(self.ins.ptrs.len() as u32 - 1).compress(),
-        //                hash,
-        //            },
-        //            (),
-        //        )
-        //        .0
-        //        .value
-        //    }
-        //}
-        //.expand()
-        //.inner()
+    fn make_generic_ty<T: Copy>(
+        &mut self,
+        ty: T,
+        get_col: fn(&mut TypeIns) -> &mut Vec<T>,
+        key: fn(&T) -> SymKey,
+        kind: fn(u32) -> ty::Kind,
+    ) -> ty::Id {
+        *self.syms.get_or_insert(key(&{ ty }), &mut self.ins, |ins| {
+            get_col(ins).push(ty);
+            kind(get_col(ins).len() as u32 - 1).compress()
+        })
     }
 
     fn size_of(&self, ty: ty::Id) -> Size {
@@ -1325,6 +1334,20 @@ impl Types {
         match ty.expand() {
             ty::Kind::Ptr(p) => Some(self.ins.ptrs[p as usize].base),
             _ => None,
+        }
+    }
+
+    fn inner_of(&self, ty: ty::Id) -> Option<ty::Id> {
+        match ty.expand() {
+            ty::Kind::Opt(o) => Some(self.ins.opts[o as usize].base),
+            _ => None,
+        }
+    }
+
+    fn opt_flag_field(&self, ty: ty::Id) -> (Offset, ty::Id) {
+        match ty.expand() {
+            ty::Kind::Ptr(_) => (0, ty::Id::UINT),
+            _ => todo!("{ty:?}"),
         }
     }
 

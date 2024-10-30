@@ -161,6 +161,27 @@ drop := fn(a: uint): void {
 }
 ```
 
+#### nullable_types
+```hb
+main := fn(): int {
+	a := &1
+
+	b := @as(?^uint, null)
+	if decide() b = a
+
+	if b == null return 9001
+
+	c := @as(?uint, *b)
+	if decide() c = null
+
+	if c != null return 42
+
+	return 0
+}
+
+decide := fn(): bool return true
+```
+
 #### structs
 ```hb
 Ty := struct {
@@ -1196,3 +1217,4 @@ main := fn(): int {
 opaque := fn(): Foo {
 	return .(3, 2)
 }
+```
