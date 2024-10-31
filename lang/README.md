@@ -184,10 +184,18 @@ main := fn(): uint {
 
 	if f == null return 34
 
+	bar := @as(?Bar, .(a, 1))
+
+	if decide() bar = null
+
+	if bar != null return 420
+
 	return d - *f.a
 }
 
 Foo := struct {a: ^uint, b: uint}
+
+Bar := struct {a: ?^uint, b: uint}
 
 decide := fn(): bool return true
 ```
