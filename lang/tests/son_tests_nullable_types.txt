@@ -2,11 +2,11 @@ decide:
     LI8 r1, 1b
     JALA r0, r31, 0a
 main:
-    ADDI64 r254, r254, -72d
-    ST r31, r254, 40a, 32h
+    ADDI64 r254, r254, -136d
+    ST r31, r254, 80a, 56h
     JAL r31, r0, :decide
     LI64 r4, 0d
-    ADDI64 r32, r254, 32d
+    ADDI64 r32, r254, 72d
     ANDI r1, r1, 255d
     JNE r1, r0, :0
     CP r33, r4
@@ -16,54 +16,72 @@ main:
     LI64 r1, 9001d
     JMP :3
  2: JAL r31, r0, :decide
-    LI8 r8, 0b
+    LI8 r34, 0b
+    LI8 r35, 1b
     ANDI r1, r1, 255d
     JNE r1, r0, :4
-    LI8 r9, 1b
-    ST r9, r254, 16a, 1h
+    ST r35, r254, 56a, 1h
     LD r9, r33, 0a, 8h
-    ST r9, r254, 24a, 8h
+    ST r9, r254, 64a, 8h
     JMP :5
- 4: ST r8, r254, 16a, 1h
- 5: LD r6, r254, 16a, 1h
+ 4: ST r34, r254, 56a, 1h
+ 5: LD r6, r254, 56a, 1h
     ANDI r6, r6, 255d
-    ANDI r8, r8, 255d
-    JEQ r6, r8, :6
+    ANDI r34, r34, 255d
+    JEQ r6, r34, :6
     LI64 r1, 42d
     JMP :3
  6: JAL r31, r0, :decide
     LI32 r2, 0w
     ANDI r1, r1, 255d
     JNE r1, r0, :7
-    CP r34, r2
+    CP r36, r2
     JMP :8
- 7: LI32 r34, 8388609w
- 8: ANDI r34, r34, 4294967295d
+ 7: LI32 r36, 8388609w
+ 8: ANDI r36, r36, 4294967295d
     ANDI r2, r2, 4294967295d
-    JNE r34, r2, :9
+    JNE r36, r2, :9
     LI64 r1, 69d
     JMP :3
  9: JAL r31, r0, :decide
     LI64 r3, 0d
+    LI64 r37, 1d
     ANDI r1, r1, 255d
     JNE r1, r0, :10
-    ST r3, r254, 0a, 8h
+    ST r3, r254, 16a, 8h
     JMP :11
-10: ST r32, r254, 0a, 8h
-    LI64 r4, 1d
-    ST r4, r254, 8a, 8h
-    ST r4, r254, 32a, 8h
-11: LD r2, r254, 0a, 8h
+10: ST r32, r254, 16a, 8h
+    ST r37, r254, 24a, 8h
+    ST r37, r254, 72a, 8h
+11: LD r2, r254, 16a, 8h
     JNE r2, r3, :12
     LI64 r1, 34d
     JMP :3
-12: LD r8, r254, 0a, 8h
-    LD r10, r8, 0a, 8h
-    ANDI r12, r34, 65535d
-    SUB64 r1, r12, r10
- 3: LD r31, r254, 40a, 32h
-    ADDI64 r254, r254, 72d
+12: JAL r31, r0, :decide
+    ADDI64 r10, r254, 32d
+    ANDI r1, r1, 255d
+    JNE r1, r0, :13
+    ADDI64 r11, r254, 0d
+    ST r32, r254, 0a, 8h
+    ST r37, r254, 8a, 8h
+    ST r35, r254, 32a, 1h
+    ADDI64 r12, r10, 8d
+    BMC r11, r12, 16h
+    JMP :14
+13: ST r34, r254, 32a, 1h
+14: LD r11, r254, 32a, 1h
+    ANDI r11, r11, 255d
+    ANDI r34, r34, 255d
+    JEQ r11, r34, :15
+    LI64 r1, 420d
+    JMP :3
+15: LD r5, r254, 16a, 8h
+    LD r7, r5, 0a, 8h
+    ANDI r9, r36, 65535d
+    SUB64 r1, r9, r7
+ 3: LD r31, r254, 80a, 56h
+    ADDI64 r254, r254, 136d
     JALA r0, r31, 0a
-code size: 556
+code size: 729
 ret: 0
 status: Ok(())

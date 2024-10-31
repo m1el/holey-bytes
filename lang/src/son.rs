@@ -4003,7 +4003,7 @@ impl<'a> Codegen<'a> {
                     .new_node(oty, Kind::BinOp { op: TokenKind::Bor }, [VOID, val.id, fill]);
                 val.ty = oty;
             }
-            Loc::Stack if val.ty.loc(self.tys) == Loc::Reg => {
+            Loc::Stack => {
                 self.strip_ptr(val);
                 let stack = self.new_stack(oty);
                 let fill = self.ci.nodes.new_const(flag_ty, 1);
@@ -4014,7 +4014,6 @@ impl<'a> Codegen<'a> {
                 val.ptr = true;
                 val.ty = oty;
             }
-            _ => todo!(),
         }
     }
 
