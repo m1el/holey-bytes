@@ -135,9 +135,6 @@ fib := fn(n: uint): uint {
 #### pointers
 ```hb
 main := fn(): uint {
-	n := @as(^uint, null)
-	if n != null return 9001
-
 	a := 1
 	b := &a
 
@@ -176,7 +173,12 @@ main := fn(): int {
 
 	if c != null return 42
 
-	return 0
+	d := @as(?u16, null)
+	if decide() d = 0
+
+	if d == null return 69
+
+	return d
 }
 
 decide := fn(): bool return true

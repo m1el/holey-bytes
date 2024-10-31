@@ -454,6 +454,7 @@ mod ty {
                 _ if oa == Self::from(NEVER) => ob,
                 _ if ob == Self::from(NEVER) => oa,
                 _ if oa == ob => oa,
+                _ if ob.is_optional() => ob,
                 _ if oa.is_pointer() && ob.is_pointer() => return None,
                 _ if a.is_signed() && b.is_signed() || a.is_unsigned() && b.is_unsigned() => ob,
                 _ if a.is_unsigned() && b.is_signed() && a.repr() - U8 < b.repr() - I8 => ob,
@@ -646,12 +647,12 @@ mod ty {
         pub enum Kind {
             Builtin,
             Struct,
-            Opt,
             Ptr,
+            Slice,
+            Opt,
             Func,
             Global,
             Module,
-            Slice,
         }
     }
 
@@ -1295,6 +1296,14 @@ impl Types {
                 self.ins.structs[stru as usize].size.set(oiter.offset);
                 oiter.offset
             }
+            ty::Kind::Opt(opt) => {
+                let base = self.ins.opts[opt as usize].base;
+                if self.nieche_of(base).is_some() {
+                    self.size_of(base)
+                } else {
+                    self.size_of(base) + self.align_of(base)
+                }
+            }
             _ if let Some(size) = ty.simple_size() => size,
             ty => unimplemented!("size_of: {:?}", ty),
         }
@@ -1344,10 +1353,27 @@ impl Types {
         }
     }
 
-    fn opt_flag_field(&self, ty: ty::Id) -> (Offset, ty::Id) {
+    fn opt_layout(&self, inner_ty: ty::Id) -> OptLayout {
+        match self.nieche_of(inner_ty) {
+            Some((_, flag_offset, flag_ty)) => {
+                OptLayout { flag_ty, flag_offset, payload_offset: 0 }
+            }
+            None => OptLayout {
+                flag_ty: ty::Id::BOOL,
+                flag_offset: 0,
+                payload_offset: self.align_of(inner_ty),
+            },
+        }
+    }
+
+    fn nieche_of(&self, ty: ty::Id) -> Option<(bool, Offset, ty::Id)> {
         match ty.expand() {
-            ty::Kind::Ptr(_) => (0, ty::Id::UINT),
-            _ => todo!("{ty:?}"),
+            ty::Kind::Ptr(_) => Some((false, 0, ty::Id::UINT)),
+            // TODO: cache this
+            ty::Kind::Struct(s) => OffsetIter::new(s, self).into_iter(self).find_map(|(f, off)| {
+                self.nieche_of(f.ty).map(|(uninit, o, ty)| (uninit, o + off, ty))
+            }),
+            _ => None,
         }
     }
 
@@ -1377,6 +1403,12 @@ impl Types {
 
         debug_assert_eq!(self.tasks.len(), 0);
     }
+}
+
+struct OptLayout {
+    flag_ty: ty::Id,
+    flag_offset: Offset,
+    payload_offset: Offset,
 }
 
 struct OffsetIter {

@@ -12,8 +12,8 @@ use {
         task,
         ty::{self, Arg, ArrayLen, Loc, Tuple},
         utils::{BitSet, Vc},
-        FTask, Func, Global, Ident, Offset, OffsetIter, Reloc, Sig, StringRef, SymKey, TypeParser,
-        TypedReloc, Types,
+        FTask, Func, Global, Ident, Offset, OffsetIter, OptLayout, Reloc, Sig, StringRef, SymKey,
+        TypeParser, TypedReloc, Types,
     },
     alloc::{string::String, vec::Vec},
     core::{
@@ -2320,9 +2320,9 @@ impl<'a> Codegen<'a> {
                 match oty.loc(self.tys) {
                     Loc::Reg => Some(self.ci.nodes.new_const_lit(oty, 0)),
                     Loc::Stack => {
-                        let (off, flag_ty) = self.tys.opt_flag_field(ty);
+                        let OptLayout { flag_ty, flag_offset, .. } = self.tys.opt_layout(ty);
                         let stack = self.new_stack(oty);
-                        let offset = self.offset(stack, off);
+                        let offset = self.offset(stack, flag_offset);
                         let value = self.ci.nodes.new_const(flag_ty, 0);
                         self.store_mem(offset, flag_ty, value);
                         Some(Value::ptr(stack).ty(oty))
@@ -2347,14 +2347,24 @@ impl<'a> Codegen<'a> {
                 }
             }
             Expr::Bool { value, .. } => Some(self.ci.nodes.new_const_lit(ty::Id::BOOL, value)),
-            Expr::Number { value, .. } => Some(self.ci.nodes.new_const_lit(
-                ctx.ty.filter(|ty| ty.is_integer()).unwrap_or(ty::Id::DEFAULT_INT),
-                value,
-            )),
-            Expr::Float { value, .. } => Some(self.ci.nodes.new_const_lit(
-                ctx.ty.filter(|ty| ty.is_float()).unwrap_or(ty::Id::F32),
-                value as i64,
-            )),
+            Expr::Number { value, .. } => Some(
+                self.ci.nodes.new_const_lit(
+                    ctx.ty
+                        .map(|ty| self.tys.inner_of(ty).unwrap_or(ty))
+                        .filter(|ty| ty.is_integer())
+                        .unwrap_or(ty::Id::DEFAULT_INT),
+                    value,
+                ),
+            ),
+            Expr::Float { value, .. } => Some(
+                self.ci.nodes.new_const_lit(
+                    ctx.ty
+                        .map(|ty| self.tys.inner_of(ty).unwrap_or(ty))
+                        .filter(|ty| ty.is_float())
+                        .unwrap_or(ty::Id::F32),
+                    value as i64,
+                ),
+            ),
             Expr::Ident { id, .. }
                 if let Some(index) = self.ci.scope.vars.iter().rposition(|v| v.id == id) =>
             {
@@ -2534,6 +2544,8 @@ impl<'a> Codegen<'a> {
                 let ctx = Ctx { ty: ctx.ty.map(|ty| self.tys.make_ptr(ty)) };
                 let mut val = self.expr_ctx(val, ctx)?;
 
+                self.unwrap_opt(pos, &mut val);
+
                 let Some(base) = self.tys.base_of(val.ty) else {
                     self.report(
                         pos,
@@ -2595,6 +2607,25 @@ impl<'a> Codegen<'a> {
                 }
 
                 Some(Value::VOID)
+            }
+            Expr::BinOp { left: &Expr::Null { pos }, .. } => {
+                self.report(pos, "'null' must always be no the right side of an expression");
+                Value::NEVER
+            }
+            Expr::BinOp {
+                left,
+                op: op @ (TokenKind::Eq | TokenKind::Ne),
+                right: Expr::Null { .. },
+                ..
+            } => {
+                let mut cmped = self.raw_expr(left)?;
+                self.strip_var(&mut cmped);
+
+                let Some(ty) = self.tys.inner_of(cmped.ty) else {
+                    return Some(self.ci.nodes.new_const_lit(ty::Id::BOOL, 1));
+                };
+
+                Some(Value::new(self.gen_null_check(cmped, ty, op)).ty(ty::BOOL))
             }
             Expr::BinOp { left, pos, op, right }
                 if !matches!(op, TokenKind::Assign | TokenKind::Decl) =>
@@ -2685,17 +2716,27 @@ impl<'a> Codegen<'a> {
             }
             Expr::Directive { name: "sizeof", args: [ty], .. } => {
                 let ty = self.ty(ty);
-                Some(self.ci.nodes.new_const_lit(
-                    ctx.ty.filter(|ty| ty.is_integer()).unwrap_or(ty::Id::DEFAULT_INT),
-                    self.tys.size_of(ty),
-                ))
+                Some(
+                    self.ci.nodes.new_const_lit(
+                        ctx.ty
+                            .map(|ty| self.tys.inner_of(ty).unwrap_or(ty))
+                            .filter(|ty| ty.is_integer())
+                            .unwrap_or(ty::Id::DEFAULT_INT),
+                        self.tys.size_of(ty),
+                    ),
+                )
             }
             Expr::Directive { name: "alignof", args: [ty], .. } => {
                 let ty = self.ty(ty);
-                Some(self.ci.nodes.new_const_lit(
-                    ctx.ty.filter(|ty| ty.is_integer()).unwrap_or(ty::Id::DEFAULT_INT),
-                    self.tys.align_of(ty),
-                ))
+                Some(
+                    self.ci.nodes.new_const_lit(
+                        ctx.ty
+                            .map(|ty| self.tys.inner_of(ty).unwrap_or(ty))
+                            .filter(|ty| ty.is_integer())
+                            .unwrap_or(ty::Id::DEFAULT_INT),
+                        self.tys.align_of(ty),
+                    ),
+                )
             }
             Expr::Directive { name: "bitcast", args: [val], pos } => {
                 let mut val = self.raw_expr(val)?;
@@ -3929,6 +3970,103 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    fn wrap_in_opt(&mut self, val: &mut Value) {
+        debug_assert!(!val.var);
+
+        let oty = self.tys.make_opt(val.ty);
+
+        if let Some((uninit, ..)) = self.tys.nieche_of(val.ty) {
+            self.strip_ptr(val);
+            val.ty = oty;
+            assert!(!uninit, "TODO");
+            return;
+        }
+
+        let OptLayout { flag_ty, flag_offset, payload_offset } = self.tys.opt_layout(val.ty);
+
+        match oty.loc(self.tys) {
+            Loc::Reg => {
+                self.strip_ptr(val);
+                // registers have inverted offsets so that accessing the inner type is a noop
+                let flag_offset = self.tys.size_of(oty) - flag_offset - 1;
+                let fill = self.ci.nodes.new_const(oty, 1i64 << (flag_offset * 8 - 1));
+                val.id = self
+                    .ci
+                    .nodes
+                    .new_node(oty, Kind::BinOp { op: TokenKind::Bor }, [VOID, val.id, fill]);
+                val.ty = oty;
+            }
+            Loc::Stack if val.ty.loc(self.tys) == Loc::Reg => {
+                self.strip_ptr(val);
+                let stack = self.new_stack(oty);
+                let fill = self.ci.nodes.new_const(flag_ty, 1);
+                self.store_mem(stack, flag_ty, fill);
+                let off = self.offset(stack, payload_offset);
+                self.store_mem(off, val.ty, val.id);
+                val.id = stack;
+                val.ptr = true;
+                val.ty = oty;
+            }
+            _ => todo!(),
+        }
+    }
+
+    fn unwrap_opt(&mut self, pos: Pos, opt: &mut Value) {
+        let Some(ty) = self.tys.inner_of(opt.ty) else { return };
+        let null_check = self.gen_null_check(*opt, ty, TokenKind::Eq);
+
+        // TODO: extract the if check int a fucntion
+        let ctrl = self.ci.nodes.new_node(ty::Id::VOID, Kind::If, [self.ci.ctrl.get(), null_check]);
+        let ctrl_ty = self.ci.nodes[ctrl].ty;
+        self.ci.nodes.remove(ctrl);
+        let oty = mem::replace(&mut opt.ty, ty);
+        match ctrl_ty {
+            ty::Id::LEFT_UNREACHABLE => {
+                if self.tys.nieche_of(ty).is_some() {
+                    return;
+                }
+
+                let OptLayout { payload_offset, .. } = self.tys.opt_layout(ty);
+
+                match oty.loc(self.tys) {
+                    Loc::Reg => {}
+                    Loc::Stack => {
+                        opt.id = self.offset(opt.id, payload_offset);
+                    }
+                }
+            }
+            ty::Id::RIGHT_UNREACHABLE => {
+                self.report(pos, "the value is always null, some checks might need to be inverted");
+            }
+            _ => {
+                self.report(
+                    pos,
+                    "can't prove the value is not 'null', \
+                    there is not nice syntax for bypassing this, sorry",
+                );
+            }
+        }
+    }
+
+    fn gen_null_check(&mut self, mut cmped: Value, ty: ty::Id, op: TokenKind) -> Nid {
+        let OptLayout { flag_ty, flag_offset, .. } = self.tys.opt_layout(ty);
+
+        match cmped.ty.loc(self.tys) {
+            Loc::Reg => {
+                self.strip_ptr(&mut cmped);
+                let inps = [VOID, cmped.id, self.ci.nodes.new_const(cmped.ty, 0)];
+                self.ci.nodes.new_node(ty::Id::BOOL, Kind::BinOp { op }, inps)
+            }
+            Loc::Stack => {
+                cmped.id = self.offset(cmped.id, flag_offset);
+                cmped.ty = flag_ty;
+                self.strip_ptr(&mut cmped);
+                let inps = [VOID, cmped.id, self.ci.nodes.new_const(ty, 0)];
+                self.ci.nodes.new_node(ty::Id::BOOL, Kind::BinOp { op }, inps)
+            }
+        }
+    }
+
     #[track_caller]
     fn assert_ty(
         &mut self,
@@ -3940,24 +4078,43 @@ impl<'a> Codegen<'a> {
         if let Some(upcasted) = src.ty.try_upcast(expected)
             && upcasted == expected
         {
+            if src.ty.is_never() {
+                return true;
+            }
+
             if src.ty != upcasted {
-                debug_assert!(
-                    src.ty.is_integer() || src.ty == ty::Id::NEVER,
-                    "{} {}",
-                    self.ty_display(src.ty),
-                    self.ty_display(upcasted)
-                );
-                debug_assert!(
-                    upcasted.is_integer() || src.ty == ty::Id::NEVER,
-                    "{} {}",
-                    self.ty_display(src.ty),
-                    self.ty_display(upcasted)
-                );
-                self.extend(src, upcasted);
+                if let Some(inner) = self.tys.inner_of(upcasted) {
+                    if inner != src.ty {
+                        self.assert_ty(pos, src, inner, hint);
+                    }
+                    self.wrap_in_opt(src);
+                } else {
+                    debug_assert!(
+                        src.ty.is_integer() || src.ty == ty::Id::NEVER,
+                        "{} {}",
+                        self.ty_display(src.ty),
+                        self.ty_display(upcasted)
+                    );
+                    debug_assert!(
+                        upcasted.is_integer() || src.ty == ty::Id::NEVER,
+                        "{} {}",
+                        self.ty_display(src.ty),
+                        self.ty_display(upcasted)
+                    );
+                    self.extend(src, upcasted);
+                }
             }
             true
         } else {
+            if let Some(inner) = self.tys.inner_of(src.ty)
+                && inner.try_upcast(expected) == Some(expected)
+            {
+                self.unwrap_opt(pos, src);
+                return self.assert_ty(pos, src, expected, hint);
+            }
+
             let ty = self.ty_display(src.ty);
+
             let expected = self.ty_display(expected);
             self.report(pos, fa!("expected {hint} to be of type {expected}, got {ty}"));
             false
@@ -3966,10 +4123,10 @@ impl<'a> Codegen<'a> {
 
     fn extend(&mut self, value: &mut Value, to: ty::Id) {
         self.strip_ptr(value);
-        value.ty = to;
         let mask = self.ci.nodes.new_const(to, (1i64 << (self.tys.size_of(value.ty) * 8)) - 1);
         let inps = [VOID, value.id, mask];
         *value = self.ci.nodes.new_node_lit(to, Kind::BinOp { op: TokenKind::Band }, inps);
+        value.ty = to;
     }
 
     #[track_caller]

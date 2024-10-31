@@ -226,17 +226,20 @@ impl ItemCtx {
                 let node = &fuc.nodes[nid];
 
                 let mut extend = |base: ty::Id, dest: ty::Id, from: usize, to: usize| {
-                    if base.simple_size() == dest.simple_size() {
+                    let (bsize, dsize) = (tys.size_of(base), tys.size_of(dest));
+                    debug_assert!(bsize <= 8);
+                    debug_assert!(dsize <= 8);
+                    if bsize == dsize {
                         return Default::default();
                     }
                     match (base.is_signed(), dest.is_signed()) {
                         (true, true) => {
                             let op = [instrs::sxt8, instrs::sxt16, instrs::sxt32]
-                                [base.simple_size().unwrap().ilog2() as usize];
+                                [bsize.ilog2() as usize];
                             op(atr(allocs[to]), atr(allocs[from]))
                         }
                         _ => {
-                            let mask = (1u64 << (base.simple_size().unwrap() * 8)) - 1;
+                            let mask = (1u64 << (bsize * 8)) - 1;
                             instrs::andi(atr(allocs[to]), atr(allocs[from]), mask)
                         }
                     }

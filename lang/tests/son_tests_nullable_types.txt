@@ -1,0 +1,51 @@
+decide:
+    LI8 r1, 1b
+    JALA r0, r31, 0a
+main:
+    ADDI64 r254, r254, -40d
+    ST r31, r254, 24a, 16h
+    JAL r31, r0, :decide
+    LI64 r3, 0d
+    ANDI r1, r1, 255d
+    JNE r1, r0, :0
+    CP r32, r3
+    JMP :1
+ 0: ADDI64 r32, r254, 16d
+ 1: JNE r32, r3, :2
+    LI64 r1, 9001d
+    JMP :3
+ 2: JAL r31, r0, :decide
+    ANDI r1, r1, 255d
+    JNE r1, r0, :4
+    LI8 r6, 1b
+    ST r6, r254, 0a, 1h
+    LD r7, r32, 0a, 8h
+    ST r7, r254, 8a, 8h
+    JMP :5
+ 4: LI8 r1, 0b
+    ST r1, r254, 0a, 1h
+ 5: LI64 r6, 0d
+    LD r7, r254, 0a, 1h
+    ANDI r7, r7, 255d
+    JEQ r7, r6, :6
+    LI64 r1, 42d
+    JMP :3
+ 6: JAL r31, r0, :decide
+    LI32 r2, 0w
+    ANDI r1, r1, 255d
+    JNE r1, r0, :7
+    CP r8, r2
+    JMP :8
+ 7: LI32 r8, 8388608w
+ 8: ANDI r8, r8, 4294967295d
+    ANDI r2, r2, 4294967295d
+    JNE r8, r2, :9
+    LI64 r1, 69d
+    JMP :3
+ 9: ANDI r1, r8, 65535d
+ 3: LD r31, r254, 24a, 16h
+    ADDI64 r254, r254, 40d
+    JALA r0, r31, 0a
+code size: 389
+ret: 0
+status: Ok(())
