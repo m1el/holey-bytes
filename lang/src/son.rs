@@ -2471,6 +2471,7 @@ impl<'a> Codegen<'a> {
             Expr::Field { target, name, pos } => {
                 let mut vtarget = self.raw_expr(target)?;
                 self.strip_var(&mut vtarget);
+                self.unwrap_opt(pos, &mut vtarget);
                 let tty = vtarget.ty;
 
                 if let ty::Kind::Module(m) = tty.expand() {
@@ -2632,6 +2633,7 @@ impl<'a> Codegen<'a> {
             {
                 let mut lhs = self.raw_expr_ctx(left, ctx)?;
                 self.strip_var(&mut lhs);
+                self.unwrap_opt(left.pos(), &mut lhs);
 
                 match lhs.ty.expand() {
                     _ if lhs.ty.is_pointer()
@@ -2645,6 +2647,7 @@ impl<'a> Codegen<'a> {
                         self.ci.nodes.unlock(lhs.id);
                         let mut rhs = rhs?;
                         self.strip_var(&mut rhs);
+                        self.unwrap_opt(right.pos(), &mut rhs);
                         let (ty, aclass, mem) = self.binop_ty(pos, &mut lhs, &mut rhs, op);
                         let inps = [VOID, lhs.id, rhs.id];
                         let bop =
@@ -3113,7 +3116,9 @@ impl<'a> Codegen<'a> {
                 })
             }
             Expr::Tupl { pos, ty, fields, .. } => {
-                ctx.ty = ty.map(|ty| self.ty(ty)).or(ctx.ty);
+                ctx.ty = ty
+                    .map(|ty| self.ty(ty))
+                    .or(ctx.ty.map(|ty| self.tys.inner_of(ty).unwrap_or(ty)));
                 inference!(sty, ctx, self, pos, "struct or slice", "<struct_ty>.(...)");
 
                 match sty.expand() {
@@ -3204,7 +3209,9 @@ impl<'a> Codegen<'a> {
                 Some(self.ci.nodes.new_const_lit(ty::Id::TYPE, value))
             }
             Expr::Ctor { pos, ty, fields, .. } => {
-                ctx.ty = ty.map(|ty| self.ty(ty)).or(ctx.ty);
+                ctx.ty = ty
+                    .map(|ty| self.ty(ty))
+                    .or(ctx.ty.map(|ty| self.tys.inner_of(ty).unwrap_or(ty)));
                 inference!(sty, ctx, self, pos, "struct", "<struct_ty>.{...}");
 
                 let ty::Kind::Struct(s) = sty.expand() else {
@@ -4061,7 +4068,7 @@ impl<'a> Codegen<'a> {
                 cmped.id = self.offset(cmped.id, flag_offset);
                 cmped.ty = flag_ty;
                 self.strip_ptr(&mut cmped);
-                let inps = [VOID, cmped.id, self.ci.nodes.new_const(ty, 0)];
+                let inps = [VOID, cmped.id, self.ci.nodes.new_const(flag_ty, 0)];
                 self.ci.nodes.new_node(ty::Id::BOOL, Kind::BinOp { op }, inps)
             }
         }

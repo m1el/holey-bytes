@@ -160,7 +160,7 @@ drop := fn(a: uint): void {
 
 #### nullable_types
 ```hb
-main := fn(): int {
+main := fn(): uint {
 	a := &1
 
 	b := @as(?^uint, null)
@@ -174,12 +174,20 @@ main := fn(): int {
 	if c != null return 42
 
 	d := @as(?u16, null)
-	if decide() d = 0
+	if decide() d = 1
 
 	if d == null return 69
 
-	return d
+	f := @as(?Foo, null)
+
+	if decide() f = .(a, 1)
+
+	if f == null return 34
+
+	return d - *f.a
 }
+
+Foo := struct {a: ^uint, b: uint}
 
 decide := fn(): bool return true
 ```

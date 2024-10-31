@@ -2,50 +2,68 @@ decide:
     LI8 r1, 1b
     JALA r0, r31, 0a
 main:
-    ADDI64 r254, r254, -40d
-    ST r31, r254, 24a, 16h
+    ADDI64 r254, r254, -72d
+    ST r31, r254, 40a, 32h
     JAL r31, r0, :decide
-    LI64 r3, 0d
+    LI64 r4, 0d
+    ADDI64 r32, r254, 32d
     ANDI r1, r1, 255d
     JNE r1, r0, :0
-    CP r32, r3
+    CP r33, r4
     JMP :1
- 0: ADDI64 r32, r254, 16d
- 1: JNE r32, r3, :2
+ 0: CP r33, r32
+ 1: JNE r33, r4, :2
     LI64 r1, 9001d
     JMP :3
  2: JAL r31, r0, :decide
+    LI8 r8, 0b
     ANDI r1, r1, 255d
     JNE r1, r0, :4
-    LI8 r6, 1b
-    ST r6, r254, 0a, 1h
-    LD r7, r32, 0a, 8h
-    ST r7, r254, 8a, 8h
+    LI8 r9, 1b
+    ST r9, r254, 16a, 1h
+    LD r9, r33, 0a, 8h
+    ST r9, r254, 24a, 8h
     JMP :5
- 4: LI8 r1, 0b
-    ST r1, r254, 0a, 1h
- 5: LI64 r6, 0d
-    LD r7, r254, 0a, 1h
-    ANDI r7, r7, 255d
-    JEQ r7, r6, :6
+ 4: ST r8, r254, 16a, 1h
+ 5: LD r6, r254, 16a, 1h
+    ANDI r6, r6, 255d
+    ANDI r8, r8, 255d
+    JEQ r6, r8, :6
     LI64 r1, 42d
     JMP :3
  6: JAL r31, r0, :decide
     LI32 r2, 0w
     ANDI r1, r1, 255d
     JNE r1, r0, :7
-    CP r8, r2
+    CP r34, r2
     JMP :8
- 7: LI32 r8, 8388608w
- 8: ANDI r8, r8, 4294967295d
+ 7: LI32 r34, 8388609w
+ 8: ANDI r34, r34, 4294967295d
     ANDI r2, r2, 4294967295d
-    JNE r8, r2, :9
+    JNE r34, r2, :9
     LI64 r1, 69d
     JMP :3
- 9: ANDI r1, r8, 65535d
- 3: LD r31, r254, 24a, 16h
-    ADDI64 r254, r254, 40d
+ 9: JAL r31, r0, :decide
+    LI64 r3, 0d
+    ANDI r1, r1, 255d
+    JNE r1, r0, :10
+    ST r3, r254, 0a, 8h
+    JMP :11
+10: ST r32, r254, 0a, 8h
+    LI64 r4, 1d
+    ST r4, r254, 8a, 8h
+    ST r4, r254, 32a, 8h
+11: LD r2, r254, 0a, 8h
+    JNE r2, r3, :12
+    LI64 r1, 34d
+    JMP :3
+12: LD r8, r254, 0a, 8h
+    LD r10, r8, 0a, 8h
+    ANDI r12, r34, 65535d
+    SUB64 r1, r12, r10
+ 3: LD r31, r254, 40a, 32h
+    ADDI64 r254, r254, 72d
     JALA r0, r31, 0a
-code size: 389
+code size: 556
 ret: 0
 status: Ok(())

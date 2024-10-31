@@ -227,8 +227,8 @@ impl ItemCtx {
 
                 let mut extend = |base: ty::Id, dest: ty::Id, from: usize, to: usize| {
                     let (bsize, dsize) = (tys.size_of(base), tys.size_of(dest));
-                    debug_assert!(bsize <= 8);
-                    debug_assert!(dsize <= 8);
+                    debug_assert!(bsize <= 8, "{}", ty::Display::new(tys, files, base));
+                    debug_assert!(dsize <= 8, "{}", ty::Display::new(tys, files, dest));
                     if bsize == dsize {
                         return Default::default();
                     }
