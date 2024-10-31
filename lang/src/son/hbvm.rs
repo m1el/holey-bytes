@@ -9,10 +9,9 @@ use {
         utils::{BitSet, Vc},
         HashMap, Offset, PLoc, Reloc, Sig, Size, TypedReloc, Types,
     },
-    alloc::{borrow::ToOwned, string::String, vec::Vec},
+    alloc::{borrow::ToOwned, boxed::Box, collections::BTreeMap, string::String, vec::Vec},
     core::{assert_matches::debug_assert_matches, mem},
     hbbytecode::{self as instrs, *},
-    std::{boxed::Box, collections::BTreeMap},
 };
 
 impl Types {

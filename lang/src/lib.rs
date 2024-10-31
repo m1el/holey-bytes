@@ -68,6 +68,7 @@ pub mod fs;
 pub mod fuzz;
 pub mod lexer;
 pub mod parser;
+pub mod regalloc;
 pub mod son;
 
 mod utils;

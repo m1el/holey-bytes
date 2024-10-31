@@ -20,9 +20,9 @@ log = "0.4.22"
 [dependencies.regalloc2]
 git = "https://github.com/jakubDoka/regalloc2"
 branch = "reuse-allocations"
-features = ["trace-log"]
+default-features = false
 
 [features]
-default = ["std"]
+default = ["std", "regalloc2/trace-log"]
 std = []
 no_log = ["log/max_level_off"]

@@ -1,3 +1,4 @@
+#![expect(dead_code)]
 use {
     alloc::alloc,
     core::{
@@ -176,14 +177,46 @@ impl BitSet {
     }
 
     pub fn clear(&mut self, len: usize) {
-        if len > self.data_and_len().1 {
-            self.grow(len.next_power_of_two().max(4 * Self::UNIT));
-        }
+        self.reserve(len);
         if self.is_inline() {
             unsafe { self.inline &= Self::FLAG };
         } else {
             self.data_mut_and_len().0.fill(0);
         }
+    }
+
+    pub fn units<'a>(&'a self, slot: &'a mut usize) -> &'a [usize] {
+        if self.is_inline() {
+            *slot = unsafe { self.inline } & !Self::FLAG;
+            core::slice::from_ref(slot)
+        } else {
+            self.data_and_len().0
+        }
+    }
+
+    pub fn reserve(&mut self, len: usize) {
+        if len > self.data_and_len().1 {
+            self.grow(len.next_power_of_two().max(4 * Self::UNIT));
+        }
+    }
+
+    pub fn units_mut(&mut self) -> Result<&mut [usize], &mut InlineBitSetView> {
+        if self.is_inline() {
+            Err(unsafe {
+                core::mem::transmute::<&mut usize, &mut InlineBitSetView>(&mut self.inline)
+            })
+        } else {
+            Ok(self.data_mut_and_len().0)
+        }
+    }
+}
+
+pub struct InlineBitSetView(usize);
+
+impl InlineBitSetView {
+    pub(crate) fn add_mask(&mut self, tmp: usize) {
+        debug_assert!(tmp & BitSet::FLAG == 0);
+        self.0 |= tmp;
     }
 }
 
