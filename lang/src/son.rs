@@ -2394,18 +2394,10 @@ impl<'a> Codegen<'a> {
             Expr::Idk { pos } => {
                 inference!(ty, ctx, self, pos, "value", "@as(<ty>, idk)");
 
-                if matches!(ty.expand(), ty::Kind::Struct(_) | ty::Kind::Slice(_)) {
+                if ty.loc(self.tys) == Loc::Stack {
                     Some(Value::ptr(self.new_stack(ty)).ty(ty))
                 } else {
-                    self.report(
-                        pos,
-                        fa!(
-                            "type '{}' cannot be uninitialized, use a zero \
-                            value instead ('null' in case of pointers)",
-                            self.ty_display(ty)
-                        ),
-                    );
-                    Value::NEVER
+                    Some(self.ci.nodes.new_const_lit(ty, 0))
                 }
             }
             Expr::Bool { value, .. } => Some(self.ci.nodes.new_const_lit(ty::Id::BOOL, value)),
@@ -4052,8 +4044,10 @@ impl<'a> Codegen<'a> {
     fn finalize(&mut self, prev_err_len: usize) -> bool {
         self.ci.finalize(&mut self.pool.nid_stack, self.tys, self.files);
         for (_, node) in self.ci.nodes.iter() {
-            if let Kind::Assert { kind: AssertKind::NullCheck, pos } = node.kind {
-                match node.ty {
+            let Kind::Assert { kind, pos } = node.kind else { continue };
+
+            match kind {
+                AssertKind::NullCheck => match node.ty {
                     ty::Id::NEVER => {
                         self.report(
                             pos,
@@ -4069,7 +4063,7 @@ impl<'a> Codegen<'a> {
                             ('if <opt> == null { /* handle */ } else { /* use opt */ }')",
                         );
                     }
-                }
+                },
             }
         }
         self.errors.borrow().len() == prev_err_len
