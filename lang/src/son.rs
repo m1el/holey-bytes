@@ -2666,6 +2666,10 @@ impl<'a> Codegen<'a> {
                 self.assign_pattern(left, right);
                 Some(Value::VOID)
             }
+            Expr::BinOp { left: Expr::Wildcard { .. }, op: TokenKind::Assign, right, .. } => {
+                self.expr(right)?;
+                Some(Value::VOID)
+            }
             Expr::BinOp { left, pos, op: TokenKind::Assign, right } => {
                 let dest = self.raw_expr(left)?;
                 let mut value = self.expr_ctx(right, Ctx::default().with_ty(dest.ty))?;

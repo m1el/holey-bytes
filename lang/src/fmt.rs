@@ -346,6 +346,7 @@ impl<'a> Formatter<'a> {
                 self.fmt(val, f)
             }
             Expr::Return { val: None, .. } => f.write_str("return"),
+            Expr::Wildcard { .. } => f.write_str("_"),
             Expr::Ident { pos, is_ct, .. } => {
                 if is_ct {
                     f.write_str("$")?;

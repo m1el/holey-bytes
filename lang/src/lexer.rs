@@ -148,6 +148,7 @@ pub enum TokenKind {
     RBrack = b']',
     Xor = b'^',
     Tick = b'`',
+    Under = b'_',
     // Unused = a-z
     LBrace = b'{',
     Bor = b'|',
@@ -308,6 +309,7 @@ gen_token_kind! {
         Null      = b"null",
         Idk       = b"idk",
         Die       = b"die",
+        Under     = b"_",
         #[punkt]
         Ctor   = ".{",
         Tupl   = ".(",

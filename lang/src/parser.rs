@@ -392,6 +392,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                 let (id, is_first) = self.resolve_ident(token);
                 E::Ident { pos, is_ct: token.kind == T::CtIdent, id, is_first }
             }
+            T::Under => E::Wildcard { pos },
             T::If => E::If {
                 pos,
                 cond: self.ptr_expr()?,
@@ -799,6 +800,9 @@ generate_expr! {
         Return {
             pos: Pos,
             val: Option<&'a Self>,
+        },
+        Wildcard {
+            pos: Pos,
         },
         /// note: ':unicode:' is any utf-8 character except ascii
         /// `'[a-zA-Z_:unicode:][a-zA-Z0-9_:unicode:]*'`

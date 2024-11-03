@@ -1008,9 +1008,9 @@ create_back_buffer := fn(total_pages: int): ^u32 {
 	remaining := total_pages - 0xFF
 	loop if remaining <= 0 break else {
 		if remaining < 0xFF {
-			_f := request_page(@intcast(remaining))
+			_ = request_page(@intcast(remaining))
 		} else {
-			_f := request_page(0xFF)
+			_ = request_page(0xFF)
 		}
 		remaining -= 0xFF
 	}
