@@ -467,8 +467,7 @@ main := fn(): uint {
 ```hb
 main := fn(): never {
 	// simply emmits 'un' instruction that immediately terminates the execution
-	// the expression evaluates into `never` type that can coerce into any other
-	// type
+	// the expresion has similar properties to 'return' but does not accept a value
 	die
 }
 ```
