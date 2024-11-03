@@ -879,6 +879,46 @@ impl Nodes {
                     return Some(self.new_const(ty, op.apply_unop(value, is_float)));
                 }
             }
+            K::Assert { kind, pos } => {
+                if self[target].ty == ty::Id::VOID {
+                    let &[ctrl, cond] = self[target].inputs.as_slice() else { unreachable!() };
+                    if let K::CInt { value } = self[cond].kind {
+                        let ty = if value != 0 {
+                            ty::Id::NEVER
+                        } else {
+                            return Some(ctrl);
+                        };
+                        return Some(self.new_node_nop(ty, K::Assert { kind, pos }, [ctrl, cond]));
+                    }
+
+                    'b: {
+                        let mut cursor = ctrl;
+                        loop {
+                            if cursor == ENTRY {
+                                break 'b;
+                            }
+
+                            // TODO: do more inteligent checks on the condition
+                            if self[cursor].kind == Kind::Else
+                                && self[self[cursor].inputs[0]].inputs[1] == cond
+                            {
+                                return Some(ctrl);
+                            }
+                            if self[cursor].kind == Kind::Then
+                                && self[self[cursor].inputs[0]].inputs[1] == cond
+                            {
+                                return Some(self.new_node_nop(
+                                    ty::Id::NEVER,
+                                    K::Assert { kind, pos },
+                                    [ctrl, cond],
+                                ));
+                            }
+
+                            cursor = self.idom(cursor);
+                        }
+                    }
+                }
+            }
             K::If => {
                 if self[target].ty == ty::Id::VOID {
                     let &[ctrl, cond] = self[target].inputs.as_slice() else { unreachable!() };
@@ -1295,7 +1335,7 @@ impl Nodes {
             write!(out, "  {node:>2}-c{:>2}: ", self[node].ralloc_backref)?;
         }
         match self[node].kind {
-            Kind::Start => unreachable!(),
+            Kind::Assert { .. } | Kind::Start => unreachable!(),
             Kind::End => return Ok(()),
             Kind::If => write!(out, "  if:      "),
             Kind::Region | Kind::Loop => writeln!(out, "      goto: {node}"),
@@ -1561,6 +1601,11 @@ impl ops::IndexMut<Nid> for Nodes {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AssertKind {
+    NullCheck,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 #[repr(u8)]
 pub enum Kind {
@@ -1586,6 +1631,11 @@ pub enum Kind {
     Return,
     // [ctrl]
     Die,
+    // [ctrl, cond]
+    Assert {
+        kind: AssertKind,
+        pos: Pos,
+    },
     // [ctrl]
     CInt {
         value: i64,
@@ -1634,6 +1684,7 @@ impl Kind {
                 | Self::Then
                 | Self::Else
                 | Self::Call { .. }
+                | Self::Assert { .. }
                 | Self::If
                 | Self::Region
                 | Self::Loop
@@ -3981,15 +4032,39 @@ impl<'a> Codegen<'a> {
 
         self.ci.scope.vars.drain(..).for_each(|v| v.remove_ignore_arg(&mut self.ci.nodes));
 
-        self.ci.finalize(&mut self.pool.nid_stack, self.tys, self.files);
-
-        if self.errors.borrow().len() == prev_err_len {
+        if self.finalize(prev_err_len) {
             self.ci.emit_body(self.tys, self.files, sig, self.pool);
             self.tys.ins.funcs[id as usize].code.append(&mut self.ci.code);
             self.tys.ins.funcs[id as usize].relocs.append(&mut self.ci.relocs);
         }
 
         self.pool.pop_ci(&mut self.ci);
+    }
+
+    fn finalize(&mut self, prev_err_len: usize) -> bool {
+        self.ci.finalize(&mut self.pool.nid_stack, self.tys, self.files);
+        for (_, node) in self.ci.nodes.iter() {
+            if let Kind::Assert { kind: AssertKind::NullCheck, pos } = node.kind {
+                match node.ty {
+                    ty::Id::NEVER => {
+                        self.report(
+                            pos,
+                            "the value is always null, some checks might need to be inverted",
+                        );
+                    }
+                    _ => {
+                        self.report(
+                            pos,
+                            "can't prove the value is not 'null', \
+                            use '@unwrap(<opt>)' if you believe compiler is stupid, \
+                            or explicitly check for null and handle it \
+                            ('if <opt> == null { /* handle */ } else { /* use opt */ }')",
+                        );
+                    }
+                }
+            }
+        }
+        self.errors.borrow().len() == prev_err_len
     }
 
     fn ty(&mut self, expr: &Expr) -> ty::Id {
@@ -4096,27 +4171,16 @@ impl<'a> Codegen<'a> {
         let null_check = self.gen_null_check(*opt, ty, TokenKind::Eq);
 
         // TODO: extract the if check int a fucntion
-        let ctrl = self.ci.nodes.new_node(ty::Id::VOID, Kind::If, [self.ci.ctrl.get(), null_check]);
-        let ctrl_ty = self.ci.nodes[ctrl].ty;
-        self.ci.nodes.remove(ctrl);
+        self.ci.ctrl.set(
+            self.ci.nodes.new_node(
+                ty::Id::VOID,
+                Kind::Assert { kind: AssertKind::NullCheck, pos },
+                [self.ci.ctrl.get(), null_check],
+            ),
+            &mut self.ci.nodes,
+        );
         let oty = mem::replace(&mut opt.ty, ty);
-        match ctrl_ty {
-            ty::Id::LEFT_UNREACHABLE => {
-                self.unwrap_opt_unchecked(ty, oty, opt);
-            }
-            ty::Id::RIGHT_UNREACHABLE => {
-                self.report(pos, "the value is always null, some checks might need to be inverted");
-            }
-            _ => {
-                self.report(
-                    pos,
-                    "can't prove the value is not 'null', \
-                    use '@unwrap(<opt>)' if you believe compiler is stupid, \
-                    or explicitly check for null and handle it \
-                    ('if <opt> == null { /* handle */ } else { /* use opt */ }')",
-                );
-            }
-        }
+        self.unwrap_opt_unchecked(ty, oty, opt);
     }
 
     fn unwrap_opt_unchecked(&mut self, ty: ty::Id, oty: ty::Id, opt: &mut Value) {
@@ -4247,13 +4311,9 @@ impl TypeParser for Codegen<'_> {
         self.expr(&Expr::Return { pos: expr.pos(), val: Some(expr) });
 
         scope = mem::take(&mut self.ci.scope.vars);
-        self.ci.finalize(&mut self.pool.nid_stack, self.tys, self.files);
 
-        let res = if self.errors.borrow().len() == prev_err_len {
-            self.emit_and_eval(file, ret, &mut [])
-        } else {
-            1
-        };
+        let res =
+            if self.finalize(prev_err_len) { self.emit_and_eval(file, ret, &mut []) } else { 1 };
 
         self.pool.pop_ci(&mut self.ci);
         self.ci.scope.vars = scope;
@@ -4291,10 +4351,8 @@ impl TypeParser for Codegen<'_> {
 
         self.expr(&(Expr::Return { pos: expr.pos(), val: Some(expr) }));
 
-        self.ci.finalize(&mut self.pool.nid_stack, self.tys, self.files);
-
         let ret = self.ci.ret.expect("for return type to be infered");
-        if self.errors.borrow().len() == prev_err_len {
+        if self.finalize(prev_err_len) {
             let mut mem = vec![0u8; self.tys.size_of(ret) as usize];
             self.emit_and_eval(file, ret, &mut mem);
             self.tys.ins.globals[gid as usize].data = mem;
@@ -4388,6 +4446,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        null_check_test;
         only_break_loop;
         reading_idk;
         nonexistent_ident_import;

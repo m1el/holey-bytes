@@ -1044,6 +1044,28 @@ main := fn(): uint {
 
 ### Just Testing Optimizations
 
+#### null_check_test
+```hb
+get_ptr := fn(): ?^uint {
+	value := 0
+	return &value
+}
+
+main := fn(): uint {
+	ptr := get_ptr()
+
+	if ptr == null {
+		return 0
+	}
+
+	loop if *ptr != 10 {
+		*ptr += 1
+	} else break
+
+	return *ptr
+}
+```
+
 #### const_folding_with_arg
 ```hb
 main := fn(arg: uint): uint {

@@ -493,6 +493,7 @@ impl ItemCtx {
                         }
                     }
                     Kind::Start
+                    | Kind::Assert { .. }
                     | Kind::Entry
                     | Kind::Mem
                     | Kind::End
@@ -1021,6 +1022,7 @@ impl<'a> Function<'a> {
                 let ops = vec![self.drg(nid)];
                 self.add_instr(nid, ops);
             }
+            Kind::Assert { .. } => unreachable!(),
             Kind::End |
             Kind::Phi | Kind::Arg | Kind::Mem | Kind::Loops  => {}
             Kind::Load { .. } if node.ty.loc(self.tys) == Loc::Stack => {

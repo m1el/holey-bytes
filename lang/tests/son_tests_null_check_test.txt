@@ -1,0 +1,26 @@
+get_ptr:
+    ADDI64 r254, r254, -8d
+    ADDI64 r1, r254, 0d
+    ADDI64 r254, r254, 8d
+    JALA r0, r31, 0a
+main:
+    ADDI64 r254, r254, -8d
+    ST r31, r254, 0a, 8h
+    JAL r31, r0, :get_ptr
+    LI64 r3, 0d
+    JNE r1, r3, :0
+    LI64 r1, 0d
+    JMP :1
+ 0: LI64 r10, 10d
+    CP r2, r1
+ 2: LD r1, r2, 0a, 8h
+    JEQ r1, r10, :1
+    ADDI64 r3, r1, 1d
+    ST r3, r2, 0a, 8h
+    JMP :2
+ 1: LD r31, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
+    JALA r0, r31, 0a
+code size: 208
+ret: 10
+status: Ok(())
