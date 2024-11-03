@@ -579,6 +579,30 @@ main := fn(): uint {
 
 ### Purely Testing Examples
 
+#### only_break_loop
+```hb
+memory := @use("memory.hb")
+
+bar := fn(): int {
+	loop if memory.inb(0x64) != 0 return 1
+}
+
+foo := fn(): void {
+	loop if (memory.inb(0x64) & 2) == 0 break
+	memory.outb(0x60, 0x0)
+}
+
+main := fn(): int {
+	@inline(foo)
+	return @inline(bar)
+}
+
+// in module: memory.hb
+inb := fn(f: int): int return f
+outb := fn(f: int, g: int): void {
+}
+```
+
 #### reading_idk
 ```hb
 main := fn(): int {

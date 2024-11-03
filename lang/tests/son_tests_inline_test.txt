@@ -23,16 +23,16 @@ scalar_values:
     JALA r0, r31, 0a
 structs:
     ADDI64 r254, r254, -32d
-    LI64 r2, 5d
-    ST r2, r254, 16a, 8h
-    ST r2, r254, 24a, 8h
-    LD r6, r254, 16a, 8h
-    ADDI64 r8, r6, 15d
-    ST r8, r254, 0a, 8h
-    LI64 r7, 20d
-    ST r7, r254, 8a, 8h
-    LD r1, r254, 0a, 8h
-    SUB64 r1, r1, r7
+    LI64 r1, 5d
+    ST r1, r254, 0a, 8h
+    ST r1, r254, 8a, 8h
+    LD r5, r254, 0a, 8h
+    ADDI64 r7, r5, 15d
+    ST r7, r254, 16a, 8h
+    LI64 r10, 20d
+    ST r10, r254, 24a, 8h
+    LD r1, r254, 16a, 8h
+    SUB64 r1, r1, r10
     ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
 code size: 310

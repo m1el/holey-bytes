@@ -1481,8 +1481,8 @@ impl Nodes {
         var.set_value(lvar.value(), self);
     }
 
-    fn load_loop_aclass(&mut self, index: usize, var: &mut AClass, loops: &mut [Loop]) {
-        if var.last_store.get() != VOID {
+    fn load_loop_aclass(&mut self, index: usize, aclass: &mut AClass, loops: &mut [Loop]) {
+        if aclass.last_store.get() != VOID {
             return;
         }
 
@@ -1496,7 +1496,7 @@ impl Nodes {
             let inps = [node, lvar.last_store.get(), VOID];
             lvar.last_store.set(self.new_node_nop(ty::Id::VOID, Kind::Phi, inps), self);
         }
-        var.last_store.set(lvar.last_store.get(), self);
+        aclass.last_store.set(lvar.last_store.get(), self);
     }
 
     fn check_dominance(&mut self, nd: Nid, min: Nid, check_outputs: bool) {
@@ -1887,6 +1887,7 @@ struct ItemCtx {
     ret: Option<ty::Id>,
     task_base: usize,
     inline_var_base: usize,
+    inline_aclass_base: usize,
     inline_depth: u16,
     inline_ret: Option<(Value, StrongRef, Scope)>,
     nodes: Nodes,
@@ -2455,12 +2456,21 @@ impl<'a> Codegen<'a> {
                     self.ci.nodes.lock(pv.id);
                     self.ci.ctrl.set(NEVER, &mut self.ci.nodes);
                 } else {
+                    for (i, aclass) in self.ci.scope.aclasses[..2].iter_mut().enumerate() {
+                        self.ci.nodes.load_loop_aclass(i, aclass, &mut self.ci.loops);
+                    }
+
                     self.ci.nodes.lock(value.id);
                     let mut scope = self.ci.scope.dup(&mut self.ci.nodes);
                     scope
                         .vars
                         .drain(self.ci.inline_var_base..)
                         .for_each(|v| v.remove(&mut self.ci.nodes));
+                    scope
+                        .aclasses
+                        .drain(self.ci.inline_aclass_base..)
+                        .for_each(|v| v.remove(&mut self.ci.nodes));
+
                     let repl = StrongRef::new(NEVER, &mut self.ci.nodes);
                     self.ci.inline_ret =
                         Some((value, mem::replace(&mut self.ci.ctrl, repl), scope));
@@ -3047,6 +3057,7 @@ impl<'a> Codegen<'a> {
                 let mut args = args.iter();
                 let mut cargs = cargs.iter();
                 let var_base = self.ci.scope.vars.len();
+                let aclass_base = self.ci.scope.aclasses.len();
                 while let Some(aty) = tys.next(self.tys) {
                     let carg = cargs.next().unwrap();
                     let Some(arg) = args.next() else { break };
@@ -3083,26 +3094,34 @@ impl<'a> Codegen<'a> {
                     }
                 }
 
-                let prev_var_base =
-                    mem::replace(&mut self.ci.inline_var_base, self.ci.scope.vars.len());
+                let prev_var_base = mem::replace(&mut self.ci.inline_var_base, var_base);
+                let prev_aclass_base = mem::replace(&mut self.ci.inline_aclass_base, aclass_base);
                 let prev_ret = self.ci.ret.replace(sig.ret);
                 let prev_inline_ret = self.ci.inline_ret.take();
                 let prev_file = mem::replace(&mut self.ci.file, file);
                 self.ci.inline_depth += 1;
 
-                if self.expr(body).is_some() && sig.ret != ty::Id::VOID {
-                    self.report(
-                        body.pos(),
-                        "expected all paths in the fucntion to return \
+                if self.expr(body).is_some() {
+                    if sig.ret == ty::Id::VOID {
+                        self.expr(&Expr::Return { pos: body.pos(), val: None });
+                    } else {
+                        self.report(
+                            body.pos(),
+                            "expected all paths in the fucntion to return \
                                     or the return type to be 'void'",
-                    );
+                        );
+                    }
                 }
 
                 self.ci.ret = prev_ret;
                 self.ci.file = prev_file;
                 self.ci.inline_depth -= 1;
                 self.ci.inline_var_base = prev_var_base;
+                self.ci.inline_aclass_base = prev_aclass_base;
                 for var in self.ci.scope.vars.drain(var_base..) {
+                    var.remove(&mut self.ci.nodes);
+                }
+                for var in self.ci.scope.aclasses.drain(aclass_base..) {
                     var.remove(&mut self.ci.nodes);
                 }
 
@@ -3111,6 +3130,11 @@ impl<'a> Codegen<'a> {
                     self.ci.scope.clear(&mut self.ci.nodes);
                     self.ci.scope = scope;
                     self.ci.scope.vars.drain(var_base..).for_each(|v| v.remove(&mut self.ci.nodes));
+                    self.ci
+                        .scope
+                        .aclasses
+                        .drain(aclass_base..)
+                        .for_each(|v| v.remove(&mut self.ci.nodes));
                     mem::replace(&mut self.ci.ctrl, ctrl).remove(&mut self.ci.nodes);
                     v
                 })
@@ -3313,11 +3337,14 @@ impl<'a> Codegen<'a> {
                     scope: self.ci.scope.dup(&mut self.ci.nodes),
                 });
 
-                for var in self.ci.scope.vars.iter_mut() {
+                for var in self.ci.scope.vars.iter_mut().skip(self.ci.inline_var_base) {
                     var.set_value(VOID, &mut self.ci.nodes);
                 }
 
-                for aclass in self.ci.scope.aclasses.iter_mut() {
+                for aclass in self.ci.scope.aclasses[..2].iter_mut() {
+                    aclass.last_store.set(VOID, &mut self.ci.nodes);
+                }
+                for aclass in self.ci.scope.aclasses.iter_mut().skip(self.ci.inline_aclass_base) {
                     aclass.last_store.set(VOID, &mut self.ci.nodes);
                 }
 
@@ -3399,7 +3426,15 @@ impl<'a> Codegen<'a> {
                                 scope_class.last_store.set(prev, &mut self.ci.nodes);
                             }
                         }
+
+                        if loop_class.last_store.get() == 0 {
+                            loop_class
+                                .last_store
+                                .set(scope_class.last_store.get(), &mut self.ci.nodes);
+                        }
                     }
+
+                    debug_assert!(self.ci.scope.aclasses.iter().all(|a| a.last_store.get() != 0));
 
                     scope.clear(&mut self.ci.nodes);
                     self.ci.ctrl.set(NEVER, &mut self.ci.nodes);
@@ -4237,8 +4272,6 @@ impl TypeParser for Codegen<'_> {
     }
 }
 
-// FIXME: make this more efficient (allocated with arena)
-
 #[cfg(test)]
 mod tests {
     use {
@@ -4309,6 +4342,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        only_break_loop;
         reading_idk;
         nonexistent_ident_import;
         big_array_crash;
