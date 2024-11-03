@@ -2704,7 +2704,11 @@ impl<'a> Codegen<'a> {
                 self.strip_var(&mut cmped);
 
                 let Some(ty) = self.tys.inner_of(cmped.ty) else {
-                    return Some(self.ci.nodes.new_const_lit(ty::Id::BOOL, 1));
+                    self.report(
+                        left.pos(),
+                        fa!("'{}' is never null, remove this check", self.ty_display(cmped.ty)),
+                    );
+                    return Value::NEVER;
                 };
 
                 Some(Value::new(self.gen_null_check(cmped, ty, op)).ty(ty::BOOL))
