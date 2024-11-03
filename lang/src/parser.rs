@@ -337,6 +337,7 @@ impl<'a, 'b> Parser<'a, 'b> {
             T::False => E::Bool { pos, value: false },
             T::Null => E::Null { pos },
             T::Idk => E::Idk { pos },
+            T::Die => E::Die { pos },
             T::DQuote => E::String { pos, literal: self.tok_str(token) },
             T::Packed => {
                 self.packed = true;
@@ -901,6 +902,10 @@ generate_expr! {
         },
         /// `'idk'`
         Idk {
+            pos: Pos,
+        },
+        /// `'die'`
+        Die {
             pos: Pos,
         },
         /// `'@' Ident List('(', ',', ')', Expr)`

@@ -138,7 +138,7 @@ impl Nodes {
                 }
                 depth
             }
-            Kind::Start | Kind::End => 1,
+            Kind::Start | Kind::End | Kind::Die => 1,
             u => unreachable!("{u:?}"),
         };
 
@@ -805,6 +805,12 @@ impl Nodes {
 
                 if let K::CInt { value } = self[rhs].kind {
                     match (op, value) {
+                        (T::Eq, 0) if self[lhs].ty.is_pointer() || self[lhs].kind == Kind::Stck => {
+                            return Some(self.new_const(ty::Id::BOOL, 0));
+                        }
+                        (T::Ne, 0) if self[lhs].ty.is_pointer() || self[lhs].kind == Kind::Stck => {
+                            return Some(self.new_const(ty::Id::BOOL, 1));
+                        }
                         (T::Add | T::Sub | T::Shl, 0) | (T::Mul | T::Div, 1) => return Some(lhs),
                         (T::Mul, 0) => return Some(rhs),
                         _ => {}
@@ -1294,6 +1300,7 @@ impl Nodes {
             Kind::If => write!(out, "  if:      "),
             Kind::Region | Kind::Loop => writeln!(out, "      goto: {node}"),
             Kind::Return => write!(out, " ret:      "),
+            Kind::Die => write!(out, " die:      "),
             Kind::CInt { value } => write!(out, "cint: #{value:<4}"),
             Kind::Phi => write!(out, " phi:      "),
             Kind::Arg => write!(
@@ -1380,7 +1387,7 @@ impl Nodes {
                     }
                     node = cfg_index;
                 }
-                Kind::Return => {
+                Kind::Return | Kind::Die => {
                     node = self[node].outputs[0];
                 }
                 Kind::Then | Kind::Else | Kind::Entry => {
@@ -1578,6 +1585,8 @@ pub enum Kind {
     // [ctrl, ?value]
     Return,
     // [ctrl]
+    Die,
+    // [ctrl]
     CInt {
         value: i64,
     },
@@ -1620,6 +1629,7 @@ impl Kind {
             Self::Start
                 | Self::End
                 | Self::Return
+                | Self::Die
                 | Self::Entry
                 | Self::Then
                 | Self::Else
@@ -1631,7 +1641,7 @@ impl Kind {
     }
 
     fn ends_basic_block(&self) -> bool {
-        matches!(self, Self::Return | Self::If | Self::End)
+        matches!(self, Self::Return | Self::If | Self::End | Self::Die)
     }
 
     fn is_peeped(&self) -> bool {
@@ -2478,6 +2488,16 @@ impl<'a> Codegen<'a> {
 
                 None
             }
+            Expr::Die { .. } => {
+                self.ci.ctrl.set(
+                    self.ci.nodes.new_node_nop(ty::Id::VOID, Kind::Die, [self.ci.ctrl.get()]),
+                    &mut self.ci.nodes,
+                );
+
+                self.ci.nodes[NEVER].inputs.push(self.ci.ctrl.get());
+                self.ci.nodes[self.ci.ctrl.get()].outputs.push(NEVER);
+                None
+            }
             Expr::Field { target, name, pos } => {
                 let mut vtarget = self.raw_expr(target)?;
                 self.strip_var(&mut vtarget);
@@ -2553,20 +2573,20 @@ impl<'a> Codegen<'a> {
             }
             Expr::UnOp { op: TokenKind::Mul, val, pos } => {
                 let ctx = Ctx { ty: ctx.ty.map(|ty| self.tys.make_ptr(ty)) };
-                let mut val = self.expr_ctx(val, ctx)?;
+                let mut vl = self.expr_ctx(val, ctx)?;
 
-                self.unwrap_opt(pos, &mut val);
+                self.unwrap_opt(val.pos(), &mut vl);
 
-                let Some(base) = self.tys.base_of(val.ty) else {
+                let Some(base) = self.tys.base_of(vl.ty) else {
                     self.report(
                         pos,
-                        fa!("the '{}' can not be dereferneced", self.ty_display(val.ty)),
+                        fa!("the '{}' can not be dereferneced", self.ty_display(vl.ty)),
                     );
                     return Value::NEVER;
                 };
-                val.ptr = true;
-                val.ty = base;
-                Some(val)
+                vl.ptr = true;
+                vl.ty = base;
+                Some(vl)
             }
             Expr::UnOp { pos, op: op @ TokenKind::Sub, val } => {
                 let val =
@@ -2781,6 +2801,25 @@ impl<'a> Codegen<'a> {
                     _ => {}
                 }
 
+                val.ty = ty;
+                Some(val)
+            }
+            Expr::Directive { name: "unwrap", args: [expr], .. } => {
+                let mut val = self.raw_expr(expr)?;
+                self.strip_var(&mut val);
+
+                let Some(ty) = self.tys.inner_of(val.ty) else {
+                    self.report(
+                        expr.pos(),
+                        fa!(
+                            "only optional types can be unwrapped ('{}' is not optional)",
+                            self.ty_display(val.ty)
+                        ),
+                    );
+                    return Value::NEVER;
+                };
+
+                self.unwrap_opt_unchecked(ty, val.ty, &mut val);
                 val.ty = ty;
                 Some(val)
             }
@@ -4063,18 +4102,7 @@ impl<'a> Codegen<'a> {
         let oty = mem::replace(&mut opt.ty, ty);
         match ctrl_ty {
             ty::Id::LEFT_UNREACHABLE => {
-                if self.tys.nieche_of(ty).is_some() {
-                    return;
-                }
-
-                let OptLayout { payload_offset, .. } = self.tys.opt_layout(ty);
-
-                match oty.loc(self.tys) {
-                    Loc::Reg => {}
-                    Loc::Stack => {
-                        opt.id = self.offset(opt.id, payload_offset);
-                    }
-                }
+                self.unwrap_opt_unchecked(ty, oty, opt);
             }
             ty::Id::RIGHT_UNREACHABLE => {
                 self.report(pos, "the value is always null, some checks might need to be inverted");
@@ -4083,8 +4111,25 @@ impl<'a> Codegen<'a> {
                 self.report(
                     pos,
                     "can't prove the value is not 'null', \
-                    there is not nice syntax for bypassing this, sorry",
+                    use '@unwrap(<opt>)' if you believe compiler is stupid, \
+                    or explicitly check for null and handle it \
+                    ('if <opt> == null { /* handle */ } else { /* use opt */ }')",
                 );
+            }
+        }
+    }
+
+    fn unwrap_opt_unchecked(&mut self, ty: ty::Id, oty: ty::Id, opt: &mut Value) {
+        if self.tys.nieche_of(ty).is_some() {
+            return;
+        }
+
+        let OptLayout { payload_offset, .. } = self.tys.opt_layout(ty);
+
+        match oty.loc(self.tys) {
+            Loc::Reg => {}
+            Loc::Stack => {
+                opt.id = self.offset(opt.id, payload_offset);
             }
         }
     }
@@ -4335,6 +4380,7 @@ mod tests {
         inline;
         idk;
         generic_functions;
+        die;
 
         // Incomplete Examples;
         //comptime_pointers;

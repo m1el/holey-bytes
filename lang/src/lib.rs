@@ -1023,16 +1023,14 @@ trait TypeParser {
 
             let Some((Expr::BinOp { left, right, .. }, name)) = f.find_decl(id) else {
                 return match id {
-                    Ok(name) => {
-                        let name = files[from_file as usize].ident_str(name);
-                        self.report(from_file, pos, format_args!("undefined indentifier: {name}"))
-                    }
+                    Ok(_) => ty::Id::NEVER,
                     Err("main") => self.report(
                         from_file,
                         pos,
                         format_args!(
                             "missing main function in '{}', compiler can't \
-                        emmit libraries since such concept is not defined",
+                            emmit libraries since such concept is not defined \
+                            (minimal main function: `main := fn(): void {{}}`)",
                             f.path
                         ),
                     ),

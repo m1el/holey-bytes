@@ -1,0 +1,5 @@
+main:
+    UN 
+code size: 9
+ret: 0
+status: Err(Unreachable)

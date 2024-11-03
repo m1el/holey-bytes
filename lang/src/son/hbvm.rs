@@ -308,6 +308,9 @@ impl ItemCtx {
                             self.emit(instrs::jmp(0));
                         }
                     }
+                    Kind::Die => {
+                        self.emit(instrs::un());
+                    }
                     Kind::CInt { value } if node.ty.is_float() => {
                         self.emit(match node.ty {
                             ty::Id::F32 => instrs::li32(
@@ -617,7 +620,9 @@ impl ItemCtx {
             self.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, (pushed + stack) as _));
         }
         self.relocs.iter_mut().for_each(|r| r.reloc.offset -= stripped_prelude_size as u32);
-        self.emit(instrs::jala(reg::ZERO, reg::RET_ADDR, 0));
+        if sig.ret != ty::Id::NEVER {
+            self.emit(instrs::jala(reg::ZERO, reg::RET_ADDR, 0));
+        }
     }
 }
 
@@ -820,6 +825,10 @@ impl<'a> Function<'a> {
                 };
 
                 self.add_instr(nid, ops);
+                self.emit_node(node.outputs[0], nid);
+            }
+            Kind::Die => {
+                self.add_instr(nid, vec![]);
                 self.emit_node(node.outputs[0], nid);
             }
             Kind::CInt { .. }
@@ -1167,7 +1176,7 @@ impl regalloc2::Function for Function<'_> {
     }
 
     fn is_ret(&self, insn: regalloc2::Inst) -> bool {
-        self.nodes[self.instrs[insn.index()].nid].kind == Kind::Return
+        matches!(self.nodes[self.instrs[insn.index()].nid].kind, Kind::Return | Kind::Die)
     }
 
     fn is_branch(&self, insn: regalloc2::Inst) -> bool {

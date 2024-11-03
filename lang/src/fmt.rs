@@ -371,6 +371,7 @@ impl<'a> Formatter<'a> {
             }
             Expr::Bool { value, .. } => f.write_str(if value { "true" } else { "false" }),
             Expr::Idk { .. } => f.write_str("idk"),
+            Expr::Die { .. } => f.write_str("die"),
             Expr::Null { .. } => f.write_str("null"),
             Expr::BinOp {
                 left,

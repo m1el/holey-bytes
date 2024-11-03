@@ -75,52 +75,53 @@ push:
     MUL64 r2, r36, r37
     CP r3, r37
     JAL r31, r0, :malloc
-    CP r38, r34
-    ST r36, r38, 16a, 8h
-    JNE r1, r35, :3
-    CP r1, r35
+    CP r38, r1
+    CP r39, r34
+    ST r36, r39, 16a, 8h
+    LI64 r1, 0d
+    CP r7, r38
+    JNE r7, r1, :3
     JMP :4
- 3: CP r39, r1
-    CP r1, r35
-    LD r6, r38, 8a, 8h
-    MULI64 r8, r6, 8d
-    LD r12, r38, 0a, 8h
-    ADD64 r11, r12, r8
-    CP r3, r39
- 9: LD r2, r38, 0a, 8h
-    LD r8, r38, 8a, 8h
-    JNE r11, r12, :5
-    JEQ r8, r1, :6
+ 3: CP r38, r7
+    LD r8, r39, 8a, 8h
+    MULI64 r10, r8, 8d
+    LD r3, r39, 0a, 8h
+    ADD64 r7, r3, r10
+    CP r5, r38
+ 9: LD r2, r39, 0a, 8h
+    LD r10, r39, 8a, 8h
+    JNE r7, r3, :5
+    JEQ r10, r35, :6
     CP r4, r37
-    MUL64 r3, r8, r4
+    MUL64 r3, r10, r4
     JAL r31, r0, :free
-    CP r5, r39
+    CP r6, r38
     JMP :7
- 6: CP r5, r39
- 7: ST r5, r38, 0a, 8h
+ 6: CP r6, r38
+ 7: ST r6, r39, 0a, 8h
     JMP :8
  5: CP r4, r37
-    CP r5, r39
-    ADDI64 r6, r3, 8d
-    ADDI64 r7, r12, 8d
-    LD r8, r12, 0a, 8h
-    ST r8, r3, 0a, 8h
-    CP r3, r6
-    CP r12, r7
+    CP r6, r38
+    ADDI64 r8, r5, 8d
+    ADDI64 r9, r3, 8d
+    LD r10, r3, 0a, 8h
+    ST r10, r5, 0a, 8h
+    CP r3, r9
+    CP r5, r8
     JMP :9
- 0: CP r38, r34
- 8: LD r3, r38, 8a, 8h
-    MULI64 r5, r3, 8d
-    LD r4, r38, 0a, 8h
-    ADD64 r1, r4, r5
+ 0: CP r39, r34
+ 8: LD r5, r39, 8a, 8h
+    MULI64 r7, r5, 8d
+    LD r6, r39, 0a, 8h
+    ADD64 r1, r6, r7
     CP r3, r32
     ST r3, r1, 0a, 8h
-    LD r11, r38, 8a, 8h
-    ADD64 r2, r11, r33
-    ST r2, r38, 8a, 8h
+    LD r2, r39, 8a, 8h
+    ADD64 r3, r2, r33
+    ST r3, r39, 8a, 8h
  4: LD r31, r254, 0a, 72h
     ADDI64 r254, r254, 72d
     JALA r0, r31, 0a
-code size: 945
+code size: 955
 ret: 69
 status: Ok(())

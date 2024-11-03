@@ -134,6 +134,7 @@ pub enum TokenKind {
     False,
     Null,
     Idk,
+    Die,
 
     Ctor,
     Tupl,
@@ -306,6 +307,7 @@ gen_token_kind! {
         False     = b"false",
         Null      = b"null",
         Idk       = b"idk",
+        Die       = b"die",
         #[punkt]
         Ctor   = ".{",
         Tupl   = ".(",

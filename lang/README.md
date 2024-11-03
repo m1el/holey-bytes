@@ -190,6 +190,11 @@ main := fn(): uint {
 
 	if bar != null return 420
 
+	g := @as(?^uint, null)
+	g = a
+
+	_rd := *g
+
 	return d - *f.a
 }
 
@@ -458,6 +463,16 @@ main := fn(): uint {
 }
 ```
 
+#### die
+```hb
+main := fn(): never {
+	// simply emmits 'un' instruction that immediately terminates the execution
+	// the expression evaluates into `never` type that can coerce into any other
+	// type
+	die
+}
+```
+
 ### Incomplete Examples
 
 #### comptime_pointers
@@ -478,7 +493,7 @@ modify := fn($num: ^uint): void {
 MALLOC_SYS_CALL := 69
 FREE_SYS_CALL := 96
 
-malloc := fn(size: uint, align: uint): ^void return @eca(MALLOC_SYS_CALL, size, align)
+malloc := fn(size: uint, align: uint): ?^void return @eca(MALLOC_SYS_CALL, size, align)
 free := fn(ptr: ^void, size: uint, align: uint): void return @eca(FREE_SYS_CALL, ptr, size, align)
 
 Vec := fn($Elem: type): type {
@@ -497,7 +512,7 @@ deinit := fn($Elem: type, vec: ^Vec(Elem)): void {
 	return
 }
 
-push := fn($Elem: type, vec: ^Vec(Elem), value: Elem): ^Elem {
+push := fn($Elem: type, vec: ^Vec(Elem), value: Elem): ?^Elem {
 	if vec.len == vec.cap {
 		if vec.cap == 0 {
 			vec.cap = 1
@@ -505,11 +520,11 @@ push := fn($Elem: type, vec: ^Vec(Elem), value: Elem): ^Elem {
 			vec.cap *= 2
 		}
 
-		new_alloc := @as(^Elem, @bitcast(malloc(vec.cap * @sizeof(Elem), @alignof(Elem))))
-		if new_alloc == 0 return @bitcast(0)
+		new_alloc := @as(?^Elem, @bitcast(malloc(vec.cap * @sizeof(Elem), @alignof(Elem))))
+		if new_alloc == null return null
 
 		src_cursor := vec.data
-		dst_cursor := new_alloc
+		dst_cursor := @as(^Elem, new_alloc)
 		end := vec.data + vec.len
 
 		loop if src_cursor == end break else {
