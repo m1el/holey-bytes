@@ -178,13 +178,18 @@ main := fn(): uint {
 
 	if d == null return 69
 
-	f := @as(?Foo, null)
+	sf := new_foo()
+	if sf == null return 999
+	str := "foo\0"
+	use_foo(sf, str)
+
+	f := no_foo()
 
 	if decide() f = .(a, 1)
 
 	if f == null return 34
 
-	bar := @as(?Bar, .(a, 1))
+	bar := new_bar(a)
 
 	if decide() bar = null
 
@@ -199,8 +204,13 @@ main := fn(): uint {
 }
 
 Foo := struct {a: ^uint, b: uint}
+no_foo := fn(): ?Foo return null
+new_foo := fn(): ?Foo return .(&0, 0)
+use_foo := fn(foo: Foo, str: ^u8): void {
+}
 
 Bar := struct {a: ?^uint, b: uint}
+new_bar := fn(a: ?^uint): ?Bar return .(a, 1)
 
 decide := fn(): bool return true
 ```

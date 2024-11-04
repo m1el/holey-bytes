@@ -3113,9 +3113,11 @@ impl<'a> Codegen<'a> {
                     let Some(arg) = args.next() else { break };
                     let Arg::Value(ty) = ty else { continue };
 
-                    let mut value = self.expr_ctx(arg, Ctx::default().with_ty(ty))?;
+                    let mut value = self.raw_expr_ctx(arg, Ctx::default().with_ty(ty))?;
+                    self.strip_var(&mut value);
                     debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
                     self.assert_ty(arg.pos(), &mut value, ty, fa!("argument {}", carg.name));
+                    self.strip_ptr(&mut value);
                     self.add_clobbers(value, &mut clobbered_aliases);
 
                     self.ci.nodes.lock(value.id);
