@@ -350,7 +350,7 @@ impl ItemCtx {
                             let &[dst, lhs, rhs] = allocs else { unreachable!() };
                             self.emit(op(atr(dst), atr(lhs), atr(rhs)));
                         } else if let Some(against) = op.cmp_against() {
-                            let op_ty = fuc.nodes[lh].ty;
+                            let op_ty = fuc.nodes[rh].ty;
 
                             self.emit(extend(fuc.nodes[lh].ty, fuc.nodes[lh].ty.extend(), 0, 0));
                             self.emit(extend(fuc.nodes[rh].ty, fuc.nodes[rh].ty.extend(), 1, 1));
@@ -365,7 +365,7 @@ impl ItemCtx {
                                 let op_fn = opop.float_cmp(op_ty).unwrap();
                                 self.emit(op_fn(atr(dst), atr(lhs), atr(rhs)));
                                 self.emit(instrs::not(atr(dst), atr(dst)));
-                            } else if op_ty.is_integer() {
+                            } else {
                                 let op_fn =
                                     if op_ty.is_signed() { instrs::cmps } else { instrs::cmpu };
                                 self.emit(op_fn(atr(dst), atr(lhs), atr(rhs)));
@@ -373,8 +373,6 @@ impl ItemCtx {
                                 if matches!(op, TokenKind::Eq | TokenKind::Lt | TokenKind::Gt) {
                                     self.emit(instrs::not(atr(dst), atr(dst)));
                                 }
-                            } else {
-                                todo!("unhandled operator: {op}");
                             }
                         } else {
                             todo!("unhandled operator: {op}");

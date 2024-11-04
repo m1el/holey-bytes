@@ -1,0 +1,6 @@
+test.hb:4:17: unwrap is not needed since the value is (provably) never null, remove it, or replace with '@as(<expr_ty>, <opt_expr>)'
+    ptr := @unwrap(always_nn)
+                   ^
+test.hb:6:16: unwrap is incorrect since the value is (provably) always null, make sure your logic is correct
+    ptr = @unwrap(always_n)
+                  ^

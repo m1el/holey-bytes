@@ -593,6 +593,17 @@ main := fn(): uint {
 
 ### Purely Testing Examples
 
+#### needless_unwrap
+```hb
+main := fn(): uint {
+	always_nn := @as(?^uint, &0)
+	ptr := @unwrap(always_nn)
+	always_n := @as(?^uint, null)
+	ptr = @unwrap(always_n)
+	return *ptr
+}
+```
+
 #### inlining_issues
 ```hb
 main := fn(): void {
@@ -1348,4 +1359,24 @@ main := fn(): int {
 opaque := fn(): Foo {
 	return .(3, 2)
 }
+```
+
+#### more_if_opts
+```hb
+main := fn(): uint {
+	opq1 := opaque()
+	opq2 := opaque()
+	a := 0
+
+	if opq1 == null {
+	} else a = *opq1
+	if opq1 != null a = *opq1
+	//if opq1 == null | opq2 == null {
+	//} else a = *opq1
+	//if opq1 != null & opq2 != null a = *opq1
+
+	return a
+}
+
+opaque := fn(): ?^uint return null
 ```
