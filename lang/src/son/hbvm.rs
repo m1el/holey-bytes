@@ -395,6 +395,9 @@ impl ItemCtx {
                                 PLoc::WideReg(rg, size) => (rg, size),
                                 PLoc::Ref(..) | PLoc::Reg(..) => continue,
                             };
+                            if size > 8 {
+                                allocs.next().unwrap();
+                            }
                             self.emit(instrs::ld(rg, atr(arg), 0, size));
                         }
 
@@ -946,7 +949,7 @@ impl<'a> Function<'a> {
                                 regalloc2::PReg::new(r as _, regalloc2::RegClass::Int),
                             ));
                         }
-                        PLoc::WideReg(..) | PLoc::Reg(..) => {
+                        PLoc::WideReg(r, size) | PLoc::Reg(r, size) => {
                             loop {
                                 match self.nodes[i].kind {
                                     Kind::Stre { .. } => i = self.nodes[i].inputs[2],
@@ -956,7 +959,16 @@ impl<'a> Function<'a> {
                                 debug_assert_ne!(i, 0);
                             }
                             debug_assert!(i != 0);
-                            ops.push(self.urg(i));
+                            ops.push(regalloc2::Operand::reg_fixed_use(
+                                self.rg(i),
+                                regalloc2::PReg::new(r as _, regalloc2::RegClass::Int),
+                            ));
+                            if size > 8 {
+                                ops.push(regalloc2::Operand::reg_fixed_use(
+                                    self.rg(i),
+                                    regalloc2::PReg::new((r + 1) as _, regalloc2::RegClass::Int),
+                                ));
+                            }
                         }
                         PLoc::Ref(r, _) => {
                             loop {
@@ -1044,6 +1056,7 @@ impl<'a> Function<'a> {
             }
             Kind::Stre if node.inputs[1] == VOID => self.nodes.lock(nid),
             Kind::Stre => {
+                debug_assert_ne!(self.tys.size_of(node.ty), 0);
                 let mut region = node.inputs[2];
                 if self.nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
                     && self.nodes.is_const(self.nodes[region].inputs[2])
@@ -1597,6 +1610,7 @@ pub fn test_run_vm(out: &[u8], output: &mut String) {
                     unsafe { alloc::alloc::dealloc(ptr as *mut u8, layout) };
                 }
                 3 => vm.write_reg(1, 42),
+                8 => {}
                 unknown => unreachable!("unknown ecall: {unknown:?}"),
             },
             Ok(hbvm::VmRunOk::Timer) => {

@@ -20,12 +20,12 @@ main:
     LI8 r35, 1b
     ANDI r1, r1, 255d
     JNE r1, r0, :4
-    ST r35, r254, 56a, 1h
+    ST r35, r254, 40a, 1h
     LD r9, r33, 0a, 8h
-    ST r9, r254, 64a, 8h
+    ST r9, r254, 48a, 8h
     JMP :5
- 4: ST r34, r254, 56a, 1h
- 5: LD r6, r254, 56a, 1h
+ 4: ST r34, r254, 40a, 1h
+ 5: LD r6, r254, 40a, 1h
     ANDI r6, r6, 255d
     ANDI r34, r34, 255d
     JEQ r6, r34, :6
@@ -48,34 +48,34 @@ main:
     LI64 r37, 1d
     ANDI r1, r1, 255d
     JNE r1, r0, :10
-    ST r3, r254, 16a, 8h
+    ST r3, r254, 0a, 8h
     JMP :11
-10: ST r32, r254, 16a, 8h
-    ST r37, r254, 24a, 8h
+10: ST r32, r254, 0a, 8h
+    ST r37, r254, 8a, 8h
     ST r37, r254, 72a, 8h
-11: LD r2, r254, 16a, 8h
+11: LD r2, r254, 0a, 8h
     JNE r2, r3, :12
     LI64 r1, 34d
     JMP :3
 12: JAL r31, r0, :decide
-    ADDI64 r10, r254, 32d
+    ADDI64 r10, r254, 16d
     ANDI r1, r1, 255d
     JNE r1, r0, :13
-    ADDI64 r11, r254, 0d
-    ST r32, r254, 0a, 8h
-    ST r37, r254, 8a, 8h
-    ST r35, r254, 32a, 1h
+    ADDI64 r11, r254, 56d
+    ST r32, r254, 56a, 8h
+    ST r37, r254, 64a, 8h
+    ST r35, r254, 16a, 1h
     ADDI64 r12, r10, 8d
     BMC r11, r12, 16h
     JMP :14
-13: ST r34, r254, 32a, 1h
-14: LD r11, r254, 32a, 1h
+13: ST r34, r254, 16a, 1h
+14: LD r11, r254, 16a, 1h
     ANDI r11, r11, 255d
     ANDI r34, r34, 255d
     JEQ r11, r34, :15
     LI64 r1, 420d
     JMP :3
-15: LD r5, r254, 16a, 8h
+15: LD r5, r254, 0a, 8h
     LD r7, r5, 0a, 8h
     ANDI r9, r36, 65535d
     SUB64 r1, r9, r7

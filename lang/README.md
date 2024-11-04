@@ -593,6 +593,59 @@ main := fn(): uint {
 
 ### Purely Testing Examples
 
+#### inlining_issues
+```hb
+main := fn(): void {
+	@use("main.hb").put_filled_rect(.(&.(0), 100, 100), .(0, 0), .(0, 0), .(1))
+}
+
+// in module: memory.hb
+
+SetMsg := packed struct {a: u8, count: u32, size: u32, src: ^u8, dest: ^u8}
+set := fn($Expr: type, src: ^Expr, dest: ^Expr, count: uint): void {
+	return @eca(8, 2, &SetMsg.(5, @intcast(count), @intcast(@sizeof(Expr)), @bitcast(src), @bitcast(dest)), @sizeof(SetMsg))
+}
+
+// in module: main.hb
+
+Color := struct {r: u8}
+
+Vec2 := fn($Ty: type): type return struct {x: Ty, y: Ty}
+
+memory := @use("memory.hb")
+
+Surface := struct {
+	buf: ^Color,
+	width: uint,
+	height: uint,
+}
+
+indexptr := fn(surface: Surface, x: uint, y: uint): ^Color {
+	return surface.buf + y * surface.width + x
+}
+
+put_filled_rect := fn(surface: Surface, pos: Vec2(uint), tr: Vec2(uint), color: Color): void {
+	top_start_idx := @inline(indexptr, surface, pos.x, pos.y)
+	bottom_start_idx := @inline(indexptr, surface, pos.x, pos.y + tr.y - 1)
+	rows_to_fill := tr.y
+
+	loop if rows_to_fill <= 1 break else {
+		@inline(memory.set, Color, &color, top_start_idx, @bitcast(tr.x))
+		@inline(memory.set, Color, &color, bottom_start_idx, @bitcast(tr.x))
+
+		top_start_idx += surface.width
+		bottom_start_idx -= surface.width
+		rows_to_fill -= 2
+	}
+
+	if rows_to_fill == 1 {
+		@inline(memory.set, Color, &color, top_start_idx, @bitcast(tr.x))
+	}
+
+	return
+}
+```
+
 #### only_break_loop
 ```hb
 memory := @use("memory.hb")

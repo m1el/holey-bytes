@@ -8,12 +8,13 @@ main:
     LI64 r6, 6d
     LI64 r5, 5d
     LI64 r2, 1d
-    LD r3, r4, 0a, 16h
+    CP r3, r4
+    LD r3, r3, 0a, 16h
     ECA 
     LI64 r1, 0d
     ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
 ev: Ecall
-code size: 152
+code size: 155
 ret: 0
 status: Ok(())
