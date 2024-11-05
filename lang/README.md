@@ -614,6 +614,18 @@ main := fn(): uint {
 }
 ```
 
+#### optional_from_eca
+```hb
+main := fn(): uint {
+	a := @as(?uint, @eca(0, 0, 0, 0))
+
+	if a == null {
+		die
+	}
+	return a
+}
+```
+
 #### inlining_issues
 ```hb
 main := fn(): void {
