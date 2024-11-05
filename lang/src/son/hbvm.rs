@@ -1,10 +1,9 @@
 use {
-    super::{ItemCtx, Nid, Nodes, Pool, RallocBRef, Regalloc, ARG_START, NEVER, VOID},
+    super::{AssemblySpec, Backend, ItemCtx, Nid, Nodes, RallocBRef, ARG_START, NEVER, VOID},
     crate::{
         lexer::TokenKind,
         parser, reg,
         son::{write_reloc, Kind, MEM},
-        task,
         ty::{self, Arg, Loc},
         utils::{BitSet, Vc},
         HashMap, Offset, PLoc, Reloc, Sig, Size, TypedReloc, Types,
@@ -14,139 +13,94 @@ use {
     hbbytecode::{self as instrs, *},
 };
 
-impl Types {
-    pub fn assemble(&mut self, to: &mut Vec<u8>) {
-        to.extend([0u8; HEADER_SIZE]);
+struct FuncDt {
+    offset: Offset,
+    // TODO: change to indices into common vec
+    relocs: Vec<TypedReloc>,
+    code: Vec<u8>,
+}
 
-        binary_prelude(to);
-        let exe = self.dump_reachable(0, to);
-        Reloc::new(HEADER_SIZE, 3, 4).apply_jump(to, self.ins.funcs[0].offset, 0);
-
-        unsafe { *to.as_mut_ptr().cast::<AbleOsExecutableHeader>() = exe }
-    }
-
-    pub fn dump_reachable(&mut self, from: ty::Func, to: &mut Vec<u8>) -> AbleOsExecutableHeader {
-        debug_assert!(self.tmp.frontier.is_empty());
-        debug_assert!(self.tmp.funcs.is_empty());
-        debug_assert!(self.tmp.globals.is_empty());
-
-        self.tmp.frontier.push(ty::Kind::Func(from).compress());
-        while let Some(itm) = self.tmp.frontier.pop() {
-            match itm.expand() {
-                ty::Kind::Func(func) => {
-                    let fuc = &mut self.ins.funcs[func as usize];
-                    if task::is_done(fuc.offset) {
-                        continue;
-                    }
-                    fuc.offset = 0;
-                    self.tmp.funcs.push(func);
-                    self.tmp.frontier.extend(fuc.relocs.iter().map(|r| r.target));
-                }
-                ty::Kind::Global(glob) => {
-                    let glb = &mut self.ins.globals[glob as usize];
-                    if task::is_done(glb.offset) {
-                        continue;
-                    }
-                    glb.offset = 0;
-                    self.tmp.globals.push(glob);
-                }
-                _ => unreachable!(),
-            }
-        }
-
-        for &func in &self.tmp.funcs {
-            let fuc = &mut self.ins.funcs[func as usize];
-            fuc.offset = to.len() as _;
-            debug_assert!(!fuc.code.is_empty());
-            to.extend(&fuc.code);
-        }
-
-        let code_length = to.len();
-
-        for global in self.tmp.globals.drain(..) {
-            let global = &mut self.ins.globals[global as usize];
-            global.offset = to.len() as _;
-            to.extend(&global.data);
-        }
-
-        let data_length = to.len() - code_length;
-
-        for func in self.tmp.funcs.drain(..) {
-            let fuc = &self.ins.funcs[func as usize];
-            for rel in &fuc.relocs {
-                let offset = match rel.target.expand() {
-                    ty::Kind::Func(fun) => self.ins.funcs[fun as usize].offset,
-                    ty::Kind::Global(glo) => self.ins.globals[glo as usize].offset,
-                    _ => unreachable!(),
-                };
-                rel.reloc.apply_jump(to, offset, fuc.offset);
-            }
-        }
-
-        AbleOsExecutableHeader {
-            magic_number: [0x15, 0x91, 0xD2],
-            executable_version: 0,
-            code_length: code_length.saturating_sub(HEADER_SIZE) as _,
-            data_length: data_length as _,
-            debug_length: 0,
-            config_length: 0,
-            metadata_length: 0,
-        }
-    }
-
-    pub fn disasm<'a>(
-        &'a self,
-        mut sluce: &[u8],
-        files: &'a [parser::Ast],
-        output: &mut String,
-        eca_handler: impl FnMut(&mut &[u8]),
-    ) -> Result<(), hbbytecode::DisasmError<'a>> {
-        use hbbytecode::DisasmItem;
-        let functions = self
-            .ins
-            .funcs
-            .iter()
-            .filter(|f| task::is_done(f.offset))
-            .map(|f| {
-                let name = if f.file != u32::MAX {
-                    let file = &files[f.file as usize];
-                    file.ident_str(f.name)
-                } else {
-                    "target_fn"
-                };
-                (f.offset, (name, f.code.len() as u32, DisasmItem::Func))
-            })
-            .chain(self.ins.globals.iter().filter(|g| task::is_done(g.offset)).map(|g| {
-                let name = if g.file == u32::MAX {
-                    core::str::from_utf8(&g.data).unwrap_or("invalid utf-8")
-                } else {
-                    let file = &files[g.file as usize];
-                    file.ident_str(g.name)
-                };
-                (g.offset, (name, g.data.len() as Size, DisasmItem::Global))
-            }))
-            .collect::<BTreeMap<_, _>>();
-        hbbytecode::disasm(&mut sluce, &functions, output, eca_handler)
+impl Default for FuncDt {
+    fn default() -> Self {
+        Self { offset: u32::MAX, relocs: Default::default(), code: Default::default() }
     }
 }
 
-impl ItemCtx {
+struct GlobalDt {
+    offset: Offset,
+}
+
+impl Default for GlobalDt {
+    fn default() -> Self {
+        Self { offset: u32::MAX }
+    }
+}
+
+#[derive(Default)]
+struct Assembler {
+    frontier: Vec<ty::Id>,
+    globals: Vec<ty::Global>,
+    funcs: Vec<ty::Func>,
+}
+
+struct Regalloc {
+    env: regalloc2::MachineEnv,
+    ctx: regalloc2::Ctx,
+}
+
+impl Default for Regalloc {
+    fn default() -> Self {
+        Self {
+            env: regalloc2::MachineEnv {
+                preferred_regs_by_class: [
+                    (1..13).map(|i| regalloc2::PReg::new(i, regalloc2::RegClass::Int)).collect(),
+                    vec![],
+                    vec![],
+                ],
+                non_preferred_regs_by_class: [
+                    (13..64).map(|i| regalloc2::PReg::new(i, regalloc2::RegClass::Int)).collect(),
+                    vec![],
+                    vec![],
+                ],
+                scratch_by_class: Default::default(),
+                fixed_stack_slots: Default::default(),
+            },
+            ctx: Default::default(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct HbvmBackend {
+    funcs: Vec<FuncDt>,
+    globals: Vec<GlobalDt>,
+    asm: Assembler,
+    ralloc: Regalloc,
+
+    ret_relocs: Vec<Reloc>,
+    relocs: Vec<TypedReloc>,
+    jump_relocs: Vec<(Nid, Reloc)>,
+    code: Vec<u8>,
+    offsets: Vec<Offset>,
+}
+
+impl HbvmBackend {
     fn emit(&mut self, instr: (usize, [u8; instrs::MAX_SIZE])) {
         emit(&mut self.code, instr);
     }
 
     fn emit_body_code(
         &mut self,
+        nodes: &mut Nodes,
         sig: Sig,
         tys: &Types,
         files: &[parser::Ast],
-        ralloc: &mut Regalloc,
-    ) -> usize {
-        let mut nodes = mem::take(&mut self.nodes);
+    ) -> (usize, bool) {
+        let mut ralloc = mem::take(&mut self.ralloc);
 
-        let fuc = Function::new(&mut nodes, tys, sig);
+        let fuc = Function::new(nodes, tys, sig);
         log::info!("{:?}", fuc);
-        if self.call_count != 0 {
+        if !fuc.tail {
             mem::swap(
                 &mut ralloc.env.preferred_regs_by_class,
                 &mut ralloc.env.non_preferred_regs_by_class,
@@ -164,12 +118,12 @@ impl ItemCtx {
                     fuc.nodes[vreg.vreg() as Nid].lock_rc = Nid::MAX;
                     fuc.nodes[fuc.instrs[inst.index()].nid].lock_rc = Nid::MAX - 1;
                 }
-                fuc.nodes.graphviz_in_browser(tys, files);
+                fuc.nodes.graphviz_in_browser(ty::Display::new(tys, files, ty::Id::VOID));
                 panic!("{err}")
             },
         );
 
-        if self.call_count != 0 {
+        if !fuc.tail {
             mem::swap(
                 &mut ralloc.env.preferred_regs_by_class,
                 &mut ralloc.env.non_preferred_regs_by_class,
@@ -187,6 +141,11 @@ impl ItemCtx {
             *saved_regs.entry(hvenc).or_insert(would_insert)
         };
 
+        '_open_function: {
+            self.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, 0));
+            self.emit(instrs::st(reg::RET_ADDR + fuc.tail as u8, reg::STACK_PTR, 0, 0));
+        }
+
         let (retl, mut parama) = tys.parama(sig.ret);
         let mut typs = sig.args.args();
         let mut args = fuc.nodes[VOID].outputs[ARG_START..].iter();
@@ -199,15 +158,15 @@ impl ItemCtx {
                 PLoc::Reg(rg, size) if ty.loc(tys) == Loc::Stack => (rg, size),
                 PLoc::Reg(..) | PLoc::Ref(..) => continue,
             };
-            self.emit(instrs::st(rg, reg::STACK_PTR, fuc.nodes[arg].offset as _, size));
+            self.emit(instrs::st(rg, reg::STACK_PTR, self.offsets[arg as usize] as _, size));
             if fuc.nodes[arg].lock_rc == 0 {
-                self.emit(instrs::addi64(rg, reg::STACK_PTR, fuc.nodes[arg].offset as _));
+                self.emit(instrs::addi64(rg, reg::STACK_PTR, self.offsets[arg as usize] as _));
             }
         }
 
         for (i, block) in fuc.blocks.iter().enumerate() {
             let blk = regalloc2::Block(i as _);
-            fuc.nodes[block.nid].offset = self.code.len() as _;
+            self.offsets[block.nid as usize] = self.code.len() as _;
             for instr_or_edit in ralloc.ctx.output.block_insts_and_edits(&fuc, blk) {
                 let inst = match instr_or_edit {
                     regalloc2::InstOrEdit::Inst(inst) => inst,
@@ -223,6 +182,7 @@ impl ItemCtx {
                 };
                 let allocs = ralloc.ctx.output.inst_allocs(inst);
                 let node = &fuc.nodes[nid];
+                let backref = fuc.backrefs[nid as usize];
 
                 let mut extend = |base: ty::Id, dest: ty::Id, from: usize, to: usize| {
                     let (bsize, dsize) = (tys.size_of(base), tys.size_of(dest));
@@ -270,7 +230,7 @@ impl ItemCtx {
                         }
                     }
                     Kind::Loop | Kind::Region => {
-                        if node.ralloc_backref as usize != i + 1 {
+                        if backref as usize != i + 1 {
                             let rel = Reloc::new(self.code.len(), 1, 4);
                             self.jump_relocs.push((nid, rel));
                             self.emit(instrs::jmp(0));
@@ -418,7 +378,7 @@ impl ItemCtx {
                                 fuc.nodes[*node.inputs.last().unwrap()].kind,
                                 Kind::Stck
                             );
-                            let stck = fuc.nodes[*node.inputs.last().unwrap()].offset;
+                            let stck = self.offsets[*node.inputs.last().unwrap() as usize];
                             self.emit(instrs::st(r, reg::STACK_PTR, stck as _, size));
                         }
                         if let Some(PLoc::Reg(r, size)) = ret
@@ -428,7 +388,7 @@ impl ItemCtx {
                                 fuc.nodes[*node.inputs.last().unwrap()].kind,
                                 Kind::Stck
                             );
-                            let stck = fuc.nodes[*node.inputs.last().unwrap()].offset;
+                            let stck = self.offsets[*node.inputs.last().unwrap() as usize];
                             self.emit(instrs::st(r, reg::STACK_PTR, stck as _, size));
                         }
                     }
@@ -442,7 +402,7 @@ impl ItemCtx {
                     }
                     Kind::Stck => {
                         let base = reg::STACK_PTR;
-                        let offset = fuc.nodes[nid].offset;
+                        let offset = self.offsets[nid as usize];
                         self.emit(instrs::addi64(atr(allocs[0]), base, offset as _));
                     }
                     Kind::Load => {
@@ -458,7 +418,9 @@ impl ItemCtx {
                         let size = tys.size_of(node.ty);
                         if node.ty.loc(tys) != Loc::Stack {
                             let (base, offset) = match fuc.nodes[region].kind {
-                                Kind::Stck => (reg::STACK_PTR, fuc.nodes[region].offset + offset),
+                                Kind::Stck => {
+                                    (reg::STACK_PTR, self.offsets[region as usize] + offset)
+                                }
                                 _ => (atr(allocs[1]), offset),
                             };
                             self.emit(instrs::ld(atr(allocs[0]), base, offset as _, size as _));
@@ -480,7 +442,7 @@ impl ItemCtx {
                         let nd = &fuc.nodes[region];
                         let (base, offset, src) = match nd.kind {
                             Kind::Stck if node.ty.loc(tys) == Loc::Reg => {
-                                (reg::STACK_PTR, nd.offset + offset, allocs[0])
+                                (reg::STACK_PTR, self.offsets[region as usize] + offset, allocs[0])
                             }
                             _ => (atr(allocs[0]), offset, allocs[1]),
                         };
@@ -507,69 +469,204 @@ impl ItemCtx {
             }
         }
 
-        self.nodes = nodes;
+        self.ralloc = ralloc;
 
-        saved_regs.len()
+        (saved_regs.len(), fuc.tail)
+    }
+}
+
+impl Backend for HbvmBackend {
+    fn assemble_bin(&mut self, entry: ty::Func, types: &Types, to: &mut Vec<u8>) {
+        to.extend([0u8; HEADER_SIZE]);
+
+        binary_prelude(to);
+        let AssemblySpec { code_length, data_length, entry } =
+            self.assemble_reachable(entry, types, to);
+
+        let exe = AbleOsExecutableHeader {
+            magic_number: [0x15, 0x91, 0xD2],
+            executable_version: 0,
+            code_length,
+            data_length,
+            debug_length: 0,
+            config_length: 0,
+            metadata_length: 0,
+        };
+        Reloc::new(HEADER_SIZE, 3, 4).apply_jump(to, entry as _, 0);
+
+        unsafe { *to.as_mut_ptr().cast::<AbleOsExecutableHeader>() = exe }
     }
 
-    pub fn emit_ct_body(
+    fn assemble_reachable(
         &mut self,
-        tys: &mut Types,
-        files: &[parser::Ast],
-        sig: Sig,
-        pool: &mut Pool,
-    ) {
-        self.emit_body(tys, files, sig, pool);
-        self.code.truncate(self.code.len() - instrs::jala(0, 0, 0).0);
-        self.emit(instrs::tx());
+        from: ty::Func,
+        types: &Types,
+        to: &mut Vec<u8>,
+    ) -> AssemblySpec {
+        debug_assert!(self.asm.frontier.is_empty());
+        debug_assert!(self.asm.funcs.is_empty());
+        debug_assert!(self.asm.globals.is_empty());
+
+        self.globals.resize_with(types.ins.globals.len(), Default::default);
+
+        self.asm.frontier.push(ty::Kind::Func(from).compress());
+        while let Some(itm) = self.asm.frontier.pop() {
+            match itm.expand() {
+                ty::Kind::Func(func) => {
+                    let fuc = &mut self.funcs[func as usize];
+                    if fuc.offset != u32::MAX {
+                        continue;
+                    }
+                    fuc.offset = 0;
+                    self.asm.funcs.push(func);
+                    self.asm.frontier.extend(fuc.relocs.iter().map(|r| r.target));
+                }
+                ty::Kind::Global(glob) => {
+                    let glb = &mut self.globals[glob as usize];
+                    if glb.offset != u32::MAX {
+                        continue;
+                    }
+                    glb.offset = 0;
+                    self.asm.globals.push(glob);
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        let init_len = to.len();
+
+        for &func in &self.asm.funcs {
+            let fuc = &mut self.funcs[func as usize];
+            fuc.offset = to.len() as _;
+            debug_assert!(!fuc.code.is_empty());
+            to.extend(&fuc.code);
+        }
+
+        let code_length = to.len() - init_len;
+
+        for global in self.asm.globals.drain(..) {
+            self.globals[global as usize].offset = to.len() as _;
+            to.extend(&types.ins.globals[global as usize].data);
+        }
+
+        let data_length = to.len() - code_length - init_len;
+
+        for func in self.asm.funcs.drain(..) {
+            let fuc = &self.funcs[func as usize];
+            for rel in &fuc.relocs {
+                let offset = match rel.target.expand() {
+                    ty::Kind::Func(fun) => self.funcs[fun as usize].offset,
+                    ty::Kind::Global(glo) => self.globals[glo as usize].offset,
+                    _ => unreachable!(),
+                };
+                rel.reloc.apply_jump(to, offset, fuc.offset);
+            }
+        }
+
+        AssemblySpec {
+            code_length: code_length as _,
+            data_length: data_length as _,
+            entry: self.funcs[from as usize].offset as _,
+        }
     }
 
-    pub fn emit_body(&mut self, tys: &mut Types, files: &[parser::Ast], sig: Sig, pool: &mut Pool) {
-        self.nodes.check_final_integrity(tys, files);
-        self.nodes.graphviz(tys, files);
-        self.nodes.gcm(&mut pool.nid_stack);
-        self.nodes.basic_blocks();
-        self.nodes.graphviz(tys, files);
+    fn disasm<'a>(
+        &'a self,
+        mut sluce: &[u8],
+        eca_handler: &mut dyn FnMut(&mut &[u8]),
+        types: &'a Types,
+        files: &'a [parser::Ast],
+        output: &mut String,
+    ) -> Result<(), hbbytecode::DisasmError<'a>> {
+        use hbbytecode::DisasmItem;
+        let functions = types
+            .ins
+            .funcs
+            .iter()
+            .zip(&self.funcs)
+            .filter(|(_, f)| f.offset != u32::MAX)
+            .map(|(f, fd)| {
+                let name = if f.file != u32::MAX {
+                    let file = &files[f.file as usize];
+                    file.ident_str(f.name)
+                } else {
+                    "target_fn"
+                };
+                (fd.offset, (name, fd.code.len() as u32, DisasmItem::Func))
+            })
+            .chain(
+                types
+                    .ins
+                    .globals
+                    .iter()
+                    .zip(&self.globals)
+                    .filter(|(_, g)| g.offset != u32::MAX)
+                    .map(|(g, gd)| {
+                        let name = if g.file == u32::MAX {
+                            core::str::from_utf8(&g.data).unwrap_or("invalid utf-8")
+                        } else {
+                            let file = &files[g.file as usize];
+                            file.ident_str(g.name)
+                        };
+                        (gd.offset, (name, g.data.len() as Size, DisasmItem::Global))
+                    }),
+            )
+            .collect::<BTreeMap<_, _>>();
+        hbbytecode::disasm(&mut sluce, &functions, output, eca_handler)
+    }
+
+    fn emit_ct_body(
+        &mut self,
+        id: ty::Func,
+        nodes: &mut Nodes,
+        tys: &Types,
+        files: &[parser::Ast],
+    ) {
+        self.emit_body(id, nodes, tys, files);
+        let fd = &mut self.funcs[id as usize];
+        fd.code.truncate(fd.code.len() - instrs::jala(0, 0, 0).0);
+        emit(&mut fd.code, instrs::tx());
+    }
+
+    fn emit_body(&mut self, id: ty::Func, nodes: &mut Nodes, tys: &Types, files: &[parser::Ast]) {
+        let sig = tys.ins.funcs[id as usize].sig.unwrap();
 
         debug_assert!(self.code.is_empty());
-        let tail = mem::take(&mut self.call_count) == 0;
 
-        '_open_function: {
-            self.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, 0));
-            self.emit(instrs::st(reg::RET_ADDR + tail as u8, reg::STACK_PTR, 0, 0));
-        }
+        self.offsets.clear();
+        self.offsets.resize(nodes.values.len(), Offset::MAX);
 
         let mut stack_size = 0;
         '_compute_stack: {
-            let mems = mem::take(&mut self.nodes[MEM].outputs);
+            let mems = mem::take(&mut nodes[MEM].outputs);
             for &stck in mems.iter() {
-                if !matches!(self.nodes[stck].kind, Kind::Stck | Kind::Arg) {
+                if !matches!(nodes[stck].kind, Kind::Stck | Kind::Arg) {
                     debug_assert_matches!(
-                        self.nodes[stck].kind,
+                        nodes[stck].kind,
                         Kind::Phi | Kind::Return | Kind::Load | Kind::Call { .. } | Kind::Stre
                     );
                     continue;
                 }
-                stack_size += tys.size_of(self.nodes[stck].ty);
-                self.nodes[stck].offset = stack_size;
+                stack_size += tys.size_of(nodes[stck].ty);
+                self.offsets[stck as usize] = stack_size;
             }
             for &stck in mems.iter() {
-                if !matches!(self.nodes[stck].kind, Kind::Stck | Kind::Arg) {
+                if !matches!(nodes[stck].kind, Kind::Stck | Kind::Arg) {
                     continue;
                 }
-                self.nodes[stck].offset = stack_size - self.nodes[stck].offset;
+                self.offsets[stck as usize] = stack_size - self.offsets[stck as usize];
             }
-            self.nodes[MEM].outputs = mems;
+            nodes[MEM].outputs = mems;
         }
 
-        let saved = self.emit_body_code(sig, tys, files, &mut pool.ralloc);
+        let (saved, tail) = self.emit_body_code(nodes, sig, tys, files);
 
         if let Some(last_ret) = self.ret_relocs.last()
             && last_ret.offset as usize == self.code.len() - 5
             && self
                 .jump_relocs
                 .last()
-                .map_or(true, |&(r, _)| self.nodes[r].offset as usize != self.code.len())
+                .map_or(true, |&(r, _)| self.offsets[r as usize] as usize != self.code.len())
         {
             self.code.truncate(self.code.len() - 5);
             self.ret_relocs.pop();
@@ -577,7 +674,7 @@ impl ItemCtx {
 
         // FIXME: maybe do this incrementally
         for (nd, rel) in self.jump_relocs.drain(..) {
-            let offset = self.nodes[nd].offset;
+            let offset = self.offsets[nd as usize];
             //debug_assert!(offset < self.code.len() as u32 - 1);
             rel.apply_jump(&mut self.code, offset, 0);
         }
@@ -592,17 +689,20 @@ impl ItemCtx {
             let pushed = (saved as i64 + !tail as i64) * 8;
             let stack = stack_size as i64;
 
+            let add_len = instrs::addi64(0, 0, 0).0;
+            let st_len = instrs::st(0, 0, 0, 0).0;
+
             match (pushed, stack) {
                 (0, 0) => {
-                    stripped_prelude_size = instrs::addi64(0, 0, 0).0 + instrs::st(0, 0, 0, 0).0;
+                    stripped_prelude_size = add_len + st_len;
                     self.code.drain(0..stripped_prelude_size);
                     break '_close_function;
                 }
                 (0, stack) => {
                     write_reloc(&mut self.code, 3, -stack, 8);
-                    stripped_prelude_size = instrs::st(0, 0, 0, 0).0;
-                    let end = instrs::addi64(0, 0, 0).0 + instrs::st(0, 0, 0, 0).0;
-                    self.code.drain(instrs::addi64(0, 0, 0).0..end);
+                    stripped_prelude_size = st_len;
+                    let end = add_len + st_len;
+                    self.code.drain(add_len..end);
                     self.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, stack as _));
                     break '_close_function;
                 }
@@ -625,8 +725,21 @@ impl ItemCtx {
         if sig.ret != ty::Id::NEVER {
             self.emit(instrs::jala(reg::ZERO, reg::RET_ADDR, 0));
         }
+
+        if self.funcs.get(id as usize).is_none() {
+            self.funcs.resize_with(id as usize + 1, Default::default);
+        }
+        self.funcs[id as usize].code = mem::take(&mut self.code);
+        self.funcs[id as usize].relocs = mem::take(&mut self.relocs);
+
+        debug_assert_eq!(self.ret_relocs.len(), 0);
+        debug_assert_eq!(self.relocs.len(), 0);
+        debug_assert_eq!(self.jump_relocs.len(), 0);
+        debug_assert_eq!(self.code.len(), 0);
     }
 }
+
+impl ItemCtx {}
 
 #[derive(Debug)]
 struct Block {
@@ -648,6 +761,9 @@ pub struct Function<'a> {
     sig: Sig,
     nodes: &'a mut Nodes,
     tys: &'a Types,
+    tail: bool,
+    visited: BitSet,
+    backrefs: Vec<u16>,
     blocks: Vec<Block>,
     instrs: Vec<Instr>,
 }
@@ -670,9 +786,17 @@ impl core::fmt::Debug for Function<'_> {
 
 impl<'a> Function<'a> {
     fn new(nodes: &'a mut Nodes, tys: &'a Types, sig: Sig) -> Self {
-        let mut s =
-            Self { nodes, tys, sig, blocks: Default::default(), instrs: Default::default() };
-        s.nodes.visited.clear(s.nodes.values.len());
+        let mut s = Self {
+            tys,
+            sig,
+            tail: true,
+            visited: Default::default(),
+            backrefs: vec![u16::MAX; nodes.values.len()],
+            blocks: Default::default(),
+            instrs: Default::default(),
+            nodes,
+        };
+        s.visited.clear(s.nodes.values.len());
         s.emit_node(VOID, VOID);
         s.add_block(0);
         s.blocks.pop();
@@ -726,7 +850,7 @@ impl<'a> Function<'a> {
 
     fn emit_node(&mut self, nid: Nid, prev: Nid) {
         if matches!(self.nodes[nid].kind, Kind::Region | Kind::Loop) {
-            let prev_bref = self.nodes[prev].ralloc_backref;
+            let prev_bref = self.backrefs[prev as usize];
             let node = self.nodes[nid].clone();
 
             let idx = 1 + node.inputs.iter().position(|&i| i == prev).unwrap();
@@ -742,7 +866,7 @@ impl<'a> Function<'a> {
 
             self.add_instr(nid, vec![]);
 
-            match (self.nodes[nid].kind, self.nodes.visited.set(nid)) {
+            match (self.nodes[nid].kind, self.visited.set(nid)) {
                 (Kind::Loop, false) => {
                     for i in node.inputs {
                         self.bridge(i, nid);
@@ -752,7 +876,7 @@ impl<'a> Function<'a> {
                 (Kind::Region, true) => return,
                 _ => {}
             }
-        } else if !self.nodes.visited.set(nid) {
+        } else if !self.visited.set(nid) {
             return;
         }
 
@@ -763,7 +887,7 @@ impl<'a> Function<'a> {
                 self.emit_node(node.outputs[0], VOID)
             }
             Kind::If => {
-                self.nodes[nid].ralloc_backref = self.nodes[prev].ralloc_backref;
+                self.backrefs[nid as usize] = self.backrefs[prev as usize];
 
                 let &[_, cond] = node.inputs.as_slice() else { unreachable!() };
                 let &[mut then, mut else_] = node.outputs.as_slice() else { unreachable!() };
@@ -787,7 +911,7 @@ impl<'a> Function<'a> {
                 self.emit_node(else_, nid);
             }
             Kind::Region | Kind::Loop => {
-                self.nodes[nid].ralloc_backref = self.add_block(nid);
+                self.backrefs[nid as usize] = self.add_block(nid);
                 if node.kind == Kind::Region {
                     for i in node.inputs {
                         self.bridge(i, nid);
@@ -800,7 +924,7 @@ impl<'a> Function<'a> {
                     }
                     block.push(self.rg(ph));
                 }
-                self.blocks[self.nodes[nid].ralloc_backref as usize].params = block;
+                self.blocks[self.backrefs[nid as usize] as usize].params = block;
                 self.reschedule_block(nid, &mut node.outputs);
                 for o in node.outputs.into_iter().rev() {
                     self.emit_node(o, nid);
@@ -849,7 +973,7 @@ impl<'a> Function<'a> {
                 self.add_instr(nid, ops);
             }
             Kind::Entry => {
-                self.nodes[nid].ralloc_backref = self.add_block(nid);
+                self.backrefs[nid as usize] = self.add_block(nid);
 
                 let (ret, mut parama) = self.tys.parama(self.sig.ret);
                 let mut typs = self.sig.args.args();
@@ -882,7 +1006,7 @@ impl<'a> Function<'a> {
                 }
             }
             Kind::Then | Kind::Else => {
-                self.nodes[nid].ralloc_backref = self.add_block(nid);
+                self.backrefs[nid as usize] = self.add_block(nid);
                 self.bridge(prev, nid);
                 self.reschedule_block(nid, &mut node.outputs);
                 for o in node.outputs.into_iter().rev() {
@@ -922,8 +1046,9 @@ impl<'a> Function<'a> {
                 let ops = vec![self.drg(nid), self.urg(node.inputs[1])];
                 self.add_instr(nid, ops);
             }
-            Kind::Call { args, .. } => {
-                self.nodes[nid].ralloc_backref = self.nodes[prev].ralloc_backref;
+            Kind::Call { args, func } => {
+                self.tail &= func == ty::ECA;
+                self.backrefs[nid as usize] = self.backrefs[prev as usize];
                 let mut ops = vec![];
 
                 let (ret, mut parama) = self.tys.parama(node.ty);
@@ -1079,17 +1204,15 @@ impl<'a> Function<'a> {
     }
 
     fn bridge(&mut self, pred: u16, succ: u16) {
-        if self.nodes[pred].ralloc_backref == u16::MAX
-            || self.nodes[succ].ralloc_backref == u16::MAX
-        {
+        if self.backrefs[pred as usize] == u16::MAX || self.backrefs[succ as usize] == u16::MAX {
             return;
         }
-        self.blocks[self.nodes[pred].ralloc_backref as usize]
+        self.blocks[self.backrefs[pred as usize] as usize]
             .succs
-            .push(regalloc2::Block::new(self.nodes[succ].ralloc_backref as usize));
-        self.blocks[self.nodes[succ].ralloc_backref as usize]
+            .push(regalloc2::Block::new(self.backrefs[succ as usize] as usize));
+        self.blocks[self.backrefs[succ as usize] as usize]
             .preds
-            .push(regalloc2::Block::new(self.nodes[pred].ralloc_backref as usize));
+            .push(regalloc2::Block::new(self.backrefs[pred as usize] as usize));
     }
 
     fn reschedule_block(&mut self, from: Nid, outputs: &mut Vc) {
@@ -1245,7 +1368,7 @@ impl regalloc2::Function for Function<'_> {
 }
 
 impl TokenKind {
-    pub fn cmp_against(self) -> Option<u64> {
+    fn cmp_against(self) -> Option<u64> {
         Some(match self {
             TokenKind::Le | TokenKind::Gt => 1,
             TokenKind::Ne | TokenKind::Eq => 0,
@@ -1254,7 +1377,7 @@ impl TokenKind {
         })
     }
 
-    pub fn float_cmp(self, ty: ty::Id) -> Option<fn(u8, u8, u8) -> EncodedInstr> {
+    fn float_cmp(self, ty: ty::Id) -> Option<fn(u8, u8, u8) -> EncodedInstr> {
         if !ty.is_float() {
             return None;
         }
@@ -1369,7 +1492,7 @@ impl TokenKind {
         Some(ops[size.ilog2() as usize])
     }
 
-    pub fn unop(&self, dst: ty::Id, src: ty::Id) -> Option<fn(u8, u8) -> EncodedInstr> {
+    fn unop(&self, dst: ty::Id, src: ty::Id) -> Option<fn(u8, u8) -> EncodedInstr> {
         let src_idx = src.simple_size().unwrap().ilog2() as usize - 2;
         Some(match self {
             Self::Sub => instrs::neg,
@@ -1392,7 +1515,7 @@ fn emit(out: &mut Vec<u8>, (len, instr): EncodedInstr) {
     out.extend_from_slice(&instr[..len]);
 }
 
-pub fn binary_prelude(to: &mut Vec<u8>) {
+fn binary_prelude(to: &mut Vec<u8>) {
     emit(to, instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
     emit(to, instrs::tx());
 }
@@ -1501,6 +1624,7 @@ pub struct Comptime {
     pub vm: hbvm::Vm<LoggedMem, { 1024 * 10 }>,
     stack: Box<[u8; VM_STACK_SIZE]>,
     pub code: Vec<u8>,
+    depth: usize,
 }
 
 impl Comptime {
@@ -1544,6 +1668,19 @@ impl Comptime {
     pub fn clear(&mut self) {
         self.code.clear();
     }
+
+    #[must_use]
+    pub fn active(&self) -> bool {
+        self.depth != 0
+    }
+
+    pub fn activate(&mut self) {
+        self.depth += 1;
+    }
+
+    pub fn deactivate(&mut self) {
+        self.depth -= 1;
+    }
 }
 
 impl Default for Comptime {
@@ -1552,7 +1689,7 @@ impl Default for Comptime {
         let mut vm = hbvm::Vm::default();
         let ptr = unsafe { stack.as_mut_ptr().cast::<u8>().add(VM_STACK_SIZE) as u64 };
         vm.write_reg(reg::STACK_PTR, ptr);
-        Self { vm, stack: unsafe { stack.assume_init() }, code: Default::default() }
+        Self { vm, stack: unsafe { stack.assume_init() }, code: Default::default(), depth: 0 }
     }
 }
 

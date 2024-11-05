@@ -1,5 +1,8 @@
 use {
-    self::{hbvm::Comptime, strong_ref::StrongRef},
+    self::{
+        hbvm::{Comptime, HbvmBackend},
+        strong_ref::StrongRef,
+    },
     crate::{
         ctx_map::CtxEntry,
         debug,
@@ -9,11 +12,10 @@ use {
             idfl::{self},
             CtorField, Expr, FileId, Pos,
         },
-        task,
         ty::{self, Arg, ArrayLen, Loc, Tuple},
         utils::{BitSet, Vc},
-        FTask, Func, Global, Ident, Offset, OffsetIter, OptLayout, Reloc, Sig, StringRef, SymKey,
-        TypeParser, TypedReloc, Types,
+        CompState, FTask, Func, Global, Ident, Offset, OffsetIter, OptLayout, Sig, StringRef,
+        SymKey, TypeParser, Types,
     },
     alloc::{string::String, vec::Vec},
     core::{
@@ -40,6 +42,38 @@ pub mod hbvm;
 
 type Nid = u16;
 type AClassId = i16;
+
+pub struct AssemblySpec {
+    entry: u64,
+    code_length: u64,
+    data_length: u64,
+}
+
+pub trait Backend {
+    fn assemble_reachable(
+        &mut self,
+        from: ty::Func,
+        types: &Types,
+        to: &mut Vec<u8>,
+    ) -> AssemblySpec;
+    fn disasm<'a>(
+        &'a self,
+        sluce: &[u8],
+        eca_handler: &mut dyn FnMut(&mut &[u8]),
+        types: &'a Types,
+        files: &'a [parser::Ast],
+        output: &mut String,
+    ) -> Result<(), hbbytecode::DisasmError<'a>>;
+    fn emit_body(&mut self, id: ty::Func, ci: &mut Nodes, tys: &Types, files: &[parser::Ast]);
+
+    fn emit_ct_body(&mut self, id: ty::Func, ci: &mut Nodes, tys: &Types, files: &[parser::Ast]) {
+        self.emit_body(id, ci, tys, files);
+    }
+
+    fn assemble_bin(&mut self, from: ty::Func, types: &Types, to: &mut Vec<u8>) {
+        self.assemble_reachable(from, types, to);
+    }
+}
 
 type Lookup = crate::ctx_map::CtxMap<Nid>;
 
@@ -71,23 +105,15 @@ macro_rules! inference {
 }
 
 #[derive(Clone)]
-struct Nodes {
+pub struct Nodes {
     values: Vec<Result<Node, (Nid, debug::Trace)>>,
-    visited: BitSet,
     free: Nid,
     lookup: Lookup,
-    complete: bool,
 }
 
 impl Default for Nodes {
     fn default() -> Self {
-        Self {
-            values: Default::default(),
-            free: Nid::MAX,
-            lookup: Default::default(),
-            visited: Default::default(),
-            complete: false,
-        }
+        Self { values: Default::default(), free: Nid::MAX, lookup: Default::default() }
     }
 }
 
@@ -183,15 +209,15 @@ impl Nodes {
         }
     }
 
-    fn push_up_impl(&mut self, node: Nid) {
-        if !self.visited.set(node) {
+    fn push_up_impl(&mut self, node: Nid, visited: &mut BitSet) {
+        if !visited.set(node) {
             return;
         }
 
         for i in 1..self[node].inputs.len() {
             let inp = self[node].inputs[i];
             if !self[inp].kind.is_pinned() {
-                self.push_up_impl(inp);
+                self.push_up_impl(inp, visited);
             }
         }
 
@@ -230,32 +256,32 @@ impl Nodes {
         self[deepest].outputs.push(node);
     }
 
-    fn collect_rpo(&mut self, node: Nid, rpo: &mut Vec<Nid>) {
-        if !self.is_cfg(node) || !self.visited.set(node) {
+    fn collect_rpo(&mut self, node: Nid, rpo: &mut Vec<Nid>, visited: &mut BitSet) {
+        if !self.is_cfg(node) || !visited.set(node) {
             return;
         }
 
         for i in 0..self[node].outputs.len() {
-            self.collect_rpo(self[node].outputs[i], rpo);
+            self.collect_rpo(self[node].outputs[i], rpo, visited);
         }
         rpo.push(node);
     }
 
-    fn push_up(&mut self, rpo: &mut Vec<Nid>) {
+    fn push_up(&mut self, rpo: &mut Vec<Nid>, visited: &mut BitSet) {
         debug_assert!(rpo.is_empty());
-        self.collect_rpo(VOID, rpo);
+        self.collect_rpo(VOID, rpo, visited);
 
         for &node in rpo.iter().rev() {
             self.loop_depth(node);
             for i in 0..self[node].inputs.len() {
-                self.push_up_impl(self[node].inputs[i]);
+                self.push_up_impl(self[node].inputs[i], visited);
             }
 
             if matches!(self[node].kind, Kind::Loop | Kind::Region) {
                 for i in 0..self[node].outputs.len() {
                     let usage = self[node].outputs[i];
                     if self[usage].kind == Kind::Phi {
-                        self.push_up_impl(usage);
+                        self.push_up_impl(usage, visited);
                     }
                 }
             }
@@ -264,13 +290,13 @@ impl Nodes {
         debug_assert_eq!(
             self.iter()
                 .map(|(n, _)| n)
-                .filter(|&n| !self.visited.get(n)
+                .filter(|&n| !visited.get(n)
                     && !matches!(self[n].kind, Kind::Arg | Kind::Mem | Kind::Loops))
                 .collect::<Vec<_>>(),
             vec![],
             "{:?}",
             self.iter()
-                .filter(|&(n, nod)| !self.visited.get(n)
+                .filter(|&(n, nod)| !visited.get(n)
                     && !matches!(nod.kind, Kind::Arg | Kind::Mem | Kind::Loops))
                 .collect::<Vec<_>>()
         );
@@ -295,20 +321,20 @@ impl Nodes {
         }
     }
 
-    fn push_down(&mut self, node: Nid) {
-        if !self.visited.set(node) {
+    fn push_down(&mut self, node: Nid, visited: &mut BitSet) {
+        if !visited.set(node) {
             return;
         }
 
         for usage in self[node].outputs.clone() {
             if self.is_forward_edge(usage, node) && self[node].kind == Kind::Stre {
-                self.push_down(usage);
+                self.push_down(usage, visited);
             }
         }
 
         for usage in self[node].outputs.clone() {
             if self.is_forward_edge(usage, node) {
-                self.push_down(usage);
+                self.push_down(usage, visited);
             }
         }
 
@@ -488,12 +514,7 @@ impl Nodes {
         }
     }
 
-    fn graphviz_low(
-        &self,
-        tys: &Types,
-        files: &[parser::Ast],
-        out: &mut String,
-    ) -> core::fmt::Result {
+    fn graphviz_low(&self, disp: ty::Display, out: &mut String) -> core::fmt::Result {
         use core::fmt::Write;
 
         writeln!(out)?;
@@ -518,7 +539,7 @@ impl Nodes {
                     out,
                     " node{i}[label=\"{i} {} {} {}\" color={color}]",
                     node.kind,
-                    ty::Display::new(tys, files, node.ty),
+                    disp.rety(node.ty),
                     node.aclass,
                 )?;
             } else {
@@ -545,17 +566,17 @@ impl Nodes {
         Ok(())
     }
 
-    fn graphviz(&self, tys: &Types, files: &[parser::Ast]) {
+    fn graphviz(&self, disp: ty::Display) {
         let out = &mut String::new();
-        _ = self.graphviz_low(tys, files, out);
+        _ = self.graphviz_low(disp, out);
         log::info!("{out}");
     }
 
-    fn graphviz_in_browser(&self, _tys: &Types, _files: &[parser::Ast]) {
+    fn graphviz_in_browser(&self, disp: ty::Display) {
         #[cfg(all(debug_assertions, feature = "std"))]
         {
             let out = &mut String::new();
-            _ = self.graphviz_low(_tys, _files, out);
+            _ = self.graphviz_low(disp, out);
             if !std::process::Command::new("brave")
                 .arg(format!("https://dreampuf.github.io/GraphvizOnline/#{out}"))
                 .status()
@@ -567,24 +588,22 @@ impl Nodes {
         }
     }
 
-    fn gcm(&mut self, rpo: &mut Vec<Nid>) {
+    fn gcm(&mut self, rpo: &mut Vec<Nid>, visited: &mut BitSet) {
         self.fix_loops();
-        self.visited.clear(self.values.len());
-        self.push_up(rpo);
-        self.visited.clear(self.values.len());
-        self.push_down(VOID);
+        visited.clear(self.values.len());
+        self.push_up(rpo, visited);
+        visited.clear(self.values.len());
+        self.push_down(VOID, visited);
     }
 
     fn clear(&mut self) {
         self.values.clear();
         self.lookup.clear();
         self.free = Nid::MAX;
-        self.complete = false;
     }
 
     fn new_node_nop(&mut self, ty: ty::Id, kind: Kind, inps: impl Into<Vc>) -> Nid {
-        let node =
-            Node { ralloc_backref: u16::MAX, inputs: inps.into(), kind, ty, ..Default::default() };
+        let node = Node { inputs: inps.into(), kind, ty, ..Default::default() };
 
         if node.kind == Kind::Phi && node.ty != ty::Id::VOID {
             debug_assert_ne!(
@@ -765,7 +784,7 @@ impl Nodes {
         stack.iter().skip(prev_len).for_each(|&n| self.lock(n));
     }
 
-    pub fn aclass_index(&self, region: Nid) -> (usize, Nid) {
+    fn aclass_index(&self, region: Nid) -> (usize, Nid) {
         if self[region].aclass >= 0 {
             (self[region].aclass as _, region)
         } else {
@@ -1336,9 +1355,6 @@ impl Nodes {
 
     #[expect(clippy::format_in_format_args)]
     fn basic_blocks_instr(&mut self, out: &mut String, node: Nid) -> core::fmt::Result {
-        if self[node].kind != Kind::Loop && self[node].kind != Kind::Region {
-            write!(out, "  {node:>2}-c{:>2}: ", self[node].ralloc_backref)?;
-        }
         match self[node].kind {
             Kind::Assert { .. } | Kind::Start => unreachable!("{} {out}", self[node].kind),
             Kind::End => return Ok(()),
@@ -1382,9 +1398,14 @@ impl Nodes {
         Ok(())
     }
 
-    fn basic_blocks_low(&mut self, out: &mut String, mut node: Nid) -> core::fmt::Result {
+    fn basic_blocks_low(
+        &mut self,
+        out: &mut String,
+        mut node: Nid,
+        visited: &mut BitSet,
+    ) -> core::fmt::Result {
         let iter = |nodes: &Nodes, node| nodes[node].outputs.clone().into_iter().rev();
-        while self.visited.set(node) {
+        while visited.set(node) {
             match self[node].kind {
                 Kind::Start => {
                     writeln!(out, "start: {}", self[node].depth.get())?;
@@ -1399,7 +1420,7 @@ impl Nodes {
                 }
                 Kind::End => break,
                 Kind::If => {
-                    self.basic_blocks_low(out, self[node].outputs[0])?;
+                    self.basic_blocks_low(out, self[node].outputs[0], visited)?;
                     node = self[node].outputs[1];
                 }
                 Kind::Region => {
@@ -1480,8 +1501,8 @@ impl Nodes {
 
     fn basic_blocks(&mut self) {
         let mut out = String::new();
-        self.visited.clear(self.values.len());
-        self.basic_blocks_low(&mut out, VOID).unwrap();
+        let mut visited = BitSet::default();
+        self.basic_blocks_low(&mut out, VOID, &mut visited).unwrap();
         log::info!("{out}");
     }
 
@@ -1489,7 +1510,7 @@ impl Nodes {
         self[o].kind.is_cfg()
     }
 
-    fn check_final_integrity(&self, tys: &Types, files: &[parser::Ast]) {
+    fn check_final_integrity(&self, disp: ty::Display) {
         if !cfg!(debug_assertions) {
             return;
         }
@@ -1517,7 +1538,7 @@ impl Nodes {
         }
 
         if failed {
-            self.graphviz_in_browser(tys, files);
+            self.graphviz_in_browser(disp);
             panic!()
         }
     }
@@ -1743,8 +1764,6 @@ pub struct Node {
     peep_triggers: Vc,
     clobbers: BitSet,
     ty: ty::Id,
-    offset: Offset,
-    ralloc_backref: RallocBRef,
     depth: Cell<IDomDepth>,
     lock_rc: LockRc,
     loop_depth: LoopDepth,
@@ -1963,7 +1982,7 @@ impl Scope {
 }
 
 #[derive(Default, Clone)]
-struct ItemCtx {
+pub struct ItemCtx {
     file: FileId,
     ret: Option<ty::Id>,
     task_base: usize,
@@ -1973,25 +1992,19 @@ struct ItemCtx {
     inline_ret: Option<(Value, StrongRef, Scope)>,
     nodes: Nodes,
     ctrl: StrongRef,
-    call_count: u16,
     loops: Vec<Loop>,
     scope: Scope,
-    ret_relocs: Vec<Reloc>,
-    relocs: Vec<TypedReloc>,
-    jump_relocs: Vec<(Nid, Reloc)>,
-    code: Vec<u8>,
 }
 
 impl ItemCtx {
     fn init(&mut self, file: FileId, ret: Option<ty::Id>, task_base: usize) {
         debug_assert_eq!(self.loops.len(), 0);
         debug_assert_eq!(self.scope.vars.len(), 0);
-        debug_assert_eq!(self.ret_relocs.len(), 0);
-        debug_assert_eq!(self.relocs.len(), 0);
-        debug_assert_eq!(self.jump_relocs.len(), 0);
-        debug_assert_eq!(self.code.len(), 0);
-
-        self.call_count = 0;
+        debug_assert_eq!(self.scope.aclasses.len(), 0);
+        debug_assert!(self.inline_ret.is_none());
+        debug_assert_eq!(self.inline_depth, 0);
+        debug_assert_eq!(self.inline_var_base, 0);
+        debug_assert_eq!(self.inline_aclass_base, 0);
 
         self.file = file;
         self.ret = ret;
@@ -2043,21 +2056,21 @@ struct Ctx {
 }
 
 impl Ctx {
-    pub fn with_ty(self, ty: ty::Id) -> Self {
+    fn with_ty(self, ty: ty::Id) -> Self {
         Self { ty: Some(ty) }
     }
 }
 
 #[derive(Default)]
-struct Pool {
+pub struct Pool {
     cis: Vec<ItemCtx>,
     used_cis: usize,
-    ralloc: Regalloc,
     nid_stack: Vec<Nid>,
+    nid_set: BitSet,
 }
 
 impl Pool {
-    pub fn push_ci(
+    fn push_ci(
         &mut self,
         file: FileId,
         ret: Option<ty::Id>,
@@ -2074,7 +2087,7 @@ impl Pool {
         self.used_cis += 1;
     }
 
-    pub fn pop_ci(&mut self, target: &mut ItemCtx) {
+    fn pop_ci(&mut self, target: &mut ItemCtx) {
         self.used_cis -= 1;
         mem::swap(&mut self.cis[self.used_cis], target);
     }
@@ -2100,33 +2113,6 @@ impl Pool {
     }
 }
 
-struct Regalloc {
-    env: regalloc2::MachineEnv,
-    ctx: regalloc2::Ctx,
-}
-
-impl Default for Regalloc {
-    fn default() -> Self {
-        Self {
-            env: regalloc2::MachineEnv {
-                preferred_regs_by_class: [
-                    (1..13).map(|i| regalloc2::PReg::new(i, regalloc2::RegClass::Int)).collect(),
-                    vec![],
-                    vec![],
-                ],
-                non_preferred_regs_by_class: [
-                    (13..64).map(|i| regalloc2::PReg::new(i, regalloc2::RegClass::Int)).collect(),
-                    vec![],
-                    vec![],
-                ],
-                scratch_by_class: Default::default(),
-                fixed_stack_slots: Default::default(),
-            },
-            ctx: Default::default(),
-        }
-    }
-}
-
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 struct Value {
     ty: ty::Id,
@@ -2140,20 +2126,20 @@ impl Value {
         Some(Self { ty: ty::Id::NEVER, var: false, ptr: false, id: NEVER });
     const VOID: Value = Self { ty: ty::Id::VOID, var: false, ptr: false, id: VOID };
 
-    pub fn new(id: Nid) -> Self {
+    fn new(id: Nid) -> Self {
         Self { id, ..Default::default() }
     }
 
-    pub fn var(id: usize) -> Self {
+    fn var(id: usize) -> Self {
         Self { id: u16::MAX - (id as Nid), var: true, ..Default::default() }
     }
 
-    pub fn ptr(id: Nid) -> Self {
+    fn ptr(id: Nid) -> Self {
         Self { id, ptr: true, ..Default::default() }
     }
 
     #[inline(always)]
-    pub fn ty(self, ty: impl Into<ty::Id>) -> Self {
+    fn ty(self, ty: impl Into<ty::Id>) -> Self {
         Self { ty: ty.into(), ..self }
     }
 }
@@ -2164,6 +2150,7 @@ pub struct CodegenCtx {
     tys: Types,
     pool: Pool,
     ct: Comptime,
+    ct_backend: HbvmBackend,
 }
 
 impl CodegenCtx {
@@ -2200,10 +2187,16 @@ pub struct Codegen<'a> {
     ci: ItemCtx,
     pool: &'a mut Pool,
     ct: &'a mut Comptime,
+    ct_backend: &'a mut HbvmBackend,
+    backend: &'a mut dyn Backend,
 }
 
 impl<'a> Codegen<'a> {
-    pub fn new(files: &'a [parser::Ast], ctx: &'a mut CodegenCtx) -> Self {
+    pub fn new(
+        backend: &'a mut dyn Backend,
+        files: &'a [parser::Ast],
+        ctx: &'a mut CodegenCtx,
+    ) -> Self {
         Self {
             files,
             errors: Errors(&ctx.parser.errors),
@@ -2211,7 +2204,44 @@ impl<'a> Codegen<'a> {
             ci: Default::default(),
             pool: &mut ctx.pool,
             ct: &mut ctx.ct,
+            ct_backend: &mut ctx.ct_backend,
+            backend,
         }
+    }
+
+    pub fn generate(&mut self, entry: FileId) {
+        self.find_type(0, entry, entry, Err("main"), self.files);
+        if self.tys.ins.funcs.is_empty() {
+            return;
+        }
+        self.make_func_reachable(0);
+        self.complete_call_graph();
+    }
+
+    pub fn assemble_comptime(&mut self) -> Comptime {
+        self.ct.code.clear();
+        self.ct_backend.assemble_bin(0, self.tys, &mut self.ct.code);
+        self.ct.reset();
+        core::mem::take(self.ct)
+    }
+
+    pub fn assemble(&mut self, buf: &mut Vec<u8>) {
+        self.backend.assemble_bin(0, self.tys, buf);
+    }
+
+    pub fn disasm(&mut self, output: &mut String, bin: &[u8]) -> Result<(), DisasmError> {
+        self.backend.disasm(bin, &mut |_| {}, self.tys, self.files, output)
+    }
+
+    pub fn push_embeds(&mut self, embeds: Vec<Vec<u8>>) {
+        self.tys.ins.globals = embeds
+            .into_iter()
+            .map(|data| Global {
+                ty: self.tys.make_array(ty::Id::U8, data.len() as _),
+                data,
+                ..Default::default()
+            })
+            .collect();
     }
 
     fn emit_and_eval(&mut self, file: FileId, ret: ty::Id, ret_loc: &mut [u8]) -> u64 {
@@ -2231,46 +2261,33 @@ impl<'a> Codegen<'a> {
             return 1;
         }
 
-        self.ci.emit_ct_body(self.tys, self.files, Sig { args: Tuple::empty(), ret }, self.pool);
-
-        let func = Func {
+        let fuc = self.tys.ins.funcs.len() as ty::Func;
+        self.tys.ins.funcs.push(Func {
             file,
-            relocs: mem::take(&mut self.ci.relocs),
-            code: mem::take(&mut self.ci.code),
+            sig: Some(Sig { args: Tuple::empty(), ret }),
             ..Default::default()
-        };
+        });
+
+        self.ct_backend.emit_ct_body(fuc, &mut self.ci.nodes, self.tys, self.files);
 
         // TODO: return them back
-        let fuc = self.tys.ins.funcs.len() as ty::Func;
-        self.tys.ins.funcs.push(func);
 
-        self.tys.dump_reachable(fuc, &mut self.ct.code);
-        self.dump_ct_asm();
+        let entry =
+            self.ct_backend.assemble_reachable(fuc, self.tys, &mut self.ct.code).entry as u32;
 
-        self.ct.run(ret_loc, self.tys.ins.funcs[fuc as usize].offset)
-    }
-
-    fn dump_ct_asm(&self) {
         #[cfg(debug_assertions)]
         {
             let mut vc = String::new();
-            if let Err(e) = self.tys.disasm(&self.ct.code, self.files, &mut vc, |_| {}) {
+            if let Err(e) =
+                self.ct_backend.disasm(&self.ct.code, &mut |_| {}, self.tys, self.files, &mut vc)
+            {
                 panic!("{e} {}", vc);
             } else {
                 log::trace!("{}", vc);
             }
         }
-    }
 
-    pub fn push_embeds(&mut self, embeds: Vec<Vec<u8>>) {
-        self.tys.ins.globals = embeds
-            .into_iter()
-            .map(|data| Global {
-                ty: self.tys.make_array(ty::Id::U8, data.len() as _),
-                data,
-                ..Default::default()
-            })
-            .collect();
+        self.ct.run(ret_loc, entry)
     }
 
     fn new_stack(&mut self, ty: ty::Id) -> Nid {
@@ -2348,12 +2365,12 @@ impl<'a> Codegen<'a> {
         debug_assert_ne!(region, VOID);
         debug_assert_ne!({ self.ci.nodes[region].ty }, ty::Id::VOID, "{:?}", {
             self.ci.nodes[region].lock_rc = Nid::MAX;
-            self.ci.nodes.graphviz_in_browser(self.tys, self.files);
+            self.ci.nodes.graphviz_in_browser(self.ty_display(ty::Id::VOID));
         });
         debug_assert!(
             self.ci.nodes[region].kind != Kind::Load || self.ci.nodes[region].ty.is_pointer(),
             "{:?} {} {}",
-            self.ci.nodes.graphviz_in_browser(self.tys, self.files),
+            self.ci.nodes.graphviz_in_browser(self.ty_display(ty::Id::VOID)),
             self.file().path,
             self.ty_display(self.ci.nodes[region].ty)
         );
@@ -2365,37 +2382,12 @@ impl<'a> Codegen<'a> {
         self.ci.nodes.new_node(ty, Kind::Load, vc)
     }
 
-    pub fn generate(&mut self, entry: FileId) {
-        self.find_type(0, entry, entry, Err("main"), self.files);
-        if self.tys.ins.funcs.is_empty() {
-            return;
-        }
-        self.make_func_reachable(0);
-        self.complete_call_graph();
-    }
-
-    pub fn assemble_comptime(&mut self) -> Comptime {
-        self.ct.code.clear();
-        self.tys.reassemble(&mut self.ct.code);
-        self.ct.reset();
-        core::mem::take(self.ct)
-    }
-
-    pub fn assemble(&mut self, buf: &mut Vec<u8>) {
-        self.tys.reassemble(buf);
-    }
-
-    pub fn disasm(&mut self, output: &mut String) -> Result<(), DisasmError> {
-        let mut bin = Vec::new();
-        self.assemble(&mut bin);
-        self.tys.disasm(&bin, self.files, output, |_| {})
-    }
-
     fn make_func_reachable(&mut self, func: ty::Func) {
+        let state_slot = self.ct.active() as usize;
         let fuc = &mut self.tys.ins.funcs[func as usize];
-        if fuc.offset == u32::MAX {
-            fuc.offset = task::id(self.tys.tasks.len() as _);
-            self.tys.tasks.push(Some(FTask { file: fuc.file, id: func }));
+        if fuc.comp_state[state_slot] == CompState::Dead {
+            fuc.comp_state[state_slot] = CompState::Queued(self.tys.tasks.len() as _);
+            self.tys.tasks.push(Some(FTask { file: fuc.file, id: func, ct: self.ct.active() }));
         }
     }
 
@@ -3072,7 +3064,6 @@ impl<'a> Codegen<'a> {
                 alt_value.or(Some(Value::new(self.ci.ctrl.get()).ty(ty)))
             }
             Expr::Call { func, args, .. } => {
-                self.ci.call_count += 1;
                 let ty = self.ty(func);
                 let ty::Kind::Func(mut fu) = ty.expand() else {
                     self.report(
@@ -4005,10 +3996,12 @@ impl<'a> Codegen<'a> {
         self.errors.borrow().len() == prev_err_len
     }
 
-    fn emit_func(&mut self, FTask { file, id }: FTask) {
+    fn emit_func(&mut self, FTask { file, id, ct }: FTask) {
         let func = &mut self.tys.ins.funcs[id as usize];
         debug_assert_eq!(func.file, file);
-        func.offset = u32::MAX - 1;
+        let cct = self.ct.active();
+        debug_assert_eq!(cct, ct);
+        func.comp_state[cct as usize] = CompState::Compiled;
         let sig = func.sig.expect("to emmit only concrete functions");
         let ast = &self.files[file as usize];
         let expr = func.expr.get(ast);
@@ -4075,9 +4068,8 @@ impl<'a> Codegen<'a> {
         self.ci.scope.vars.drain(..).for_each(|v| v.remove_ignore_arg(&mut self.ci.nodes));
 
         if self.finalize(prev_err_len) {
-            self.ci.emit_body(self.tys, self.files, sig, self.pool);
-            self.tys.ins.funcs[id as usize].code.append(&mut self.ci.code);
-            self.tys.ins.funcs[id as usize].relocs.append(&mut self.ci.relocs);
+            let backend = if !cct { &mut *self.backend } else { &mut *self.ct_backend };
+            backend.emit_body(id, &mut self.ci.nodes, self.tys, self.files);
         }
 
         self.pool.pop_ci(&mut self.ci);
@@ -4087,6 +4079,7 @@ impl<'a> Codegen<'a> {
         use {AssertKind as AK, CondOptRes as CR};
 
         self.ci.finalize(&mut self.pool.nid_stack, self.tys, self.files);
+
         let mut to_remove = vec![];
         for (id, node) in self.ci.nodes.iter() {
             let Kind::Assert { kind, pos } = node.kind else { continue };
@@ -4153,7 +4146,17 @@ impl<'a> Codegen<'a> {
                 self.ci.nodes[n].outputs.iter().map(|&o| &self.ci.nodes[o]).collect::<Vec<_>>(),
             );
         });
+
         self.ci.unlock();
+
+        if self.errors.borrow().len() == prev_err_len {
+            self.ci.nodes.check_final_integrity(self.ty_display(ty::Id::VOID));
+            self.ci.nodes.graphviz(self.ty_display(ty::Id::VOID));
+            self.ci.nodes.gcm(&mut self.pool.nid_stack, &mut self.pool.nid_set);
+            self.ci.nodes.basic_blocks();
+            self.ci.nodes.graphviz(self.ty_display(ty::Id::VOID));
+        }
+
         self.errors.borrow().len() == prev_err_len
     }
 
@@ -4399,6 +4402,7 @@ impl TypeParser for Codegen<'_> {
     }
 
     fn eval_const(&mut self, file: FileId, expr: &Expr, ret: ty::Id) -> u64 {
+        self.ct.activate();
         let mut scope = mem::take(&mut self.ci.scope.vars);
         self.pool.push_ci(file, Some(ret), self.tys.tasks.len(), &mut self.ci);
         self.ci.scope.vars = scope;
@@ -4415,6 +4419,7 @@ impl TypeParser for Codegen<'_> {
         self.pool.pop_ci(&mut self.ci);
         self.ci.scope.vars = scope;
 
+        self.ct.deactivate();
         res
     }
 
@@ -4427,18 +4432,21 @@ impl TypeParser for Codegen<'_> {
     }
 
     fn on_reuse(&mut self, existing: ty::Id) {
+        let state_slot = self.ct.active() as usize;
         if let ty::Kind::Func(id) = existing.expand()
             && let func = &mut self.tys.ins.funcs[id as usize]
-            && let Err(idx) = task::unpack(func.offset)
+            && let CompState::Queued(idx) = func.comp_state[state_slot]
             && idx < self.tys.tasks.len()
         {
-            func.offset = task::id(self.tys.tasks.len());
+            func.comp_state[state_slot] = CompState::Queued(self.tys.tasks.len());
             let task = self.tys.tasks[idx].take();
             self.tys.tasks.push(task);
         }
     }
 
     fn eval_global(&mut self, file: FileId, name: Ident, expr: &Expr) -> ty::Id {
+        self.ct.activate();
+
         let gid = self.tys.ins.globals.len() as ty::Global;
         self.tys.ins.globals.push(Global { file, name, ..Default::default() });
 
@@ -4458,6 +4466,7 @@ impl TypeParser for Codegen<'_> {
         self.pool.pop_ci(&mut self.ci);
         self.tys.ins.globals[gid as usize].ty = ret;
 
+        self.ct.deactivate();
         ty.compress()
     }
 
@@ -4475,7 +4484,7 @@ impl TypeParser for Codegen<'_> {
 #[cfg(test)]
 mod tests {
     use {
-        super::CodegenCtx,
+        super::{hbvm::HbvmBackend, CodegenCtx},
         alloc::{string::String, vec::Vec},
         core::fmt::Write,
     };
@@ -4487,7 +4496,8 @@ mod tests {
 
         let mut ctx = CodegenCtx::default();
         let (ref files, embeds) = crate::test_parse_files(ident, input, &mut ctx.parser);
-        let mut codegen = super::Codegen::new(files, &mut ctx);
+        let mut backend = HbvmBackend::default();
+        let mut codegen = super::Codegen::new(&mut backend, files, &mut ctx);
         codegen.push_embeds(embeds);
 
         codegen.generate(0);
@@ -4501,9 +4511,9 @@ mod tests {
         }
 
         let mut out = Vec::new();
-        codegen.tys.reassemble(&mut out);
+        codegen.assemble(&mut out);
 
-        let err = codegen.tys.disasm(&out, codegen.files, output, |_| {});
+        let err = codegen.disasm(output, &out);
         if let Err(e) = err {
             writeln!(output, "!!! asm is invalid: {e}").unwrap();
             return;

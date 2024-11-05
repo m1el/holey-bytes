@@ -2,7 +2,7 @@ use {
     crate::{
         lexer::TokenKind,
         parser,
-        son::{Codegen, CodegenCtx},
+        son::{hbvm::HbvmBackend, Codegen, CodegenCtx},
     },
     alloc::string::String,
     core::{fmt::Write, hash::BuildHasher, ops::Range},
@@ -133,7 +133,8 @@ pub fn fuzz(seed_range: Range<u64>) {
 
         assert!(ctx.parser.errors.get_mut().is_empty());
 
-        let mut cdg = Codegen::new(core::slice::from_ref(&parsed), &mut ctx);
+        let mut backend = HbvmBackend::default();
+        let mut cdg = Codegen::new(&mut backend, core::slice::from_ref(&parsed), &mut ctx);
         cdg.generate(0);
     }
 }

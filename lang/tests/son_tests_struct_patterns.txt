@@ -4,15 +4,14 @@ fib:
     CP r32, r2
     LI64 r33, 2d
     JLTU r2, r33, :0
-    CP r6, r32
-    ADDI64 r2, r6, -1d
+    CP r34, r32
+    ADDI64 r2, r34, -1d
     JAL r31, r0, :fib
     CP r2, r32
     CP r34, r1
     SUB64 r2, r2, r33
     JAL r31, r0, :fib
-    CP r6, r34
-    ADD64 r1, r1, r6
+    ADD64 r1, r1, r34
     JMP :1
  0: CP r1, r32
  1: LD r31, r254, 0a, 32h
@@ -41,11 +40,10 @@ main:
     CP r2, r32
     CP r33, r1
     JAL r31, r0, :fib_iter
-    CP r9, r33
-    SUB64 r1, r9, r1
+    SUB64 r1, r33, r1
     LD r31, r254, 0a, 24h
     ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
-code size: 306
+code size: 300
 ret: 0
 status: Ok(())

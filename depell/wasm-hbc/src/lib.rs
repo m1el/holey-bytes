@@ -6,7 +6,7 @@ use {
     alloc::{string::String, vec::Vec},
     hblang::{
         parser::FileId,
-        son::{Codegen, CodegenCtx},
+        son::{hbvm::HbvmBackend, Codegen, CodegenCtx},
     },
 };
 
@@ -78,14 +78,15 @@ unsafe fn compile_and_run(mut fuel: usize) {
     };
 
     let mut ct = {
-        Codegen::new(&files, &mut ctx).generate(root as FileId);
+        let mut backend = HbvmBackend::default();
+        Codegen::new(&mut backend, &files, &mut ctx).generate(root as FileId);
 
         if !ctx.parser.errors.borrow().is_empty() {
             log::error!("{}", ctx.parser.errors.borrow());
             return;
         }
 
-        let mut c = Codegen::new(&files, &mut ctx);
+        let mut c = Codegen::new(&mut backend, &files, &mut ctx);
         c.assemble_comptime()
     };
 

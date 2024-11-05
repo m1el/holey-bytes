@@ -1,7 +1,7 @@
 use {
     crate::{
         parser::{self, Ast, Ctx, FileKind},
-        son,
+        son::{self, hbvm::HbvmBackend},
     },
     alloc::{string::String, vec::Vec},
     core::{fmt::Write, num::NonZeroUsize, ops::Deref},
@@ -88,9 +88,10 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
         let ast = parsed.ast.into_iter().next().unwrap();
         write!(out, "{ast}").unwrap();
     } else {
+        let mut backend = HbvmBackend::default();
         let mut ctx = crate::son::CodegenCtx::default();
         *ctx.parser.errors.get_mut() = parsed.errors;
-        let mut codegen = son::Codegen::new(&parsed.ast, &mut ctx);
+        let mut codegen = son::Codegen::new(&mut backend, &parsed.ast, &mut ctx);
 
         codegen.push_embeds(parsed.embeds);
         codegen.generate(0);
@@ -100,12 +101,12 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
             return Err(std::io::Error::other("compilation faoled"));
         }
 
+        codegen.assemble(out);
+
         if options.dump_asm {
-            codegen
-                .disasm(unsafe { std::mem::transmute::<&mut Vec<u8>, &mut String>(out) })
-                .map_err(|e| io::Error::other(e.to_string()))?;
-        } else {
-            codegen.assemble(out);
+            let mut disasm = String::new();
+            codegen.disasm(&mut disasm, out).map_err(|e| io::Error::other(e.to_string()))?;
+            *out = disasm.into_bytes();
         }
     }
 

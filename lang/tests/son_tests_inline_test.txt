@@ -1,22 +1,21 @@
 main:
-    ADDI64 r254, r254, -16d
-    ST r31, r254, 0a, 16h
+    ADDI64 r254, r254, -32d
+    ST r31, r254, 0a, 32h
     JAL r31, r0, :scalar_values
-    LI64 r3, 0d
-    CP r8, r3
-    JEQ r1, r8, :0
+    LI64 r32, 0d
+    CP r33, r32
+    JEQ r1, r33, :0
     LI64 r1, 1d
     JMP :1
- 0: CP r32, r8
-    JAL r31, r0, :structs
-    CP r3, r32
-    JEQ r1, r3, :2
+ 0: JAL r31, r0, :structs
+    CP r34, r33
+    JEQ r1, r34, :2
     JAL r31, r0, :structs
     JMP :1
- 2: CP r1, r3
-    CP r32, r3
- 1: LD r31, r254, 0a, 16h
-    ADDI64 r254, r254, 16d
+ 2: CP r1, r34
+    CP r33, r34
+ 1: LD r31, r254, 0a, 32h
+    ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
 scalar_values:
     LI64 r1, 0d
@@ -35,6 +34,6 @@ structs:
     SUB64 r1, r1, r10
     ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
-code size: 310
+code size: 307
 ret: 0
 status: Ok(())

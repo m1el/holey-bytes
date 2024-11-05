@@ -1,17 +1,17 @@
 main:
-    ADDI64 r254, r254, -40d
-    ST r31, r254, 24a, 16h
+    ADDI64 r254, r254, -56d
+    ST r31, r254, 24a, 32h
     LI64 r32, 1d
     ADDI64 r2, r254, 0d
     ST r32, r254, 0a, 8h
-    LI64 r5, 2d
-    ST r5, r254, 8a, 8h
-    LI64 r8, 4d
-    ST r8, r254, 16a, 8h
+    LI64 r33, 2d
+    ST r33, r254, 8a, 8h
+    LI64 r34, 4d
+    ST r34, r254, 16a, 8h
     JAL r31, r0, :pass
     ADD64 r1, r1, r32
-    LD r31, r254, 24a, 16h
-    ADDI64 r254, r254, 40d
+    LD r31, r254, 24a, 32h
+    ADDI64 r254, r254, 56d
     JALA r0, r31, 0a
 pass:
     LD r4, r2, 8a, 8h

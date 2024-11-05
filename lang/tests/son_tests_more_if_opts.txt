@@ -1,23 +1,23 @@
 main:
-    ADDI64 r254, r254, -16d
-    ST r31, r254, 0a, 16h
+    ADDI64 r254, r254, -32d
+    ST r31, r254, 0a, 32h
     JAL r31, r0, :opaque
     CP r32, r1
     JAL r31, r0, :opaque
-    LI64 r6, 0d
+    LI64 r33, 0d
     CP r1, r32
-    JNE r1, r6, :0
+    JNE r1, r33, :0
     CP r32, r1
     LI64 r1, 0d
-    CP r3, r32
+    CP r34, r32
     JMP :1
- 0: CP r3, r1
-    LD r1, r3, 0a, 8h
- 1: JEQ r3, r6, :2
-    LD r1, r3, 0a, 8h
+ 0: CP r34, r1
+    LD r1, r34, 0a, 8h
+ 1: JEQ r34, r33, :2
+    LD r1, r34, 0a, 8h
     JMP :2
- 2: LD r31, r254, 0a, 16h
-    ADDI64 r254, r254, 16d
+ 2: LD r31, r254, 0a, 32h
+    ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
 opaque:
     LI64 r1, 0d

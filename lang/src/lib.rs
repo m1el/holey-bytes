@@ -219,26 +219,6 @@ mod ctx_map {
     }
 }
 
-mod task {
-    use super::Offset;
-
-    pub fn unpack(offset: Offset) -> Result<Offset, usize> {
-        if offset >> 31 != 0 {
-            Err((offset & !(1 << 31)) as usize)
-        } else {
-            Ok(offset)
-        }
-    }
-
-    pub fn is_done(offset: Offset) -> bool {
-        unpack(offset).is_ok()
-    }
-
-    pub fn id(index: usize) -> Offset {
-        1 << 31 | index as u32
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Debug)]
 pub struct Ident(u32);
 
@@ -567,6 +547,7 @@ mod ty {
                 };)*
             }
 
+            #[expect(dead_code)]
             impl Id {
                 $(pub const $name: Self = Kind::Builtin($name).compress();)*
             }
@@ -758,7 +739,7 @@ pub enum SymKey<'a> {
 }
 
 #[derive(Clone, Copy)]
-struct Sig {
+pub struct Sig {
     args: ty::Tuple,
     ret: ty::Id,
 }
@@ -769,10 +750,7 @@ struct Func {
     base: Option<ty::Func>,
     expr: ExprRef,
     sig: Option<Sig>,
-    offset: Offset,
-    // TODO: change to indices into common vec
-    relocs: Vec<TypedReloc>,
-    code: Vec<u8>,
+    comp_state: [CompState; 2],
 }
 
 impl Default for Func {
@@ -783,11 +761,17 @@ impl Default for Func {
             base: None,
             expr: Default::default(),
             sig: None,
-            offset: u32::MAX,
-            relocs: Default::default(),
-            code: Default::default(),
+            comp_state: Default::default(),
         }
     }
+}
+
+#[derive(Default, PartialEq, Eq)]
+enum CompState {
+    #[default]
+    Dead,
+    Queued(usize),
+    Compiled,
 }
 
 #[derive(Clone, Copy)]
@@ -801,7 +785,6 @@ struct Global {
     file: FileId,
     name: Ident,
     ty: ty::Id,
-    offset: Offset,
     data: Vec<u8>,
 }
 
@@ -809,7 +792,6 @@ impl Default for Global {
     fn default() -> Self {
         Self {
             ty: Default::default(),
-            offset: u32::MAX,
             data: Default::default(),
             file: u32::MAX,
             name: Default::default(),
@@ -947,9 +929,6 @@ impl IdentInterner {
 #[derive(Default)]
 struct TypesTmp {
     fields: Vec<Field>,
-    frontier: Vec<ty::Id>,
-    globals: Vec<ty::Global>,
-    funcs: Vec<ty::Func>,
     args: Vec<ty::Id>,
 }
 
@@ -968,6 +947,7 @@ pub struct TypeIns {
 struct FTask {
     file: FileId,
     id: ty::Func,
+    ct: bool,
 }
 
 struct StringRef(ty::Global);
@@ -982,7 +962,7 @@ impl ctx_map::CtxEntry for StringRef {
 }
 
 #[derive(Default)]
-struct Types {
+pub struct Types {
     syms: ctx_map::CtxMap<ty::Id>,
     names: IdentInterner,
     strings: ctx_map::CtxMap<StringRef>,
@@ -1222,12 +1202,6 @@ impl Types {
         &self.ins.fields[self.struct_field_range(strct)]
     }
 
-    fn reassemble(&mut self, buf: &mut Vec<u8>) {
-        self.ins.funcs.iter_mut().for_each(|f| f.offset = u32::MAX);
-        self.ins.globals.iter_mut().for_each(|g| g.offset = u32::MAX);
-        self.assemble(buf)
-    }
-
     fn parama(&self, ret: impl Into<ty::Id>) -> (Option<PLoc>, ParamAlloc) {
         let mut iter = ParamAlloc(1..12);
         let ret = iter.next(ret.into(), self);
@@ -1395,9 +1369,6 @@ impl Types {
         self.ins.slices.clear();
 
         debug_assert_eq!(self.tmp.fields.len(), 0);
-        debug_assert_eq!(self.tmp.frontier.len(), 0);
-        debug_assert_eq!(self.tmp.globals.len(), 0);
-        debug_assert_eq!(self.tmp.funcs.len(), 0);
         debug_assert_eq!(self.tmp.args.len(), 0);
 
         debug_assert_eq!(self.tasks.len(), 0);
