@@ -55,8 +55,9 @@ unsafe fn compile_and_run(mut fuel: usize) {
         files
     };
 
+    let mut ctx = CodegenCtx::default();
+
     let files = {
-        let mut ctx = hblang::parser::Ctx::default();
         let paths = files.iter().map(|f| f.path).collect::<Vec<_>>();
         let mut loader = |path: &str, _: &str, kind| match kind {
             hblang::parser::FileKind::Module => Ok(paths.binary_search(&path).unwrap() as FileId),
@@ -69,7 +70,7 @@ unsafe fn compile_and_run(mut fuel: usize) {
                     f.path,
                     // since 'free' does nothing this is fine
                     String::from_raw_parts(f.code.as_mut_ptr(), f.code.len(), f.code.len()),
-                    &mut ctx,
+                    &mut ctx.parser,
                     &mut loader,
                 )
             })
@@ -77,9 +78,14 @@ unsafe fn compile_and_run(mut fuel: usize) {
     };
 
     let mut ct = {
-        let mut ctx = CodegenCtx::default();
+        Codegen::new(&files, &mut ctx).generate(root as FileId);
+
+        if !ctx.parser.errors.borrow().is_empty() {
+            log::error!("{}", ctx.parser.errors.borrow());
+            return;
+        }
+
         let mut c = Codegen::new(&files, &mut ctx);
-        c.generate(root as FileId);
         c.assemble_comptime()
     };
 

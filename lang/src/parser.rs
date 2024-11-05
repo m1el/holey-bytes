@@ -1167,14 +1167,16 @@ fn report_to(file: &str, path: &str, pos: Pos, msg: &dyn fmt::Display, out: &mut
 
     let line = &file[file[..pos as usize].rfind('\n').map_or(0, |i| i + 1)
         ..file[pos as usize..].find('\n').map_or(file.len(), |i| i + pos as usize)];
-    col += line.matches('\t').count() * 3;
+    col += line.chars().take_while(|c| c.is_whitespace()).filter(|&c| c == '\t').count() * 3;
 
+    let mut has_non_whitespace = false;
     for char in line.chars() {
-        if char == '\t' {
+        if char == '\t' && !has_non_whitespace {
             _ = out.write_str("    ");
         } else {
             _ = out.write_char(char);
         }
+        has_non_whitespace |= !char.is_whitespace();
     }
     _ = out.write_char('\n');
     for _ in 0..col - 1 {
