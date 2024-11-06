@@ -626,6 +626,24 @@ main := fn(): uint {
 }
 ```
 
+#### returning_optional_issues
+```hb
+BMP := 0
+
+get_format := fn(): ?uint {
+	return BMP
+}
+
+main := fn(): uint {
+	fmt := get_format()
+	if fmt == null {
+		return 1
+	} else {
+		return fmt
+	}
+}
+```
+
 #### inlining_issues
 ```hb
 main := fn(): void {

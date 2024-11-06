@@ -4595,5 +4595,6 @@ mod tests {
         overwrite_aliasing_overoptimization;
         more_if_opts;
         optional_from_eca;
+        returning_optional_issues;
     }
 }
