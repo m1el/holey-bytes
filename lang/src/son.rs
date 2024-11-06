@@ -4526,6 +4526,7 @@ mod tests {
         // Tour Examples
         main_fn;
         arithmetic;
+        advanced_floating_point_arithmetic;
         floating_point_arithmetic;
         functions;
         comments;
