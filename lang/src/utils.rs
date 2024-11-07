@@ -62,6 +62,12 @@ impl BitSet {
     const INLINE_ELEMS: usize = Self::UNIT - 1;
     const UNIT: usize = core::mem::size_of::<usize>() * 8;
 
+    pub fn with_capacity(len: usize) -> Self {
+        let mut s = Self::default();
+        s.reserve(len);
+        s
+    }
+
     fn is_inline(&self) -> bool {
         unsafe { self.inline & Self::FLAG != 0 }
     }

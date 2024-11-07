@@ -9,5 +9,5 @@ db.sqlite-journal
 # assets
 /depell/src/*.gz
 /depell/src/*.wasm
-**/*-sv.rs
+#**/*-sv.rs
 /bytecode/src/instrs.rs

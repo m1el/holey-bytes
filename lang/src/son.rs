@@ -44,7 +44,7 @@ type Nid = u16;
 type AClassId = i16;
 
 pub struct AssemblySpec {
-    entry: u64,
+    entry: u32,
     code_length: u64,
     data_length: u64,
 }
@@ -118,16 +118,16 @@ impl Default for Nodes {
 }
 
 impl Nodes {
-    fn loop_depth(&mut self, target: Nid) -> LoopDepth {
-        if self[target].loop_depth != 0 {
-            return self[target].loop_depth;
+    fn loop_depth(&self, target: Nid) -> LoopDepth {
+        if self[target].loop_depth.get() != 0 {
+            return self[target].loop_depth.get();
         }
 
-        self[target].loop_depth = match self[target].kind {
+        self[target].loop_depth.set(match self[target].kind {
             Kind::Entry | Kind::Then | Kind::Else | Kind::Call { .. } | Kind::Return | Kind::If => {
                 let dpth = self.loop_depth(self[target].inputs[0]);
-                if self[target].loop_depth != 0 {
-                    return self[target].loop_depth;
+                if self[target].loop_depth.get() != 0 {
+                    return self[target].loop_depth.get();
                 }
                 dpth
             }
@@ -139,10 +139,10 @@ impl Nodes {
             }
             Kind::Loop => {
                 let depth = Self::loop_depth(self, self[target].inputs[0]) + 1;
-                self[target].loop_depth = depth;
+                self[target].loop_depth.set(depth);
                 let mut cursor = self[target].inputs[1];
                 while cursor != target {
-                    self[cursor].loop_depth = depth;
+                    self[cursor].loop_depth.set(depth);
                     let next = if self[cursor].kind == Kind::Region {
                         self.loop_depth(self[cursor].inputs[0]);
                         self[cursor].inputs[1]
@@ -156,8 +156,8 @@ impl Nodes {
                             .iter()
                             .find(|&&n| self[n].kind != self[cursor].kind)
                             .unwrap();
-                        if self[other].loop_depth == 0 {
-                            self[other].loop_depth = depth - 1;
+                        if self[other].loop_depth.get() == 0 {
+                            self[other].loop_depth.set(depth - 1);
                         }
                     }
                     cursor = next;
@@ -166,9 +166,9 @@ impl Nodes {
             }
             Kind::Start | Kind::End | Kind::Die => 1,
             u => unreachable!("{u:?}"),
-        };
+        });
 
-        self[target].loop_depth
+        self[target].loop_depth.get()
     }
 
     fn idepth(&self, target: Nid) -> IDomDepth {
@@ -444,7 +444,7 @@ impl Nodes {
         self[to].inputs.push(from);
     }
 
-    fn use_block(&mut self, target: Nid, from: Nid) -> Nid {
+    fn use_block(&self, target: Nid, from: Nid) -> Nid {
         if self[from].kind != Kind::Phi {
             return self.idom(from);
         }
@@ -1428,7 +1428,7 @@ impl Nodes {
                         out,
                         "region{node}: {} {} {:?}",
                         self[node].depth.get(),
-                        self[node].loop_depth,
+                        self[node].loop_depth.get(),
                         self[node].inputs
                     )?;
                     let mut cfg_index = Nid::MAX;
@@ -1445,7 +1445,7 @@ impl Nodes {
                         out,
                         "loop{node}: {} {} {:?}",
                         self[node].depth.get(),
-                        self[node].loop_depth,
+                        self[node].loop_depth.get(),
                         self[node].outputs
                     )?;
                     let mut cfg_index = Nid::MAX;
@@ -1465,7 +1465,7 @@ impl Nodes {
                         out,
                         "b{node}: {} {} {:?}",
                         self[node].depth.get(),
-                        self[node].loop_depth,
+                        self[node].loop_depth.get(),
                         self[node].outputs
                     )?;
                     let mut cfg_index = Nid::MAX;
@@ -1621,6 +1621,15 @@ impl Nodes {
             dominated = self.idom(dominated);
         }
     }
+
+    fn is_data_dep(&self, nid: Nid, n: Nid) -> bool {
+        match self[n].kind {
+            _ if self.is_cfg(n) && !matches!(self[n].kind, Kind::Call { .. }) => false,
+            Kind::Stre => self[n].inputs[3] != nid,
+            Kind::Load => self[n].inputs[2] != nid,
+            _ => self[n].inputs[0] != nid || self[n].inputs[1..].contains(&nid),
+        }
+    }
 }
 
 enum CondOptRes {
@@ -1737,6 +1746,10 @@ impl Kind {
         matches!(self, Self::Return | Self::If | Self::End | Self::Die)
     }
 
+    fn starts_basic_block(&self) -> bool {
+        matches!(self, Self::Region | Self::Loop | Self::Start | Kind::Then | Kind::Else)
+    }
+
     fn is_peeped(&self) -> bool {
         !matches!(self, Self::End | Self::Arg | Self::Mem | Self::Loops)
     }
@@ -1766,7 +1779,7 @@ pub struct Node {
     ty: ty::Id,
     depth: Cell<IDomDepth>,
     lock_rc: LockRc,
-    loop_depth: LoopDepth,
+    loop_depth: Cell<LoopDepth>,
     aclass: AClassId,
     antidep: Nid,
 }
@@ -1793,9 +1806,12 @@ impl Node {
     fn is_mem(&self) -> bool {
         matches!(self.kind, Kind::Stre | Kind::Load | Kind::Stck)
     }
+
+    fn is_data_phi(&self) -> bool {
+        self.kind == Kind::Phi && self.ty != ty::Id::VOID
+    }
 }
 
-type RallocBRef = u16;
 type LoopDepth = u16;
 type LockRc = u16;
 type IDomDepth = u16;
@@ -2272,8 +2288,7 @@ impl<'a> Codegen<'a> {
 
         // TODO: return them back
 
-        let entry =
-            self.ct_backend.assemble_reachable(fuc, self.tys, &mut self.ct.code).entry as u32;
+        let entry = self.ct_backend.assemble_reachable(fuc, self.tys, &mut self.ct.code).entry;
 
         #[cfg(debug_assertions)]
         {
@@ -4516,10 +4531,9 @@ mod tests {
         let err = codegen.disasm(output, &out);
         if let Err(e) = err {
             writeln!(output, "!!! asm is invalid: {e}").unwrap();
-            return;
+        } else {
+            super::hbvm::test_run_vm(&out, output);
         }
-
-        super::hbvm::test_run_vm(&out, output);
     }
 
     crate::run_tests! { generate:

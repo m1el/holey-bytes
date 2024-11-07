@@ -8,10 +8,10 @@ members = [
 	"xrt",
 	"xtask",
 	"lang",
-	"depell",
-	"depell/wasm-fmt",
-	"depell/wasm-hbc",
-	"depell/wasm-rt",
+	#"depell",
+	#"depell/wasm-fmt",
+	#"depell/wasm-hbc",
+	#"depell/wasm-rt",
 ]
 
 [workspace.dependencies]
