@@ -628,9 +628,14 @@ main := fn(): uint {
 ```hb
 Structure := struct {}
 
+BigStructure := struct {a: uint, b: uint}
+
 returner_fn := fn(): ?Structure {
-	structure := Structure.()
-	return structure
+	return .()
+}
+
+returner_bn := fn(): ?BigStructure {
+	return .(0, 0)
 }
 
 main := fn(): int {

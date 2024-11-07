@@ -4267,7 +4267,6 @@ impl<'a> Codegen<'a> {
 
         match oty.loc(self.tys) {
             Loc::Reg => {
-                std::println!("{} {} {}", self.ty_display(oty), flag_offset, self.tys.size_of(oty));
                 self.strip_ptr(val);
                 // registers have inverted offsets so that accessing the inner type is a noop
                 let flag_offset = self.tys.size_of(oty) * 8 - flag_offset * 8 - 1;
