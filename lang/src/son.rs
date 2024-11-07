@@ -4526,6 +4526,7 @@ mod tests {
         // Tour Examples
         main_fn;
         arithmetic;
+        advanced_floating_point_arithmetic;
         floating_point_arithmetic;
         functions;
         comments;
@@ -4594,5 +4595,7 @@ mod tests {
         global_aliasing_overptimization;
         overwrite_aliasing_overoptimization;
         more_if_opts;
+        optional_from_eca;
+        returning_optional_issues;
     }
 }

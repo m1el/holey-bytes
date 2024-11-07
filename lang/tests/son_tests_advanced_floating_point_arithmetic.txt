@@ -1,0 +1,53 @@
+main:
+    ADDI64 r254, r254, -32d
+    ST r31, r254, 0a, 32h
+    LI32 r32, 1148846080w
+    CP r2, r32
+    JAL r31, r0, :sin
+    FMUL32 r33, r1, r32
+    FTI32 r34, r33, 1b
+    ANDI r1, r34, 4294967295d
+    LD r31, r254, 0a, 32h
+    ADDI64 r254, r254, 32d
+    JALA r0, r31, 0a
+sin:
+    LRA r4, r0, :TABLE_SIZE
+    LD r6, r4, 0a, 4h
+    ITF32 r8, r6
+    LRA r12, r0, :PI
+    LI32 r7, 1056964608w
+    FMUL32 r1, r8, r2
+    LD r4, r12, 0a, 4h
+    FMUL32 r3, r1, r7
+    FDIV32 r9, r3, r4
+    FTI32 r9, r9, 1b
+    ADDI32 r10, r6, 4294967295w
+    LI32 r11, 4w
+    AND r12, r10, r9
+    DIRS32 r11, r0, r6, r11
+    ANDI r6, r12, 4294967295d
+    LI32 r5, 1073741824w
+    ITF32 r12, r9
+    ADD32 r3, r11, r9
+    MULI64 r11, r6, 4d
+    LRA r9, r0, :SIN_TABLE
+    FMUL32 r12, r12, r5
+    AND r10, r10, r3
+    ADD64 r3, r9, r11
+    FMUL32 r4, r4, r12
+    ANDI r10, r10, 4294967295d
+    LD r6, r3, 0a, 4h
+    FDIV32 r8, r4, r8
+    MULI64 r10, r10, 4d
+    FMUL32 r3, r6, r7
+    FSUB32 r11, r2, r8
+    ADD64 r2, r9, r10
+    FMUL32 r7, r11, r3
+    LD r5, r2, 0a, 4h
+    FSUB32 r9, r5, r7
+    FMUL32 r11, r9, r11
+    FADD32 r1, r6, r11
+    JALA r0, r31, 0a
+code size: 1370
+ret: 1000000
+status: Ok(())
