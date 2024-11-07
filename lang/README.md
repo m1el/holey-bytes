@@ -624,6 +624,25 @@ main := fn(): uint {
 
 ### Purely Testing Examples
 
+#### nullable_structure
+```hb
+Structure := struct {}
+
+returner_fn := fn(): ?Structure {
+	structure := Structure.()
+	return structure
+}
+
+main := fn(): int {
+	ret := returner_fn()
+	if ret != null {
+		return 1
+	}
+
+	return 0
+}
+```
+
 #### needless_unwrap
 ```hb
 main := fn(): uint {

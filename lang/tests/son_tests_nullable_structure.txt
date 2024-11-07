@@ -1,0 +1,21 @@
+main:
+    ADDI64 r254, r254, -16d
+    ST r31, r254, 0a, 16h
+    JAL r31, r0, :returner_fn
+    LI8 r32, 0b
+    ANDI r1, r1, 255d
+    ANDI r32, r32, 255d
+    JEQ r1, r32, :0
+    LI64 r1, 1d
+    JMP :1
+ 0: LI64 r1, 0d
+ 1: LD r31, r254, 0a, 16h
+    ADDI64 r254, r254, 16d
+    JALA r0, r31, 0a
+returner_fn:
+    LD r1, r254, 0a, 0h
+    ORI r1, r1, 128d
+    JALA r0, r31, 0a
+code size: 164
+ret: 1
+status: Ok(())

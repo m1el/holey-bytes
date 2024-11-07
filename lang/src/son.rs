@@ -4267,10 +4267,11 @@ impl<'a> Codegen<'a> {
 
         match oty.loc(self.tys) {
             Loc::Reg => {
+                std::println!("{} {} {}", self.ty_display(oty), flag_offset, self.tys.size_of(oty));
                 self.strip_ptr(val);
                 // registers have inverted offsets so that accessing the inner type is a noop
-                let flag_offset = self.tys.size_of(oty) - flag_offset - 1;
-                let fill = self.ci.nodes.new_const(oty, 1i64 << (flag_offset * 8 - 1));
+                let flag_offset = self.tys.size_of(oty) * 8 - flag_offset * 8 - 1;
+                let fill = self.ci.nodes.new_const(oty, 1i64 << flag_offset);
                 val.id = self
                     .ci
                     .nodes
@@ -4595,6 +4596,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        nullable_structure;
         needless_unwrap;
         inlining_issues;
         null_check_test;
