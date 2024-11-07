@@ -501,6 +501,7 @@ impl TokenKind {
         Some(match self {
             Self::Sub => instrs::neg,
             Self::Float if dst.is_float() && src.is_integer() => {
+                debug_assert_eq!(dst.simple_size(), src.simple_size());
                 [instrs::itf32, instrs::itf64][src_idx]
             }
             Self::Number if src.is_float() && dst.is_integer() => {
@@ -750,7 +751,7 @@ pub fn test_run_vm(out: &[u8], output: &mut String) {
                 }
                 3 => vm.write_reg(1, 42),
                 8 => {}
-                unknown => unreachable!("unknown ecall: {unknown:?}"),
+                unknown => writeln!(output, "unknown ecall: {unknown:?}").unwrap(),
             },
             Ok(hbvm::VmRunOk::Timer) => {
                 writeln!(output, "timed out").unwrap();

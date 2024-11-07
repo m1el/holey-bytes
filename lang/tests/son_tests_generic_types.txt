@@ -76,20 +76,20 @@ push:
     CP r3, r39
     JAL r31, r0, :malloc
     CP r40, r1
-    CP r41, r36
-    ST r38, r41, 16a, 8h
     LI64 r1, 0d
-    CP r42, r40
-    JNE r42, r1, :3
+    CP r41, r40
+    JNE r41, r1, :3
     JMP :4
- 3: CP r40, r42
-    LD r36, r41, 8a, 8h
+ 3: CP r40, r41
+    CP r42, r36
+    ST r38, r42, 16a, 8h
+    LD r36, r42, 8a, 8h
     MULI64 r43, r36, 8d
-    LD r44, r41, 0a, 8h
+    LD r44, r42, 0a, 8h
     ADD64 r45, r44, r43
     CP r46, r40
- 9: LD r2, r41, 0a, 8h
-    LD r47, r41, 8a, 8h
+ 9: LD r2, r42, 0a, 8h
+    LD r47, r42, 8a, 8h
     JNE r45, r44, :5
     JEQ r47, r37, :6
     CP r4, r39
@@ -98,27 +98,27 @@ push:
     CP r1, r40
     JMP :7
  6: CP r1, r40
- 7: ST r1, r41, 0a, 8h
+ 7: ST r1, r42, 0a, 8h
     JMP :8
  5: CP r1, r40
     CP r4, r39
-    ADDI64 r48, r46, 8d
-    ADDI64 r42, r44, 8d
+    ADDI64 r41, r46, 8d
+    ADDI64 r48, r44, 8d
     LD r49, r44, 0a, 8h
     ST r49, r46, 0a, 8h
-    CP r44, r42
-    CP r46, r48
+    CP r44, r48
+    CP r46, r41
     JMP :9
- 0: CP r41, r36
- 8: LD r50, r41, 8a, 8h
+ 0: CP r42, r36
+ 8: LD r50, r42, 8a, 8h
     MULI64 r51, r50, 8d
-    LD r52, r41, 0a, 8h
+    LD r52, r42, 0a, 8h
     ADD64 r1, r52, r51
     CP r3, r32
     ST r3, r1, 0a, 8h
-    LD r53, r41, 8a, 8h
+    LD r53, r42, 8a, 8h
     ADD64 r54, r53, r33
-    ST r54, r41, 8a, 8h
+    ST r54, r42, 8a, 8h
  4: LD r31, r254, 0a, 192h
     ADDI64 r254, r254, 192d
     JALA r0, r31, 0a

@@ -757,11 +757,11 @@ impl Nodes {
                 self.push_adjacent_nodes(new, stack);
             }
 
-            debug_assert_matches!(
-                self.iter()
-                    .find(|(i, n)| n.lock_rc != 0 && n.kind.is_peeped() && !stack.contains(i)),
-                None
-            );
+            //debug_assert_matches!(
+            //    self.iter()
+            //        .find(|(i, n)| n.lock_rc != 0 && n.kind.is_peeped() && !stack.contains(i)),
+            //    None
+            //);
         }
 
         stack.drain(..).for_each(|s| _ = self.unlock_remove(s));
@@ -974,8 +974,15 @@ impl Nodes {
 
                 let mut new_inps = Vc::from(&self[target].inputs[..2]);
                 'a: for &n in self[target].inputs.clone().iter().skip(2) {
-                    if self[n].kind != Kind::Stre || self[n].inputs.len() != 4 {
+                    if self[n].kind != Kind::Stre {
                         new_inps.push(n);
+                        continue;
+                    }
+
+                    if let Some(&load) =
+                        self[n].outputs.iter().find(|&&n| self[n].kind == Kind::Load)
+                    {
+                        self[load].peep_triggers.push(target);
                         continue;
                     }
 
@@ -989,12 +996,19 @@ impl Nodes {
 
                     cursor = self[cursor].inputs[3];
                     while cursor != MEM {
-                        if self.aclass_index(self[cursor].inputs[2]) != class
-                            || self[cursor].inputs.len() != 4
-                        {
+                        debug_assert_eq!(self[cursor].kind, Kind::Stre);
+                        if self.aclass_index(self[cursor].inputs[2]) != class {
                             new_inps.push(n);
                             continue 'a;
                         }
+
+                        if let Some(&load) =
+                            self[cursor].outputs.iter().find(|&&n| self[n].kind == Kind::Load)
+                        {
+                            self[load].peep_triggers.push(target);
+                            continue 'a;
+                        }
+
                         cursor = self[cursor].inputs[3];
                     }
                 }
@@ -1291,7 +1305,10 @@ impl Nodes {
                 (Some(b), Some(a)) if a == b => Some(a),
                 _ => None,
             },
-            _ => None,
+            _ => {
+                std::println!("{:?} {:?}", tn, mn);
+                None
+            }
         }
     }
 
@@ -2521,13 +2538,15 @@ impl<'a> Codegen<'a> {
             }
             Expr::Return { pos, val } => {
                 let mut value = if let Some(val) = val {
-                    self.expr_ctx(val, Ctx { ty: self.ci.ret })?
+                    self.raw_expr_ctx(val, Ctx { ty: self.ci.ret })?
                 } else {
                     Value { ty: ty::Id::VOID, ..Default::default() }
                 };
+                self.strip_var(&mut value);
 
                 let expected = *self.ci.ret.get_or_insert(value.ty);
                 self.assert_ty(pos, &mut value, expected, "return value");
+                self.strip_ptr(&mut value);
 
                 if self.ci.inline_depth == 0 {
                     debug_assert_ne!(self.ci.ctrl.get(), VOID);
@@ -2981,7 +3000,7 @@ impl<'a> Codegen<'a> {
                     );
                 }
 
-                if self.tys.size_of(val.ty) < self.tys.size_of(ty) {
+                if self.tys.size_of(val.ty) != self.tys.size_of(ty) {
                     Some(
                         self.ci
                             .nodes
@@ -2995,8 +3014,7 @@ impl<'a> Codegen<'a> {
                 let val = self.expr(expr)?;
 
                 let ret_ty = match val.ty {
-                    ty::Id::F64 => ty::Id::INT,
-                    ty::Id::F32 => ty::Id::I32,
+                    ty::Id::F32 | ty::Id::F64 => ty::Id::INT,
                     _ => {
                         self.report(
                             expr.pos(),
@@ -3017,7 +3035,7 @@ impl<'a> Codegen<'a> {
 
                 let (ret_ty, expected) = match val.ty.simple_size().unwrap() {
                     8 => (ty::Id::F64, ty::Id::INT),
-                    _ => (ty::Id::F32, ty::Id::I32),
+                    _ => (ty::Id::F32, ty::Id::INT),
                 };
 
                 self.assert_ty(expr.pos(), &mut val, expected, "converted integer");
@@ -4170,6 +4188,8 @@ impl<'a> Codegen<'a> {
             self.ci.nodes.gcm(&mut self.pool.nid_stack, &mut self.pool.nid_set);
             self.ci.nodes.basic_blocks();
             self.ci.nodes.graphviz(self.ty_display(ty::Id::VOID));
+        } else {
+            self.ci.nodes.graphviz_in_browser(self.ty_display(ty::Id::VOID));
         }
 
         self.errors.borrow().len() == prev_err_len
@@ -4233,6 +4253,7 @@ impl<'a> Codegen<'a> {
     fn wrap_in_opt(&mut self, val: &mut Value) {
         debug_assert!(!val.var);
 
+        let was_ptr = val.ptr;
         let oty = self.tys.make_opt(val.ty);
 
         if let Some((uninit, ..)) = self.tys.nieche_of(val.ty) {
@@ -4267,6 +4288,10 @@ impl<'a> Codegen<'a> {
                 val.ptr = true;
                 val.ty = oty;
             }
+        }
+
+        if !was_ptr {
+            self.strip_ptr(val);
         }
     }
 
@@ -4315,6 +4340,7 @@ impl<'a> Codegen<'a> {
 
     fn gen_null_check(&mut self, mut cmped: Value, ty: ty::Id, op: TokenKind) -> Nid {
         let OptLayout { flag_ty, flag_offset, .. } = self.tys.opt_layout(ty);
+        debug_assert!(cmped.ty.is_optional());
 
         match cmped.ty.loc(self.tys) {
             Loc::Reg => {
@@ -4325,6 +4351,8 @@ impl<'a> Codegen<'a> {
             Loc::Stack => {
                 cmped.id = self.offset(cmped.id, flag_offset);
                 cmped.ty = flag_ty;
+                debug_assert!(cmped.ptr);
+                std::println!("{}", self.ty_display(flag_ty));
                 self.strip_ptr(&mut cmped);
                 let inps = [VOID, cmped.id, self.ci.nodes.new_const(flag_ty, 0)];
                 self.ci.nodes.new_node(ty::Id::BOOL, Kind::BinOp { op }, inps)

@@ -97,8 +97,13 @@ main:
     JALA r0, r31, 0a
 new_bar:
     ADDI64 r254, r254, -24d
-    ADDI64 r5, r254, 0d
-    BMC r1, r1, 24h
+    LI8 r8, 1b
+    ADDI64 r7, r254, 0d
+    ST r8, r254, 0a, 1h
+    ST r2, r254, 8a, 8h
+    LI64 r9, 1d
+    ST r9, r254, 16a, 8h
+    BMC r7, r1, 24h
     ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
 new_foo:
@@ -125,6 +130,6 @@ use_foo:
     ADDI64 r2, r254, 0d
     ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
-code size: 1091
+code size: 1143
 ret: 0
 status: Ok(())

@@ -1,0 +1,31 @@
+get_format:
+    ADDI64 r254, r254, -16d
+    LI8 r5, 1b
+    ADDI64 r4, r254, 0d
+    LRA r3, r0, :BMP
+    ST r5, r254, 0a, 1h
+    LD r6, r3, 0a, 8h
+    ST r6, r254, 8a, 8h
+    LD r1, r4, 0a, 16h
+    ADDI64 r254, r254, 16d
+    JALA r0, r31, 0a
+main:
+    ADDI64 r254, r254, -48d
+    ST r31, r254, 16a, 32h
+    ADDI64 r32, r254, 0d
+    JAL r31, r0, :get_format
+    ST r1, r254, 0a, 16h
+    LI8 r33, 0b
+    LD r34, r254, 0a, 1h
+    ANDI r34, r34, 255d
+    ANDI r33, r33, 255d
+    JNE r34, r33, :0
+    LI64 r1, 1d
+    JMP :1
+ 0: LD r1, r254, 8a, 8h
+ 1: LD r31, r254, 16a, 32h
+    ADDI64 r254, r254, 48d
+    JALA r0, r31, 0a
+code size: 283
+ret: 0
+status: Ok(())
