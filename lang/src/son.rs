@@ -1188,8 +1188,11 @@ impl Nodes {
                     return Some(prev_store);
                 }
 
-                if value != VOID
-                    && self[target].inputs.len() == 4
+                if let Some(&load) =
+                    self[target].outputs.iter().find(|&&n| self[n].kind == Kind::Load)
+                {
+                    self[load].peep_triggers.push(target);
+                } else if value != VOID
                     && self[value].kind != Kind::Load
                     && self[store].kind == Kind::Stre
                     && self[store].inputs[2] == region
