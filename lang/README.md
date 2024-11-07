@@ -630,17 +630,23 @@ Structure := struct {}
 
 BigStructure := struct {a: uint, b: uint}
 
+MidStructure := struct {a: u8}
+
 returner_fn := fn(): ?Structure {
 	return .()
 }
-
 returner_bn := fn(): ?BigStructure {
 	return .(0, 0)
+}
+returner_cn := fn(): ?MidStructure {
+	return .(0)
 }
 
 main := fn(): int {
 	ret := returner_fn()
-	if ret != null {
+	bet := returner_bn()
+	cet := returner_cn()
+	if ret != null & bet != null & cet != null {
 		return 1
 	}
 

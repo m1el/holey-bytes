@@ -792,10 +792,8 @@ impl<'a> Env<'a> {
             dom = self.ctx.nodes.idom(dom);
             dom = self.ctx.idom_of(dom);
         }
-        std::println!("{inst} {:?}", self.ctx.nodes[inst].key());
         self.ctx.uses_of(inst, use_buf);
         for uinst in use_buf.drain(..) {
-            std::println!("| {uinst} {:?}", self.ctx.nodes[uinst].key());
             let cursor = self.ctx.use_block(inst, uinst);
             self.reverse_cfg_dfs(cursor, dom, |_, n, b| {
                 let mut range = b.range.clone();
@@ -808,7 +806,6 @@ impl<'a> Env<'a> {
                         .map_or(Nid::MAX, |n| n + 1) as usize,
                 );
 
-                std::println!("|- {range:?} {:?}", self.ctx.nodes[n].key());
                 bundle.add(range);
             });
         }
@@ -824,7 +821,6 @@ impl<'a> Env<'a> {
                 self.res.node_to_reg[inst as usize] = self.res.bundles.len() as Reg;
             }
         }
-        std::println!("|= {}", self.res.node_to_reg[inst as usize]);
     }
 
     fn reverse_cfg_dfs(

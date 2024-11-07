@@ -81,10 +81,20 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
     }
 
     if options.fmt {
+        if !parsed.errors.is_empty() {
+            *out = parsed.errors.into_bytes();
+            return Err(std::io::Error::other("parsing fialed"));
+        }
+
         for parsed in parsed.ast {
             format_ast(parsed)?;
         }
     } else if options.fmt_stdout {
+        if !parsed.errors.is_empty() {
+            *out = parsed.errors.into_bytes();
+            return Err(std::io::Error::other("parsing fialed"));
+        }
+
         let ast = parsed.ast.into_iter().next().unwrap();
         write!(out, "{ast}").unwrap();
     } else {
