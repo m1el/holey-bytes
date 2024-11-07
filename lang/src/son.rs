@@ -1308,10 +1308,7 @@ impl Nodes {
                 (Some(b), Some(a)) if a == b => Some(a),
                 _ => None,
             },
-            _ => {
-                std::println!("{:?} {:?}", tn, mn);
-                None
-            }
+            _ => None,
         }
     }
 
@@ -4355,7 +4352,6 @@ impl<'a> Codegen<'a> {
                 cmped.id = self.offset(cmped.id, flag_offset);
                 cmped.ty = flag_ty;
                 debug_assert!(cmped.ptr);
-                std::println!("{}", self.ty_display(flag_ty));
                 self.strip_ptr(&mut cmped);
                 let inps = [VOID, cmped.id, self.ci.nodes.new_const(flag_ty, 0)];
                 self.ci.nodes.new_node(ty::Id::BOOL, Kind::BinOp { op }, inps)
