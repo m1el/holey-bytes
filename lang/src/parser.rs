@@ -2,6 +2,8 @@ use {
     crate::{
         fmt::Formatter,
         lexer::{self, Lexer, Token, TokenKind},
+        ty::{Global, Module},
+        utils::Ent as _,
         Ident,
     },
     alloc::{boxed::Box, string::String, vec::Vec},
@@ -19,10 +21,9 @@ use {
 
 pub type Pos = u32;
 pub type IdentFlags = u32;
-pub type FileId = u32;
 pub type IdentIndex = u16;
 pub type LoaderError = String;
-pub type Loader<'a> = &'a mut (dyn FnMut(&str, &str, FileKind) -> Result<FileId, LoaderError> + 'a);
+pub type Loader<'a> = &'a mut (dyn FnMut(&str, &str, FileKind) -> Result<usize, LoaderError> + 'a);
 
 #[derive(PartialEq, Eq, Debug)]
 pub enum FileKind {
@@ -63,7 +64,7 @@ pub mod idfl {
     }
 }
 
-pub fn no_loader(_: &str, _: &str, _: FileKind) -> Result<FileId, LoaderError> {
+pub fn no_loader(_: &str, _: &str, _: FileKind) -> Result<usize, LoaderError> {
     Ok(0)
 }
 
@@ -307,7 +308,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                     pos,
                     path,
                     id: match (self.loader)(path, self.path, FileKind::Module) {
-                        Ok(id) => id,
+                        Ok(id) => Module::new(id),
                         Err(e) => {
                             self.report(str.start, format_args!("error loading dependency: {e:#}"))?
                         }
@@ -325,7 +326,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                     pos,
                     path,
                     id: match (self.loader)(path, self.path, FileKind::Embed) {
-                        Ok(id) => id,
+                        Ok(id) => Global::new(id),
                         Err(e) => self.report(
                             str.start,
                             format_args!("error loading embedded file: {e:#}"),
@@ -929,13 +930,13 @@ generate_expr! {
         /// `'@use' '(' String ')'`
         Mod {
             pos:  Pos,
-            id:   FileId,
+            id:   Module,
             path: &'a str,
         },
         /// `'@use' '(' String ')'`
         Embed {
             pos:  Pos,
-            id:   FileId,
+            id:   Global,
             path: &'a str,
         },
     }
@@ -960,14 +961,14 @@ impl Expr<'_> {
         }
     }
 
-    pub fn find_pattern_path<T, F: FnOnce(&Expr) -> T>(
+    pub fn find_pattern_path<T, F: FnOnce(&Expr, bool) -> T>(
         &self,
         ident: Ident,
         target: &Expr,
         mut with_final: F,
     ) -> Result<T, F> {
         match *self {
-            Self::Ident { id, .. } if id == ident => Ok(with_final(target)),
+            Self::Ident { id, is_ct, .. } if id == ident => Ok(with_final(target, is_ct)),
             Self::Ctor { fields, .. } => {
                 for &CtorField { name, value, pos } in fields {
                     match value.find_pattern_path(
@@ -1234,7 +1235,7 @@ impl Default for Ast {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(packed)]
 pub struct ExprRef(NonNull<Expr<'static>>);
 

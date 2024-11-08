@@ -10,20 +10,20 @@ use {
         parser::{
             self,
             idfl::{self},
-            CtorField, Expr, FileId, Pos,
+            CtorField, Expr, Pos,
         },
-        ty::{self, Arg, ArrayLen, Loc, Tuple},
-        utils::{BitSet, Vc},
+        ty::{self, Arg, ArrayLen, Loc, Module, Tuple},
+        utils::{BitSet, Ent, Vc},
         CompState, FTask, Func, Global, Ident, Offset, OffsetIter, OptLayout, Sig, StringRef,
         SymKey, TypeParser, Types,
     },
-    alloc::{rc::Rc, string::String, vec::Vec},
+    alloc::{string::String, vec::Vec},
     core::{
         assert_matches::debug_assert_matches,
         cell::{Cell, RefCell},
         fmt::{self, Debug, Display, Write},
         format_args as fa, mem,
-        ops::{self, Deref},
+        ops::{self},
     },
     hashbrown::hash_map,
     hbbytecode::DisasmError,
@@ -2016,7 +2016,7 @@ impl Scope {
 
 #[derive(Default, Clone)]
 pub struct ItemCtx {
-    file: FileId,
+    file: Module,
     pos: Vec<Pos>,
     ret: Option<ty::Id>,
     task_base: usize,
@@ -2031,7 +2031,7 @@ pub struct ItemCtx {
 }
 
 impl ItemCtx {
-    fn init(&mut self, file: FileId, ret: Option<ty::Id>, task_base: usize) {
+    fn init(&mut self, file: Module, ret: Option<ty::Id>, task_base: usize) {
         debug_assert_eq!(self.loops.len(), 0);
         debug_assert_eq!(self.scope.vars.len(), 0);
         debug_assert_eq!(self.scope.aclasses.len(), 0);
@@ -2106,7 +2106,7 @@ pub struct Pool {
 impl Pool {
     fn push_ci(
         &mut self,
-        file: FileId,
+        file: Module,
         ret: Option<ty::Id>,
         task_base: usize,
         target: &mut ItemCtx,
@@ -2173,8 +2173,8 @@ impl Value {
     }
 
     #[inline(always)]
-    fn ty(self, ty: impl Into<ty::Id>) -> Self {
-        Self { ty: ty.into(), ..self }
+    fn ty(self, ty: ty::Id) -> Self {
+        Self { ty, ..self }
     }
 }
 
@@ -2239,24 +2239,24 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    pub fn generate(&mut self, entry: FileId) {
+    pub fn generate(&mut self, entry: Module) {
         self.find_type(0, entry, entry, Err("main"), self.files);
         if self.tys.ins.funcs.is_empty() {
             return;
         }
-        self.make_func_reachable(0);
+        self.make_func_reachable(ty::Func::MAIN);
         self.complete_call_graph();
     }
 
     pub fn assemble_comptime(&mut self) -> Comptime {
         self.ct.code.clear();
-        self.ct_backend.assemble_bin(0, self.tys, &mut self.ct.code);
+        self.ct_backend.assemble_bin(ty::Func::MAIN, self.tys, &mut self.ct.code);
         self.ct.reset();
         core::mem::take(self.ct)
     }
 
     pub fn assemble(&mut self, buf: &mut Vec<u8>) {
-        self.backend.assemble_bin(0, self.tys, buf);
+        self.backend.assemble_bin(ty::Func::MAIN, self.tys, buf);
     }
 
     pub fn disasm(&mut self, output: &mut String, bin: &[u8]) -> Result<(), DisasmError> {
@@ -2264,17 +2264,17 @@ impl<'a> Codegen<'a> {
     }
 
     pub fn push_embeds(&mut self, embeds: Vec<Vec<u8>>) {
-        self.tys.ins.globals = embeds
-            .into_iter()
-            .map(|data| Global {
+        for data in embeds {
+            let g = Global {
                 ty: self.tys.make_array(ty::Id::U8, data.len() as _),
                 data,
                 ..Default::default()
-            })
-            .collect();
+            };
+            self.tys.ins.globals.push(g);
+        }
     }
 
-    fn emit_and_eval(&mut self, file: FileId, ret: ty::Id, ret_loc: &mut [u8]) -> u64 {
+    fn emit_and_eval(&mut self, file: Module, ret: ty::Id, ret_loc: &mut [u8]) -> u64 {
         let mut rets =
             self.ci.nodes[NEVER].inputs.iter().filter(|&&i| self.ci.nodes[i].kind == Kind::Return);
         if let Some(&ret) = rets.next()
@@ -2291,8 +2291,7 @@ impl<'a> Codegen<'a> {
             return 1;
         }
 
-        let fuc = self.tys.ins.funcs.len() as ty::Func;
-        self.tys.ins.funcs.push(Func {
+        let fuc = self.tys.ins.funcs.push(Func {
             file,
             sig: Some(Sig { args: Tuple::empty(), ret }),
             ..Default::default()
@@ -2413,7 +2412,7 @@ impl<'a> Codegen<'a> {
 
     fn make_func_reachable(&mut self, func: ty::Func) {
         let state_slot = self.ct.active() as usize;
-        let fuc = &mut self.tys.ins.funcs[func as usize];
+        let fuc = &mut self.tys.ins.funcs[func];
         if fuc.comp_state[state_slot] == CompState::Dead {
             fuc.comp_state[state_slot] = CompState::Queued(self.tys.tasks.len() as _);
             self.tys.tasks.push(Some(FTask { file: fuc.file, id: func, ct: self.ct.active() }));
@@ -2500,9 +2499,9 @@ impl<'a> Codegen<'a> {
             Expr::Ident { id, pos, .. } => {
                 let decl = self.find_type(pos, self.ci.file, self.ci.file, Ok(id), self.files);
                 match decl.expand() {
-                    ty::Kind::Builtin(ty::NEVER) => Value::NEVER,
+                    ty::Kind::NEVER => Value::NEVER,
                     ty::Kind::Global(global) => {
-                        let gl = &self.tys.ins.globals[global as usize];
+                        let gl = &self.tys.ins.globals[global];
                         let value = self.ci.nodes.new_node(gl.ty, Kind::Global { global }, [VOID]);
                         self.ci.nodes[value].aclass = GLOBAL_ACLASS as _;
                         Some(Value::ptr(value).ty(gl.ty))
@@ -2527,8 +2526,8 @@ impl<'a> Codegen<'a> {
                         occupied_entry.get_key_value().0.value.0
                     }
                     (hash_map::RawEntryMut::Vacant(vacant_entry), hash) => {
-                        let global = self.tys.ins.globals.len() as ty::Global;
-                        self.tys.ins.globals.push(Global { data, ty, ..Default::default() });
+                        let global =
+                            self.tys.ins.globals.push(Global { data, ty, ..Default::default() });
                         vacant_entry
                             .insert(crate::ctx_map::Key { value: StringRef(global), hash }, ())
                             .0
@@ -2626,9 +2625,9 @@ impl<'a> Codegen<'a> {
                         .find_type(pos, self.ci.file, m, Err(name), self.files)
                         .expand()
                     {
-                        ty::Kind::Builtin(ty::NEVER) => Value::NEVER,
+                        ty::Kind::NEVER => Value::NEVER,
                         ty::Kind::Global(global) => {
-                            let gl = &self.tys.ins.globals[global as usize];
+                            let gl = &self.tys.ins.globals[global];
                             let value =
                                 self.ci.nodes.new_node(gl.ty, Kind::Global { global }, [VOID]);
                             self.ci.nodes[value].aclass = GLOBAL_ACLASS as _;
@@ -2781,7 +2780,7 @@ impl<'a> Codegen<'a> {
                     return Value::NEVER;
                 };
 
-                Some(Value::new(self.gen_null_check(cmped, ty, op)).ty(ty::BOOL))
+                Some(Value::new(self.gen_null_check(cmped, ty, op)).ty(ty::Id::BOOL))
             }
             Expr::BinOp { left, pos, op, right }
                 if !matches!(op, TokenKind::Assign | TokenKind::Decl) =>
@@ -2850,7 +2849,7 @@ impl<'a> Codegen<'a> {
                     return Value::NEVER;
                 };
 
-                let elem = self.tys.ins.slices[s as usize].elem;
+                let elem = self.tys.ins.slices[s].elem;
                 let mut idx = self.expr_ctx(index, Ctx::default().with_ty(ty::Id::DEFAULT_INT))?;
                 self.assert_ty(index.pos(), &mut idx, ty::Id::DEFAULT_INT, "subscript");
                 let size = self.ci.nodes.new_const(ty::Id::INT, self.tys.size_of(elem));
@@ -2866,7 +2865,7 @@ impl<'a> Codegen<'a> {
                 Some(Value::ptr(ptr).ty(elem))
             }
             Expr::Embed { id, .. } => {
-                let glob = &self.tys.ins.globals[id as usize];
+                let glob = &self.tys.ins.globals[id];
                 let g = self.ci.nodes.new_node(glob.ty, Kind::Global { global: id }, [VOID]);
                 Some(Value::ptr(g).ty(glob.ty))
             }
@@ -3092,7 +3091,7 @@ impl<'a> Codegen<'a> {
 
                 inps[0] = self.ci.ctrl.get();
                 self.ci.ctrl.set(
-                    self.ci.nodes.new_node(ty, Kind::Call { func: ty::ECA, args }, inps),
+                    self.ci.nodes.new_node(ty, Kind::Call { func: ty::Func::ECA, args }, inps),
                     &mut self.ci.nodes,
                 );
 
@@ -3115,8 +3114,8 @@ impl<'a> Codegen<'a> {
                 };
                 self.make_func_reachable(fu);
 
-                let fuc = &self.tys.ins.funcs[fu as usize];
-                let ast = &self.files[fuc.file as usize];
+                let fuc = &self.tys.ins.funcs[fu];
+                let ast = &self.files[fuc.file.index()];
                 let &Expr::Closure { args: cargs, .. } = fuc.expr.get(ast) else { unreachable!() };
 
                 if args.len() != cargs.len() {
@@ -3195,9 +3194,9 @@ impl<'a> Codegen<'a> {
                     return Value::NEVER;
                 };
 
-                let Func { expr, file, .. } = self.tys.ins.funcs[fu as usize];
+                let Func { expr, file, .. } = self.tys.ins.funcs[fu];
 
-                let ast = &self.files[file as usize];
+                let ast = &self.files[file.index()];
                 let &Expr::Closure { args: cargs, body, .. } = expr.get(ast) else {
                     unreachable!()
                 };
@@ -3342,7 +3341,7 @@ impl<'a> Codegen<'a> {
                         Some(Value::ptr(mem).ty(sty))
                     }
                     ty::Kind::Slice(s) => {
-                        let slice = &self.tys.ins.slices[s as usize];
+                        let slice = &self.tys.ins.slices[s];
                         let len = slice.len().unwrap_or(fields.len());
                         let elem = slice.elem;
                         let elem_size = self.tys.size_of(elem);
@@ -3839,8 +3838,8 @@ impl<'a> Codegen<'a> {
     }
 
     fn compute_signature(&mut self, func: &mut ty::Func, pos: Pos, args: &[Expr]) -> Option<Sig> {
-        let fuc = &self.tys.ins.funcs[*func as usize];
-        let fast = self.files[fuc.file as usize].clone();
+        let fuc = &self.tys.ins.funcs[*func];
+        let fast = self.files[fuc.file.index()].clone();
         let &Expr::Closure { args: cargs, ret, .. } = fuc.expr.get(&fast) else {
             unreachable!();
         };
@@ -3895,20 +3894,24 @@ impl<'a> Codegen<'a> {
 
             let sym = SymKey::FuncInst(*func, args);
             let ct = |ins: &mut crate::TypeIns| {
-                let func_id = ins.funcs.len();
-                let fuc = &ins.funcs[*func as usize];
-                ins.funcs.push(Func {
-                    file: fuc.file,
-                    name: fuc.name,
-                    base: Some(*func),
-                    sig: Some(Sig { args, ret }),
-                    expr: fuc.expr,
-                    ..Default::default()
-                });
-
-                ty::Kind::Func(func_id as _).compress()
+                let fuc = &ins.funcs[*func];
+                ins.funcs
+                    .push(Func {
+                        file: fuc.file,
+                        name: fuc.name,
+                        base: Some(*func),
+                        sig: Some(Sig { args, ret }),
+                        expr: fuc.expr,
+                        ..Default::default()
+                    })
+                    .into()
             };
-            *func = self.tys.syms.get_or_insert(sym, &mut self.tys.ins, ct).expand().inner();
+            let ty::Kind::Func(f) =
+                self.tys.syms.get_or_insert(sym, &mut self.tys.ins, ct).expand()
+            else {
+                unreachable!()
+            };
+            *func = f;
 
             Sig { args, ret }
         })
@@ -4034,13 +4037,13 @@ impl<'a> Codegen<'a> {
     }
 
     fn emit_func(&mut self, FTask { file, id, ct }: FTask) {
-        let func = &mut self.tys.ins.funcs[id as usize];
+        let func = &mut self.tys.ins.funcs[id];
         debug_assert_eq!(func.file, file);
         let cct = self.ct.active();
         debug_assert_eq!(cct, ct);
         func.comp_state[cct as usize] = CompState::Compiled;
         let sig = func.sig.expect("to emmit only concrete functions");
-        let ast = &self.files[file as usize];
+        let ast = &self.files[file.index()];
         let expr = func.expr.get(ast);
 
         self.pool.push_ci(file, Some(sig.ret), 0, &mut self.ci);
@@ -4192,8 +4195,6 @@ impl<'a> Codegen<'a> {
             self.ci.nodes.gcm(&mut self.pool.nid_stack, &mut self.pool.nid_set);
             self.ci.nodes.basic_blocks();
             self.ci.nodes.graphviz(self.ty_display(ty::Id::VOID));
-        } else {
-            self.ci.nodes.graphviz_in_browser(self.ty_display(ty::Id::VOID));
         }
 
         self.errors.borrow().len() == prev_err_len
@@ -4438,7 +4439,7 @@ impl<'a> Codegen<'a> {
     }
 
     fn file(&self) -> &'a parser::Ast {
-        &self.files[self.ci.file as usize]
+        &self.files[self.ci.file.index()]
     }
 }
 
@@ -4447,7 +4448,7 @@ impl TypeParser for Codegen<'_> {
         self.tys
     }
 
-    fn eval_const(&mut self, file: FileId, expr: &Expr, ret: ty::Id) -> u64 {
+    fn eval_const(&mut self, file: Module, expr: &Expr, ret: ty::Id) -> u64 {
         self.ct.activate();
         let mut scope = mem::take(&mut self.ci.scope.vars);
         self.pool.push_ci(file, Some(ret), self.tys.tasks.len(), &mut self.ci);
@@ -4480,7 +4481,7 @@ impl TypeParser for Codegen<'_> {
     fn on_reuse(&mut self, existing: ty::Id) {
         let state_slot = self.ct.active() as usize;
         if let ty::Kind::Func(id) = existing.expand()
-            && let func = &mut self.tys.ins.funcs[id as usize]
+            && let func = &mut self.tys.ins.funcs[id]
             && let CompState::Queued(idx) = func.comp_state[state_slot]
             && idx < self.tys.tasks.len()
         {
@@ -4490,11 +4491,10 @@ impl TypeParser for Codegen<'_> {
         }
     }
 
-    fn eval_global(&mut self, file: FileId, name: Ident, expr: &Expr) -> ty::Id {
+    fn eval_global(&mut self, file: Module, name: Ident, expr: &Expr) -> ty::Id {
         self.ct.activate();
 
-        let gid = self.tys.ins.globals.len() as ty::Global;
-        self.tys.ins.globals.push(Global { file, name, ..Default::default() });
+        let gid = self.tys.ins.globals.push(Global { file, name, ..Default::default() });
 
         let ty = ty::Kind::Global(gid);
         self.pool.push_ci(file, None, self.tys.tasks.len(), &mut self.ci);
@@ -4506,19 +4506,19 @@ impl TypeParser for Codegen<'_> {
         if self.finalize(prev_err_len) {
             let mut mem = vec![0u8; self.tys.size_of(ret) as usize];
             self.emit_and_eval(file, ret, &mut mem);
-            self.tys.ins.globals[gid as usize].data = mem;
+            self.tys.ins.globals[gid].data = mem;
         }
 
         self.pool.pop_ci(&mut self.ci);
-        self.tys.ins.globals[gid as usize].ty = ret;
+        self.tys.ins.globals[gid].ty = ret;
 
         self.ct.deactivate();
         ty.compress()
     }
 
-    fn report(&self, file: FileId, pos: Pos, msg: impl Display) -> ty::Id {
+    fn report(&self, file: Module, pos: Pos, msg: impl Display) -> ty::Id {
         let mut buf = self.errors.borrow_mut();
-        write!(buf, "{}", self.files[file as usize].report(pos, msg)).unwrap();
+        write!(buf, "{}", self.files[file.index()].report(pos, msg)).unwrap();
         ty::Id::NEVER
     }
 
@@ -4531,6 +4531,7 @@ impl TypeParser for Codegen<'_> {
 mod tests {
     use {
         super::{hbvm::HbvmBackend, CodegenCtx},
+        crate::ty,
         alloc::{string::String, vec::Vec},
         core::fmt::Write,
     };
@@ -4546,7 +4547,7 @@ mod tests {
         let mut codegen = super::Codegen::new(&mut backend, files, &mut ctx);
         codegen.push_embeds(embeds);
 
-        codegen.generate(0);
+        codegen.generate(ty::Module::MAIN);
 
         {
             let errors = codegen.errors.borrow();

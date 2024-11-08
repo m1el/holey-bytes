@@ -32,11 +32,13 @@
 
 #[cfg(feature = "std")]
 pub use fs::*;
+pub use utils::Ent;
 use {
     self::{
         lexer::TokenKind,
-        parser::{idfl, CommentOr, Expr, ExprRef, FileId, Pos},
-        ty::ArrayLen,
+        parser::{idfl, CommentOr, Expr, ExprRef, Pos},
+        ty::{ArrayLen, Builtin, Module},
+        utils::EntVec,
     },
     alloc::{string::String, vec::Vec},
     core::{cell::Cell, fmt::Display, ops::Range},
@@ -251,17 +253,17 @@ impl Ident {
         pos..pos + len
     }
 
-    fn builtin(builtin: u32) -> Ident {
-        debug_assert!(Self(builtin).is_null());
-        Self(builtin)
+    fn builtin(builtin: Builtin) -> Ident {
+        Self(builtin.index() as _)
     }
 }
 
-mod ty {
+pub mod ty {
     use {
         crate::{
             lexer::TokenKind,
-            parser::{self, FileId, Pos},
+            parser::{self, Pos},
+            utils::Ent,
             Ident, Size, Types,
         },
         core::{num::NonZeroU32, ops::Range},
@@ -269,16 +271,10 @@ mod ty {
 
     pub type ArrayLen = u32;
 
-    pub type Builtin = u32;
-    pub type Struct = u32;
-    pub type Opt = u32;
-    pub type Ptr = u32;
-    pub type Func = u32;
-    pub type Global = u32;
-    pub type Module = u32;
-    pub type Slice = u32;
-
-    pub const ECA: Func = Func::MAX;
+    impl Func {
+        pub const ECA: Func = Func(u32::MAX);
+        pub const MAIN: Func = Func(u32::MIN);
+    }
 
     #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default, PartialOrd, Ord)]
     pub struct Tuple(pub u32);
@@ -303,6 +299,10 @@ mod ty {
 
         pub fn len(self) -> usize {
             self.0 as usize & Self::LEN_MASK
+        }
+
+        pub fn is_empty(self) -> bool {
+            self.len() == 0
         }
 
         pub fn empty() -> Self {
@@ -350,28 +350,30 @@ mod ty {
         fn key<'a>(&self, ctx: &'a Self::Ctx) -> Self::Key<'a> {
             match self.expand() {
                 Kind::Struct(s) => {
-                    let st = &ctx.structs[s as usize];
+                    let st = &ctx.structs[s];
                     debug_assert_ne!(st.pos, Pos::MAX);
                     crate::SymKey::Struct(st.file, st.pos, st.captures)
                 }
-                Kind::Ptr(p) => crate::SymKey::Pointer(&ctx.ptrs[p as usize]),
-                Kind::Opt(p) => crate::SymKey::Optional(&ctx.opts[p as usize]),
+                Kind::Ptr(p) => crate::SymKey::Pointer(&ctx.ptrs[p]),
+                Kind::Opt(p) => crate::SymKey::Optional(&ctx.opts[p]),
                 Kind::Func(f) => {
-                    let fc = &ctx.funcs[f as usize];
+                    let fc = &ctx.funcs[f];
                     if let Some(base) = fc.base {
+                        // TODO: merge base and sig
                         crate::SymKey::FuncInst(base, fc.sig.unwrap().args)
                     } else {
                         crate::SymKey::Decl(fc.file, fc.name)
                     }
                 }
                 Kind::Global(g) => {
-                    let gb = &ctx.globals[g as usize];
+                    let gb = &ctx.globals[g];
                     crate::SymKey::Decl(gb.file, gb.name)
                 }
-                Kind::Slice(s) => crate::SymKey::Array(&ctx.slices[s as usize]),
+                Kind::Slice(s) => crate::SymKey::Array(&ctx.slices[s]),
                 Kind::Module(_) | Kind::Builtin(_) => {
-                    crate::SymKey::Decl(FileId::MAX, Ident::INVALID)
+                    crate::SymKey::Decl(Module::default(), Ident::INVALID)
                 }
+                Kind::Const(c) => crate::SymKey::Constant(&ctx.consts[c]),
             }
         }
     }
@@ -388,7 +390,7 @@ mod ty {
         pub fn bin_ret(self, op: TokenKind) -> Id {
             use TokenKind as T;
             match op {
-                T::Lt | T::Gt | T::Le | T::Ge | T::Ne | T::Eq => BOOL.into(),
+                T::Lt | T::Gt | T::Le | T::Ge | T::Ne | T::Eq => Id::BOOL,
                 _ => self,
             }
         }
@@ -415,7 +417,7 @@ mod ty {
 
         pub fn strip_pointer(self) -> Self {
             match self.expand() {
-                Kind::Ptr(_) => Kind::Builtin(UINT).compress(),
+                Kind::Ptr(_) => Id::UINT,
                 _ => self,
             }
         }
@@ -432,8 +434,8 @@ mod ty {
             let (oa, ob) = (Self(self.0.min(ob.0)), Self(self.0.max(ob.0)));
             let (a, b) = (oa.strip_pointer(), ob.strip_pointer());
             Some(match () {
-                _ if oa == Self::from(NEVER) => ob,
-                _ if ob == Self::from(NEVER) => oa,
+                _ if oa == Id::NEVER => ob,
+                _ if ob == Id::NEVER => oa,
                 _ if oa == ob => oa,
                 _ if ob.is_optional() => ob,
                 _ if oa.is_pointer() && ob.is_pointer() => return None,
@@ -456,12 +458,12 @@ mod ty {
         pub(crate) fn simple_size(&self) -> Option<Size> {
             Some(match self.expand() {
                 Kind::Ptr(_) => 8,
-                Kind::Builtin(VOID) => 0,
-                Kind::Builtin(NEVER) => 0,
-                Kind::Builtin(INT | UINT | F64) => 8,
-                Kind::Builtin(I32 | U32 | TYPE | F32) => 4,
-                Kind::Builtin(I16 | U16) => 2,
-                Kind::Builtin(I8 | U8 | BOOL) => 1,
+                Kind::Builtin(Builtin(VOID)) => 0,
+                Kind::Builtin(Builtin(NEVER)) => 0,
+                Kind::Builtin(Builtin(INT | UINT | F64)) => 8,
+                Kind::Builtin(Builtin(I32 | U32 | TYPE | F32)) => 4,
+                Kind::Builtin(Builtin(I16 | U16)) => 2,
+                Kind::Builtin(Builtin(I8 | U8 | BOOL)) => 1,
                 _ => return None,
             })
         }
@@ -479,7 +481,7 @@ mod ty {
         pub(crate) fn loc(&self, tys: &Types) -> Loc {
             match self.expand() {
                 Kind::Opt(o)
-                    if let ty = tys.ins.opts[o as usize].base
+                    if let ty = tys.ins.opts[o].base
                         && ty.loc(tys) == Loc::Reg
                         && (ty.is_pointer() || tys.size_of(ty) < 8) =>
                 {
@@ -488,7 +490,9 @@ mod ty {
                 Kind::Ptr(_) | Kind::Builtin(_) => Loc::Reg,
                 Kind::Struct(_) if tys.size_of(*self) == 0 => Loc::Reg,
                 Kind::Struct(_) | Kind::Slice(_) | Kind::Opt(_) => Loc::Stack,
-                Kind::Func(_) | Kind::Global(_) | Kind::Module(_) => unreachable!(),
+                Kind::Func(_) | Kind::Global(_) | Kind::Module(_) | Kind::Const(_) => {
+                    unreachable!()
+                }
             }
         }
 
@@ -496,7 +500,7 @@ mod ty {
             match self.expand() {
                 Kind::Struct(s) => tys.struct_fields(s).iter().any(|f| f.ty.has_pointers(tys)),
                 Kind::Ptr(_) => true,
-                Kind::Slice(s) => tys.ins.slices[s as usize].len == ArrayLen::MAX,
+                Kind::Slice(s) => tys.ins.slices[s].len == ArrayLen::MAX,
                 _ => false,
             }
         }
@@ -514,12 +518,6 @@ mod ty {
         }
     }
 
-    impl From<u32> for Id {
-        fn from(id: u32) -> Self {
-            Kind::Builtin(id).compress()
-        }
-    }
-
     const fn array_to_lower_case<const N: usize>(array: [u8; N]) -> [u8; N] {
         let mut result = [0; N];
         let mut i = 0;
@@ -533,7 +531,7 @@ mod ty {
 
     macro_rules! builtin_type {
         ($($name:ident;)*) => {
-            $(pub const $name: Builtin = ${index(0)} + 1;)*
+            $(const $name: u32 = ${index(0)} + 1;)*
 
             mod __lc_names {
                 use super::*;
@@ -547,20 +545,23 @@ mod ty {
                 };)*
             }
 
-            #[expect(dead_code)]
             impl Id {
-                $(pub const $name: Self = Kind::Builtin($name).compress();)*
+                $(pub const $name: Self = Kind::Builtin(Builtin($name)).compress();)*
+            }
+
+            impl Kind {
+                $(pub const $name: Self = Kind::Builtin(Builtin($name));)*
             }
 
             pub fn from_str(name: &str) -> Option<Builtin> {
                 match name {
-                    $(__lc_names::$name => Some($name),)*
+                    $(__lc_names::$name => Some(Builtin($name)),)*
                     _ => None,
                 }
             }
 
             pub fn to_str(ty: Builtin) -> &'static str {
-                match ty {
+                match ty.0 {
                     $($name => __lc_names::$name,)*
                     v => unreachable!("invalid type: {}", v),
                 }
@@ -590,6 +591,10 @@ mod ty {
 
     macro_rules! type_kind {
         ($(#[$meta:meta])* $vis:vis enum $name:ident {$( $variant:ident, )*}) => {
+            crate::utils::decl_ent! {
+                $(pub struct $variant(u32);)*
+            }
+
             $(#[$meta])*
             $vis enum $name {
                 $($variant($variant),)*
@@ -603,24 +608,32 @@ mod ty {
                 $vis fn from_ty(ty: Id) -> Self {
                     let (flag, index) = (ty.repr() >> Self::FLAG_OFFSET, ty.repr() & Self::INDEX_MASK);
                     match flag {
-                        $(${index(0)} => Self::$variant(index),)*
+                        $(${index(0)} => Self::$variant($variant(index)),)*
                         i => unreachable!("{i}"),
                     }
                 }
 
                 $vis const fn compress(self) -> Id {
                     let (index, flag) = match self {
-                        $(Self::$variant(index) => (index, ${index(0)}),)*
+                        $(Self::$variant(index) => (index.0, ${index(0)}),)*
                     };
                    Id(unsafe { NonZeroU32::new_unchecked((flag << Self::FLAG_OFFSET) | index) })
                 }
+            }
 
-                $vis const fn inner(self) -> u32 {
-                    match self {
-                        $(Self::$variant(index) => index,)*
+            $(
+                impl From<$variant> for $name {
+                    fn from(value: $variant) -> Self {
+                        Self::$variant(value)
                     }
                 }
-            }
+
+                impl From<$variant> for Id {
+                    fn from(value: $variant) -> Self {
+                        $name::$variant(value).compress()
+                    }
+                }
+            )*
         };
     }
 
@@ -635,12 +648,35 @@ mod ty {
             Func,
             Global,
             Module,
+            Const,
+        }
+    }
+
+    impl Module {
+        pub const MAIN: Self = Self(0);
+    }
+
+    impl Default for Module {
+        fn default() -> Self {
+            Self(u32::MAX)
+        }
+    }
+
+    impl TryFrom<Ident> for Builtin {
+        type Error = ();
+
+        fn try_from(value: Ident) -> Result<Self, Self::Error> {
+            if value.is_null() {
+                Ok(Self(value.len()))
+            } else {
+                Err(())
+            }
         }
     }
 
     impl Default for Kind {
         fn default() -> Self {
-            Self::Builtin(UNDECLARED)
+            Id::UNDECLARED.expand()
         }
     }
 
@@ -666,7 +702,7 @@ mod ty {
             match TK::from_ty(self.ty) {
                 TK::Module(idx) => {
                     f.write_str("@use(\"")?;
-                    self.files[idx as usize].path.fmt(f)?;
+                    self.files[idx.index()].path.fmt(f)?;
                     f.write_str(")[")?;
                     idx.fmt(f)?;
                     f.write_str("]")
@@ -674,14 +710,14 @@ mod ty {
                 TK::Builtin(ty) => f.write_str(to_str(ty)),
                 TK::Opt(ty) => {
                     f.write_str("?")?;
-                    self.rety(self.tys.ins.opts[ty as usize].base).fmt(f)
+                    self.rety(self.tys.ins.opts[ty].base).fmt(f)
                 }
                 TK::Ptr(ty) => {
                     f.write_str("^")?;
-                    self.rety(self.tys.ins.ptrs[ty as usize].base).fmt(f)
+                    self.rety(self.tys.ins.ptrs[ty].base).fmt(f)
                 }
                 TK::Struct(idx) => {
-                    let record = &self.tys.ins.structs[idx as usize];
+                    let record = &self.tys.ins.structs[idx];
                     if record.name.is_null() {
                         f.write_str("[")?;
                         idx.fmt(f)?;
@@ -698,7 +734,7 @@ mod ty {
                         }
                         f.write_str("}")
                     } else {
-                        let file = &self.files[record.file as usize];
+                        let file = &self.files[record.file.index()];
                         f.write_str(file.ident_str(record.name))
                     }
                 }
@@ -707,11 +743,12 @@ mod ty {
                     idx.fmt(f)
                 }
                 TK::Global(idx) => {
-                    f.write_str("global")?;
-                    idx.fmt(f)
+                    let global = &self.tys.ins.globals[idx];
+                    let file = &self.files[global.file.index()];
+                    f.write_str(file.ident_str(global.name))
                 }
                 TK::Slice(idx) => {
-                    let array = self.tys.ins.slices[idx as usize];
+                    let array = self.tys.ins.slices[idx];
                     f.write_str("[")?;
                     self.rety(array.elem).fmt(f)?;
                     if array.len != ArrayLen::MAX {
@@ -719,6 +756,11 @@ mod ty {
                         array.len.fmt(f)?;
                     }
                     f.write_str("]")
+                }
+                TK::Const(idx) => {
+                    let cnst = &self.tys.ins.consts[idx];
+                    let file = &self.files[cnst.file.index()];
+                    f.write_str(file.ident_str(cnst.name))
                 }
             }
         }
@@ -732,10 +774,11 @@ type Size = u32;
 pub enum SymKey<'a> {
     Pointer(&'a Ptr),
     Optional(&'a Opt),
-    Struct(FileId, Pos, ty::Tuple),
+    Struct(Module, Pos, ty::Tuple),
     FuncInst(ty::Func, ty::Tuple),
-    Decl(FileId, Ident),
+    Decl(Module, Ident),
     Array(&'a Array),
+    Constant(&'a Const),
 }
 
 #[derive(Clone, Copy)]
@@ -744,26 +787,14 @@ pub struct Sig {
     ret: ty::Id,
 }
 
+#[derive(Default)]
 struct Func {
-    file: FileId,
+    file: Module,
     name: Ident,
     base: Option<ty::Func>,
     expr: ExprRef,
     sig: Option<Sig>,
     comp_state: [CompState; 2],
-}
-
-impl Default for Func {
-    fn default() -> Self {
-        Self {
-            file: u32::MAX,
-            name: Default::default(),
-            base: None,
-            expr: Default::default(),
-            sig: None,
-            comp_state: Default::default(),
-        }
-    }
 }
 
 #[derive(Default, PartialEq, Eq)]
@@ -780,23 +811,19 @@ struct TypedReloc {
     reloc: Reloc,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct Global {
-    file: FileId,
+    file: Module,
     name: Ident,
     ty: ty::Id,
     data: Vec<u8>,
 }
 
-impl Default for Global {
-    fn default() -> Self {
-        Self {
-            ty: Default::default(),
-            data: Default::default(),
-            file: u32::MAX,
-            name: Default::default(),
-        }
-    }
+#[derive(PartialEq, Eq, Hash)]
+pub struct Const {
+    ast: ExprRef,
+    name: Ident,
+    file: Module,
 }
 
 // TODO: make into bit struct (width: u2, sub_offset: u3, offset: u27)
@@ -835,7 +862,7 @@ struct Field {
 struct Struct {
     name: Ident,
     pos: Pos,
-    file: FileId,
+    file: Module,
     size: Cell<Size>,
     align: Cell<u8>,
     captures: ty::Tuple,
@@ -934,18 +961,19 @@ struct TypesTmp {
 
 #[derive(Default)]
 pub struct TypeIns {
-    funcs: Vec<Func>,
     args: Vec<ty::Id>,
-    globals: Vec<Global>,
-    structs: Vec<Struct>,
     fields: Vec<Field>,
-    ptrs: Vec<Ptr>,
-    opts: Vec<Opt>,
-    slices: Vec<Array>,
+    funcs: EntVec<ty::Func, Func>,
+    globals: EntVec<ty::Global, Global>,
+    consts: EntVec<ty::Const, Const>,
+    structs: EntVec<ty::Struct, Struct>,
+    ptrs: EntVec<ty::Ptr, Ptr>,
+    opts: EntVec<ty::Opt, Opt>,
+    slices: EntVec<ty::Slice, Array>,
 }
 
 struct FTask {
-    file: FileId,
+    file: Module,
     id: ty::Func,
     ct: bool,
 }
@@ -953,11 +981,11 @@ struct FTask {
 struct StringRef(ty::Global);
 
 impl ctx_map::CtxEntry for StringRef {
-    type Ctx = [Global];
+    type Ctx = EntVec<ty::Global, Global>;
     type Key<'a> = &'a [u8];
 
     fn key<'a>(&self, ctx: &'a Self::Ctx) -> Self::Key<'a> {
-        &ctx[self.0 as usize].data
+        &ctx[self.0].data
     }
 }
 
@@ -975,16 +1003,16 @@ trait TypeParser {
     fn tys(&mut self) -> &mut Types;
     fn on_reuse(&mut self, existing: ty::Id);
     fn find_local_ty(&mut self, name: Ident) -> Option<ty::Id>;
-    fn eval_const(&mut self, file: FileId, expr: &Expr, ty: ty::Id) -> u64;
-    fn eval_global(&mut self, file: FileId, name: Ident, expr: &Expr) -> ty::Id;
+    fn eval_const(&mut self, file: Module, expr: &Expr, ty: ty::Id) -> u64;
+    fn eval_global(&mut self, file: Module, name: Ident, expr: &Expr) -> ty::Id;
     fn infer_type(&mut self, expr: &Expr) -> ty::Id;
-    fn report(&self, file: FileId, pos: Pos, msg: impl Display) -> ty::Id;
+    fn report(&self, file: Module, pos: Pos, msg: impl Display) -> ty::Id;
 
     fn find_type(
         &mut self,
         pos: Pos,
-        from_file: FileId,
-        file: FileId,
+        from_file: Module,
+        file: Module,
         id: Result<Ident, &str>,
         files: &[parser::Ast],
     ) -> ty::Id {
@@ -999,9 +1027,9 @@ trait TypeParser {
             self.on_reuse(ty);
             ty
         } else {
-            let f = &files[file as usize];
+            let f = &files[file.index()];
 
-            let Some((Expr::BinOp { left, right, .. }, name)) = f.find_decl(id) else {
+            let Some((expr @ Expr::BinOp { left, right, .. }, name)) = f.find_decl(id) else {
                 return match id {
                     Ok(_) => ty::Id::NEVER,
                     Err("main") => self.report(
@@ -1025,20 +1053,19 @@ trait TypeParser {
                 ty
             } else {
                 let ty = left
-                    .find_pattern_path(name, right, |right| {
-                        self.parse_ty(file, right, Some(name), files)
+                    .find_pattern_path(name, right, |right, is_ct| {
+                        if is_ct {
+                            self.tys()
+                                .ins
+                                .consts
+                                .push(Const { ast: ExprRef::new(expr), name, file })
+                                .into()
+                        } else {
+                            self.parse_ty(file, right, Some(name), files)
+                        }
                     })
                     .unwrap_or_else(|_| unreachable!());
                 let tys = self.tys();
-                let nm = match ty.expand() {
-                    ty::Kind::Struct(s) => &mut tys.ins.structs[s as usize].name,
-                    ty::Kind::Func(s) => &mut tys.ins.funcs[s as usize].name,
-                    ty::Kind::Global(s) => &mut tys.ins.globals[s as usize].name,
-                    _ => &mut Ident::default(),
-                };
-                if nm.is_null() {
-                    *nm = name;
-                }
                 tys.syms.insert(SymKey::Decl(file, name), ty, &tys.ins);
                 ty
             }
@@ -1046,7 +1073,7 @@ trait TypeParser {
 
         let tys = self.tys();
         if let ty::Kind::Global(g) = ty.expand() {
-            let g = &tys.ins.globals[g as usize];
+            let g = &tys.ins.globals[g];
             if g.ty == ty::Id::TYPE {
                 return ty::Id::from(
                     u32::from_ne_bytes(g.data.as_slice().try_into().unwrap()) as u64
@@ -1059,7 +1086,7 @@ trait TypeParser {
     /// returns none if comptime eval is required
     fn parse_ty(
         &mut self,
-        file: FileId,
+        file: Module,
         expr: &Expr,
         name: Option<Ident>,
         files: &[parser::Ast],
@@ -1074,7 +1101,7 @@ trait TypeParser {
                 let base = self.parse_ty(file, val, None, files);
                 self.tys().make_opt(base)
             }
-            Expr::Ident { id, .. } if id.is_null() => id.len().into(),
+            Expr::Ident { id, .. } if let Ok(bt) = ty::Builtin::try_from(id) => bt.into(),
             Expr::Ident { id, pos, .. } => self.find_type(pos, file, file, Ok(id), files),
             Expr::Field { target, pos, name }
                 if let ty::Kind::Module(inside) =
@@ -1119,18 +1146,21 @@ trait TypeParser {
                 }
 
                 let tys = self.tys();
-                tys.ins.structs.push(Struct {
-                    file,
-                    pos,
-                    name: name.unwrap_or_default(),
-                    field_start: tys.ins.fields.len() as _,
-                    explicit_alignment: packed.then_some(1),
-                    ..Default::default()
-                });
+                let ty = tys
+                    .ins
+                    .structs
+                    .push(Struct {
+                        file,
+                        pos,
+                        name: name.unwrap_or_default(),
+                        field_start: tys.ins.fields.len() as _,
+                        explicit_alignment: packed.then_some(1),
+                        ..Default::default()
+                    })
+                    .into();
 
                 tys.ins.fields.extend(tys.tmp.fields.drain(prev_tmp..));
 
-                let ty = ty::Kind::Struct(tys.ins.structs.len() as u32 - 1).compress();
                 tys.syms.insert(sym, ty, &tys.ins);
                 ty
             }
@@ -1141,7 +1171,7 @@ trait TypeParser {
                     sig: 'b: {
                         let arg_base = self.tys().tmp.args.len();
                         for arg in args {
-                            let sym = parser::find_symbol(&files[file as usize].symbols, arg.id);
+                            let sym = parser::find_symbol(&files[file.index()].symbols, arg.id);
                             if sym.flags & idfl::COMPTIME != 0 {
                                 self.tys().tmp.args.truncate(arg_base);
                                 break 'b None;
@@ -1161,10 +1191,7 @@ trait TypeParser {
                     ..Default::default()
                 };
 
-                let id = self.tys().ins.funcs.len() as _;
-                self.tys().ins.funcs.push(func);
-
-                ty::Kind::Func(id).compress()
+                self.tys().ins.funcs.push(func).into()
             }
             _ if let Some(name) = name => self.eval_global(file, name, expr),
             _ => ty::Id::from(self.eval_const(file, expr, ty::Id::TYPE)),
@@ -1174,12 +1201,9 @@ trait TypeParser {
 
 impl Types {
     fn struct_field_range(&self, strct: ty::Struct) -> Range<usize> {
-        let start = self.ins.structs[strct as usize].field_start as usize;
-        let end = self
-            .ins
-            .structs
-            .get(strct as usize + 1)
-            .map_or(self.ins.fields.len(), |s| s.field_start as usize);
+        let start = self.ins.structs[strct].field_start as usize;
+        let end =
+            self.ins.structs.next(strct).map_or(self.ins.fields.len(), |s| s.field_start as usize);
         start..end
     }
 
@@ -1210,49 +1234,30 @@ impl Types {
     }
 
     fn make_opt(&mut self, base: ty::Id) -> ty::Id {
-        self.make_generic_ty(
-            Opt { base },
-            |ins| &mut ins.opts,
-            |e| SymKey::Optional(e),
-            ty::Kind::Opt,
-        )
+        self.make_generic_ty(Opt { base }, |ins| &mut ins.opts, |e| SymKey::Optional(e))
     }
 
     fn make_ptr(&mut self, base: ty::Id) -> ty::Id {
-        self.make_generic_ty(
-            Ptr { base },
-            |ins| &mut ins.ptrs,
-            |e| SymKey::Pointer(e),
-            ty::Kind::Ptr,
-        )
+        self.make_generic_ty(Ptr { base }, |ins| &mut ins.ptrs, |e| SymKey::Pointer(e))
     }
 
     fn make_array(&mut self, elem: ty::Id, len: ArrayLen) -> ty::Id {
-        self.make_generic_ty(
-            Array { elem, len },
-            |ins| &mut ins.slices,
-            |e| SymKey::Array(e),
-            ty::Kind::Slice,
-        )
+        self.make_generic_ty(Array { elem, len }, |ins| &mut ins.slices, |e| SymKey::Array(e))
     }
 
-    fn make_generic_ty<T: Copy>(
+    fn make_generic_ty<K: Ent + Into<ty::Id>, T: Copy>(
         &mut self,
         ty: T,
-        get_col: fn(&mut TypeIns) -> &mut Vec<T>,
+        get_col: fn(&mut TypeIns) -> &mut EntVec<K, T>,
         key: fn(&T) -> SymKey,
-        kind: fn(u32) -> ty::Kind,
     ) -> ty::Id {
-        *self.syms.get_or_insert(key(&{ ty }), &mut self.ins, |ins| {
-            get_col(ins).push(ty);
-            kind(get_col(ins).len() as u32 - 1).compress()
-        })
+        *self.syms.get_or_insert(key(&{ ty }), &mut self.ins, |ins| get_col(ins).push(ty).into())
     }
 
     fn size_of(&self, ty: ty::Id) -> Size {
         match ty.expand() {
             ty::Kind::Slice(arr) => {
-                let arr = &self.ins.slices[arr as usize];
+                let arr = &self.ins.slices[arr];
                 match arr.len {
                     0 => 0,
                     ArrayLen::MAX => 16,
@@ -1260,17 +1265,17 @@ impl Types {
                 }
             }
             ty::Kind::Struct(stru) => {
-                if self.ins.structs[stru as usize].size.get() != 0 {
-                    return self.ins.structs[stru as usize].size.get();
+                if self.ins.structs[stru].size.get() != 0 {
+                    return self.ins.structs[stru].size.get();
                 }
 
                 let mut oiter = OffsetIter::new(stru, self);
                 while oiter.next(self).is_some() {}
-                self.ins.structs[stru as usize].size.set(oiter.offset);
+                self.ins.structs[stru].size.set(oiter.offset);
                 oiter.offset
             }
             ty::Kind::Opt(opt) => {
-                let base = self.ins.opts[opt as usize].base;
+                let base = self.ins.opts[opt].base;
                 if self.nieche_of(base).is_some() {
                     self.size_of(base)
                 } else {
@@ -1285,10 +1290,10 @@ impl Types {
     fn align_of(&self, ty: ty::Id) -> Size {
         match ty.expand() {
             ty::Kind::Struct(stru) => {
-                if self.ins.structs[stru as usize].align.get() != 0 {
-                    return self.ins.structs[stru as usize].align.get() as _;
+                if self.ins.structs[stru].align.get() != 0 {
+                    return self.ins.structs[stru].align.get() as _;
                 }
-                let align = self.ins.structs[stru as usize].explicit_alignment.map_or_else(
+                let align = self.ins.structs[stru].explicit_alignment.map_or_else(
                     || {
                         self.struct_fields(stru)
                             .iter()
@@ -1298,11 +1303,11 @@ impl Types {
                     },
                     |a| a as _,
                 );
-                self.ins.structs[stru as usize].align.set(align.try_into().unwrap());
+                self.ins.structs[stru].align.set(align.try_into().unwrap());
                 align
             }
             ty::Kind::Slice(arr) => {
-                let arr = &self.ins.slices[arr as usize];
+                let arr = &self.ins.slices[arr];
                 match arr.len {
                     ArrayLen::MAX => 8,
                     _ => self.align_of(arr.elem),
@@ -1314,14 +1319,14 @@ impl Types {
 
     fn base_of(&self, ty: ty::Id) -> Option<ty::Id> {
         match ty.expand() {
-            ty::Kind::Ptr(p) => Some(self.ins.ptrs[p as usize].base),
+            ty::Kind::Ptr(p) => Some(self.ins.ptrs[p].base),
             _ => None,
         }
     }
 
     fn inner_of(&self, ty: ty::Id) -> Option<ty::Id> {
         match ty.expand() {
-            ty::Kind::Opt(o) => Some(self.ins.opts[o as usize].base),
+            ty::Kind::Opt(o) => Some(self.ins.opts[o].base),
             _ => None,
         }
     }
@@ -1401,7 +1406,7 @@ impl OffsetIter {
     }
 
     fn next<'a>(&mut self, tys: &'a Types) -> Option<(&'a Field, Offset)> {
-        let stru = &tys.ins.structs[self.strct as usize];
+        let stru = &tys.ins.structs[self.strct];
         let field = &tys.ins.fields[self.fields.next()?];
 
         let align = stru.explicit_alignment.map_or_else(|| tys.align_of(field.ty), |a| a as u32);
@@ -1579,12 +1584,10 @@ fn test_parse_files(
         FileKind::Module => module_map
             .iter()
             .position(|&(name, _)| name == path)
-            .map(|i| i as parser::FileId)
             .ok_or("Module Not Found".to_string()),
         FileKind::Embed => embed_map
             .iter()
             .position(|&(name, _)| name == path)
-            .map(|i| i as parser::FileId)
             .ok_or("Embed Not Found".to_string()),
     };
 

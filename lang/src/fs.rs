@@ -2,6 +2,7 @@ use {
     crate::{
         parser::{Ast, Ctx, FileKind},
         son::{self, hbvm::HbvmBackend},
+        ty,
     },
     alloc::{string::String, vec::Vec},
     core::{fmt::Write, num::NonZeroUsize, ops::Deref},
@@ -96,7 +97,7 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
         let mut codegen = son::Codegen::new(&mut backend, &parsed.ast, &mut ctx);
 
         codegen.push_embeds(parsed.embeds);
-        codegen.generate(0);
+        codegen.generate(ty::Module::MAIN);
 
         if !codegen.errors.borrow().is_empty() {
             drop(codegen);
@@ -242,10 +243,10 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Loaded> {
         }
     }
 
-    type Task = (u32, PathBuf);
+    type Task = (usize, PathBuf);
 
-    let seen_modules = Mutex::new(crate::HashMap::<PathBuf, u32>::default());
-    let seen_embeds = Mutex::new(crate::HashMap::<PathBuf, u32>::default());
+    let seen_modules = Mutex::new(crate::HashMap::<PathBuf, usize>::default());
+    let seen_embeds = Mutex::new(crate::HashMap::<PathBuf, usize>::default());
     let tasks = TaskQueue::<Task>::new(extra_threads + 1);
     let ast = Mutex::new(Vec::<io::Result<Ast>>::new());
     let embeds = Mutex::new(Vec::<Vec<u8>>::new());
@@ -264,7 +265,7 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Loaded> {
                         }
                         hash_map::Entry::Vacant(entry) => {
                             physiscal_path = entry.insert_entry(len as _).key().clone();
-                            len as u32
+                            len
                         }
                     }
                 };
@@ -289,7 +290,7 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Loaded> {
                         }
                         hash_map::Entry::Vacant(entry) => {
                             physiscal_path = entry.insert_entry(len as _).key().clone();
-                            len as u32
+                            len
                         }
                     }
                 };
@@ -331,9 +332,9 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Loaded> {
         while let Some(task @ (indx, ..)) = tasks.pop() {
             let res = execute_task(&mut ctx, task, &mut tmp);
             let mut ast = ast.lock().unwrap();
-            let len = ast.len().max(indx as usize + 1);
+            let len = ast.len().max(indx + 1);
             ast.resize_with(len, || Err(io::ErrorKind::InvalidData.into()));
-            ast[indx as usize] = res;
+            ast[indx] = res;
         }
         ctx.errors.into_inner()
     };

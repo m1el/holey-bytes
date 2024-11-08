@@ -3,6 +3,7 @@ use {
         lexer::TokenKind,
         parser,
         son::{hbvm::HbvmBackend, Codegen, CodegenCtx},
+        ty::Module,
     },
     alloc::string::String,
     core::{fmt::Write, hash::BuildHasher, ops::Range},
@@ -135,6 +136,6 @@ pub fn fuzz(seed_range: Range<u64>) {
 
         let mut backend = HbvmBackend::default();
         let mut cdg = Codegen::new(&mut backend, core::slice::from_ref(&parsed), &mut ctx);
-        cdg.generate(0);
+        cdg.generate(Module::MAIN);
     }
 }

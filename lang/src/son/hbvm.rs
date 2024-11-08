@@ -4,7 +4,8 @@ use {
         lexer::TokenKind,
         parser, reg,
         son::{debug_assert_matches, write_reloc, Kind, MEM},
-        ty::{self, Loc},
+        ty::{self, Loc, Module},
+        utils::{Ent, EntVec},
         Offset, Reloc, Size, TypedReloc, Types,
     },
     alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec},
@@ -47,8 +48,8 @@ struct Assembler {
 
 #[derive(Default)]
 pub struct HbvmBackend {
-    funcs: Vec<FuncDt>,
-    globals: Vec<GlobalDt>,
+    funcs: EntVec<ty::Func, FuncDt>,
+    globals: EntVec<ty::Global, GlobalDt>,
     asm: Assembler,
     ralloc: their_regalloc::Regalloc,
     ralloc_my: my_regalloc::Res,
@@ -98,13 +99,13 @@ impl Backend for HbvmBackend {
         debug_assert!(self.asm.funcs.is_empty());
         debug_assert!(self.asm.globals.is_empty());
 
-        self.globals.resize_with(types.ins.globals.len(), Default::default);
+        self.globals.shadow(types.ins.globals.len());
 
         self.asm.frontier.push(ty::Kind::Func(from).compress());
         while let Some(itm) = self.asm.frontier.pop() {
             match itm.expand() {
                 ty::Kind::Func(func) => {
-                    let fuc = &mut self.funcs[func as usize];
+                    let fuc = &mut self.funcs[func];
                     debug_assert!(!fuc.code.is_empty());
                     if fuc.offset != u32::MAX {
                         continue;
@@ -114,7 +115,7 @@ impl Backend for HbvmBackend {
                     self.asm.frontier.extend(fuc.relocs.iter().map(|r| r.target));
                 }
                 ty::Kind::Global(glob) => {
-                    let glb = &mut self.globals[glob as usize];
+                    let glb = &mut self.globals[glob];
                     if glb.offset != u32::MAX {
                         continue;
                     }
@@ -128,7 +129,7 @@ impl Backend for HbvmBackend {
         let init_len = to.len();
 
         for &func in &self.asm.funcs {
-            let fuc = &mut self.funcs[func as usize];
+            let fuc = &mut self.funcs[func];
             fuc.offset = to.len() as _;
             debug_assert!(!fuc.code.is_empty());
             to.extend(&fuc.code);
@@ -137,18 +138,18 @@ impl Backend for HbvmBackend {
         let code_length = to.len() - init_len;
 
         for global in self.asm.globals.drain(..) {
-            self.globals[global as usize].offset = to.len() as _;
-            to.extend(&types.ins.globals[global as usize].data);
+            self.globals[global].offset = to.len() as _;
+            to.extend(&types.ins.globals[global].data);
         }
 
         let data_length = to.len() - code_length - init_len;
 
         for func in self.asm.funcs.drain(..) {
-            let fuc = &self.funcs[func as usize];
+            let fuc = &self.funcs[func];
             for rel in &fuc.relocs {
                 let offset = match rel.target.expand() {
-                    ty::Kind::Func(fun) => self.funcs[fun as usize].offset,
-                    ty::Kind::Global(glo) => self.globals[glo as usize].offset,
+                    ty::Kind::Func(fun) => self.funcs[fun].offset,
+                    ty::Kind::Global(glo) => self.globals[glo].offset,
                     _ => unreachable!(),
                 };
                 rel.reloc.apply_jump(to, offset, fuc.offset);
@@ -158,7 +159,7 @@ impl Backend for HbvmBackend {
         AssemblySpec {
             code_length: code_length as _,
             data_length: data_length as _,
-            entry: self.funcs[from as usize].offset,
+            entry: self.funcs[from].offset,
         }
     }
 
@@ -175,11 +176,11 @@ impl Backend for HbvmBackend {
             .ins
             .funcs
             .iter()
-            .zip(&self.funcs)
+            .zip(self.funcs.iter())
             .filter(|(_, f)| f.offset != u32::MAX)
             .map(|(f, fd)| {
-                let name = if f.file != u32::MAX {
-                    let file = &files[f.file as usize];
+                let name = if f.file != Module::default() {
+                    let file = &files[f.file.index()];
                     file.ident_str(f.name)
                 } else {
                     "target_fn"
@@ -191,13 +192,13 @@ impl Backend for HbvmBackend {
                     .ins
                     .globals
                     .iter()
-                    .zip(&self.globals)
+                    .zip(self.globals.iter())
                     .filter(|(_, g)| g.offset != u32::MAX)
                     .map(|(g, gd)| {
-                        let name = if g.file == u32::MAX {
+                        let name = if g.file == Module::default() {
                             core::str::from_utf8(&g.data).unwrap_or("invalid utf-8")
                         } else {
-                            let file = &files[g.file as usize];
+                            let file = &files[g.file.index()];
                             file.ident_str(g.name)
                         };
                         (gd.offset, (name, g.data.len() as Size, DisasmItem::Global))
@@ -215,13 +216,13 @@ impl Backend for HbvmBackend {
         files: &[parser::Ast],
     ) {
         self.emit_body(id, nodes, tys, files);
-        let fd = &mut self.funcs[id as usize];
+        let fd = &mut self.funcs[id];
         fd.code.truncate(fd.code.len() - instrs::jala(0, 0, 0).0);
         emit(&mut fd.code, instrs::tx());
     }
 
     fn emit_body(&mut self, id: ty::Func, nodes: &mut Nodes, tys: &Types, files: &[parser::Ast]) {
-        let sig = tys.ins.funcs[id as usize].sig.unwrap();
+        let sig = tys.ins.funcs[id].sig.unwrap();
 
         debug_assert!(self.code.is_empty());
 
@@ -319,11 +320,9 @@ impl Backend for HbvmBackend {
             self.emit(instrs::jala(reg::ZERO, reg::RET_ADDR, 0));
         }
 
-        if self.funcs.get(id as usize).is_none() {
-            self.funcs.resize_with(id as usize + 1, Default::default);
-        }
-        self.funcs[id as usize].code = mem::take(&mut self.code);
-        self.funcs[id as usize].relocs = mem::take(&mut self.relocs);
+        self.funcs.shadow(tys.ins.funcs.len());
+        self.funcs[id].code = mem::take(&mut self.code);
+        self.funcs[id].relocs = mem::take(&mut self.relocs);
 
         debug_assert_eq!(self.ret_relocs.len(), 0);
         debug_assert_eq!(self.relocs.len(), 0);

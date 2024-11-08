@@ -5,6 +5,7 @@ use {
         alloc::Layout,
         fmt::Debug,
         hint::unreachable_unchecked,
+        marker::PhantomData,
         mem::MaybeUninit,
         ops::{Deref, DerefMut, Not},
         ptr::Unique,
@@ -532,3 +533,97 @@ struct AllocedVc {
     len: Nid,
     base: Unique<Nid>,
 }
+
+pub trait Ent: Copy {
+    fn new(index: usize) -> Self;
+    fn index(self) -> usize;
+}
+
+pub struct EntVec<K: Ent, T> {
+    data: ::alloc::vec::Vec<T>,
+    k: PhantomData<fn(K)>,
+}
+
+impl<K: Ent, T> Default for EntVec<K, T> {
+    fn default() -> Self {
+        Self { data: Default::default(), k: PhantomData }
+    }
+}
+
+impl<K: Ent, T> EntVec<K, T> {
+    pub fn clear(&mut self) {
+        self.data.clear();
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    pub fn push(&mut self, value: T) -> K {
+        let k = K::new(self.data.len());
+        self.data.push(value);
+        k
+    }
+
+    pub fn next(&self, index: K) -> Option<&T> {
+        self.data.get(index.index() + 1)
+    }
+
+    pub fn shadow(&mut self, len: usize)
+    where
+        T: Default,
+    {
+        if self.data.len() < len {
+            self.data.resize_with(len, Default::default);
+        }
+    }
+
+    pub fn iter(&self) -> core::slice::Iter<T> {
+        self.data.iter()
+    }
+}
+
+impl<K: Ent, T> core::ops::Index<K> for EntVec<K, T> {
+    type Output = T;
+
+    fn index(&self, index: K) -> &Self::Output {
+        &self.data[index.index()]
+    }
+}
+
+impl<K: Ent, T> core::ops::IndexMut<K> for EntVec<K, T> {
+    fn index_mut(&mut self, index: K) -> &mut Self::Output {
+        &mut self.data[index.index()]
+    }
+}
+
+macro_rules! decl_ent {
+    ($(
+        $vis:vis struct $name:ident($index:ty);
+    )*) => {$(
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+        $vis struct $name($index);
+
+        impl crate::utils::Ent for $name {
+            fn new(index: usize) -> Self {
+                Self(index as $index)
+            }
+
+            fn index(self) -> usize {
+                self.0 as _
+            }
+        }
+
+
+        impl core::fmt::Display for $name {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                write!(f, concat!(stringify!($name), "{}"), self.0)
+            }
+        }
+    )*};
+}
+pub(crate) use decl_ent;

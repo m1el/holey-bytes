@@ -5,8 +5,9 @@
 use {
     alloc::{string::String, vec::Vec},
     hblang::{
-        parser::FileId,
         son::{hbvm::HbvmBackend, Codegen, CodegenCtx},
+        ty::Module,
+        Ent,
     },
 };
 
@@ -60,7 +61,7 @@ unsafe fn compile_and_run(mut fuel: usize) {
     let files = {
         let paths = files.iter().map(|f| f.path).collect::<Vec<_>>();
         let mut loader = |path: &str, _: &str, kind| match kind {
-            hblang::parser::FileKind::Module => Ok(paths.binary_search(&path).unwrap() as FileId),
+            hblang::parser::FileKind::Module => Ok(paths.binary_search(&path).unwrap()),
             hblang::parser::FileKind::Embed => Err("embeds are not supported".into()),
         };
         files
@@ -79,7 +80,7 @@ unsafe fn compile_and_run(mut fuel: usize) {
 
     let mut ct = {
         let mut backend = HbvmBackend::default();
-        Codegen::new(&mut backend, &files, &mut ctx).generate(root as FileId);
+        Codegen::new(&mut backend, &files, &mut ctx).generate(Module::new(root));
 
         if !ctx.parser.errors.borrow().is_empty() {
             log::error!("{}", ctx.parser.errors.borrow());

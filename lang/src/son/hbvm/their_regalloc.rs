@@ -315,7 +315,7 @@ impl HbvmBackend {
                             !matches!(ret, Some(PLoc::Ref(..))) || allocs.next().is_some()
                         );
 
-                        if func == ty::ECA {
+                        if func == ty::Func::ECA {
                             self.emit(instrs::eca());
                         } else {
                             self.relocs.push(TypedReloc {
@@ -710,7 +710,7 @@ impl<'a> Function<'a> {
                 self.add_instr(nid, ops);
             }
             Kind::Call { args, func } => {
-                self.tail &= func == ty::ECA;
+                self.tail &= func == ty::Func::ECA;
                 self.backrefs[nid as usize] = self.backrefs[prev as usize];
                 let mut ops = vec![];
 
