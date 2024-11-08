@@ -18,6 +18,9 @@ fn main() {
     let mut out = Vec::new();
     match run(&mut out) {
         Ok(_) => std::io::stdout().write_all(&out).unwrap(),
-        Err(_) => std::io::stderr().write_all(&out).unwrap(),
+        Err(_) => {
+            std::io::stderr().write_all(&out).unwrap();
+            std::process::exit(1);
+        }
     }
 }
