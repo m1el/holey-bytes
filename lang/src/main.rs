@@ -12,6 +12,9 @@ fn main() {
         hblang::run_compiler(file, opts, out)
     }
 
+    log::set_logger(&hblang::fs::Logger).unwrap();
+    log::set_max_level(log::LevelFilter::Error);
+
     let mut out = Vec::new();
     match run(&mut out) {
         Ok(_) => std::io::stdout().write_all(&out).unwrap(),
