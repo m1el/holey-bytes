@@ -2500,12 +2500,8 @@ impl<'a> Codegen<'a> {
                 let decl = self.find_type(pos, self.ci.file, self.ci.file, Ok(id), self.files);
                 match decl.expand() {
                     ty::Kind::NEVER => Value::NEVER,
-                    ty::Kind::Global(global) => {
-                        let gl = &self.tys.ins.globals[global];
-                        let value = self.ci.nodes.new_node(gl.ty, Kind::Global { global }, [VOID]);
-                        self.ci.nodes[value].aclass = GLOBAL_ACLASS as _;
-                        Some(Value::ptr(value).ty(gl.ty))
-                    }
+                    ty::Kind::Global(global) => self.gen_global(global),
+                    ty::Kind::Const(cnst) => self.gen_const(cnst),
                     _ => Some(Value::new(Nid::MAX).ty(decl)),
                 }
             }
@@ -2626,13 +2622,8 @@ impl<'a> Codegen<'a> {
                         .expand()
                     {
                         ty::Kind::NEVER => Value::NEVER,
-                        ty::Kind::Global(global) => {
-                            let gl = &self.tys.ins.globals[global];
-                            let value =
-                                self.ci.nodes.new_node(gl.ty, Kind::Global { global }, [VOID]);
-                            self.ci.nodes[value].aclass = GLOBAL_ACLASS as _;
-                            Some(Value::ptr(value).ty(gl.ty))
-                        }
+                        ty::Kind::Global(global) => self.gen_global(global),
+                        ty::Kind::Const(cnst) => self.gen_const(cnst),
                         v => Some(Value::new(Nid::MAX).ty(v.compress())),
                     };
                 }
@@ -3771,6 +3762,25 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    fn gen_global(&mut self, global: ty::Global) -> Option<Value> {
+        let gl = &self.tys.ins.globals[global];
+        let value = self.ci.nodes.new_node(gl.ty, Kind::Global { global }, [VOID]);
+        self.ci.nodes[value].aclass = GLOBAL_ACLASS as _;
+        Some(Value::ptr(value).ty(gl.ty))
+    }
+
+    fn gen_const(&mut self, cnst: ty::Const) -> Option<Value> {
+        let c = &self.tys.ins.consts[cnst];
+        let f = &self.files[c.file.index()];
+        let Expr::BinOp { left, right, .. } = c.ast.get(f) else { unreachable!() };
+
+        left.find_pattern_path(c.name, right, |expr, is_ct| {
+            debug_assert!(is_ct);
+            self.expr(expr)
+        })
+        .unwrap_or_else(|_| unreachable!())
+    }
+
     fn add_clobbers(&mut self, value: Value, clobbered_aliases: &mut BitSet) {
         if let Some(base) = self.tys.base_of(value.ty) {
             clobbered_aliases.set(self.ci.nodes.aclass_index(value.id).0 as _);
@@ -4496,7 +4506,6 @@ impl TypeParser for Codegen<'_> {
 
         let gid = self.tys.ins.globals.push(Global { file, name, ..Default::default() });
 
-        let ty = ty::Kind::Global(gid);
         self.pool.push_ci(file, None, self.tys.tasks.len(), &mut self.ci);
         let prev_err_len = self.errors.borrow().len();
 
@@ -4513,7 +4522,7 @@ impl TypeParser for Codegen<'_> {
         self.tys.ins.globals[gid].ty = ret;
 
         self.ct.deactivate();
-        ty.compress()
+        gid.into()
     }
 
     fn report(&self, file: Module, pos: Pos, msg: impl Display) -> ty::Id {
@@ -4572,7 +4581,6 @@ mod tests {
         // Tour Examples
         main_fn;
         arithmetic;
-        advanced_floating_point_arithmetic;
         floating_point_arithmetic;
         functions;
         comments;
@@ -4585,6 +4593,7 @@ mod tests {
         hex_octal_binary_literals;
         struct_operators;
         global_variables;
+        constants;
         directives;
         c_strings;
         struct_patterns;
@@ -4600,6 +4609,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        advanced_floating_point_arithmetic;
         nullable_structure;
         needless_unwrap;
         inlining_issues;
