@@ -1,17 +1,20 @@
 #[cfg(feature = "std")]
-fn main() -> std::io::Result<()> {
+fn main() {
     use std::io::Write;
 
-    log::set_logger(&hblang::Logger).unwrap();
-    log::set_max_level(log::LevelFilter::Info);
+    fn run(out: &mut Vec<u8>) -> std::io::Result<()> {
+        let args = std::env::args().collect::<Vec<_>>();
+        let args = args.iter().map(String::as_str).collect::<Vec<_>>();
 
-    let args = std::env::args().collect::<Vec<_>>();
-    let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+        let opts = hblang::Options::from_args(&args, out)?;
+        let file = args.iter().filter(|a| !a.starts_with('-')).nth(1).copied().unwrap_or("main.hb");
 
-    let opts = hblang::Options::from_args(&args)?;
-    let file = args.iter().filter(|a| !a.starts_with('-')).nth(1).copied().unwrap_or("main.hb");
+        hblang::run_compiler(file, opts, out)
+    }
 
     let mut out = Vec::new();
-    hblang::run_compiler(file, opts, &mut out)?;
-    std::io::stdout().write_all(&out)
+    match run(&mut out) {
+        Ok(_) => std::io::stdout().write_all(&out).unwrap(),
+        Err(_) => std::io::stderr().write_all(&out).unwrap(),
+    }
 }

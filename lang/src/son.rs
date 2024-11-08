@@ -17,7 +17,7 @@ use {
         CompState, FTask, Func, Global, Ident, Offset, OffsetIter, OptLayout, Sig, StringRef,
         SymKey, TypeParser, Types,
     },
-    alloc::{string::String, vec::Vec},
+    alloc::{rc::Rc, string::String, vec::Vec},
     core::{
         assert_matches::debug_assert_matches,
         cell::{Cell, RefCell},
@@ -2017,6 +2017,7 @@ impl Scope {
 #[derive(Default, Clone)]
 pub struct ItemCtx {
     file: FileId,
+    pos: Vec<Pos>,
     ret: Option<ty::Id>,
     task_base: usize,
     inline_var_base: usize,
@@ -2195,33 +2196,29 @@ impl CodegenCtx {
     }
 }
 
-pub struct Errors<'a>(&'a RefCell<String>);
-
-impl Deref for Errors<'_> {
-    type Target = RefCell<String>;
-
-    fn deref(&self) -> &Self::Target {
-        self.0
-    }
-}
-
-impl Drop for Errors<'_> {
-    fn drop(&mut self) {
-        if debug::panicking() && !self.0.borrow().is_empty() {
-            log::error!("{}", self.0.borrow());
-        }
-    }
-}
-
 pub struct Codegen<'a> {
     pub files: &'a [parser::Ast],
-    pub errors: Errors<'a>,
+    pub errors: &'a RefCell<String>,
     tys: &'a mut Types,
     ci: ItemCtx,
     pool: &'a mut Pool,
     ct: &'a mut Comptime,
     ct_backend: &'a mut HbvmBackend,
     backend: &'a mut dyn Backend,
+}
+
+impl Drop for Codegen<'_> {
+    fn drop(&mut self) {
+        if debug::panicking() {
+            if let Some(&pos) = self.ci.pos.last() {
+                self.report(pos, "panic occured here");
+            }
+
+            if !self.errors.borrow().is_empty() {
+                log::error!("{}", self.errors.borrow());
+            }
+        }
+    }
 }
 
 impl<'a> Codegen<'a> {
@@ -2232,7 +2229,7 @@ impl<'a> Codegen<'a> {
     ) -> Self {
         Self {
             files,
-            errors: Errors(&ctx.parser.errors),
+            errors: &ctx.parser.errors,
             tys: &mut ctx.tys,
             ci: Default::default(),
             pool: &mut ctx.pool,
@@ -2427,7 +2424,14 @@ impl<'a> Codegen<'a> {
         self.raw_expr_ctx(expr, Ctx::default())
     }
 
-    fn raw_expr_ctx(&mut self, expr: &Expr, mut ctx: Ctx) -> Option<Value> {
+    fn raw_expr_ctx(&mut self, expr: &Expr, ctx: Ctx) -> Option<Value> {
+        self.ci.pos.push(expr.pos());
+        let res = self.raw_expr_ctx_low(expr, ctx);
+        self.ci.pos.pop().unwrap();
+        res
+    }
+
+    fn raw_expr_ctx_low(&mut self, expr: &Expr, mut ctx: Ctx) -> Option<Value> {
         // ordered by complexity of the expression
         match *expr {
             Expr::Null { pos } => {

@@ -282,6 +282,14 @@ impl<'a, 'b> Parser<'a, 'b> {
 
     fn unit_expr(&mut self) -> Option<Expr<'a>> {
         use {Expr as E, TokenKind as T};
+
+        if matches!(
+            self.token.kind,
+            T::RParen | T::RBrace | T::RBrack | T::Comma | T::Semi | T::Else
+        ) {
+            self.report(self.token.start, "expected expression")?;
+        }
+
         let frame = self.ctx.idents.len();
         let token @ Token { start: pos, .. } = self.next();
         let prev_boundary = self.ns_bound;

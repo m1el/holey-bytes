@@ -1,6 +1,6 @@
 use {
     crate::{
-        parser::{self, Ast, Ctx, FileKind},
+        parser::{Ast, Ctx, FileKind},
         son::{self, hbvm::HbvmBackend},
     },
     alloc::{string::String, vec::Vec},
@@ -42,10 +42,10 @@ pub struct Options {
 }
 
 impl Options {
-    pub fn from_args(args: &[&str]) -> std::io::Result<Self> {
+    pub fn from_args(args: &[&str], out: &mut Vec<u8>) -> std::io::Result<Self> {
         if args.contains(&"--help") || args.contains(&"-h") {
-            log::error!("Usage: hbc [OPTIONS...] <FILE>");
-            log::error!(include_str!("../command-help.txt"));
+            writeln!(out, "Usage: hbc [OPTIONS...] <FILE>")?;
+            writeln!(out, include_str!("../command-help.txt"))?;
             return Err(std::io::ErrorKind::Other.into());
         }
 
@@ -58,7 +58,9 @@ impl Options {
                 .position(|&a| a == "--threads")
                 .map(|i| {
                     args[i + 1].parse::<NonZeroUsize>().map_err(|e| {
-                        std::io::Error::other(format!("--threads expects non zero integer: {e}"))
+                        writeln!(out, "--threads expects non zero integer: {e}")
+                            .err()
+                            .unwrap_or(std::io::ErrorKind::Other.into())
                     })
                 })
                 .transpose()?
@@ -71,32 +73,22 @@ impl Options {
 pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std::io::Result<()> {
     let parsed = parse_from_fs(options.extra_threads, root_file)?;
 
-    fn format_ast(ast: parser::Ast) -> std::io::Result<()> {
-        let mut output = String::new();
-        write!(output, "{ast}").unwrap();
-        if ast.file.deref().trim() != output.as_str().trim() {
-            std::fs::write(&*ast.path, output)?;
-        }
-        Ok(())
+    if (options.fmt || options.fmt_stdout) && !parsed.errors.is_empty() {
+        *out = parsed.errors.into_bytes();
+        return Err(std::io::Error::other("fmt fialed (errors are in out)"));
     }
 
     if options.fmt {
-        if !parsed.errors.is_empty() {
-            *out = parsed.errors.into_bytes();
-            return Err(std::io::Error::other("parsing fialed"));
-        }
-
-        for parsed in parsed.ast {
-            format_ast(parsed)?;
+        let mut output = String::new();
+        for ast in parsed.ast {
+            write!(output, "{ast}").unwrap();
+            if ast.file.deref().trim() != output.as_str().trim() {
+                std::fs::write(&*ast.path, &output)?;
+            }
+            output.clear();
         }
     } else if options.fmt_stdout {
-        if !parsed.errors.is_empty() {
-            *out = parsed.errors.into_bytes();
-            return Err(std::io::Error::other("parsing fialed"));
-        }
-
-        let ast = parsed.ast.into_iter().next().unwrap();
-        write!(out, "{ast}").unwrap();
+        write!(out, "{}", &parsed.ast[0])?;
     } else {
         let mut backend = HbvmBackend::default();
         let mut ctx = crate::son::CodegenCtx::default();
@@ -107,8 +99,9 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
         codegen.generate(0);
 
         if !codegen.errors.borrow().is_empty() {
-            log::error!("{}", codegen.errors.borrow());
-            return Err(std::io::Error::other("compilation faoled"));
+            drop(codegen);
+            *out = ctx.parser.errors.into_inner().into_bytes();
+            return Err(std::io::Error::other("compilation faoled (errors are in out)"));
         }
 
         codegen.assemble(out);
