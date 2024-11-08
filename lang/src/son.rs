@@ -225,13 +225,13 @@ impl Nodes {
             return;
         }
 
-        let mut deepest = VOID;
-        for i in 0..self[node].inputs.len() {
-            let inp = self[node].inputs[i];
+        let mut deepest = self[node].inputs[0];
+        for &inp in self[node].inputs[1..].iter() {
             if self.idepth(inp) > self.idepth(deepest) {
                 if matches!(self[inp].kind, Kind::Call { .. }) {
                     deepest = inp;
                 } else {
+                    debug_assert!(!self.is_cfg(inp));
                     deepest = self.idom(inp);
                 }
             }
@@ -256,14 +256,15 @@ impl Nodes {
         self[deepest].outputs.push(node);
     }
 
-    fn collect_rpo(&mut self, node: Nid, rpo: &mut Vec<Nid>, visited: &mut BitSet) {
+    fn collect_rpo(&self, node: Nid, rpo: &mut Vec<Nid>, visited: &mut BitSet) {
         if !self.is_cfg(node) || !visited.set(node) {
             return;
         }
 
-        for i in 0..self[node].outputs.len() {
-            self.collect_rpo(self[node].outputs[i], rpo, visited);
+        for &n in self[node].outputs.iter() {
+            self.collect_rpo(n, rpo, visited);
         }
+
         rpo.push(node);
     }
 
@@ -1250,6 +1251,8 @@ impl Nodes {
                 if self[target].inputs[0] == NEVER {
                     return Some(NEVER);
                 }
+
+                std::dbg!(&self[self[target].inputs[1]]);
 
                 if self[target].inputs[1] == NEVER {
                     self.lock(target);
@@ -2390,6 +2393,11 @@ impl<'a> Codegen<'a> {
         }
 
         let (index, _) = self.ci.nodes.aclass_index(region);
+        if self.ci.nodes[value].kind == Kind::Load {
+            let (lindex, _) = self.ci.nodes.aclass_index(self.ci.nodes[value].inputs[1]);
+            let clobber = self.ci.scope.aclasses[lindex].clobber.get();
+            self.ci.scope.aclasses[index].clobber.set(clobber, &mut self.ci.nodes);
+        }
         let aclass = &mut self.ci.scope.aclasses[index];
         self.ci.nodes.load_loop_aclass(index, aclass, &mut self.ci.loops);
         let vc = Vc::from([aclass.clobber.get(), value, region, aclass.last_store.get()]);
@@ -2416,7 +2424,7 @@ impl<'a> Codegen<'a> {
         let (index, _) = self.ci.nodes.aclass_index(region);
         let aclass = &mut self.ci.scope.aclasses[index];
         self.ci.nodes.load_loop_aclass(index, aclass, &mut self.ci.loops);
-        let vc = [aclass.clobber.get(), region, aclass.last_store.get()];
+        let vc = [std::dbg!(aclass.clobber.get()), region, aclass.last_store.get()];
         self.ci.nodes.new_node(ty, Kind::Load, vc)
     }
 
@@ -2567,15 +2575,10 @@ impl<'a> Codegen<'a> {
                         }
                     }
 
-                    self.ci.ctrl.set(
-                        self.ci.nodes.new_node_nop(ty::Id::VOID, Kind::Return, inps),
-                        &mut self.ci.nodes,
-                    );
-
-                    self.ci.nodes[self.ci.ctrl.get()].pos = pos;
-
-                    self.ci.nodes[NEVER].inputs.push(self.ci.ctrl.get());
-                    self.ci.nodes[self.ci.ctrl.get()].outputs.push(NEVER);
+                    let ret = self.ci.nodes.new_node_nop(ty::Id::VOID, Kind::Return, inps);
+                    self.ci.ctrl.set(NEVER, &mut self.ci.nodes);
+                    self.ci.nodes[ret].pos = pos;
+                    self.ci.nodes.bind(ret, NEVER);
                 } else if let Some((pv, ctrl, scope)) = &mut self.ci.inline_ret {
                     ctrl.set(
                         self.ci
@@ -3164,6 +3167,7 @@ impl<'a> Codegen<'a> {
                     Loc::Reg => None,
                     Loc::Stack => {
                         let stck = self.new_stack(func.pos(), sig.ret);
+                        clobbered_aliases.set(self.ci.nodes.aclass_index(stck).0 as _);
                         inps.push(stck);
                         Some(Value::ptr(stck).ty(sig.ret))
                     }
@@ -4638,6 +4642,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        null_check_in_the_loop;
         stack_provenance;
         advanced_floating_point_arithmetic;
         nullable_structure;

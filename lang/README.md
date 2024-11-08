@@ -612,6 +612,30 @@ main := fn(): uint {
 
 ### Purely Testing Examples
 
+#### null_check_in_the_loop
+```hb
+A := struct {
+	x_change: u8,
+	y_change: u8,
+	left: u8,
+	middle: u8,
+	right: u8,
+}
+
+return_fn := fn(): ?A {
+	return A.(0, 0, 0, 0, 0)
+}
+
+main := fn(): int {
+	loop {
+		ret := return_fn()
+		if ret != null {
+			return 1
+		}
+	}
+}
+```
+
 #### stack_provenance
 ```hb
 main := fn(): uint {
