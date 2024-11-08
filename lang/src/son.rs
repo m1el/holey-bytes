@@ -1252,8 +1252,6 @@ impl Nodes {
                     return Some(NEVER);
                 }
 
-                std::dbg!(&self[self[target].inputs[1]]);
-
                 if self[target].inputs[1] == NEVER {
                     self.lock(target);
                     for o in self[target].outputs.clone() {
@@ -2424,7 +2422,7 @@ impl<'a> Codegen<'a> {
         let (index, _) = self.ci.nodes.aclass_index(region);
         let aclass = &mut self.ci.scope.aclasses[index];
         self.ci.nodes.load_loop_aclass(index, aclass, &mut self.ci.loops);
-        let vc = [std::dbg!(aclass.clobber.get()), region, aclass.last_store.get()];
+        let vc = [aclass.clobber.get(), region, aclass.last_store.get()];
         self.ci.nodes.new_node(ty, Kind::Load, vc)
     }
 
