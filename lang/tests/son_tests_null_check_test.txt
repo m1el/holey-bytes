@@ -1,7 +1,5 @@
 get_ptr:
-    ADDI64 r254, r254, -8d
-    ADDI64 r1, r254, 0d
-    ADDI64 r254, r254, 8d
+    LI64 r1, 0d
     JALA r0, r31, 0a
 main:
     ADDI64 r254, r254, -40d
@@ -21,6 +19,6 @@ main:
  1: LD r31, r254, 0a, 40h
     ADDI64 r254, r254, 40d
     JALA r0, r31, 0a
-code size: 208
-ret: 10
+code size: 185
+ret: 0
 status: Ok(())

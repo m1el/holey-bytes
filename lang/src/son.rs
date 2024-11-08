@@ -994,6 +994,14 @@ impl Nodes {
                         continue;
                     }
 
+                    if self[class.1].outputs.iter().any(|&n| {
+                        self[n].kind != Kind::Stre
+                            && self[n].outputs.iter().any(|&n| self[n].kind != Kind::Stre)
+                    }) {
+                        new_inps.push(n);
+                        continue;
+                    }
+
                     cursor = self[cursor].inputs[3];
                     while cursor != MEM {
                         debug_assert_eq!(self[cursor].kind, Kind::Stre);
@@ -1799,6 +1807,7 @@ pub struct Node {
     loop_depth: Cell<LoopDepth>,
     aclass: AClassId,
     antidep: Nid,
+    pos: Pos,
 }
 
 impl Node {
@@ -2318,9 +2327,10 @@ impl<'a> Codegen<'a> {
         self.ct.run(ret_loc, entry)
     }
 
-    fn new_stack(&mut self, ty: ty::Id) -> Nid {
+    fn new_stack(&mut self, pos: Pos, ty: ty::Id) -> Nid {
         let stck = self.ci.nodes.new_node_nop(ty, Kind::Stck, [VOID, MEM]);
         self.ci.nodes[stck].aclass = self.ci.scope.aclasses.len() as _;
+        self.ci.nodes[stck].pos = pos;
         self.ci.scope.aclasses.push(AClass::new(&mut self.ci.nodes));
         stck
     }
@@ -2452,7 +2462,7 @@ impl<'a> Codegen<'a> {
                     Loc::Reg => Some(self.ci.nodes.new_const_lit(oty, 0)),
                     Loc::Stack => {
                         let OptLayout { flag_ty, flag_offset, .. } = self.tys.opt_layout(ty);
-                        let stack = self.new_stack(oty);
+                        let stack = self.new_stack(pos, oty);
                         let offset = self.offset(stack, flag_offset);
                         let value = self.ci.nodes.new_const(flag_ty, 0);
                         self.store_mem(offset, flag_ty, value);
@@ -2464,7 +2474,7 @@ impl<'a> Codegen<'a> {
                 inference!(ty, ctx, self, pos, "value", "@as(<ty>, idk)");
 
                 if ty.loc(self.tys) == Loc::Stack {
-                    Some(Value::ptr(self.new_stack(ty)).ty(ty))
+                    Some(Value::ptr(self.new_stack(pos, ty)).ty(ty))
                 } else {
                     Some(self.ci.nodes.new_const_lit(ty, 0))
                 }
@@ -2561,6 +2571,8 @@ impl<'a> Codegen<'a> {
                         self.ci.nodes.new_node_nop(ty::Id::VOID, Kind::Return, inps),
                         &mut self.ci.nodes,
                     );
+
+                    self.ci.nodes[self.ci.ctrl.get()].pos = pos;
 
                     self.ci.nodes[NEVER].inputs.push(self.ci.ctrl.get());
                     self.ci.nodes[self.ci.ctrl.get()].outputs.push(NEVER);
@@ -2661,7 +2673,7 @@ impl<'a> Codegen<'a> {
 
                 Some(Value::ptr(self.offset(vtarget.id, offset)).ty(ty))
             }
-            Expr::UnOp { op: TokenKind::Band, val, .. } => {
+            Expr::UnOp { op: TokenKind::Band, val, pos } => {
                 let ctx = Ctx { ty: ctx.ty.and_then(|ty| self.tys.base_of(ty)) };
 
                 let mut val = self.raw_expr_ctx(val, ctx)?;
@@ -2673,7 +2685,7 @@ impl<'a> Codegen<'a> {
                     return Some(val);
                 }
 
-                let stack = self.new_stack(val.ty);
+                let stack = self.new_stack(pos, val.ty);
                 self.store_mem(stack, val.ty, val.id);
 
                 Some(Value::new(stack).ty(self.tys.make_ptr(val.ty)))
@@ -2710,11 +2722,11 @@ impl<'a> Codegen<'a> {
                     Value::NEVER
                 }
             }
-            Expr::BinOp { left, op: TokenKind::Decl, right, .. } => {
+            Expr::BinOp { left, op: TokenKind::Decl, right, pos } => {
                 let mut right = self.expr(right)?;
 
                 if right.ty.loc(self.tys) == Loc::Stack {
-                    let stck = self.new_stack(right.ty);
+                    let stck = self.new_stack(pos, right.ty);
                     self.store_mem(stck, right.ty, right.id);
                     right.id = stck;
                     right.ptr = true;
@@ -2807,7 +2819,7 @@ impl<'a> Codegen<'a> {
                         let mut rhs = rhs?;
                         self.strip_var(&mut rhs);
                         self.assert_ty(pos, &mut rhs, lhs.ty, "struct operand");
-                        let dst = self.new_stack(lhs.ty);
+                        let dst = self.new_stack(pos, lhs.ty);
                         self.struct_op(left.pos(), op, s, dst, lhs.id, rhs.id);
                         Some(Value::ptr(dst).ty(lhs.ty))
                     }
@@ -2906,7 +2918,7 @@ impl<'a> Codegen<'a> {
                 match ty.loc(self.tys) {
                     Loc::Reg if mem::take(&mut val.ptr) => val.id = self.load_mem(val.id, ty),
                     Loc::Stack if !val.ptr => {
-                        let stack = self.new_stack(ty);
+                        let stack = self.new_stack(pos, ty);
                         self.store_mem(stack, val.ty, val.id);
                         val.id = stack;
                         val.ptr = true;
@@ -3074,7 +3086,7 @@ impl<'a> Codegen<'a> {
                 let alt_value = match ty.loc(self.tys) {
                     Loc::Reg => None,
                     Loc::Stack => {
-                        let stck = self.new_stack(ty);
+                        let stck = self.new_stack(pos, ty);
                         inps.push(stck);
                         Some(Value::ptr(stck).ty(ty))
                     }
@@ -3151,7 +3163,7 @@ impl<'a> Codegen<'a> {
                 let alt_value = match sig.ret.loc(self.tys) {
                     Loc::Reg => None,
                     Loc::Stack => {
-                        let stck = self.new_stack(sig.ret);
+                        let stck = self.new_stack(func.pos(), sig.ret);
                         inps.push(stck);
                         Some(Value::ptr(stck).ty(sig.ret))
                     }
@@ -3298,7 +3310,7 @@ impl<'a> Codegen<'a> {
 
                 match sty.expand() {
                     ty::Kind::Struct(s) => {
-                        let mem = self.new_stack(sty);
+                        let mem = self.new_stack(pos, sty);
                         let mut offs = OffsetIter::new(s, self.tys);
                         for field in fields {
                             let Some((ty, offset)) = offs.next_ty(self.tys) else {
@@ -3352,7 +3364,7 @@ impl<'a> Codegen<'a> {
                             return Value::NEVER;
                         }
 
-                        let mem = self.new_stack(aty);
+                        let mem = self.new_stack(pos, aty);
 
                         for (field, offset) in
                             fields.iter().zip((0u32..).step_by(elem_size as usize))
@@ -3407,7 +3419,7 @@ impl<'a> Codegen<'a> {
                     .into_iter(self.tys)
                     .map(|(f, o)| (f.ty, o))
                     .collect::<Vec<_>>();
-                let mem = self.new_stack(sty);
+                let mem = self.new_stack(pos, sty);
                 for field in fields {
                     let Some(index) = self.tys.find_struct_field(s, field.name) else {
                         self.report(
@@ -4199,6 +4211,23 @@ impl<'a> Codegen<'a> {
 
         self.ci.unlock();
 
+        for &node in self.ci.nodes[NEVER].inputs.iter() {
+            if self.ci.nodes[node].kind == Kind::Return
+                && self.ci.nodes[self.ci.nodes.aclass_index(self.ci.nodes[node].inputs[1]).1].kind
+                    == Kind::Stck
+            {
+                self.report(
+                    self.ci.nodes[node].pos,
+                    "returning value with local provenance \
+                    (pointer will be invalid after function returns)",
+                );
+                self.report(
+                    self.ci.nodes[self.ci.nodes.aclass_index(self.ci.nodes[node].inputs[1]).1].pos,
+                    "...the pointer points to stack allocation created here",
+                );
+            }
+        }
+
         if self.errors.borrow().len() == prev_err_len {
             self.ci.nodes.check_final_integrity(self.ty_display(ty::Id::VOID));
             self.ci.nodes.graphviz(self.ty_display(ty::Id::VOID));
@@ -4265,7 +4294,7 @@ impl<'a> Codegen<'a> {
         }
     }
 
-    fn wrap_in_opt(&mut self, val: &mut Value) {
+    fn wrap_in_opt(&mut self, pos: Pos, val: &mut Value) {
         debug_assert!(!val.var);
 
         let was_ptr = val.ptr;
@@ -4294,7 +4323,7 @@ impl<'a> Codegen<'a> {
             }
             Loc::Stack => {
                 self.strip_ptr(val);
-                let stack = self.new_stack(oty);
+                let stack = self.new_stack(pos, oty);
                 let fill = self.ci.nodes.new_const(flag_ty, 1);
                 self.store_mem(stack, flag_ty, fill);
                 let off = self.offset(stack, payload_offset);
@@ -4394,7 +4423,7 @@ impl<'a> Codegen<'a> {
                     if inner != src.ty {
                         self.assert_ty(pos, src, inner, hint);
                     }
-                    self.wrap_in_opt(src);
+                    self.wrap_in_opt(pos, src);
                 } else {
                     debug_assert!(
                         src.ty.is_integer() || src.ty == ty::Id::NEVER,
@@ -4609,6 +4638,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        stack_provenance;
         advanced_floating_point_arithmetic;
         nullable_structure;
         needless_unwrap;

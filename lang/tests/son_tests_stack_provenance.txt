@@ -1,0 +1,6 @@
+test.hb:5:23: returning value with local provenance (pointer will be invalid after function returns)
+dangle := fn(): ^uint return &0
+                      ^
+test.hb:5:30: ...the pointer points to stack allocation created here
+dangle := fn(): ^uint return &0
+                             ^
