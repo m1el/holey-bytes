@@ -2486,6 +2486,12 @@ impl<'a> Codegen<'a> {
                 }
             }
             Expr::Bool { value, .. } => Some(self.ci.nodes.new_const_lit(ty::Id::BOOL, value)),
+            Expr::Number { value, .. }
+                if let Some(ty) = ctx.ty
+                    && ty.is_float() =>
+            {
+                Some(self.ci.nodes.new_const_lit(ty, (value as f64).to_bits() as i64))
+            }
             Expr::Number { value, .. } => Some(
                 self.ci.nodes.new_const_lit(
                     ctx.ty
