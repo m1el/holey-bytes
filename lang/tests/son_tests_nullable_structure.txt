@@ -12,18 +12,18 @@ main:
     LI8 r35, 0b
     LD r36, r254, 2a, 1h
     CP r1, r32
-    ANDI r37, r37, 255d
     ANDI r1, r1, 255d
+    ANDI r34, r34, 255d
     CMPU r37, r1, r34
     CMPUI r37, r37, 0d
-    ANDI r38, r38, 255d
     ANDI r36, r36, 255d
+    ANDI r35, r35, 255d
     CMPU r38, r36, r35
     CMPUI r38, r38, 0d
     LD r39, r254, 0a, 1h
     AND r40, r38, r37
-    ANDI r41, r41, 255d
     ANDI r39, r39, 255d
+    ANDI r35, r35, 255d
     CMPU r41, r39, r35
     CMPUI r41, r41, 0d
     AND r42, r41, r40

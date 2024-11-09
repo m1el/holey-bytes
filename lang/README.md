@@ -324,11 +324,11 @@ note: values of global variables are evaluated at compile time
 
 #### constants
 ```hb
-$some_const := 34
-
-main := fn(): uint {
+main := fn(): u32 {
 	return some_const + 35
 }
+
+$some_const := 34
 ```
 
 #### directives

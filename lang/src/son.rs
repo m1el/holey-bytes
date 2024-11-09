@@ -2517,7 +2517,7 @@ impl<'a> Codegen<'a> {
                 match decl.expand() {
                     ty::Kind::NEVER => Value::NEVER,
                     ty::Kind::Global(global) => self.gen_global(global),
-                    ty::Kind::Const(cnst) => self.gen_const(cnst),
+                    ty::Kind::Const(cnst) => self.gen_const(cnst, ctx),
                     _ => Some(Value::new(Nid::MAX).ty(decl)),
                 }
             }
@@ -2636,7 +2636,7 @@ impl<'a> Codegen<'a> {
                     {
                         ty::Kind::NEVER => Value::NEVER,
                         ty::Kind::Global(global) => self.gen_global(global),
-                        ty::Kind::Const(cnst) => self.gen_const(cnst),
+                        ty::Kind::Const(cnst) => self.gen_const(cnst, ctx),
                         v => Some(Value::new(Nid::MAX).ty(v.compress())),
                     };
                 }
@@ -3783,14 +3783,14 @@ impl<'a> Codegen<'a> {
         Some(Value::ptr(value).ty(gl.ty))
     }
 
-    fn gen_const(&mut self, cnst: ty::Const) -> Option<Value> {
+    fn gen_const(&mut self, cnst: ty::Const, ctx: Ctx) -> Option<Value> {
         let c = &self.tys.ins.consts[cnst];
         let f = &self.files[c.file.index()];
         let Expr::BinOp { left, right, .. } = c.ast.get(f) else { unreachable!() };
 
         left.find_pattern_path(c.name, right, |expr, is_ct| {
             debug_assert!(is_ct);
-            self.expr(expr)
+            self.expr_ctx(expr, ctx)
         })
         .unwrap_or_else(|_| unreachable!())
     }

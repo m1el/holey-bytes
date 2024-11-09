@@ -399,7 +399,12 @@ impl<'a, 'b> Parser<'a, 'b> {
             },
             T::Ident | T::CtIdent => {
                 let (id, is_first) = self.resolve_ident(token);
-                E::Ident { pos, is_ct: token.kind == T::CtIdent, id, is_first }
+                E::Ident {
+                    pos: pos - (token.kind == T::CtIdent) as Pos,
+                    is_ct: token.kind == T::CtIdent,
+                    id,
+                    is_first,
+                }
             }
             T::Under => E::Wildcard { pos },
             T::If => E::If {
