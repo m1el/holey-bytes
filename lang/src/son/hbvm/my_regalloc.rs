@@ -10,7 +10,7 @@ use {
         Offset, PLoc, Reloc, Sig, TypedReloc, Types,
     },
     alloc::{borrow::ToOwned, vec::Vec},
-    core::{mem, ops::Range, u32, usize},
+    core::{mem, ops::Range},
     hbbytecode::{self as instrs},
 };
 

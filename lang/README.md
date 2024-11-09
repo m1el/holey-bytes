@@ -612,6 +612,30 @@ main := fn(): uint {
 
 ### Purely Testing Examples
 
+#### scheduling_block_did_dirty
+```hb
+Struct := struct {
+	pad: uint,
+	pad2: uint,
+}
+
+file := [u8].(255)
+
+opaque := fn(x: uint): uint {
+	return file[x]
+}
+
+constructor := fn(x: uint): Struct {
+	a := opaque(x)
+	return .(a, a)
+}
+
+main := fn(): void {
+	something := constructor(0)
+	return
+}
+```
+
 #### null_check_returning_small_global
 ```hb
 MAGIC := 127

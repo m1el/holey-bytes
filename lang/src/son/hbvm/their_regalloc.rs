@@ -855,6 +855,7 @@ impl<'a> Function<'a> {
     }
 
     fn reschedule_block(&mut self, from: Nid, outputs: &mut Vc) {
+        // NOTE: this code is horible
         let from = Some(&from);
         let mut buf = Vec::with_capacity(outputs.len());
         let mut seen = BitSet::default();
@@ -878,7 +879,9 @@ impl<'a> Function<'a> {
                             .all(|&o| self.nodes[o].inputs.first() != from || seen.get(o))
                         && seen.set(i)
                     {
-                        buf.push(i);
+                        for &o in outputs.iter().filter(|&&n| n == i) {
+                            buf.push(o);
+                        }
                     }
                 }
                 cursor += 1;
@@ -890,7 +893,9 @@ impl<'a> Function<'a> {
                 continue;
             }
             let mut cursor = buf.len();
-            buf.push(o);
+            for &o in outputs.iter().filter(|&&n| n == o) {
+                buf.push(o);
+            }
             while let Some(&n) = buf.get(cursor) {
                 for &i in &self.nodes[n].inputs[1..] {
                     if from == self.nodes[i].inputs.first()
@@ -900,22 +905,17 @@ impl<'a> Function<'a> {
                             .all(|&o| self.nodes[o].inputs.first() != from || seen.get(o))
                         && seen.set(i)
                     {
-                        buf.push(i);
+                        for &o in outputs.iter().filter(|&&n| n == i) {
+                            buf.push(o);
+                        }
                     }
                 }
                 cursor += 1;
             }
         }
 
-        debug_assert!(
-            outputs.len() == buf.len() || outputs.len() == buf.len() + 1,
-            "{:?} {:?}",
-            outputs,
-            buf
-        );
-
-        if buf.len() + 1 == outputs.len() {
-            outputs.remove(outputs.len() - 1);
+        if outputs.len() != buf.len() {
+            panic!("{:?} {:?}", outputs, buf);
         }
         outputs.copy_from_slice(&buf);
     }

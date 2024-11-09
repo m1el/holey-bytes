@@ -1,0 +1,31 @@
+constructor:
+    ADDI64 r254, r254, -32d
+    ST r31, r254, 16a, 16h
+    CP r2, r3
+    JAL r31, r0, :opaque
+    ADDI64 r32, r254, 0d
+    ST r1, r254, 0a, 8h
+    ST r1, r254, 8a, 8h
+    LD r1, r32, 0a, 16h
+    LD r31, r254, 16a, 16h
+    ADDI64 r254, r254, 32d
+    JALA r0, r31, 0a
+main:
+    ADDI64 r254, r254, -32d
+    ST r31, r254, 16a, 16h
+    ADDI64 r32, r254, 0d
+    LI64 r3, 0d
+    JAL r31, r0, :constructor
+    ST r1, r254, 0a, 16h
+    LD r31, r254, 16a, 16h
+    ADDI64 r254, r254, 32d
+    JALA r0, r31, 0a
+opaque:
+    LRA r3, r0, :file
+    ADD64 r5, r3, r2
+    LD r7, r5, 0a, 1h
+    ANDI r1, r7, 255d
+    JALA r0, r31, 0a
+code size: 274
+ret: 255
+status: Ok(())

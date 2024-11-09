@@ -4079,9 +4079,10 @@ impl<'a> Codegen<'a> {
         self.pool.push_ci(file, Some(sig.ret), 0, &mut self.ci);
         let prev_err_len = self.errors.borrow().len();
 
-        let &Expr::Closure { body, args, .. } = expr else {
+        let &Expr::Closure { body, args, pos, .. } = expr else {
             unreachable!("{}", self.ast_display(expr))
         };
+        self.ci.pos.push(pos);
 
         let mut tys = sig.args.args();
         let mut args = args.iter();
@@ -4142,6 +4143,7 @@ impl<'a> Codegen<'a> {
             backend.emit_body(id, &mut self.ci.nodes, self.tys, self.files);
         }
 
+        self.ci.pos.pop();
         self.pool.pop_ci(&mut self.ci);
     }
 
@@ -4646,6 +4648,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        scheduling_block_did_dirty;
         null_check_returning_small_global;
         null_check_in_the_loop;
         stack_provenance;
