@@ -612,6 +612,39 @@ main := fn(): uint {
 
 ### Purely Testing Examples
 
+#### null_check_returning_small_global
+```hb
+MAGIC := 127
+get := fn(file: ^u8): ?uint {
+	if *file == MAGIC {
+		return MAGIC
+	} else {
+		return null
+	}
+}
+
+some_file := [u8].(127, 255, 255, 255, 255, 255)
+
+foo := fn(): ?uint {
+	gotten := get(&some_file[0])
+	if gotten == null {
+		return null
+	} else if gotten == 4 {
+		return 2
+	} else if gotten == MAGIC {
+		return 0
+	}
+
+	return null
+}
+
+main := fn(): uint {
+	f := foo()
+	if f == null return 100
+	return f
+}
+```
+
 #### null_check_in_the_loop
 ```hb
 A := struct {

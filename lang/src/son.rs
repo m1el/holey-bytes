@@ -4579,7 +4579,7 @@ mod tests {
     fn generate(ident: &'static str, input: &'static str, output: &mut String) {
         _ = log::set_logger(&crate::fs::Logger);
         log::set_max_level(log::LevelFilter::Info);
-        //log::set_max_level(log::LevelFilter::Trace);
+        //        log::set_max_level(log::LevelFilter::Trace);
 
         let mut ctx = CodegenCtx::default();
         let (ref files, embeds) = crate::test_parse_files(ident, input, &mut ctx.parser);
@@ -4640,6 +4640,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        null_check_returning_small_global;
         null_check_in_the_loop;
         stack_provenance;
         advanced_floating_point_arithmetic;

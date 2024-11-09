@@ -264,8 +264,8 @@ impl HbvmBackend {
                         } else if let Some(against) = op.cmp_against() {
                             let op_ty = fuc.nodes[rh].ty;
 
-                            self.emit(extend(fuc.nodes[lh].ty, fuc.nodes[lh].ty.extend(), 0, 0));
-                            self.emit(extend(fuc.nodes[rh].ty, fuc.nodes[rh].ty.extend(), 1, 1));
+                            self.emit(extend(fuc.nodes[lh].ty, fuc.nodes[lh].ty.extend(), 1, 1));
+                            self.emit(extend(fuc.nodes[rh].ty, fuc.nodes[rh].ty.extend(), 2, 2));
                             let &[dst, lhs, rhs] = allocs else { unreachable!() };
 
                             if op_ty.is_float() && matches!(op, TokenKind::Le | TokenKind::Ge) {
