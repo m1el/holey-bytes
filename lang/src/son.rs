@@ -2321,7 +2321,7 @@ impl<'a> Codegen<'a> {
             {
                 panic!("{e} {}", vc);
             } else {
-                log::trace!("{}", vc);
+                log::info!("{}", vc);
             }
         }
 
@@ -4579,7 +4579,7 @@ mod tests {
     fn generate(ident: &'static str, input: &'static str, output: &mut String) {
         _ = log::set_logger(&crate::fs::Logger);
         log::set_max_level(log::LevelFilter::Info);
-        //        log::set_max_level(log::LevelFilter::Trace);
+        //log::set_max_level(log::LevelFilter::Trace);
 
         let mut ctx = CodegenCtx::default();
         let (ref files, embeds) = crate::test_parse_files(ident, input, &mut ctx.parser);

@@ -10,7 +10,7 @@ use {
         Offset, PLoc, Reloc, Sig, TypedReloc, Types,
     },
     alloc::{borrow::ToOwned, vec::Vec},
-    core::{mem, ops::Range},
+    core::{mem, ops::Range, u32, usize},
     hbbytecode::{self as instrs},
 };
 
@@ -33,6 +33,8 @@ impl HbvmBackend {
             self.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, 0));
             self.emit(instrs::st(reg::RET_ADDR + fuc.tail as u8, reg::STACK_PTR, 0, 0));
         }
+
+        res.node_to_reg[MEM as usize] = res.bundles.len() as u8 + 1;
 
         let reg_offset = if fuc.tail { reg::RET + 12 } else { reg::RET_ADDR + 1 };
 
@@ -82,6 +84,7 @@ impl HbvmBackend {
                 }
 
                 let node = &fuc.nodes[nid];
+                let bref = mem::replace(&mut fuc.backrefs[nid as usize], u16::MAX);
 
                 let extend = |base: ty::Id, dest: ty::Id, from: Nid, to: Nid| {
                     let (bsize, dsize) = (tys.size_of(base), tys.size_of(dest));
@@ -114,50 +117,98 @@ impl HbvmBackend {
                                 unreachable!()
                             };
 
-                            self.emit(extend(fuc.nodes[lhs].ty, fuc.nodes[lhs].ty.extend(), 0, 0));
-                            self.emit(extend(fuc.nodes[rhs].ty, fuc.nodes[rhs].ty.extend(), 1, 1));
+                            self.emit(extend(
+                                fuc.nodes[lhs].ty,
+                                fuc.nodes[lhs].ty.extend(),
+                                lhs,
+                                lhs,
+                            ));
+                            self.emit(extend(
+                                fuc.nodes[rhs].ty,
+                                fuc.nodes[rhs].ty.extend(),
+                                rhs,
+                                rhs,
+                            ));
 
                             let rel = Reloc::new(self.code.len(), 3, 2);
                             self.jump_relocs.push((node.outputs[!swapped as usize], rel));
                             self.emit(op(atr(lhs), atr(rhs), 0));
                         } else {
-                            self.emit(extend(fuc.nodes[cnd].ty, fuc.nodes[cnd].ty.extend(), 0, 0));
+                            self.emit(extend(
+                                fuc.nodes[cnd].ty,
+                                fuc.nodes[cnd].ty.extend(),
+                                cnd,
+                                cnd,
+                            ));
                             let rel = Reloc::new(self.code.len(), 3, 2);
                             self.jump_relocs.push((node.outputs[0], rel));
                             self.emit(instrs::jne(atr(cnd), reg::ZERO, 0));
                         }
                     }
                     Kind::Loop | Kind::Region => {
-                        if (mem::replace(&mut fuc.backrefs[nid as usize], u16::MAX) != u16::MAX)
-                            ^ (node.kind == Kind::Loop)
-                        {
-                            let index = (node.kind == Kind::Loop) as usize + 1;
+                        let mut emit_moves = |index| {
+                            let mut moves = vec![];
                             for &out in node.outputs.iter() {
-                                if fuc.nodes[out].is_data_phi()
-                                    && atr(out) != atr(fuc.nodes[out].inputs[index])
-                                {
-                                    self.emit(instrs::cp(
-                                        atr(out),
-                                        atr(fuc.nodes[out].inputs[index]),
-                                    ));
+                                if fuc.nodes[out].is_data_phi() {
+                                    debug_assert_eq!(
+                                        fuc.backrefs[fuc.nodes[out].inputs[index] as usize],
+                                        u16::MAX,
+                                        "{:?}\n{:?}",
+                                        node,
+                                        fuc.nodes[fuc.nodes[out].inputs[index]]
+                                    );
+                                    if atr(out) != atr(fuc.nodes[out].inputs[index]) {
+                                        if atr(out) == 34 && atr(fuc.nodes[out].inputs[index]) == 32
+                                        {
+                                            std::dbg!(&node, out, &fuc.nodes[out]);
+                                        }
+                                        moves.push([
+                                            atr(out),
+                                            atr(fuc.nodes[out].inputs[index]),
+                                            0,
+                                        ]);
+                                    }
                                 }
                             }
+
+                            moves.sort_unstable_by(|[aa, ab, _], [ba, bb, _]| {
+                                if aa == bb && ab == ba {
+                                    core::cmp::Ordering::Equal
+                                } else if aa == bb {
+                                    core::cmp::Ordering::Greater
+                                } else {
+                                    core::cmp::Ordering::Less
+                                }
+                            });
+
+                            moves.dedup_by(|[aa, ab, _], [ba, bb, kind]| {
+                                if aa == bb && ab == ba {
+                                    *kind = 1;
+                                    true
+                                } else {
+                                    false
+                                }
+                            });
+
+                            for [dst, src, kind] in moves {
+                                if kind == 0 {
+                                    self.emit(instrs::cp(dst, src));
+                                } else {
+                                    self.emit(instrs::swa(dst, src));
+                                }
+                            }
+                        };
+
+                        if (bref != u16::MAX) ^ (node.kind == Kind::Loop) {
+                            let index = (node.kind == Kind::Loop) as usize + 1;
+                            emit_moves(index);
 
                             let rel = Reloc::new(self.code.len(), 1, 4);
                             self.jump_relocs.push((nid, rel));
                             self.emit(instrs::jmp(0));
                         } else {
                             let index = (node.kind != Kind::Loop) as usize + 1;
-                            for &out in node.outputs.iter() {
-                                if fuc.nodes[out].is_data_phi()
-                                    && atr(out) != atr(fuc.nodes[out].inputs[index])
-                                {
-                                    self.emit(instrs::cp(
-                                        atr(out),
-                                        atr(fuc.nodes[out].inputs[index]),
-                                    ));
-                                }
-                            }
+                            emit_moves(index);
                         }
                     }
                     Kind::Return => {
@@ -241,8 +292,18 @@ impl HbvmBackend {
                         } else if let Some(against) = op.cmp_against() {
                             let op_ty = fuc.nodes[lhs].ty;
 
-                            self.emit(extend(fuc.nodes[lhs].ty, fuc.nodes[lhs].ty.extend(), 0, 0));
-                            self.emit(extend(fuc.nodes[rhs].ty, fuc.nodes[rhs].ty.extend(), 1, 1));
+                            self.emit(extend(
+                                fuc.nodes[lhs].ty,
+                                fuc.nodes[lhs].ty.extend(),
+                                lhs,
+                                lhs,
+                            ));
+                            self.emit(extend(
+                                fuc.nodes[rhs].ty,
+                                fuc.nodes[rhs].ty.extend(),
+                                rhs,
+                                rhs,
+                            ));
 
                             if op_ty.is_float() && matches!(op, TokenKind::Le | TokenKind::Ge) {
                                 let opop = match op {
@@ -253,7 +314,7 @@ impl HbvmBackend {
                                 let op_fn = opop.float_cmp(op_ty).unwrap();
                                 self.emit(op_fn(atr(nid), atr(lhs), atr(rhs)));
                                 self.emit(instrs::not(atr(nid), atr(nid)));
-                            } else if op_ty.is_integer() {
+                            } else {
                                 let op_fn =
                                     if op_ty.is_signed() { instrs::cmps } else { instrs::cmpu };
                                 self.emit(op_fn(atr(nid), atr(lhs), atr(rhs)));
@@ -261,8 +322,6 @@ impl HbvmBackend {
                                 if matches!(op, TokenKind::Eq | TokenKind::Lt | TokenKind::Gt) {
                                     self.emit(instrs::not(atr(nid), atr(nid)));
                                 }
-                            } else {
-                                todo!("unhandled operator: {op}");
                             }
                         } else {
                             todo!("unhandled operator: {op}");
@@ -787,11 +846,7 @@ impl<'a> Env<'a> {
     }
 
     fn append_bundle(&mut self, inst: Nid, bundle: &mut Bundle, use_buf: &mut Vec<Nid>) {
-        let mut dom = self.ctx.idom_of(inst);
-        if self.ctx.nodes[dom].kind == Kind::Loop && self.ctx.nodes[inst].kind == Kind::Phi {
-            dom = self.ctx.nodes.idom(dom);
-            dom = self.ctx.idom_of(dom);
-        }
+        let dom = self.ctx.idom_of(inst);
         self.ctx.uses_of(inst, use_buf);
         for uinst in use_buf.drain(..) {
             let cursor = self.ctx.use_block(inst, uinst);
