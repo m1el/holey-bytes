@@ -337,7 +337,7 @@ impl HbvmBackend {
                             let Arg::Value(ty) = arg else { continue };
                             let Some(loc) = parama.next(ty, tys) else { continue };
 
-                            let mut arg = *allocs.next().unwrap();
+                            let arg = *allocs.next().unwrap();
                             let (rg, size) = match loc {
                                 PLoc::Reg(rg, size) if ty.loc(tys) == Loc::Stack => (rg, size),
                                 PLoc::WideReg(rg, size) => (rg, size),

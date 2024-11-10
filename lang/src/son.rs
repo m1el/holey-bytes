@@ -191,13 +191,10 @@ impl Nodes {
     fn fix_loops(&mut self) {
         'o: for l in self[LOOPS].outputs.clone() {
             let mut cursor = self[l].inputs[1];
+            let depth = self.loop_depth(cursor);
             while cursor != l {
                 if self[cursor].kind == Kind::If
-                    && self[cursor]
-                        .outputs
-                        .clone()
-                        .into_iter()
-                        .any(|b| self.loop_depth(b) < self.loop_depth(cursor))
+                    && self[cursor].outputs.iter().any(|&b| self.loop_depth(b) < depth)
                 {
                     continue 'o;
                 }
@@ -261,6 +258,14 @@ impl Nodes {
             return;
         }
 
+        if node == NEVER {
+            std::dbg!();
+        }
+
+        if self[node].kind == Kind::Loop {
+            std::dbg!(&self[node]);
+        }
+
         for &n in self[node].outputs.iter() {
             self.collect_rpo(n, rpo, visited);
         }
@@ -269,6 +274,7 @@ impl Nodes {
     }
 
     fn push_up(&mut self, rpo: &mut Vec<Nid>, visited: &mut BitSet) {
+        std::dbg!();
         debug_assert!(rpo.is_empty());
         self.collect_rpo(VOID, rpo, visited);
 
@@ -1342,7 +1348,11 @@ impl Nodes {
 
     fn modify_input(&mut self, target: Nid, inp_index: usize, with: Nid) -> Nid {
         self.remove_node_lookup(target);
-        debug_assert_ne!(self[target].inputs[inp_index], with, "{:?}", self[target]);
+        debug_assert_ne!(
+            self[target].inputs[inp_index], with,
+            "{:?} {:?}",
+            self[target], self[with]
+        );
 
         if self[target].is_not_gvnd() && (self[target].kind != Kind::Phi || with == 0) {
             let prev = self[target].inputs[inp_index];
@@ -4223,7 +4233,7 @@ impl<'a> Codegen<'a> {
                     let index = self.ci.nodes[out].inputs.iter().position(|&p| p == n).unwrap();
                     self.ci.nodes.modify_input(out, index, self.ci.nodes[n].inputs[0]);
                 } else {
-                    if !self.ci.nodes[out].kind.is_pinned() {
+                    if !self.ci.nodes[out].kind.is_pinned() && self.ci.nodes[out].inputs[0] != pin {
                         out = self.ci.nodes.modify_input(out, 0, pin);
                     }
                     let index =
