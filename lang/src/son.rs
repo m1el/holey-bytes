@@ -3816,6 +3816,7 @@ impl<'a> Codegen<'a> {
 
     fn gen_const(&mut self, cnst: ty::Const, ctx: Ctx) -> Option<Value> {
         let c = &self.tys.ins.consts[cnst];
+        let prev = mem::replace(&mut self.ci.file, c.file);
         let f = &self.files[c.file.index()];
         let Expr::BinOp { left, right, .. } = c.ast.get(f) else { unreachable!() };
 
@@ -3826,6 +3827,7 @@ impl<'a> Codegen<'a> {
             })
             .unwrap_or_else(|_| unreachable!())?;
         self.strip_var(&mut value);
+        self.ci.file = prev;
         Some(value)
     }
 
