@@ -392,6 +392,8 @@ impl Nodes {
             }
         }
 
+        buf.sort_by_key(|&n| !self.is_cfg(n));
+
         if outputs.len() != buf.len() {
             panic!("{:?} {:?}", outputs, buf);
         }
