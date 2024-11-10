@@ -1247,20 +1247,22 @@ impl Nodes {
                         },
                     );
                     let size = tys.size_of(ty);
+                    let mut offset = 0;
                     loop {
-                        break match s[region].kind {
-                            _ if region == loc => 0..size as usize,
+                        match s[region].kind {
+                            _ if region == loc => {
+                                break offset as usize..offset as usize + size as usize
+                            }
                             Kind::Assert { kind: AssertKind::NullCheck, .. } => {
-                                region = s[region].inputs[2];
-                                continue;
+                                region = s[region].inputs[2]
                             }
                             Kind::BinOp { op: TokenKind::Add | TokenKind::Sub }
-                                if let Kind::CInt { value } = s[s[region].inputs[2]].kind
-                                    && s[region].inputs[1] == loc =>
+                                if let Kind::CInt { value } = s[s[region].inputs[2]].kind =>
                             {
-                                value as usize..value as usize + size as usize
+                                offset += value;
+                                region = s[region].inputs[1];
                             }
-                            _ => 0..full_size as usize,
+                            _ => break 0..full_size as usize,
                         };
                     }
                 }
@@ -1280,6 +1282,8 @@ impl Nodes {
                     if range.start >= load_range.end || range.end <= load_range.start {
                         cursor = self[cursor].inputs[3];
                     } else {
+                        let reg = self.aclass_index(self[cursor].inputs[2]).1;
+                        self[reg].peep_triggers.push(target);
                         break;
                     }
                 }
@@ -4327,7 +4331,7 @@ impl<'a> Codegen<'a> {
             self.ci.nodes.basic_blocks();
             self.ci.nodes.graphviz(self.ty_display(ty::Id::VOID));
         } else {
-            //self.ci.nodes.graphviz_in_browser(self.ty_display(ty::Id::VOID));
+            self.ci.nodes.graphviz_in_browser(self.ty_display(ty::Id::VOID));
         }
 
         self.errors.borrow().len() == prev_err_len

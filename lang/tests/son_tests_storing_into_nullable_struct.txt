@@ -1,40 +1,42 @@
 do_stuff:
     CP r1, r2
     JALA r0, r31, 0a
+just_read:
+    JALA r0, r31, 0a
 main:
-    ADDI64 r254, r254, -104d
-    ST r31, r254, 32a, 72h
+    ADDI64 r254, r254, -120d
+    ST r31, r254, 48a, 72h
     ADDI64 r32, r254, 16d
+    CP r1, r32
     JAL r31, r0, :optionala
-    ST r1, r254, 16a, 16h
-    LI8 r33, 0b
-    LD r34, r254, 16a, 1h
-    ANDI r34, r34, 255d
-    ANDI r33, r33, 255d
+    CP r2, r32
+    LI64 r33, 0d
+    LD r34, r254, 16a, 8h
     JNE r34, r33, :0
     LI64 r1, 10d
     JMP :1
- 0: LI64 r35, 0d
-    ST r35, r254, 24a, 8h
+ 0: ST r33, r254, 24a, 8h
+    JAL r31, r0, :just_read
     LD r2, r254, 24a, 8h
     JAL r31, r0, :do_stuff
-    CP r36, r1
-    ADDI64 r37, r254, 0d
+    CP r35, r1
+    ADDI64 r36, r254, 0d
     JAL r31, r0, :optional
     ST r1, r254, 0a, 16h
+    LI8 r37, 0b
     LD r38, r254, 0a, 1h
     ANDI r38, r38, 255d
-    ANDI r33, r33, 255d
-    JNE r38, r33, :2
+    ANDI r37, r37, 255d
+    JNE r38, r37, :2
     LI64 r1, 20d
     JMP :1
  2: LI64 r39, 100d
     ST r39, r254, 8a, 8h
     LD r2, r254, 8a, 8h
     JAL r31, r0, :do_stuff
-    ADD64 r1, r1, r36
- 1: LD r31, r254, 32a, 72h
-    ADDI64 r254, r254, 104d
+    ADD64 r1, r1, r35
+ 1: LD r31, r254, 48a, 72h
+    ADDI64 r254, r254, 120d
     JALA r0, r31, 0a
 optional:
     ADDI64 r254, r254, -16d
@@ -47,18 +49,22 @@ optional:
     ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
 optionala:
-    ADDI64 r254, r254, -24d
-    ADDI64 r1, r254, 0d
-    LI64 r3, 1d
-    LI8 r7, 1b
-    ADDI64 r6, r254, 8d
-    ST r3, r254, 0a, 8h
-    ST r7, r254, 8a, 1h
-    ADDI64 r11, r6, 8d
-    BMC r1, r11, 8h
-    LD r1, r6, 0a, 16h
-    ADDI64 r254, r254, 24d
+    ADDI64 r254, r254, -56d
+    ADDI64 r7, r254, 0d
+    LI64 r8, 1d
+    ADDI64 r9, r254, 16d
+    ADDI64 r6, r254, 24d
+    ST r8, r254, 0a, 8h
+    ST r9, r254, 24a, 8h
+    ADDI64 r3, r6, 8d
+    BMC r7, r3, 8h
+    ADDI64 r4, r254, 8d
+    ST r4, r254, 40a, 8h
+    LI64 r2, 0d
+    ST r2, r254, 48a, 8h
+    BMC r6, r1, 32h
+    ADDI64 r254, r254, 56d
     JALA r0, r31, 0a
-code size: 568
+code size: 604
 ret: 100
 status: Ok(())

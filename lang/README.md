@@ -617,12 +617,14 @@ main := fn(): uint {
 
 #### storing_into_nullable_struct
 ```hb
-StructA := struct {b: StructB}
+StructA := struct {b: StructB, c: ^uint, d: uint}
 
-StructB := struct {c: uint}
+StructB := struct {g: ^uint, c: StructC}
+
+StructC := struct {c: uint}
 
 optionala := fn(): ?StructA {
-	return .(.(1))
+	return .(.(&0, .(1)), &0, 0)
 }
 
 Struct := struct {inner: uint}
@@ -635,13 +637,17 @@ do_stuff := fn(arg: uint): uint {
 	return arg
 }
 
+just_read := fn(s: StructA): void {
+}
+
 main := fn(): uint {
 	a := optionala()
 	if a == null {
 		return 10
 	}
-	a.b = .(0)
-	innera := do_stuff(a.b.c)
+	a.b.c = .(0)
+	just_read(a)
+	innera := do_stuff(a.b.c.c)
 
 	val := optional()
 	if val == null {
