@@ -5,7 +5,7 @@ use {
         parser, reg,
         son::{debug_assert_matches, Kind, ARG_START, MEM, NEVER, VOID},
         ty::{self, Arg, Loc},
-        utils::{BitSet, Vc},
+        utils::BitSet,
         HashMap, Offset, PLoc, Reloc, Sig, TypedReloc, Types,
     },
     alloc::{borrow::ToOwned, vec::Vec},
@@ -616,7 +616,7 @@ impl<'a> Function<'a> {
                     block.push(self.rg(ph));
                 }
                 self.blocks[self.backrefs[nid as usize] as usize].params = block;
-                self.reschedule_block(nid, &mut node.outputs);
+                self.nodes.reschedule_block(nid, &mut node.outputs);
                 for o in node.outputs.into_iter().rev() {
                     self.emit_node(o, nid);
                 }
@@ -680,7 +680,7 @@ impl<'a> Function<'a> {
                     )]);
                 }
 
-                self.reschedule_block(nid, &mut node.outputs);
+                self.nodes.reschedule_block(nid, &mut node.outputs);
                 for o in node.outputs.into_iter().rev() {
                     self.emit_node(o, nid);
                 }
@@ -688,7 +688,7 @@ impl<'a> Function<'a> {
             Kind::Then | Kind::Else => {
                 self.backrefs[nid as usize] = self.add_block(nid);
                 self.bridge(prev, nid);
-                self.reschedule_block(nid, &mut node.outputs);
+                self.nodes.reschedule_block(nid, &mut node.outputs);
                 for o in node.outputs.into_iter().rev() {
                     self.emit_node(o, nid);
                 }
@@ -783,7 +783,7 @@ impl<'a> Function<'a> {
 
                 self.add_instr(nid, ops);
 
-                self.reschedule_block(nid, &mut node.outputs);
+                self.nodes.reschedule_block(nid, &mut node.outputs);
                 for o in node.outputs.into_iter().rev() {
                     if self.nodes[o].inputs[0] == nid
                         || (matches!(self.nodes[o].kind, Kind::Loop | Kind::Region)
@@ -852,72 +852,6 @@ impl<'a> Function<'a> {
         self.blocks[self.backrefs[succ as usize] as usize]
             .preds
             .push(regalloc2::Block::new(self.backrefs[pred as usize] as usize));
-    }
-
-    fn reschedule_block(&mut self, from: Nid, outputs: &mut Vc) {
-        // NOTE: this code is horible
-        let from = Some(&from);
-        let mut buf = Vec::with_capacity(outputs.len());
-        let mut seen = BitSet::default();
-        seen.clear(self.nodes.values.len());
-
-        for &o in outputs.iter() {
-            if !self.nodes.is_cfg(o) {
-                continue;
-            }
-
-            seen.set(o);
-
-            let mut cursor = buf.len();
-            buf.push(o);
-            while let Some(&n) = buf.get(cursor) {
-                for &i in &self.nodes[n].inputs[1..] {
-                    if from == self.nodes[i].inputs.first()
-                        && self.nodes[i]
-                            .outputs
-                            .iter()
-                            .all(|&o| self.nodes[o].inputs.first() != from || seen.get(o))
-                        && seen.set(i)
-                    {
-                        for &o in outputs.iter().filter(|&&n| n == i) {
-                            buf.push(o);
-                        }
-                    }
-                }
-                cursor += 1;
-            }
-        }
-
-        for &o in outputs.iter() {
-            if !seen.set(o) {
-                continue;
-            }
-            let mut cursor = buf.len();
-            for &o in outputs.iter().filter(|&&n| n == o) {
-                buf.push(o);
-            }
-            while let Some(&n) = buf.get(cursor) {
-                for &i in &self.nodes[n].inputs[1..] {
-                    if from == self.nodes[i].inputs.first()
-                        && self.nodes[i]
-                            .outputs
-                            .iter()
-                            .all(|&o| self.nodes[o].inputs.first() != from || seen.get(o))
-                        && seen.set(i)
-                    {
-                        for &o in outputs.iter().filter(|&&n| n == i) {
-                            buf.push(o);
-                        }
-                    }
-                }
-                cursor += 1;
-            }
-        }
-
-        if outputs.len() != buf.len() {
-            panic!("{:?} {:?}", outputs, buf);
-        }
-        outputs.copy_from_slice(&buf);
     }
 }
 

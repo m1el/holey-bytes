@@ -5,7 +5,7 @@ use {
         parser, reg,
         son::{debug_assert_matches, write_reloc, Kind, MEM},
         ty::{self, Loc, Module},
-        utils::{Ent, EntVec},
+        utils::{BitSet, Ent, EntVec, Vc},
         Offset, Reloc, Size, TypedReloc, Types,
     },
     alloc::{boxed::Box, collections::BTreeMap, string::String, vec::Vec},
@@ -332,6 +332,72 @@ impl Backend for HbvmBackend {
 }
 
 impl Nodes {
+    fn reschedule_block(&mut self, from: Nid, outputs: &mut Vc) {
+        // NOTE: this code is horible
+        let from = Some(&from);
+        let mut buf = Vec::with_capacity(outputs.len());
+        let mut seen = BitSet::default();
+        seen.clear(self.values.len());
+
+        for &o in outputs.iter() {
+            if !self.is_cfg(o) {
+                continue;
+            }
+
+            seen.set(o);
+
+            let mut cursor = buf.len();
+            buf.push(o);
+            while let Some(&n) = buf.get(cursor) {
+                for &i in &self[n].inputs[1..] {
+                    if from == self[i].inputs.first()
+                        && self[i]
+                            .outputs
+                            .iter()
+                            .all(|&o| self[o].inputs.first() != from || seen.get(o))
+                        && seen.set(i)
+                    {
+                        for &o in outputs.iter().filter(|&&n| n == i) {
+                            buf.push(o);
+                        }
+                    }
+                }
+                cursor += 1;
+            }
+        }
+
+        for &o in outputs.iter() {
+            if !seen.set(o) {
+                continue;
+            }
+            let mut cursor = buf.len();
+            for &o in outputs.iter().filter(|&&n| n == o) {
+                buf.push(o);
+            }
+            while let Some(&n) = buf.get(cursor) {
+                for &i in &self[n].inputs[1..] {
+                    if from == self[i].inputs.first()
+                        && self[i]
+                            .outputs
+                            .iter()
+                            .all(|&o| self[o].inputs.first() != from || seen.get(o))
+                        && seen.set(i)
+                    {
+                        for &o in outputs.iter().filter(|&&n| n == i) {
+                            buf.push(o);
+                        }
+                    }
+                }
+                cursor += 1;
+            }
+        }
+
+        if outputs.len() != buf.len() {
+            panic!("{:?} {:?}", outputs, buf);
+        }
+        outputs.copy_from_slice(&buf);
+    }
+
     fn is_never_used(&self, nid: Nid, tys: &Types) -> bool {
         let node = &self[nid];
         match node.kind {
@@ -485,7 +551,7 @@ impl TokenKind {
             Self::Band => return Some(andi),
             Self::Bor => return Some(ori),
             Self::Xor => return Some(xori),
-            Self::Shr if signed => basic_op!(srui8, srui16, srui32, srui64),
+            Self::Shr if signed => basic_op!(srsi8, srsi16, srsi32, srsi64),
             Self::Shr => basic_op!(srui8, srui16, srui32, srui64),
             Self::Shl => basic_op!(slui8, slui16, slui32, slui64),
             _ => return None,

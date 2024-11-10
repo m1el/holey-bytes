@@ -95,8 +95,8 @@ put_filled_rect:
     CP r4, r33
     CP r5, r44
     ECA 
-    ADD64 r42, r40, r42
     SUB64 r41, r41, r40
+    ADD64 r42, r40, r42
     SUB64 r39, r39, r32
     CP r6, r43
     CP r8, r44

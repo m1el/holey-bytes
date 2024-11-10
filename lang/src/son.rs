@@ -450,7 +450,9 @@ impl Nodes {
             return self.idom(from);
         }
 
-        let index = self[from].inputs.iter().position(|&n| n == target).unwrap();
+        let index = self[from].inputs.iter().position(|&n| n == target).unwrap_or_else(|| {
+            panic!("from {from} {:?} target {target} {:?}", self[from], self[target])
+        });
         self[self[from].inputs[0]].inputs[index - 1]
     }
 
@@ -493,6 +495,8 @@ impl Nodes {
                 self.load_loop_var(i, from_value, loops);
                 self.load_loop_var(i, to_value, loops);
                 if to_value.value() != from_value.value() {
+                    debug_assert!(!to_value.ptr);
+                    debug_assert!(!from_value.ptr);
                     let inps = [ctrl.get(), from_value.value(), to_value.value()];
                     to_value.set_value_remove(self.new_node(from_value.ty, Kind::Phi, inps), self);
                 }
@@ -624,6 +628,8 @@ impl Nodes {
                     node.ty.expand(),
                 );
             }
+
+            debug_assert!(!matches!(node.ty.expand(), ty::Kind::Struct(_)));
         }
 
         let mut lookup_meta = None;
@@ -1036,8 +1042,9 @@ impl Nodes {
                 if self[lhs].kind == Kind::Stre
                     && self[rhs].kind == Kind::Stre
                     && self[lhs].ty == self[rhs].ty
+                    && !matches!(self[lhs].ty.expand(), ty::Kind::Struct(_))
                     && self[lhs].inputs[2] == self[rhs].inputs[2]
-                    && self[lhs].inputs.get(3) == self[rhs].inputs.get(3)
+                    && self[lhs].inputs[3] == self[rhs].inputs[3]
                 {
                     let pick_value = self.new_node(self[lhs].ty, Kind::Phi, [
                         ctrl,
@@ -1154,6 +1161,10 @@ impl Nodes {
                         }
                     }
 
+                    if !unidentifed.is_empty() {
+                        break 'eliminate;
+                    }
+
                     debug_assert_matches!(
                         self[last_store].kind,
                         Kind::Stre | Kind::Mem,
@@ -1166,10 +1177,6 @@ impl Nodes {
                         "{:?}",
                         self[first_store]
                     );
-
-                    if !unidentifed.is_empty() {
-                        break 'eliminate;
-                    }
 
                     // FIXME: when the loads and stores become parallel we will need to get saved
                     // differently
@@ -1574,9 +1581,13 @@ impl Nodes {
             return;
         }
 
+        debug_assert!(!var.ptr);
+
         let [loops @ .., loob] = loops else { unreachable!() };
         let node = loob.node;
         let lvar = &mut loob.scope.vars[index];
+
+        debug_assert!(!lvar.ptr);
 
         self.load_loop_var(index, lvar, loops);
 
@@ -1634,7 +1645,7 @@ impl Nodes {
         }
     }
 
-    fn dominates(&mut self, dominator: Nid, mut dominated: Nid) -> bool {
+    fn dominates(&self, dominator: Nid, mut dominated: Nid) -> bool {
         loop {
             if dominator == dominated {
                 break true;
@@ -1650,10 +1661,19 @@ impl Nodes {
 
     fn is_data_dep(&self, nid: Nid, n: Nid) -> bool {
         match self[n].kind {
-            _ if self.is_cfg(n) && !matches!(self[n].kind, Kind::Call { .. }) => false,
+            Kind::Return => self[n].inputs[1] == nid,
+            _ if self.is_cfg(n) && !matches!(self[n].kind, Kind::Call { .. } | Kind::If) => false,
             Kind::Stre => self[n].inputs[3] != nid,
             Kind::Load => self[n].inputs[2] != nid,
             _ => self[n].inputs[0] != nid || self[n].inputs[1..].contains(&nid),
+        }
+    }
+
+    fn this_or_delegates<'a>(&'a self, source: Nid, target: &'a Nid) -> (Nid, &'a [Nid]) {
+        if self[*target].lock_rc == 0 {
+            (source, core::slice::from_ref(target))
+        } else {
+            (*target, self[*target].outputs.as_slice())
         }
     }
 }
@@ -3509,7 +3529,9 @@ impl<'a> Codegen<'a> {
                 });
 
                 for var in self.ci.scope.vars.iter_mut().skip(self.ci.inline_var_base) {
-                    var.set_value(VOID, &mut self.ci.nodes);
+                    if !var.ptr {
+                        var.set_value(VOID, &mut self.ci.nodes);
+                    }
                 }
 
                 for aclass in self.ci.scope.aclasses[..2].iter_mut() {
@@ -4612,6 +4634,8 @@ mod tests {
         if let Err(e) = err {
             writeln!(output, "!!! asm is invalid: {e}").unwrap();
         } else {
+            log::info!("================ running {ident} ==============");
+            log::trace!("{output}");
             super::hbvm::test_run_vm(&out, output);
         }
     }
