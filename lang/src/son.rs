@@ -1267,8 +1267,8 @@ impl Nodes {
 
                 let &[ctrl, region, store] = self[target].inputs.as_slice() else { unreachable!() };
                 let load_range = range_of(self, region, self[target].ty, tys);
-                let mut cursor = store;
 
+                let mut cursor = store;
                 while cursor != MEM && self[cursor].kind != Kind::Phi {
                     if self[cursor].inputs[0] == ctrl
                         && self[cursor].inputs[2] == region
@@ -1279,9 +1279,9 @@ impl Nodes {
                     let range = range_of(self, self[cursor].inputs[2], self[cursor].ty, tys);
                     if range.start >= load_range.end || range.end <= load_range.start {
                         cursor = self[cursor].inputs[3];
-                        continue;
+                    } else {
+                        break;
                     }
-                    break;
                 }
 
                 if store != cursor {
@@ -2414,31 +2414,6 @@ impl<'a> Codegen<'a> {
         let (value_index, value_region) = self.ci.nodes.aclass_index(value);
         if value_index != 0 {
             self.ci.nodes[value_region].aclass = 0;
-            //// simply switch the class to the default one
-            //let aclass = &mut self.ci.scope.aclasses[value_index];
-            //self.ci.nodes.load_loop_aclass(value_index, aclass, &mut self.ci.loops);
-            //let last_store = aclass.last_store.get();
-            //let mut cursor = last_store;
-            //let mut first_store = cursor;
-            //while cursor != MEM {
-            //    first_store = cursor;
-            //    debug_assert_matches!(
-            //        self.ci.nodes[cursor].kind,
-            //        Kind::Stre,
-            //        "{:?}",
-            //        self.ci.nodes[cursor]
-            //    );
-            //    cursor = self.ci.nodes[cursor].inputs[3];
-            //}
-
-            //if last_store != MEM {
-            //    let base_class = self.ci.scope.aclasses[0].last_store.get();
-            //    if base_class != MEM {
-            //        self.ci.nodes.modify_input(first_store, 3, base_class);
-            //    }
-            //    self.ci.scope.aclasses[0].last_store.set(last_store, &mut self.ci.nodes);
-            //}
-
             self.ci.nodes.load_loop_aclass(0, &mut self.ci.scope.aclasses[0], &mut self.ci.loops);
             self.ci.nodes.load_loop_aclass(
                 value_index,
@@ -2457,9 +2432,13 @@ impl<'a> Codegen<'a> {
 
         let (index, _) = self.ci.nodes.aclass_index(region);
         if self.ci.nodes[value].kind == Kind::Load {
-            let (lindex, _) = self.ci.nodes.aclass_index(self.ci.nodes[value].inputs[1]);
+            let (lindex, ..) = self.ci.nodes.aclass_index(self.ci.nodes[value].inputs[1]);
             let clobber = self.ci.scope.aclasses[lindex].clobber.get();
-            self.ci.scope.aclasses[index].clobber.set(clobber, &mut self.ci.nodes);
+            if self.ci.nodes.idepth(clobber)
+                > self.ci.nodes.idepth(self.ci.scope.aclasses[index].clobber.get())
+            {
+                self.ci.scope.aclasses[index].clobber.set(clobber, &mut self.ci.nodes);
+            }
         }
         let aclass = &mut self.ci.scope.aclasses[index];
         self.ci.nodes.load_loop_aclass(index, aclass, &mut self.ci.loops);
@@ -3948,6 +3927,7 @@ impl<'a> Codegen<'a> {
 
     fn add_clobber_stores(&mut self, clobbered_aliases: BitSet) {
         for clobbered in clobbered_aliases.iter() {
+            debug_assert_matches!(self.ci.nodes[self.ci.ctrl.get()].kind, Kind::Call { .. });
             self.ci.scope.aclasses[clobbered].clobber.set(self.ci.ctrl.get(), &mut self.ci.nodes);
         }
         self.ci.nodes[self.ci.ctrl.get()].clobbers = clobbered_aliases;

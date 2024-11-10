@@ -614,23 +614,40 @@ main := fn(): uint {
 
 #### storing_into_nullable_struct
 ```hb
+StructA := struct {b: StructB}
+
+StructB := struct {c: uint}
+
+optionala := fn(): ?StructA {
+	return .(.(1))
+}
+
 Struct := struct {inner: uint}
 
 optional := fn(): ?Struct {
 	return .(10)
 }
 
-do_stuff := fn(arg: Struct): uint {
-	return arg.inner
+do_stuff := fn(arg: uint): uint {
+	return arg
 }
 
-main := fn(): void {
-	val := optional()
-	if val == null {
-		return
+main := fn(): uint {
+	a := optionala()
+	if a == null {
+		return 10
 	}
-	val.inner = 100
-	inner := do_stuff(val)
+	a.b = .(0)
+	innera := do_stuff(a.b.c)
+
+	//val := optional()
+	//if val == null {
+	//	return 20
+	//}
+	//val.inner = 100
+	//inner := do_stuff(val.inner)
+	return innera
+	//+ inner
 }
 ```
 
