@@ -446,8 +446,11 @@ pass := fn(arr: ^[uint; 3]): uint {
 #### inline
 ```hb
 main := fn(): uint {
-	return @inline(foo, 1, 2, 3) - 6
+	return @inline(foo, 1, 2, 3) - bar(3)
 }
+
+// only for functions with no control flow (if, loop)
+$bar := fn(a: uint): uint return a * 2
 
 gb := 0
 

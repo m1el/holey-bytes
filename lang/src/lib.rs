@@ -794,6 +794,7 @@ struct Func {
     base: Option<ty::Func>,
     expr: ExprRef,
     sig: Option<Sig>,
+    is_inline: bool,
     comp_state: [CompState; 2],
 }
 
@@ -1052,20 +1053,28 @@ trait TypeParser {
             if let Some(&ty) = tys.syms.get(SymKey::Decl(file, name), &tys.ins) {
                 ty
             } else {
-                let ty = left
+                let (is_ct, ty) = left
                     .find_pattern_path(name, right, |right, is_ct| {
-                        if is_ct {
-                            self.tys()
-                                .ins
-                                .consts
-                                .push(Const { ast: ExprRef::new(expr), name, file })
-                                .into()
-                        } else {
-                            self.parse_ty(file, right, Some(name), files)
-                        }
+                        (
+                            is_ct,
+                            if is_ct && !matches!(right, Expr::Closure { .. }) {
+                                self.tys()
+                                    .ins
+                                    .consts
+                                    .push(Const { ast: ExprRef::new(expr), name, file })
+                                    .into()
+                            } else {
+                                self.parse_ty(file, right, Some(name), files)
+                            },
+                        )
                     })
                     .unwrap_or_else(|_| unreachable!());
                 let tys = self.tys();
+                if let ty::Kind::Func(f) = ty.expand()
+                    && is_ct
+                {
+                    tys.ins.funcs[f].is_inline = true;
+                }
                 tys.syms.insert(SymKey::Decl(file, name), ty, &tys.ins);
                 ty
             }

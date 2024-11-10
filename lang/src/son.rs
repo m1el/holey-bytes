@@ -3192,210 +3192,9 @@ impl<'a> Codegen<'a> {
 
                 alt_value.or(Some(Value::new(self.ci.ctrl.get()).ty(ty)))
             }
-            Expr::Call { func, args, .. } => {
-                let ty = self.ty(func);
-                let ty::Kind::Func(mut fu) = ty.expand() else {
-                    self.report(
-                        func.pos(),
-                        fa!("compiler cant (yet) call '{}'", self.ty_display(ty)),
-                    );
-                    return Value::NEVER;
-                };
-
-                let Some(sig) = self.compute_signature(&mut fu, func.pos(), args) else {
-                    return Value::NEVER;
-                };
-                self.make_func_reachable(fu);
-
-                let fuc = &self.tys.ins.funcs[fu];
-                let ast = &self.files[fuc.file.index()];
-                let &Expr::Closure { args: cargs, .. } = fuc.expr.get(ast) else { unreachable!() };
-
-                if args.len() != cargs.len() {
-                    self.report(
-                        func.pos(),
-                        fa!(
-                            "expected {} function argumenr{}, got {}",
-                            cargs.len(),
-                            if cargs.len() == 1 { "" } else { "s" },
-                            args.len()
-                        ),
-                    );
-                }
-
-                let mut inps = Vc::from([NEVER]);
-                let mut tys = sig.args.args();
-                let mut cargs = cargs.iter();
-                let mut args = args.iter();
-                let mut clobbered_aliases = BitSet::default();
-                while let Some(ty) = tys.next(self.tys) {
-                    let carg = cargs.next().unwrap();
-                    let Some(arg) = args.next() else { break };
-                    let Arg::Value(ty) = ty else { continue };
-
-                    let mut value = self.raw_expr_ctx(arg, Ctx::default().with_ty(ty))?;
-                    self.strip_var(&mut value);
-                    debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
-                    self.assert_ty(arg.pos(), &mut value, ty, fa!("argument {}", carg.name));
-                    self.strip_ptr(&mut value);
-                    self.add_clobbers(value, &mut clobbered_aliases);
-
-                    self.ci.nodes.lock(value.id);
-                    inps.push(value.id);
-                }
-
-                for &n in inps.iter().skip(1) {
-                    self.ci.nodes.unlock(n);
-                }
-
-                self.append_clobbers(&mut inps, &mut clobbered_aliases);
-
-                let alt_value = match sig.ret.loc(self.tys) {
-                    Loc::Reg => None,
-                    Loc::Stack => {
-                        let stck = self.new_stack(func.pos(), sig.ret);
-                        clobbered_aliases.set(self.ci.nodes.aclass_index(stck).0 as _);
-                        inps.push(stck);
-                        Some(Value::ptr(stck).ty(sig.ret))
-                    }
-                };
-
-                inps[0] = self.ci.ctrl.get();
-                self.ci.ctrl.set(
-                    self.ci.nodes.new_node_nop(
-                        sig.ret,
-                        Kind::Call { func: fu, args: sig.args },
-                        inps,
-                    ),
-                    &mut self.ci.nodes,
-                );
-
-                self.add_clobber_stores(clobbered_aliases);
-
-                alt_value.or(Some(Value::new(self.ci.ctrl.get()).ty(sig.ret)))
-            }
+            Expr::Call { func, args, .. } => self.gen_call(func, args, false),
             Expr::Directive { name: "inline", args: [func, args @ ..], .. } => {
-                let ty = self.ty(func);
-                let ty::Kind::Func(mut fu) = ty.expand() else {
-                    self.report(
-                        func.pos(),
-                        fa!(
-                            "first argument to @inline should be a function,
-                                        but here its '{}'",
-                            self.ty_display(ty)
-                        ),
-                    );
-                    return Value::NEVER;
-                };
-
-                let Some(sig) = self.compute_signature(&mut fu, func.pos(), args) else {
-                    return Value::NEVER;
-                };
-
-                let Func { expr, file, .. } = self.tys.ins.funcs[fu];
-
-                let ast = &self.files[file.index()];
-                let &Expr::Closure { args: cargs, body, .. } = expr.get(ast) else {
-                    unreachable!()
-                };
-
-                if args.len() != cargs.len() {
-                    self.report(
-                        func.pos(),
-                        fa!(
-                            "expected {} inline function argumenr{}, got {}",
-                            cargs.len(),
-                            if cargs.len() == 1 { "" } else { "s" },
-                            args.len()
-                        ),
-                    );
-                }
-
-                let mut tys = sig.args.args();
-                let mut args = args.iter();
-                let mut cargs = cargs.iter();
-                let var_base = self.ci.scope.vars.len();
-                let aclass_base = self.ci.scope.aclasses.len();
-                while let Some(aty) = tys.next(self.tys) {
-                    let carg = cargs.next().unwrap();
-                    let Some(arg) = args.next() else { break };
-                    match aty {
-                        Arg::Type(id) => {
-                            self.ci.scope.vars.push(Variable::new(
-                                carg.id,
-                                id,
-                                false,
-                                NEVER,
-                                &mut self.ci.nodes,
-                            ));
-                        }
-                        Arg::Value(ty) => {
-                            let mut value = self.raw_expr_ctx(arg, Ctx::default().with_ty(ty))?;
-                            self.strip_var(&mut value);
-                            debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
-                            debug_assert_ne!(value.id, 0);
-                            self.assert_ty(
-                                arg.pos(),
-                                &mut value,
-                                ty,
-                                fa!("argument {}", carg.name),
-                            );
-
-                            self.ci.scope.vars.push(Variable::new(
-                                carg.id,
-                                ty,
-                                value.ptr,
-                                value.id,
-                                &mut self.ci.nodes,
-                            ));
-                        }
-                    }
-                }
-
-                let prev_var_base = mem::replace(&mut self.ci.inline_var_base, var_base);
-                let prev_aclass_base = mem::replace(&mut self.ci.inline_aclass_base, aclass_base);
-                let prev_ret = self.ci.ret.replace(sig.ret);
-                let prev_inline_ret = self.ci.inline_ret.take();
-                let prev_file = mem::replace(&mut self.ci.file, file);
-                self.ci.inline_depth += 1;
-
-                if self.expr(body).is_some() {
-                    if sig.ret == ty::Id::VOID {
-                        self.expr(&Expr::Return { pos: body.pos(), val: None });
-                    } else {
-                        self.report(
-                            body.pos(),
-                            "expected all paths in the fucntion to return \
-                                    or the return type to be 'void'",
-                        );
-                    }
-                }
-
-                self.ci.ret = prev_ret;
-                self.ci.file = prev_file;
-                self.ci.inline_depth -= 1;
-                self.ci.inline_var_base = prev_var_base;
-                self.ci.inline_aclass_base = prev_aclass_base;
-                for var in self.ci.scope.vars.drain(var_base..) {
-                    var.remove(&mut self.ci.nodes);
-                }
-                for var in self.ci.scope.aclasses.drain(aclass_base..) {
-                    var.remove(&mut self.ci.nodes);
-                }
-
-                mem::replace(&mut self.ci.inline_ret, prev_inline_ret).map(|(v, ctrl, scope)| {
-                    self.ci.nodes.unlock(v.id);
-                    self.ci.scope.clear(&mut self.ci.nodes);
-                    self.ci.scope = scope;
-                    self.ci.scope.vars.drain(var_base..).for_each(|v| v.remove(&mut self.ci.nodes));
-                    self.ci
-                        .scope
-                        .aclasses
-                        .drain(aclass_base..)
-                        .for_each(|v| v.remove(&mut self.ci.nodes));
-                    mem::replace(&mut self.ci.ctrl, ctrl).remove(&mut self.ci.nodes);
-                    v
-                })
+                self.gen_call(func, args, true)
             }
             Expr::Tupl { pos, ty, fields, .. } => {
                 ctx.ty = ty
@@ -3878,6 +3677,174 @@ impl<'a> Codegen<'a> {
                 self.report_unhandled_ast(e, "bruh");
                 Value::NEVER
             }
+        }
+    }
+
+    fn gen_call(&mut self, func: &Expr, args: &[Expr], inline: bool) -> Option<Value> {
+        let ty = self.ty(func);
+        let ty::Kind::Func(mut fu) = ty.expand() else {
+            self.report(func.pos(), fa!("compiler cant (yet) call '{}'", self.ty_display(ty)));
+            return Value::NEVER;
+        };
+
+        let Some(sig) = self.compute_signature(&mut fu, func.pos(), args) else {
+            return Value::NEVER;
+        };
+        self.make_func_reachable(fu);
+
+        let Func { expr, file, is_inline, .. } = self.tys.ins.funcs[fu];
+        let ast = &self.files[file.index()];
+        let &Expr::Closure { args: cargs, body, .. } = expr.get(ast) else { unreachable!() };
+
+        if args.len() != cargs.len() {
+            self.report(
+                func.pos(),
+                fa!(
+                    "expected {} function argumenr{}, got {}",
+                    cargs.len(),
+                    if cargs.len() == 1 { "" } else { "s" },
+                    args.len()
+                ),
+            );
+        }
+
+        if inline && is_inline {
+            self.report(
+                func.pos(),
+                "function is declared as inline so this @inline directive only reduces readability",
+            );
+        }
+
+        if is_inline || inline {
+            let mut tys = sig.args.args();
+            let mut args = args.iter();
+            let mut cargs = cargs.iter();
+            let var_base = self.ci.scope.vars.len();
+            let aclass_base = self.ci.scope.aclasses.len();
+            while let Some(aty) = tys.next(self.tys) {
+                let carg = cargs.next().unwrap();
+                let Some(arg) = args.next() else { break };
+                match aty {
+                    Arg::Type(id) => {
+                        self.ci.scope.vars.push(Variable::new(
+                            carg.id,
+                            id,
+                            false,
+                            NEVER,
+                            &mut self.ci.nodes,
+                        ));
+                    }
+                    Arg::Value(ty) => {
+                        let mut value = self.raw_expr_ctx(arg, Ctx::default().with_ty(ty))?;
+                        self.strip_var(&mut value);
+                        debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
+                        debug_assert_ne!(value.id, 0);
+                        self.assert_ty(arg.pos(), &mut value, ty, fa!("argument {}", carg.name));
+
+                        self.ci.scope.vars.push(Variable::new(
+                            carg.id,
+                            ty,
+                            value.ptr,
+                            value.id,
+                            &mut self.ci.nodes,
+                        ));
+                    }
+                }
+            }
+
+            let prev_var_base = mem::replace(&mut self.ci.inline_var_base, var_base);
+            let prev_aclass_base = mem::replace(&mut self.ci.inline_aclass_base, aclass_base);
+            let prev_inline_ret = self.ci.inline_ret.take();
+            self.ci.inline_depth += 1;
+            let prev_ret = self.ci.ret.replace(sig.ret);
+            let prev_file = mem::replace(&mut self.ci.file, file);
+            let prev_ctrl = self.ci.ctrl.get();
+
+            if self.expr(body).is_some() {
+                if sig.ret == ty::Id::VOID {
+                    self.expr(&Expr::Return { pos: body.pos(), val: None });
+                } else {
+                    self.report(
+                        body.pos(),
+                        "expected all paths in the fucntion to return \
+                                    or the return type to be 'void'",
+                    );
+                }
+            }
+
+            self.ci.ret = prev_ret;
+            self.ci.file = prev_file;
+            self.ci.inline_depth -= 1;
+            self.ci.inline_var_base = prev_var_base;
+            self.ci.inline_aclass_base = prev_aclass_base;
+            for var in self.ci.scope.vars.drain(var_base..) {
+                var.remove(&mut self.ci.nodes);
+            }
+            for var in self.ci.scope.aclasses.drain(aclass_base..) {
+                var.remove(&mut self.ci.nodes);
+            }
+
+            let (v, ctrl, scope) = mem::replace(&mut self.ci.inline_ret, prev_inline_ret)?;
+            if is_inline && ctrl.get() != prev_ctrl {
+                self.report(body.pos(), "function is makred inline but it contains controlflow");
+            }
+
+            self.ci.nodes.unlock(v.id);
+            self.ci.scope.clear(&mut self.ci.nodes);
+            self.ci.scope = scope;
+            self.ci.scope.vars.drain(var_base..).for_each(|v| v.remove(&mut self.ci.nodes));
+            self.ci.scope.aclasses.drain(aclass_base..).for_each(|v| v.remove(&mut self.ci.nodes));
+
+            mem::replace(&mut self.ci.ctrl, ctrl).remove(&mut self.ci.nodes);
+
+            Some(v)
+        } else {
+            let mut inps = Vc::from([NEVER]);
+            let mut tys = sig.args.args();
+            let mut cargs = cargs.iter();
+            let mut args = args.iter();
+            let mut clobbered_aliases = BitSet::default();
+            while let Some(ty) = tys.next(self.tys) {
+                let carg = cargs.next().unwrap();
+                let Some(arg) = args.next() else { break };
+                let Arg::Value(ty) = ty else { continue };
+
+                let mut value = self.raw_expr_ctx(arg, Ctx::default().with_ty(ty))?;
+                self.strip_var(&mut value);
+                debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
+                self.assert_ty(arg.pos(), &mut value, ty, fa!("argument {}", carg.name));
+                self.strip_ptr(&mut value);
+                self.add_clobbers(value, &mut clobbered_aliases);
+
+                self.ci.nodes.lock(value.id);
+                inps.push(value.id);
+            }
+
+            for &n in inps.iter().skip(1) {
+                self.ci.nodes.unlock(n);
+            }
+
+            self.append_clobbers(&mut inps, &mut clobbered_aliases);
+
+            let alt_value = match sig.ret.loc(self.tys) {
+                Loc::Reg => None,
+                Loc::Stack => {
+                    let stck = self.new_stack(func.pos(), sig.ret);
+                    clobbered_aliases.set(self.ci.nodes.aclass_index(stck).0 as _);
+                    inps.push(stck);
+                    Some(Value::ptr(stck).ty(sig.ret))
+                }
+            };
+
+            inps[0] = self.ci.ctrl.get();
+            self.ci.ctrl.set(
+                self.ci.nodes.new_node_nop(sig.ret, Kind::Call { func: fu, args: sig.args }, inps),
+                &mut self.ci.nodes,
+            );
+
+            self.add_clobber_stores(clobbered_aliases);
+
+            alt_value.or(Some(Value::new(self.ci.ctrl.get()).ty(sig.ret)))
         }
     }
 
