@@ -50,7 +50,7 @@ impl HbvmBackend {
     ) -> (usize, bool) {
         let mut ralloc = mem::take(&mut self.ralloc);
 
-        let fuc = Function::new(nodes, tys, sig);
+        let fuc = Function::new(nodes, tys, files, sig);
         log::info!("{:?}", fuc);
         if !fuc.tail {
             mem::swap(
@@ -447,6 +447,7 @@ pub struct Function<'a> {
     sig: Sig,
     nodes: &'a mut Nodes,
     tys: &'a Types,
+    files: &'a [parser::Ast],
     tail: bool,
     visited: BitSet,
     backrefs: Vec<u16>,
@@ -471,10 +472,11 @@ impl core::fmt::Debug for Function<'_> {
 }
 
 impl<'a> Function<'a> {
-    fn new(nodes: &'a mut Nodes, tys: &'a Types, sig: Sig) -> Self {
+    fn new(nodes: &'a mut Nodes, tys: &'a Types, files: &'a [parser::Ast], sig: Sig) -> Self {
         let mut s = Self {
             tys,
             sig,
+            files,
             tail: true,
             visited: Default::default(),
             backrefs: vec![u16::MAX; nodes.values.len()],
@@ -523,13 +525,27 @@ impl<'a> Function<'a> {
         regalloc2::Operand::reg_def(self.rg(nid))
     }
 
-    fn rg(&self, nid: Nid) -> regalloc2::VReg {
+    fn rg(&mut self, nid: Nid) -> regalloc2::VReg {
         debug_assert!(
             !self.nodes.is_cfg(nid) || matches!(self.nodes[nid].kind, Kind::Call { .. }),
             "{:?}",
             self.nodes[nid]
         );
-        debug_assert_eq!(self.nodes[nid].lock_rc, 0, "{nid} {:?}", self.nodes[nid]);
+        debug_assert_eq!(
+            { self.nodes[nid].lock_rc },
+            0,
+            "{nid} {:?} {:?} {:?}",
+            self.nodes[nid].clone(),
+            nid,
+            {
+                self.nodes[nid].lock_rc = u16::MAX - 1;
+                self.nodes.graphviz_in_browser(ty::Display::new(
+                    self.tys,
+                    self.files,
+                    ty::Id::VOID,
+                ));
+            }
+        );
         debug_assert!(self.nodes[nid].kind != Kind::Phi || self.nodes[nid].ty != ty::Id::VOID);
         regalloc2::VReg::new(nid as _, regalloc2::RegClass::Int)
     }
@@ -665,8 +681,9 @@ impl<'a> Function<'a> {
                     match parama.next(ty, self.tys) {
                         None => {}
                         Some(PLoc::Reg(r, _) | PLoc::WideReg(r, _) | PLoc::Ref(r, _)) => {
+                            let a = self.rg(arg);
                             self.add_instr(NEVER, vec![regalloc2::Operand::reg_fixed_def(
-                                self.rg(arg),
+                                a,
                                 regalloc2::PReg::new(r as _, regalloc2::RegClass::Int),
                             )]);
                         }
@@ -674,8 +691,9 @@ impl<'a> Function<'a> {
                 }
 
                 if let Some(PLoc::Ref(r, ..)) = ret {
+                    let m = self.rg(MEM);
                     self.add_instr(NEVER, vec![regalloc2::Operand::reg_fixed_def(
-                        self.rg(MEM),
+                        m,
                         regalloc2::PReg::new(r as _, regalloc2::RegClass::Int),
                     )]);
                 }

@@ -2433,7 +2433,9 @@ impl<'a> Codegen<'a> {
             self.ci.nodes.graphviz_in_browser(self.ty_display(ty::Id::VOID));
         });
         debug_assert!(
-            self.ci.nodes[region].kind != Kind::Load || self.ci.nodes[region].ty.is_pointer(),
+            self.ci.nodes[region].kind != Kind::Load
+                || self.ci.nodes[region].kind == Kind::Stck
+                || self.ci.nodes[region].ty.is_pointer(),
             "{:?} {} {}",
             self.ci.nodes.graphviz_in_browser(self.ty_display(ty::Id::VOID)),
             self.file().path,
@@ -3817,11 +3819,14 @@ impl<'a> Codegen<'a> {
         let f = &self.files[c.file.index()];
         let Expr::BinOp { left, right, .. } = c.ast.get(f) else { unreachable!() };
 
-        left.find_pattern_path(c.name, right, |expr, is_ct| {
-            debug_assert!(is_ct);
-            self.expr_ctx(expr, ctx)
-        })
-        .unwrap_or_else(|_| unreachable!())
+        let mut value = left
+            .find_pattern_path(c.name, right, |expr, is_ct| {
+                debug_assert!(is_ct);
+                self.raw_expr_ctx(expr, ctx)
+            })
+            .unwrap_or_else(|_| unreachable!())?;
+        self.strip_var(&mut value);
+        Some(value)
     }
 
     fn add_clobbers(&mut self, value: Value, clobbered_aliases: &mut BitSet) {
