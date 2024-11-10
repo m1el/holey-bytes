@@ -258,14 +258,6 @@ impl Nodes {
             return;
         }
 
-        if node == NEVER {
-            std::dbg!();
-        }
-
-        if self[node].kind == Kind::Loop {
-            std::dbg!(&self[node]);
-        }
-
         for &n in self[node].outputs.iter() {
             self.collect_rpo(n, rpo, visited);
         }
@@ -274,7 +266,6 @@ impl Nodes {
     }
 
     fn push_up(&mut self, rpo: &mut Vec<Nid>, visited: &mut BitSet) {
-        std::dbg!();
         debug_assert!(rpo.is_empty());
         self.collect_rpo(VOID, rpo, visited);
 
