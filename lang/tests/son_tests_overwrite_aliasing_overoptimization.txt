@@ -1,6 +1,6 @@
 main:
-    ADDI64 r254, r254, -104d
-    ST r31, r254, 40a, 64h
+    ADDI64 r254, r254, -112d
+    ST r31, r254, 40a, 72h
     LI64 r32, 4d
     ADDI64 r33, r254, 24d
     ADDI64 r34, r254, 0d
@@ -14,10 +14,10 @@ main:
     LD r36, r254, 8a, 8h
     LD r37, r254, 16a, 8h
     ADD64 r38, r37, r36
-    LD r37, r254, 0a, 8h
-    SUB64 r1, r37, r38
-    LD r31, r254, 40a, 64h
-    ADDI64 r254, r254, 104d
+    LD r39, r254, 0a, 8h
+    SUB64 r1, r39, r38
+    LD r31, r254, 40a, 72h
+    ADDI64 r254, r254, 112d
     JALA r0, r31, 0a
 opaque:
     ADDI64 r254, r254, -16d

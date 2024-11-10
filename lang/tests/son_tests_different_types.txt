@@ -8,18 +8,18 @@ main:
     ST r1, r254, 3a, 1h
     LI32 r9, 0w
     ST r9, r254, 4a, 4h
-    LI32 r12, 2w
-    ST r12, r254, 8a, 4h
-    LD r3, r254, 8a, 4h
-    ANDI r3, r3, 4294967295d
-    ANDI r12, r12, 4294967295d
-    JEQ r3, r12, :0
+    LD r4, r254, 4a, 4h
+    LI32 r1, 2w
+    ST r1, r254, 8a, 4h
+    LD r5, r254, 8a, 4h
+    ANDI r5, r5, 4294967295d
+    ANDI r1, r1, 4294967295d
+    JEQ r5, r1, :0
     LI64 r1, 0d
     JMP :1
- 0: LD r10, r254, 4a, 4h
-    ANDI r10, r10, 4294967295d
+ 0: ANDI r4, r4, 4294967295d
     ANDI r9, r9, 4294967295d
-    JEQ r10, r9, :2
+    JEQ r4, r9, :2
     LI64 r1, 64d
     JMP :1
  2: LI64 r1, 512d

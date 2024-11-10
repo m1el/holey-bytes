@@ -640,14 +640,13 @@ main := fn(): uint {
 	a.b = .(0)
 	innera := do_stuff(a.b.c)
 
-	//val := optional()
-	//if val == null {
-	//	return 20
-	//}
-	//val.inner = 100
-	//inner := do_stuff(val.inner)
-	return innera
-	//+ inner
+	val := optional()
+	if val == null {
+		return 20
+	}
+	val.inner = 100
+	inner := do_stuff(val.inner)
+	return innera + inner
 }
 ```
 

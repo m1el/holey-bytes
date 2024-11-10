@@ -4360,7 +4360,7 @@ impl<'a> Codegen<'a> {
             self.ci.nodes.basic_blocks();
             self.ci.nodes.graphviz(self.ty_display(ty::Id::VOID));
         } else {
-            self.ci.nodes.graphviz_in_browser(self.ty_display(ty::Id::VOID));
+            //self.ci.nodes.graphviz_in_browser(self.ty_display(ty::Id::VOID));
         }
 
         self.errors.borrow().len() == prev_err_len
