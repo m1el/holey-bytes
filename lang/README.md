@@ -612,6 +612,28 @@ main := fn(): uint {
 
 ### Purely Testing Examples
 
+#### storing_into_nullable_struct
+```hb
+Struct := struct {inner: uint}
+
+optional := fn(): ?Struct {
+	return .(10)
+}
+
+do_stuff := fn(arg: Struct): uint {
+	return arg.inner
+}
+
+main := fn(): void {
+	val := optional()
+	if val == null {
+		return
+	}
+	val.inner = 100
+	inner := do_stuff(val)
+}
+```
+
 #### scheduling_block_did_dirty
 ```hb
 Struct := struct {

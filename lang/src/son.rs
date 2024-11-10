@@ -23,7 +23,7 @@ use {
         cell::{Cell, RefCell},
         fmt::{self, Debug, Display, Write},
         format_args as fa, mem,
-        ops::{self},
+        ops::{self, Range},
     },
     hashbrown::hash_map,
     hbbytecode::DisasmError,
@@ -484,6 +484,7 @@ impl Nodes {
         ctrl: &StrongRef,
         to: &mut Scope,
         from: &mut Scope,
+        tys: &Types,
     ) {
         for (i, (to_value, from_value)) in to.vars.iter_mut().zip(from.vars.iter_mut()).enumerate()
         {
@@ -495,7 +496,8 @@ impl Nodes {
                     debug_assert!(!to_value.ptr);
                     debug_assert!(!from_value.ptr);
                     let inps = [ctrl.get(), from_value.value(), to_value.value()];
-                    to_value.set_value_remove(self.new_node(from_value.ty, Kind::Phi, inps), self);
+                    to_value
+                        .set_value_remove(self.new_node(from_value.ty, Kind::Phi, inps, tys), self);
                 }
             }
         }
@@ -510,7 +512,7 @@ impl Nodes {
                     let inps = [ctrl.get(), from_class.last_store.get(), to_class.last_store.get()];
                     to_class
                         .last_store
-                        .set_remove(self.new_node(ty::Id::VOID, Kind::Phi, inps), self);
+                        .set_remove(self.new_node(ty::Id::VOID, Kind::Phi, inps, tys), self);
                 }
             }
         }
@@ -667,9 +669,9 @@ impl Nodes {
         }
     }
 
-    fn new_node(&mut self, ty: ty::Id, kind: Kind, inps: impl Into<Vc>) -> Nid {
+    fn new_node(&mut self, ty: ty::Id, kind: Kind, inps: impl Into<Vc>, tys: &Types) -> Nid {
         let id = self.new_node_nop(ty, kind, inps);
-        if let Some(opt) = self.peephole(id) {
+        if let Some(opt) = self.peephole(id, tys) {
             debug_assert_ne!(opt, id);
             self.lock(opt);
             self.remove(id);
@@ -685,11 +687,11 @@ impl Nodes {
     }
 
     fn new_const_lit(&mut self, ty: ty::Id, value: impl Into<i64>) -> Value {
-        self.new_node_lit(ty, Kind::CInt { value: value.into() }, [VOID])
+        Value::new(self.new_const(ty, value)).ty(ty)
     }
 
-    fn new_node_lit(&mut self, ty: ty::Id, kind: Kind, inps: impl Into<Vc>) -> Value {
-        Value::new(self.new_node(ty, kind, inps)).ty(ty)
+    fn new_node_lit(&mut self, ty: ty::Id, kind: Kind, inps: impl Into<Vc>, tys: &Types) -> Value {
+        Value::new(self.new_node(ty, kind, inps, tys)).ty(ty)
     }
 
     fn lock(&mut self, target: Nid) {
@@ -727,15 +729,15 @@ impl Nodes {
         true
     }
 
-    fn late_peephole(&mut self, target: Nid) -> Option<Nid> {
-        if let Some(id) = self.peephole(target) {
+    fn late_peephole(&mut self, target: Nid, tys: &Types) -> Option<Nid> {
+        if let Some(id) = self.peephole(target, tys) {
             self.replace(target, id);
             return None;
         }
         None
     }
 
-    fn iter_peeps(&mut self, mut fuel: usize, stack: &mut Vec<Nid>) {
+    fn iter_peeps(&mut self, mut fuel: usize, stack: &mut Vec<Nid>, tys: &Types) {
         debug_assert!(stack.is_empty());
 
         self.iter()
@@ -756,7 +758,7 @@ impl Nodes {
                 continue;
             }
 
-            if let Some(new) = self.peephole(node) {
+            if let Some(new) = self.peephole(node, tys) {
                 self.replace(node, new);
                 self.push_adjacent_nodes(new, stack);
             }
@@ -806,7 +808,7 @@ impl Nodes {
         }
     }
 
-    fn peephole(&mut self, target: Nid) -> Option<Nid> {
+    fn peephole(&mut self, target: Nid, tys: &Types) -> Option<Nid> {
         use {Kind as K, TokenKind as T};
         match self[target].kind {
             K::BinOp { op } => {
@@ -828,9 +830,12 @@ impl Nodes {
                         T::Sub => return Some(self.new_const(ty, 0)),
                         T::Add => {
                             let rhs = self.new_const(ty, 2);
-                            return Some(
-                                self.new_node(ty, K::BinOp { op: T::Mul }, [ctrl, lhs, rhs]),
-                            );
+                            return Some(self.new_node(
+                                ty,
+                                K::BinOp { op: T::Mul },
+                                [ctrl, lhs, rhs],
+                                tys,
+                            ));
                         }
                         _ => {}
                     }
@@ -864,13 +869,13 @@ impl Nodes {
                     {
                         // (a op #b) op #c => a op (#b op #c)
                         let new_rhs = self.new_const(ty, op.apply_binop(av, bv, is_float));
-                        return Some(self.new_node(ty, K::BinOp { op }, [ctrl, a, new_rhs]));
+                        return Some(self.new_node(ty, K::BinOp { op }, [ctrl, a, new_rhs], tys));
                     }
 
                     if self.is_const(b) {
                         // (a op #b) op c => (a op c) op #b
-                        let new_lhs = self.new_node(ty, K::BinOp { op }, [ctrl, a, rhs]);
-                        return Some(self.new_node(ty, K::BinOp { op }, [ctrl, new_lhs, b]));
+                        let new_lhs = self.new_node(ty, K::BinOp { op }, [ctrl, a, rhs], tys);
+                        return Some(self.new_node(ty, K::BinOp { op }, [ctrl, new_lhs, b], tys));
                     }
                 }
 
@@ -881,7 +886,12 @@ impl Nodes {
                 {
                     // a * #n + a => a * (#n + 1)
                     let new_rhs = self.new_const(ty, value + 1);
-                    return Some(self.new_node(ty, K::BinOp { op: T::Mul }, [ctrl, rhs, new_rhs]));
+                    return Some(self.new_node(
+                        ty,
+                        K::BinOp { op: T::Mul },
+                        [ctrl, rhs, new_rhs],
+                        tys,
+                    ));
                 }
 
                 if op == T::Sub
@@ -890,23 +900,24 @@ impl Nodes {
                     && let K::CInt { value: b } = self[self[lhs].inputs[2]].kind
                 {
                     let new_rhs = self.new_const(ty, b - a);
-                    return Some(self.new_node(ty, K::BinOp { op: T::Add }, [
-                        ctrl,
-                        self[lhs].inputs[1],
-                        new_rhs,
-                    ]));
+                    return Some(self.new_node(
+                        ty,
+                        K::BinOp { op: T::Add },
+                        [ctrl, self[lhs].inputs[1], new_rhs],
+                        tys,
+                    ));
                 }
 
                 if op == T::Sub && self[lhs].kind == (K::BinOp { op }) {
                     // (a - b) - c => a - (b + c)
                     let &[_, a, b] = self[lhs].inputs.as_slice() else { unreachable!() };
                     let c = rhs;
-                    let new_rhs = self.new_node(ty, K::BinOp { op: T::Add }, [ctrl, b, c]);
-                    return Some(self.new_node(ty, K::BinOp { op }, [ctrl, a, new_rhs]));
+                    let new_rhs = self.new_node(ty, K::BinOp { op: T::Add }, [ctrl, b, c], tys);
+                    return Some(self.new_node(ty, K::BinOp { op }, [ctrl, a, new_rhs], tys));
                 }
 
                 if changed {
-                    return Some(self.new_node(ty, self[target].kind, [ctrl, lhs, rhs]));
+                    return Some(self.new_node(ty, self[target].kind, [ctrl, lhs, rhs], tys));
                 }
             }
             K::UnOp { op } => {
@@ -1043,11 +1054,12 @@ impl Nodes {
                     && self[lhs].inputs[2] == self[rhs].inputs[2]
                     && self[lhs].inputs[3] == self[rhs].inputs[3]
                 {
-                    let pick_value = self.new_node(self[lhs].ty, Kind::Phi, [
-                        ctrl,
-                        self[lhs].inputs[1],
-                        self[rhs].inputs[1],
-                    ]);
+                    let pick_value = self.new_node(
+                        self[lhs].ty,
+                        Kind::Phi,
+                        [ctrl, self[lhs].inputs[1], self[rhs].inputs[1]],
+                        tys,
+                    );
                     let mut vc = Vc::from([VOID, pick_value, self[lhs].inputs[2]]);
                     for &rest in &self[lhs].inputs[3..] {
                         vc.push(rest);
@@ -1055,7 +1067,7 @@ impl Nodes {
                     for &rest in &self[rhs].inputs[4..] {
                         vc.push(rest);
                     }
-                    return Some(self.new_node(self[lhs].ty, Kind::Stre, vc));
+                    return Some(self.new_node(self[lhs].ty, Kind::Stre, vc, tys));
                 }
             }
             K::Stck => {
@@ -1183,11 +1195,14 @@ impl Nodes {
                         if let Kind::BinOp { op } = self[oper].kind {
                             debug_assert_eq!(self[oper].outputs.len(), 1);
                             debug_assert_eq!(self[self[oper].outputs[0]].kind, Kind::Stre);
-                            region = self.new_node(self[oper].ty, Kind::BinOp { op }, [
-                                VOID,
-                                region,
-                                self[oper].inputs[2],
-                            ]);
+                            let new_region = self.new_node(
+                                self[oper].ty,
+                                Kind::BinOp { op },
+                                [VOID, region, self[oper].inputs[2]],
+                                tys,
+                            );
+                            self.pass_aclass(self.aclass_index(region).1, new_region);
+                            region = new_region;
                             oper = self[oper].outputs[0];
                         }
 
@@ -1195,7 +1210,7 @@ impl Nodes {
                         debug_assert_eq!(inps.len(), 4);
                         inps[2] = region;
                         inps[3] = prev_store;
-                        prev_store = self.new_node(self[oper].ty, Kind::Stre, inps);
+                        prev_store = self.new_node(self[oper].ty, Kind::Stre, inps, tys);
                     }
 
                     return Some(prev_store);
@@ -1220,35 +1235,62 @@ impl Nodes {
                 }
             }
             K::Load => {
-                let &[_, region, store] = self[target].inputs.as_slice() else { unreachable!() };
-
-                if self[store].kind == Kind::Stre
-                    && self[store].inputs[2] == region
-                    && self[store].ty == self[target].ty
-                    && self[store]
-                        .outputs
-                        .iter()
-                        .all(|&n| !matches!(self[n].kind, Kind::Call { .. }))
-                {
-                    return Some(self[store].inputs[1]);
+                fn range_of(s: &Nodes, mut region: Nid, ty: ty::Id, tys: &Types) -> Range<usize> {
+                    let loc = s.aclass_index(region).1;
+                    let full_size = tys.size_of(
+                        if matches!(s[loc].kind, Kind::Stck | Kind::Arg | Kind::Global { .. }) {
+                            s[loc].ty
+                        } else if let Some(ptr) = tys.base_of(s[loc].ty) {
+                            ptr
+                        } else {
+                            return 0..usize::MAX;
+                        },
+                    );
+                    let size = tys.size_of(ty);
+                    loop {
+                        break match s[region].kind {
+                            _ if region == loc => 0..size as usize,
+                            Kind::Assert { kind: AssertKind::NullCheck, .. } => {
+                                region = s[region].inputs[2];
+                                continue;
+                            }
+                            Kind::BinOp { op: TokenKind::Add | TokenKind::Sub }
+                                if let Kind::CInt { value } = s[s[region].inputs[2]].kind
+                                    && s[region].inputs[1] == loc =>
+                            {
+                                value as usize..value as usize + size as usize
+                            }
+                            _ => 0..full_size as usize,
+                        };
+                    }
                 }
 
-                let (index, reg) = self.aclass_index(region);
-                if index != 0 && self[reg].kind == Kind::Stck {
-                    let mut cursor = store;
-                    while cursor != MEM
-                        && self[cursor].kind == Kind::Stre
-                        && self[cursor].inputs[1] != VOID
-                        && self[cursor]
-                            .outputs
-                            .iter()
-                            .all(|&n| !matches!(self[n].kind, Kind::Call { .. }))
+                let &[ctrl, region, store] = self[target].inputs.as_slice() else { unreachable!() };
+                let load_range = range_of(self, region, self[target].ty, tys);
+                let mut cursor = store;
+
+                while cursor != MEM && self[cursor].kind != Kind::Phi {
+                    if self[cursor].inputs[0] == ctrl
+                        && self[cursor].inputs[2] == region
+                        && self[cursor].ty == self[target].ty
                     {
-                        if self[cursor].inputs[2] == region && self[cursor].ty == self[target].ty {
-                            return Some(self[cursor].inputs[1]);
-                        }
-                        cursor = self[cursor].inputs[3];
+                        return Some(self[cursor].inputs[1]);
                     }
+                    let range = range_of(self, self[cursor].inputs[2], self[cursor].ty, tys);
+                    if range.start >= load_range.end || range.end <= load_range.start {
+                        cursor = self[cursor].inputs[3];
+                        continue;
+                    }
+                    break;
+                }
+
+                if store != cursor {
+                    return Some(self.new_node(
+                        self[target].ty,
+                        Kind::Load,
+                        [ctrl, region, cursor],
+                        tys,
+                    ));
                 }
             }
             K::Loop => {
@@ -2078,29 +2120,31 @@ impl ItemCtx {
         self.nodes.clear();
         self.scope.vars.clear();
 
-        let start = self.nodes.new_node(ty::Id::VOID, Kind::Start, []);
+        let start = self.nodes.new_node_nop(ty::Id::VOID, Kind::Start, []);
         debug_assert_eq!(start, VOID);
-        let end = self.nodes.new_node(ty::Id::NEVER, Kind::End, []);
+        let end = self.nodes.new_node_nop(ty::Id::NEVER, Kind::End, []);
         debug_assert_eq!(end, NEVER);
         self.nodes.lock(end);
-        self.ctrl =
-            StrongRef::new(self.nodes.new_node(ty::Id::VOID, Kind::Entry, [VOID]), &mut self.nodes);
+        self.ctrl = StrongRef::new(
+            self.nodes.new_node_nop(ty::Id::VOID, Kind::Entry, [VOID]),
+            &mut self.nodes,
+        );
         debug_assert_eq!(self.ctrl.get(), ENTRY);
-        let mem = self.nodes.new_node(ty::Id::VOID, Kind::Mem, [VOID]);
+        let mem = self.nodes.new_node_nop(ty::Id::VOID, Kind::Mem, [VOID]);
         debug_assert_eq!(mem, MEM);
         self.nodes.lock(mem);
-        let loops = self.nodes.new_node(ty::Id::VOID, Kind::Loops, [VOID]);
+        let loops = self.nodes.new_node_nop(ty::Id::VOID, Kind::Loops, [VOID]);
         debug_assert_eq!(loops, LOOPS);
         self.nodes.lock(loops);
         self.scope.aclasses.push(AClass::new(&mut self.nodes)); // DEFAULT
         self.scope.aclasses.push(AClass::new(&mut self.nodes)); // GLOBAL
     }
 
-    fn finalize(&mut self, stack: &mut Vec<Nid>, _tys: &Types, _files: &[parser::Ast]) {
+    fn finalize(&mut self, stack: &mut Vec<Nid>, tys: &Types, _files: &[parser::Ast]) {
         self.scope.clear(&mut self.nodes);
         mem::take(&mut self.ctrl).soft_remove(&mut self.nodes);
 
-        self.nodes.iter_peeps(1000, stack);
+        self.nodes.iter_peeps(1000, stack, tys);
     }
 
     fn unlock(&mut self) {
@@ -2421,7 +2465,7 @@ impl<'a> Codegen<'a> {
         self.ci.nodes.load_loop_aclass(index, aclass, &mut self.ci.loops);
         let vc = Vc::from([aclass.clobber.get(), value, region, aclass.last_store.get()]);
         mem::take(&mut aclass.last_store).soft_remove(&mut self.ci.nodes);
-        let store = self.ci.nodes.new_node(ty, Kind::Stre, vc);
+        let store = self.ci.nodes.new_node(ty, Kind::Stre, vc, self.tys);
         aclass.last_store = StrongRef::new(store, &mut self.ci.nodes);
         store
     }
@@ -2446,7 +2490,7 @@ impl<'a> Codegen<'a> {
         let aclass = &mut self.ci.scope.aclasses[index];
         self.ci.nodes.load_loop_aclass(index, aclass, &mut self.ci.loops);
         let vc = [aclass.clobber.get(), region, aclass.last_store.get()];
-        self.ci.nodes.new_node(ty, Kind::Load, vc)
+        self.ci.nodes.new_node(ty, Kind::Load, vc, self.tys)
     }
 
     fn make_func_reachable(&mut self, func: ty::Func) {
@@ -2576,7 +2620,7 @@ impl<'a> Codegen<'a> {
                             .0
                     }
                 };
-                let global = self.ci.nodes.new_node(ty, Kind::Global { global }, [VOID]);
+                let global = self.ci.nodes.new_node_nop(ty, Kind::Global { global }, [VOID]);
                 self.ci.nodes[global].aclass = GLOBAL_ACLASS as _;
                 Some(Value::new(global).ty(ty))
             }
@@ -2608,15 +2652,28 @@ impl<'a> Codegen<'a> {
                     self.ci.nodes.bind(ret, NEVER);
                 } else if let Some((pv, ctrl, scope)) = &mut self.ci.inline_ret {
                     ctrl.set(
-                        self.ci
-                            .nodes
-                            .new_node(ty::Id::VOID, Kind::Region, [self.ci.ctrl.get(), ctrl.get()]),
+                        self.ci.nodes.new_node(
+                            ty::Id::VOID,
+                            Kind::Region,
+                            [self.ci.ctrl.get(), ctrl.get()],
+                            self.tys,
+                        ),
                         &mut self.ci.nodes,
                     );
-                    self.ci.nodes.merge_scopes(&mut self.ci.loops, ctrl, scope, &mut self.ci.scope);
+                    self.ci.nodes.merge_scopes(
+                        &mut self.ci.loops,
+                        ctrl,
+                        scope,
+                        &mut self.ci.scope,
+                        self.tys,
+                    );
                     self.ci.nodes.unlock(pv.id);
-                    pv.id =
-                        self.ci.nodes.new_node(value.ty, Kind::Phi, [ctrl.get(), value.id, pv.id]);
+                    pv.id = self.ci.nodes.new_node(
+                        value.ty,
+                        Kind::Phi,
+                        [ctrl.get(), value.id, pv.id],
+                        self.tys,
+                    );
                     self.ci.nodes.lock(pv.id);
                     self.ci.ctrl.set(NEVER, &mut self.ci.nodes);
                 } else {
@@ -2741,12 +2798,20 @@ impl<'a> Codegen<'a> {
                 let val =
                     self.expr_ctx(val, Ctx::default().with_ty(ctx.ty.unwrap_or(ty::Id::INT)))?;
                 if val.ty.is_integer() {
-                    Some(self.ci.nodes.new_node_lit(val.ty, Kind::UnOp { op }, [VOID, val.id]))
+                    Some(self.ci.nodes.new_node_lit(
+                        val.ty,
+                        Kind::UnOp { op },
+                        [VOID, val.id],
+                        self.tys,
+                    ))
                 } else if val.ty.is_float() {
                     let value = self.ci.nodes.new_const(val.ty, (-1f64).to_bits() as i64);
-                    Some(self.ci.nodes.new_node_lit(val.ty, Kind::BinOp { op: TokenKind::Mul }, [
-                        VOID, val.id, value,
-                    ]))
+                    Some(self.ci.nodes.new_node_lit(
+                        val.ty,
+                        Kind::BinOp { op: TokenKind::Mul },
+                        [VOID, val.id, value],
+                        self.tys,
+                    ))
                 } else {
                     self.report(pos, fa!("cant negate '{}'", self.ty_display(val.ty)));
                     Value::NEVER
@@ -2837,8 +2902,12 @@ impl<'a> Codegen<'a> {
                         self.implicit_unwrap(right.pos(), &mut rhs);
                         let (ty, aclass) = self.binop_ty(pos, &mut lhs, &mut rhs, op);
                         let inps = [VOID, lhs.id, rhs.id];
-                        let bop =
-                            self.ci.nodes.new_node_lit(ty.bin_ret(op), Kind::BinOp { op }, inps);
+                        let bop = self.ci.nodes.new_node_lit(
+                            ty.bin_ret(op),
+                            Kind::BinOp { op },
+                            inps,
+                            self.tys,
+                        );
                         self.ci.nodes.pass_aclass(aclass, bop.id);
                         Some(bop)
                     }
@@ -2887,19 +2956,28 @@ impl<'a> Codegen<'a> {
                 self.assert_ty(index.pos(), &mut idx, ty::Id::DEFAULT_INT, "subscript");
                 let size = self.ci.nodes.new_const(ty::Id::INT, self.tys.size_of(elem));
                 let inps = [VOID, idx.id, size];
-                let offset =
-                    self.ci.nodes.new_node(ty::Id::INT, Kind::BinOp { op: TokenKind::Mul }, inps);
+                let offset = self.ci.nodes.new_node(
+                    ty::Id::INT,
+                    Kind::BinOp { op: TokenKind::Mul },
+                    inps,
+                    self.tys,
+                );
                 let aclass = self.ci.nodes.aclass_index(bs.id).1;
                 let inps = [VOID, bs.id, offset];
-                let ptr =
-                    self.ci.nodes.new_node(ty::Id::INT, Kind::BinOp { op: TokenKind::Add }, inps);
+                let ptr = self.ci.nodes.new_node(
+                    ty::Id::INT,
+                    Kind::BinOp { op: TokenKind::Add },
+                    inps,
+                    self.tys,
+                );
                 self.ci.nodes.pass_aclass(aclass, ptr);
 
                 Some(Value::ptr(ptr).ty(elem))
             }
             Expr::Embed { id, .. } => {
                 let glob = &self.tys.ins.globals[id];
-                let g = self.ci.nodes.new_node(glob.ty, Kind::Global { global: id }, [VOID]);
+                let g =
+                    self.ci.nodes.new_node(glob.ty, Kind::Global { global: id }, [VOID], self.tys);
                 Some(Value::ptr(g).ty(glob.ty))
             }
             Expr::Directive { name: "sizeof", args: [ty], .. } => {
@@ -3037,11 +3115,12 @@ impl<'a> Codegen<'a> {
                 }
 
                 if self.tys.size_of(val.ty) != self.tys.size_of(ty) {
-                    Some(
-                        self.ci
-                            .nodes
-                            .new_node_lit(ty, Kind::UnOp { op: TokenKind::Float }, [VOID, val.id]),
-                    )
+                    Some(self.ci.nodes.new_node_lit(
+                        ty,
+                        Kind::UnOp { op: TokenKind::Float },
+                        [VOID, val.id],
+                        self.tys,
+                    ))
                 } else {
                     Some(val.ty(ty))
                 }
@@ -3060,11 +3139,12 @@ impl<'a> Codegen<'a> {
                     }
                 };
 
-                Some(
-                    self.ci
-                        .nodes
-                        .new_node_lit(ret_ty, Kind::UnOp { op: TokenKind::Number }, [VOID, val.id]),
-                )
+                Some(self.ci.nodes.new_node_lit(
+                    ret_ty,
+                    Kind::UnOp { op: TokenKind::Number },
+                    [VOID, val.id],
+                    self.tys,
+                ))
             }
             Expr::Directive { name: "itf", args: [expr], .. } => {
                 let mut val = self.expr(expr)?;
@@ -3076,11 +3156,12 @@ impl<'a> Codegen<'a> {
 
                 self.assert_ty(expr.pos(), &mut val, expected, "converted integer");
 
-                Some(
-                    self.ci
-                        .nodes
-                        .new_node_lit(ret_ty, Kind::UnOp { op: TokenKind::Float }, [VOID, val.id]),
-                )
+                Some(self.ci.nodes.new_node_lit(
+                    ret_ty,
+                    Kind::UnOp { op: TokenKind::Float },
+                    [VOID, val.id],
+                    self.tys,
+                ))
             }
             Expr::Directive { name: "as", args: [ty, expr], .. } => {
                 let ty = self.ty(ty);
@@ -3124,7 +3205,7 @@ impl<'a> Codegen<'a> {
 
                 inps[0] = self.ci.ctrl.get();
                 self.ci.ctrl.set(
-                    self.ci.nodes.new_node(ty, Kind::Call { func: ty::Func::ECA, args }, inps),
+                    self.ci.nodes.new_node_nop(ty, Kind::Call { func: ty::Func::ECA, args }, inps),
                     &mut self.ci.nodes,
                 );
 
@@ -3202,7 +3283,11 @@ impl<'a> Codegen<'a> {
 
                 inps[0] = self.ci.ctrl.get();
                 self.ci.ctrl.set(
-                    self.ci.nodes.new_node(sig.ret, Kind::Call { func: fu, args: sig.args }, inps),
+                    self.ci.nodes.new_node_nop(
+                        sig.ret,
+                        Kind::Call { func: fu, args: sig.args },
+                        inps,
+                    ),
                     &mut self.ci.nodes,
                 );
 
@@ -3517,11 +3602,12 @@ impl<'a> Codegen<'a> {
             }
             Expr::Loop { body, .. } => {
                 self.ci.ctrl.set(
-                    self.ci.nodes.new_node(ty::Id::VOID, Kind::Loop, [
-                        self.ci.ctrl.get(),
-                        self.ci.ctrl.get(),
-                        LOOPS,
-                    ]),
+                    self.ci.nodes.new_node(
+                        ty::Id::VOID,
+                        Kind::Loop,
+                        [self.ci.ctrl.get(), self.ci.ctrl.get(), LOOPS],
+                        self.tys,
+                    ),
                     &mut self.ci.nodes,
                 );
                 self.ci.loops.push(Loop {
@@ -3552,9 +3638,12 @@ impl<'a> Codegen<'a> {
 
                 if let Some(con) = mem::take(con).unwrap(&mut self.ci.nodes) {
                     self.ci.ctrl.set(
-                        self.ci
-                            .nodes
-                            .new_node(ty::Id::VOID, Kind::Region, [con, self.ci.ctrl.get()]),
+                        self.ci.nodes.new_node(
+                            ty::Id::VOID,
+                            Kind::Region,
+                            [con, self.ci.ctrl.get()],
+                            self.tys,
+                        ),
                         &mut self.ci.nodes,
                     );
                     self.ci.nodes.merge_scopes(
@@ -3562,6 +3651,7 @@ impl<'a> Codegen<'a> {
                         &self.ci.ctrl,
                         &mut self.ci.scope,
                         &mut cons,
+                        self.tys,
                     );
                     cons.clear(&mut self.ci.nodes);
                 }
@@ -3721,7 +3811,7 @@ impl<'a> Codegen<'a> {
                 bres.clear(&mut self.ci.nodes);
 
                 self.ci.nodes.unlock(node);
-                let rpl = self.ci.nodes.late_peephole(node).unwrap_or(node);
+                let rpl = self.ci.nodes.late_peephole(node, self.tys).unwrap_or(node);
                 if self.ci.ctrl.get() == node {
                     self.ci.ctrl.set_remove(rpl, &mut self.ci.nodes);
                 }
@@ -3734,8 +3824,12 @@ impl<'a> Codegen<'a> {
                 let mut cnd = self.expr_ctx(cond, Ctx::default().with_ty(ty::Id::BOOL))?;
                 self.assert_ty(cond.pos(), &mut cnd, ty::Id::BOOL, "condition");
 
-                let if_node =
-                    self.ci.nodes.new_node(ty::Id::VOID, Kind::If, [self.ci.ctrl.get(), cnd.id]);
+                let if_node = self.ci.nodes.new_node(
+                    ty::Id::VOID,
+                    Kind::If,
+                    [self.ci.ctrl.get(), cnd.id],
+                    self.tys,
+                );
 
                 'b: {
                     let branch = match self.ci.nodes[if_node].ty {
@@ -3756,14 +3850,14 @@ impl<'a> Codegen<'a> {
                 let else_scope = self.ci.scope.dup(&mut self.ci.nodes);
 
                 self.ci.ctrl.set(
-                    self.ci.nodes.new_node(ty::Id::VOID, Kind::Then, [if_node]),
+                    self.ci.nodes.new_node(ty::Id::VOID, Kind::Then, [if_node], self.tys),
                     &mut self.ci.nodes,
                 );
                 let lcntrl = self.expr(then).map_or(Nid::MAX, |_| self.ci.ctrl.get());
 
                 let mut then_scope = mem::replace(&mut self.ci.scope, else_scope);
                 self.ci.ctrl.set(
-                    self.ci.nodes.new_node(ty::Id::VOID, Kind::Else, [if_node]),
+                    self.ci.nodes.new_node(ty::Id::VOID, Kind::Else, [if_node], self.tys),
                     &mut self.ci.nodes,
                 );
                 let rcntrl = if let Some(else_) = else_ {
@@ -3786,7 +3880,7 @@ impl<'a> Codegen<'a> {
                 }
 
                 self.ci.ctrl.set(
-                    self.ci.nodes.new_node(ty::Id::VOID, Kind::Region, [lcntrl, rcntrl]),
+                    self.ci.nodes.new_node(ty::Id::VOID, Kind::Region, [lcntrl, rcntrl], self.tys),
                     &mut self.ci.nodes,
                 );
 
@@ -3795,6 +3889,7 @@ impl<'a> Codegen<'a> {
                     &self.ci.ctrl,
                     &mut self.ci.scope,
                     &mut then_scope,
+                    self.tys,
                 );
                 then_scope.clear(&mut self.ci.nodes);
 
@@ -3809,7 +3904,7 @@ impl<'a> Codegen<'a> {
 
     fn gen_global(&mut self, global: ty::Global) -> Option<Value> {
         let gl = &self.tys.ins.globals[global];
-        let value = self.ci.nodes.new_node(gl.ty, Kind::Global { global }, [VOID]);
+        let value = self.ci.nodes.new_node_nop(gl.ty, Kind::Global { global }, [VOID]);
         self.ci.nodes[value].aclass = GLOBAL_ACLASS as _;
         Some(Value::ptr(value).ty(gl.ty))
     }
@@ -3876,7 +3971,8 @@ impl<'a> Codegen<'a> {
                 _ if ty.is_pointer() || ty.is_integer() || ty == ty::Id::BOOL => {
                     let lhs = self.load_mem(lhs, ty);
                     let rhs = self.load_mem(rhs, ty);
-                    let res = self.ci.nodes.new_node(ty, Kind::BinOp { op }, [VOID, lhs, rhs]);
+                    let res =
+                        self.ci.nodes.new_node(ty, Kind::BinOp { op }, [VOID, lhs, rhs], self.tys);
                     self.store_mem(dst, ty, res);
                 }
                 ty::Kind::Struct(is) => {
@@ -4032,7 +4128,8 @@ impl<'a> Codegen<'a> {
         let off = self.ci.nodes.new_const(ty::Id::INT, off);
         let aclass = self.ci.nodes.aclass_index(val).1;
         let inps = [VOID, val, off];
-        let seted = self.ci.nodes.new_node(ty::Id::INT, Kind::BinOp { op: TokenKind::Add }, inps);
+        let seted =
+            self.ci.nodes.new_node(ty::Id::INT, Kind::BinOp { op: TokenKind::Add }, inps, self.tys);
         self.ci.nodes.pass_aclass(aclass, seted);
         seted
     }
@@ -4053,16 +4150,24 @@ impl<'a> Codegen<'a> {
 
         if loob.ctrl[id].is_live() {
             loob.ctrl[id].set(
-                self.ci.nodes.new_node(ty::Id::VOID, Kind::Region, [
-                    self.ci.ctrl.get(),
-                    loob.ctrl[id].get(),
-                ]),
+                self.ci.nodes.new_node(
+                    ty::Id::VOID,
+                    Kind::Region,
+                    [self.ci.ctrl.get(), loob.ctrl[id].get()],
+                    self.tys,
+                ),
                 &mut self.ci.nodes,
             );
             let mut scope = mem::take(&mut loob.ctrl_scope[id]);
             let ctrl = mem::take(&mut loob.ctrl[id]);
 
-            self.ci.nodes.merge_scopes(&mut self.ci.loops, &ctrl, &mut scope, &mut self.ci.scope);
+            self.ci.nodes.merge_scopes(
+                &mut self.ci.loops,
+                &ctrl,
+                &mut scope,
+                &mut self.ci.scope,
+                self.tys,
+            );
 
             loob = self.ci.loops.last_mut().unwrap();
             loob.ctrl_scope[id] = scope;
@@ -4274,6 +4379,8 @@ impl<'a> Codegen<'a> {
             self.ci.nodes.gcm(&mut self.pool.nid_stack, &mut self.pool.nid_set);
             self.ci.nodes.basic_blocks();
             self.ci.nodes.graphviz(self.ty_display(ty::Id::VOID));
+        } else {
+            self.ci.nodes.graphviz_in_browser(self.ty_display(ty::Id::VOID));
         }
 
         self.errors.borrow().len() == prev_err_len
@@ -4317,10 +4424,12 @@ impl<'a> Codegen<'a> {
                     && let Some(elem) = self.tys.base_of(upcasted)
                 {
                     let cnst = self.ci.nodes.new_const(ty::Id::INT, self.tys.size_of(elem));
-                    oper.id =
-                        self.ci.nodes.new_node(upcasted, Kind::BinOp { op: TokenKind::Mul }, [
-                            VOID, oper.id, cnst,
-                        ]);
+                    oper.id = self.ci.nodes.new_node(
+                        upcasted,
+                        Kind::BinOp { op: TokenKind::Mul },
+                        [VOID, oper.id, cnst],
+                        self.tys,
+                    );
                     return (upcasted, self.ci.nodes.aclass_index(other.id).1);
                 }
             }
@@ -4355,10 +4464,12 @@ impl<'a> Codegen<'a> {
                 // registers have inverted offsets so that accessing the inner type is a noop
                 let flag_offset = self.tys.size_of(oty) * 8 - flag_offset * 8 - 1;
                 let fill = self.ci.nodes.new_const(oty, 1i64 << flag_offset);
-                val.id = self
-                    .ci
-                    .nodes
-                    .new_node(oty, Kind::BinOp { op: TokenKind::Bor }, [VOID, val.id, fill]);
+                val.id = self.ci.nodes.new_node(
+                    oty,
+                    Kind::BinOp { op: TokenKind::Bor },
+                    [VOID, val.id, fill],
+                    self.tys,
+                );
                 val.ty = oty;
             }
             Loc::Stack => {
@@ -4396,7 +4507,7 @@ impl<'a> Codegen<'a> {
 
         // TODO: extract the if check int a fucntion
         self.ci.ctrl.set(
-            self.ci.nodes.new_node(oty, Kind::Assert { kind, pos }, [
+            self.ci.nodes.new_node_nop(oty, Kind::Assert { kind, pos }, [
                 self.ci.ctrl.get(),
                 null_check,
                 opt.id,
@@ -4430,7 +4541,7 @@ impl<'a> Codegen<'a> {
             Loc::Reg => {
                 self.strip_ptr(&mut cmped);
                 let inps = [VOID, cmped.id, self.ci.nodes.new_const(cmped.ty, 0)];
-                self.ci.nodes.new_node(ty::Id::BOOL, Kind::BinOp { op }, inps)
+                self.ci.nodes.new_node(ty::Id::BOOL, Kind::BinOp { op }, inps, self.tys)
             }
             Loc::Stack => {
                 cmped.id = self.offset(cmped.id, flag_offset);
@@ -4438,7 +4549,7 @@ impl<'a> Codegen<'a> {
                 debug_assert!(cmped.ptr);
                 self.strip_ptr(&mut cmped);
                 let inps = [VOID, cmped.id, self.ci.nodes.new_const(flag_ty, 0)];
-                self.ci.nodes.new_node(ty::Id::BOOL, Kind::BinOp { op }, inps)
+                self.ci.nodes.new_node(ty::Id::BOOL, Kind::BinOp { op }, inps, self.tys)
             }
         }
     }
@@ -4501,7 +4612,8 @@ impl<'a> Codegen<'a> {
         self.strip_ptr(value);
         let mask = self.ci.nodes.new_const(to, (1i64 << (self.tys.size_of(value.ty) * 8)) - 1);
         let inps = [VOID, value.id, mask];
-        *value = self.ci.nodes.new_node_lit(to, Kind::BinOp { op: TokenKind::Band }, inps);
+        *value =
+            self.ci.nodes.new_node_lit(to, Kind::BinOp { op: TokenKind::Band }, inps, self.tys);
         value.ty = to;
     }
 
@@ -4680,6 +4792,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        storing_into_nullable_struct;
         scheduling_block_did_dirty;
         null_check_returning_small_global;
         null_check_in_the_loop;
