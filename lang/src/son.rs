@@ -1298,14 +1298,21 @@ impl Nodes {
                 }
             }
             K::Loop => {
-                if self[target].inputs[0] == NEVER {
-                    return Some(NEVER);
-                }
-
-                if self[target].inputs[1] == NEVER {
+                if self[target].inputs[1] == NEVER || self[target].inputs[0] == NEVER {
                     self.lock(target);
                     for o in self[target].outputs.clone() {
                         if self[o].kind == Kind::Phi {
+                            self.remove_node_lookup(target);
+
+                            let prev = self[o].inputs[2];
+                            self[o].inputs[2] = VOID;
+                            self[VOID].outputs.push(o);
+                            let index = self[prev].outputs.iter().position(|&n| n == o).unwrap();
+                            self[prev].outputs.swap_remove(index);
+                            self.lock(o);
+                            self.remove(prev);
+                            self.unlock(o);
+
                             self.replace(o, self[o].inputs[1]);
                         }
                     }
@@ -3398,6 +3405,7 @@ impl<'a> Codegen<'a> {
                     ),
                     &mut self.ci.nodes,
                 );
+
                 self.ci.loops.push(Loop {
                     node: self.ci.ctrl.get(),
                     ctrl: [StrongRef::DEFAULT; 2],
@@ -4749,6 +4757,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        very_nested_loops;
         generic_type_mishap;
         storing_into_nullable_struct;
         scheduling_block_did_dirty;

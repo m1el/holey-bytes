@@ -615,6 +615,51 @@ main := fn(): uint {
 
 ### Purely Testing Examples
 
+#### very_nested_loops
+```hb
+$W := 200
+$H := 200
+$MAX_ITER := 20
+$ZOOM := 0.5
+
+main := fn(): int {
+	mv_x := 0.5
+	mv_y := 0.0
+
+	y := 0
+	loop if y < H break else {
+		x := 0
+		loop if x < W break else {
+			i := MAX_ITER - 1
+
+			c_i := (2.0 * @floatcast(@itf(@as(i32, @intcast(x)))) - @floatcast(@itf(@as(i32, @intcast(W))))) / (W * ZOOM) + mv_x
+			c_r := (2.0 * @floatcast(@itf(@as(i32, @intcast(y)))) - @floatcast(@itf(@as(i32, @intcast(H))))) / (H * ZOOM) + mv_y
+
+			z_i := c_i
+			z_r := c_r
+
+			// iteration
+			loop if (z_r + z_i) * (z_r + z_i) >= 4 | i == 0 break else {
+				// z = z * z + c
+				z_i = z_i * z_i + c_i
+				z_r = z_r * z_r + c_r
+				i -= 1
+			}
+			//   b g r
+			put_pixel(.(x, y), .(@as(u8, @intcast(i)), @as(u8, @intcast(i)), @as(u8, @intcast(i)), 255))
+		}
+	}
+
+	return 0
+}
+
+Color := struct {r: u8, g: u8, b: u8, a: u8}
+Vec := struct {x: uint, y: uint}
+
+put_pixel := fn(pos: Vec, color: Color): void {
+}
+```
+
 #### generic_type_mishap
 ```hb
 opaque := fn($Expr: type, ptr: ^?Expr): void {
