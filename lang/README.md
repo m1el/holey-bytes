@@ -615,6 +615,26 @@ main := fn(): uint {
 
 ### Purely Testing Examples
 
+#### generic_type_mishap
+```hb
+opaque := fn($Expr: type, ptr: ^?Expr): void {
+}
+
+process := fn($Expr: type): void {
+	optional := @as(?Expr, null)
+	timer := 1000
+	loop if timer > 0 {
+		opaque(Expr, &optional)
+		if optional != null return {
+		}
+		timer -= 1
+	}
+	return
+}
+
+main := fn(): void process(uint)
+```
+
 #### storing_into_nullable_struct
 ```hb
 StructA := struct {b: StructB, c: ^uint, d: uint}

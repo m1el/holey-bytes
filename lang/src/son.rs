@@ -2022,6 +2022,12 @@ struct Variable {
 
 impl Variable {
     fn new(id: Ident, ty: ty::Id, ptr: bool, value: Nid, nodes: &mut Nodes) -> Self {
+        if value == NEVER {
+            if ty == ty::Id::NEVER {
+                panic!();
+            }
+        }
+
         Self { id, ty, ptr, value: StrongRef::new(value, nodes) }
     }
 
@@ -3400,7 +3406,7 @@ impl<'a> Codegen<'a> {
                 });
 
                 for var in self.ci.scope.vars.iter_mut().skip(self.ci.inline_var_base) {
-                    if !var.ptr {
+                    if !var.ptr && var.value() != NEVER {
                         var.set_value(VOID, &mut self.ci.nodes);
                     }
                 }
@@ -4331,7 +4337,7 @@ impl<'a> Codegen<'a> {
             self.ci.nodes.basic_blocks();
             self.ci.nodes.graphviz(self.ty_display(ty::Id::VOID));
         } else {
-            self.ci.nodes.graphviz_in_browser(self.ty_display(ty::Id::VOID));
+            //self.ci.nodes.graphviz_in_browser(self.ty_display(ty::Id::VOID));
         }
 
         self.errors.borrow().len() == prev_err_len
@@ -4664,7 +4670,13 @@ impl TypeParser for Codegen<'_> {
     }
 
     fn find_local_ty(&mut self, ident: Ident) -> Option<ty::Id> {
-        self.ci.scope.vars.iter().rfind(|v| (v.id == ident && v.value() == NEVER)).map(|v| v.ty)
+        self.ci
+            .scope
+            .vars
+            .iter()
+            .rfind(|v| (v.id == ident && v.value() == NEVER))
+            .map(|v| v.ty)
+            .inspect(|&ty| debug_assert_ne!(ty, ty::Id::NEVER))
     }
 }
 
@@ -4743,6 +4755,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        generic_type_mishap;
         storing_into_nullable_struct;
         scheduling_block_did_dirty;
         null_check_returning_small_global;

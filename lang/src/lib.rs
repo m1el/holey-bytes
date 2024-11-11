@@ -1032,7 +1032,10 @@ trait TypeParser {
 
             let Some((expr @ Expr::BinOp { left, right, .. }, name)) = f.find_decl(id) else {
                 return match id {
-                    Ok(_) => ty::Id::NEVER,
+                    Ok(_) => {
+                        debug_assert_eq!(from_file, file);
+                        self.report(file, pos, "somehow this was not found")
+                    }
                     Err("main") => self.report(
                         from_file,
                         pos,
