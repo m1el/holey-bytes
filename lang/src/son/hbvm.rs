@@ -564,27 +564,27 @@ impl TokenKind {
     }
 
     fn unop(&self, dst: ty::Id, src: ty::Id) -> Option<fn(u8, u8) -> EncodedInstr> {
-        let src_idx = src.simple_size().unwrap().ilog2() as usize - 2;
+        let src_idx = src.simple_size().unwrap().ilog2() as usize;
         Some(match self {
             Self::Sub => [
-                |a, b| sub8(a, 0, b),
-                |a, b| sub16(a, 0, b),
-                |a, b| sub32(a, 0, b),
-                |a, b| sub64(a, 0, b),
-            ][src.simple_size().unwrap().ilog2() as usize],
+                |a, b| sub8(a, reg::ZERO, b),
+                |a, b| sub16(a, reg::ZERO, b),
+                |a, b| sub32(a, reg::ZERO, b),
+                |a, b| sub64(a, reg::ZERO, b),
+            ][src_idx],
             Self::Not => instrs::not,
             Self::Float if dst.is_float() && src.is_integer() => {
                 debug_assert_matches!(
                     (dst.simple_size(), src.simple_size()),
                     (Some(4 | 8), Some(8))
                 );
-                [instrs::itf32, instrs::itf64][src_idx]
+                [instrs::itf32, instrs::itf64][src_idx - 2]
             }
             Self::Number if src.is_float() && dst.is_integer() => {
-                [|a, b| instrs::fti32(a, b, 1), |a, b| instrs::fti64(a, b, 1)][src_idx]
+                [|a, b| instrs::fti32(a, b, 1), |a, b| instrs::fti64(a, b, 1)][src_idx - 2]
             }
             Self::Float if dst.is_float() && src.is_float() => {
-                [instrs::fc32t64, |a, b| instrs::fc64t32(a, b, 1)][src_idx]
+                [instrs::fc32t64, |a, b| instrs::fc64t32(a, b, 1)][src_idx - 2]
             }
             _ => return None,
         })
