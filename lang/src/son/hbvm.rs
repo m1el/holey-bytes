@@ -567,6 +567,7 @@ impl TokenKind {
         let src_idx = src.simple_size().unwrap().ilog2() as usize - 2;
         Some(match self {
             Self::Sub => instrs::neg,
+            Self::Not => instrs::not,
             Self::Float if dst.is_float() && src.is_integer() => {
                 debug_assert_matches!(
                     (dst.simple_size(), src.simple_size()),
