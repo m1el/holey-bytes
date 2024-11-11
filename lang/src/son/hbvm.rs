@@ -568,7 +568,10 @@ impl TokenKind {
         Some(match self {
             Self::Sub => instrs::neg,
             Self::Float if dst.is_float() && src.is_integer() => {
-                debug_assert_eq!(dst.simple_size(), src.simple_size());
+                debug_assert_matches!(
+                    (dst.simple_size(), src.simple_size()),
+                    (Some(4 | 8), Some(8))
+                );
                 [instrs::itf32, instrs::itf64][src_idx]
             }
             Self::Number if src.is_float() && dst.is_integer() => {

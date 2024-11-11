@@ -212,7 +212,7 @@ use_foo := fn(foo: Foo, str: ^u8): void {
 Bar := struct {a: ?^uint, b: uint}
 new_bar := fn(a: ?^uint): ?Bar return .(a, 1)
 
-decide := fn(): bool return true
+decide := fn(): bool return !false
 ```
 
 #### structs

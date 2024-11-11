@@ -263,6 +263,7 @@ impl TokenKind {
         match self {
             Self::Sub if float => (-f64::from_bits(value as _)).to_bits() as _,
             Self::Sub => value.wrapping_neg(),
+            Self::Not => (value == 0) as _,
             Self::Float if float => value,
             Self::Float => (value as f64).to_bits() as _,
             Self::Number => {

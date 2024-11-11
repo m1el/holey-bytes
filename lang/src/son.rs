@@ -2029,12 +2029,6 @@ struct Variable {
 
 impl Variable {
     fn new(id: Ident, ty: ty::Id, ptr: bool, value: Nid, nodes: &mut Nodes) -> Self {
-        if value == NEVER {
-            if ty == ty::Id::NEVER {
-                panic!();
-            }
-        }
-
         Self { id, ty, ptr, value: StrongRef::new(value, nodes) }
     }
 
@@ -2810,6 +2804,21 @@ impl<'a> Codegen<'a> {
                     ))
                 } else {
                     self.report(pos, fa!("cant negate '{}'", self.ty_display(val.ty)));
+                    Value::NEVER
+                }
+            }
+            Expr::UnOp { pos, op: op @ TokenKind::Not, val } => {
+                let val =
+                    self.expr_ctx(val, Ctx::default().with_ty(ctx.ty.unwrap_or(ty::Id::INT)))?;
+                if val.ty == ty::Id::BOOL {
+                    Some(self.ci.nodes.new_node_lit(
+                        val.ty,
+                        Kind::UnOp { op },
+                        [VOID, val.id],
+                        self.tys,
+                    ))
+                } else {
+                    self.report(pos, fa!("cant logically negate '{}'", self.ty_display(val.ty)));
                     Value::NEVER
                 }
             }

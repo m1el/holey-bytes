@@ -459,7 +459,7 @@ impl<'a, 'b> Parser<'a, 'b> {
                     pos
                 },
             },
-            T::Band | T::Mul | T::Xor | T::Sub | T::Que => E::UnOp {
+            T::Band | T::Mul | T::Xor | T::Sub | T::Que | T::Not => E::UnOp {
                 pos,
                 op: token.kind,
                 val: {
