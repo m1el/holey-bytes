@@ -3168,10 +3168,16 @@ impl<'a> Codegen<'a> {
                     self.tys,
                 ))
             }
-            Expr::Directive { name: "as", args: [ty, expr], .. } => {
+            Expr::Directive { name: "as", args: [ty, expr], pos } => {
                 let ty = self.ty(ty);
-                let ctx = Ctx::default().with_ty(ty);
-                let mut val = self.raw_expr_ctx(expr, ctx)?;
+                let mut val = self.raw_expr_ctx(expr, Ctx::default().with_ty(ty))?;
+
+                if let Some(ity) = ctx.ty
+                    && ity.try_upcast(ty) == Some(ty)
+                    && val.ty == ity
+                {
+                    self.report(pos, "the type is known at this point, remove the hint");
+                }
                 self.strip_var(&mut val);
                 self.assert_ty(expr.pos(), &mut val, ty, "hinted expr");
                 Some(val)

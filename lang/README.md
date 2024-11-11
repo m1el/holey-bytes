@@ -646,7 +646,7 @@ main := fn(): int {
 				i -= 1
 			}
 			//   b g r
-			put_pixel(.(x, y), .(@as(u8, @intcast(i)), @as(u8, @intcast(i)), @as(u8, @intcast(i)), 255))
+			put_pixel(.(x, y), .(@intcast(i), @intcast(i), @intcast(i), 255))
 		}
 	}
 
@@ -1030,7 +1030,7 @@ main := fn(): uint {
 ```hb
 Color := struct {r: u8, g: u8, b: u8, a: u8}
 white := Color.(255, 255, 255, 255)
-u32_to_color := fn(v: u32): Color return @as(Color, @bitcast(u32_to_u32(@bitcast(v))))
+u32_to_color := fn(v: u32): Color return @bitcast(u32_to_u32(@bitcast(v)))
 u32_to_u32 := fn(v: u32): u32 return v
 main := fn(): uint {
 	return u32_to_color(@bitcast(white)).r
@@ -1399,7 +1399,7 @@ main := fn(): uint {
 	}
 	n = 1
 	loop if n >= 10 break else {
-		*(@as(^[u8; 1024], @bitcast(&back_buffer)) + n) = *@as(^[u8; 1024], @bitcast(&back_buffer))
+		*(@as(^[u8; 1024], @bitcast(&back_buffer)) + n) = *@bitcast(&back_buffer)
 		n += 1
 	}
 	return back_buffer[1024 * 2]
