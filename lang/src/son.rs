@@ -1043,6 +1043,10 @@ impl Nodes {
             K::Phi => {
                 let &[ctrl, lhs, rhs] = self[target].inputs.as_slice() else { unreachable!() };
 
+                if rhs == target {
+                    return Some(lhs);
+                }
+
                 if lhs == rhs {
                     return Some(lhs);
                 }
