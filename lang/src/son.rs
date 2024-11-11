@@ -4670,13 +4670,7 @@ impl TypeParser for Codegen<'_> {
     }
 
     fn find_local_ty(&mut self, ident: Ident) -> Option<ty::Id> {
-        self.ci
-            .scope
-            .vars
-            .iter()
-            .rfind(|v| (v.id == ident && v.value() == NEVER))
-            .map(|v| v.ty)
-            .inspect(|&ty| debug_assert_ne!(ty, ty::Id::NEVER))
+        self.ci.scope.vars.iter().rfind(|v| (v.id == ident && v.value() == NEVER)).map(|v| v.ty)
     }
 }
 
