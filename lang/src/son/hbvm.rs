@@ -566,7 +566,12 @@ impl TokenKind {
     fn unop(&self, dst: ty::Id, src: ty::Id) -> Option<fn(u8, u8) -> EncodedInstr> {
         let src_idx = src.simple_size().unwrap().ilog2() as usize - 2;
         Some(match self {
-            Self::Sub => instrs::neg,
+            Self::Sub => [
+                |a, b| sub8(a, 0, b),
+                |a, b| sub16(a, 0, b),
+                |a, b| sub32(a, 0, b),
+                |a, b| sub64(a, 0, b),
+            ][src.simple_size().unwrap().ilog2() as usize],
             Self::Not => instrs::not,
             Self::Float if dst.is_float() && src.is_integer() => {
                 debug_assert_matches!(
