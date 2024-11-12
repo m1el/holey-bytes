@@ -3591,7 +3591,7 @@ impl<'a> Codegen<'a> {
                     .zip(bres.vars.iter_mut())
                 {
                     if self.ci.nodes[scope_var.value()].is_lazy_phi(node) {
-                        if loop_var.value() != scope_var.value() {
+                        if loop_var.value() != scope_var.value() && loop_var.value() != 0 {
                             scope_var.set_value(
                                 self.ci.nodes.modify_input(scope_var.value(), 2, loop_var.value()),
                                 &mut self.ci.nodes,
