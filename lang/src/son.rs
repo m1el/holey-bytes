@@ -3849,7 +3849,13 @@ impl<'a> Codegen<'a> {
             }
 
             let (v, ctrl, scope) = mem::replace(&mut self.ci.inline_ret, prev_inline_ret)?;
-            if is_inline && ctrl.get() != prev_ctrl {
+            if is_inline
+                && (ctrl.get() != prev_ctrl
+                    && (!matches!(self.ci.nodes[ctrl.get()].kind, Kind::Call {
+                        func: ty::Func::ECA,
+                        ..
+                    }) || self.ci.nodes[ctrl.get()].inputs[0] != prev_ctrl))
+            {
                 self.report(body.pos(), "function is makred inline but it contains controlflow");
             }
 

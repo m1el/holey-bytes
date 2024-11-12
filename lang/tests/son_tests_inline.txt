@@ -1,18 +1,20 @@
 main:
-    LI64 r7, 6d
-    LRA r3, r0, :gb
-    LI64 r6, 0d
-    LD r8, r3, 0a, 8h
-    CMPU r9, r8, r6
-    CMPUI r9, r9, 0d
-    ORI r11, r9, 0d
-    ANDI r11, r11, 255d
-    JNE r11, r0, :0
-    CP r4, r7
+    LI64 r2, 8d
+    ECA 
+    LI64 r10, 6d
+    LRA r6, r0, :gb
+    LI64 r9, 0d
+    LD r11, r6, 0a, 8h
+    CMPU r12, r11, r9
+    CMPUI r12, r12, 0d
+    ORI r2, r12, 0d
+    ANDI r2, r2, 255d
+    JNE r2, r0, :0
+    CP r7, r10
     JMP :1
- 0: LI64 r4, 1d
- 1: SUB64 r1, r4, r7
+ 0: LI64 r7, 1d
+ 1: SUB64 r1, r7, r10
     JALA r0, r31, 0a
-code size: 131
+code size: 142
 ret: 0
 status: Ok(())

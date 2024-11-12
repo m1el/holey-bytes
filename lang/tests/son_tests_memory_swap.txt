@@ -1,0 +1,32 @@
+decide:
+    ADDI64 r254, r254, -24d
+    ADDI64 r5, r254, 0d
+    ST r2, r254, 0a, 8h
+    LI64 r8, 0d
+    ST r8, r254, 8a, 8h
+    ST r8, r254, 16a, 8h
+    BMC r5, r1, 24h
+    ADDI64 r254, r254, 24d
+    JALA r0, r31, 0a
+main:
+    ADDI64 r254, r254, -112d
+    ST r31, r254, 72a, 40h
+    ADDI64 r32, r254, 48d
+    LI64 r2, 0d
+    CP r1, r32
+    JAL r31, r0, :decide
+    ADDI64 r1, r254, 24d
+    BMC r32, r1, 24h
+    LI64 r2, 1d
+    JAL r31, r0, :decide
+    ADDI64 r33, r254, 0d
+    BMC r32, r33, 24h
+    LD r34, r254, 24a, 8h
+    LD r35, r254, 0a, 8h
+    ADD64 r1, r35, r34
+    LD r31, r254, 72a, 40h
+    ADDI64 r254, r254, 112d
+    JALA r0, r31, 0a
+code size: 275
+ret: 1
+status: Ok(())
