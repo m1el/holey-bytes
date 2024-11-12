@@ -125,7 +125,7 @@ impl BitSet {
         let index = index as usize;
         let (mut data, len) = self.data_mut_and_len();
         if core::intrinsics::unlikely(index >= len) {
-            self.grow(index.next_power_of_two().max(4 * Self::UNIT));
+            self.grow((index + 1).next_power_of_two().max(4 * Self::UNIT));
             (data, _) = self.data_mut_and_len();
         }
 
