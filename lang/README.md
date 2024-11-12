@@ -633,6 +633,30 @@ main := fn(): uint {
 
 ### Purely Testing Examples
 
+#### triggering_store_in_divergent_branch
+```hb
+opaque := fn(): uint {
+	return 1 << 31
+}
+
+main := fn(): void {
+	a := 0
+	loop if a >= opaque() break else {
+		valid := true
+		b := 0
+		loop if b >= opaque() break else {
+			if b == 1 << 16 {
+				valid = false
+				break
+			}
+			b += 1
+		}
+		if valid == false continue
+		a += 1
+	}
+}
+```
+
 #### very_nested_loops
 ```hb
 $W := 200

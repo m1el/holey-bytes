@@ -4823,6 +4823,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        triggering_store_in_divergent_branch;
         wrong_dead_code_elimination;
         memory_swap;
         very_nested_loops;

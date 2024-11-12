@@ -130,6 +130,7 @@ impl BitSet {
         }
 
         let (elem, bit) = Self::indexes(index);
+        debug_assert!(elem < data.len(), "{} < {}", elem, data.len());
         let elem = unsafe { data.get_unchecked_mut(elem) };
         let prev = *elem;
         *elem |= 1 << bit;
