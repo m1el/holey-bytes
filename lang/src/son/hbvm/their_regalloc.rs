@@ -431,7 +431,8 @@ impl HbvmBackend {
                     | Kind::Then
                     | Kind::Else
                     | Kind::Phi
-                    | Kind::Arg => unreachable!(),
+                    | Kind::Arg
+                    | Kind::Join => unreachable!(),
                 }
             }
         }
@@ -835,7 +836,7 @@ impl<'a> Function<'a> {
                 self.add_instr(nid, ops);
             }
             Kind::Assert { .. } => unreachable!(),
-            Kind::End | Kind::Phi | Kind::Arg | Kind::Mem | Kind::Loops => {}
+            Kind::End | Kind::Phi | Kind::Arg | Kind::Mem | Kind::Loops | Kind::Join => {}
             Kind::Load { .. } => {
                 let mut region = node.inputs[1];
                 if self.nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })

@@ -27,6 +27,7 @@ use {
     },
     hashbrown::hash_map,
     hbbytecode::DisasmError,
+    std::backtrace,
 };
 
 const VOID: Nid = 0;
@@ -443,6 +444,7 @@ impl Nodes {
 
     fn bind(&mut self, from: Nid, to: Nid) {
         debug_assert_ne!(to, 0);
+        debug_assert_ne!(self[to].kind, Kind::Phi);
         self[from].outputs.push(to);
         self[to].inputs.push(from);
     }
@@ -712,6 +714,12 @@ impl Nodes {
     fn remove(&mut self, target: Nid) -> bool {
         if !self[target].is_dangling() {
             return false;
+        }
+
+        if self[target].kind == (Kind::BinOp { op: TokenKind::Add })
+            && self[target].ty == ty::Id::U8
+        {
+            log::info!("{}", std::backtrace::Backtrace::capture());
         }
 
         for i in 0..self[target].inputs.len() {
@@ -1503,7 +1511,8 @@ impl Nodes {
             Kind::Load => write!(out, "load:      "),
             Kind::Stre => write!(out, "stre:      "),
             Kind::Mem => write!(out, " mem:      "),
-            Kind::Loops => write!(out, " loops:      "),
+            Kind::Loops => write!(out, "loops:      "),
+            Kind::Join => write!(out, "join:     "),
         }?;
 
         if self[node].kind != Kind::Loop && self[node].kind != Kind::Region {
@@ -1850,6 +1859,8 @@ pub enum Kind {
     Load,
     // [ctrl, value, memory]
     Stre,
+    // [ctrl, a, b]
+    Join,
 }
 
 impl Kind {
@@ -2474,11 +2485,15 @@ impl<'a> Codegen<'a> {
             );
             let base_class = self.ci.scope.aclasses[0].last_store.get();
             let last_store = self.ci.scope.aclasses[value_index].last_store.get();
-            if base_class != MEM && last_store != MEM {
-                self.ci.nodes.bind(base_class, last_store);
-            }
-            if last_store != MEM {
-                self.ci.scope.aclasses[0].last_store.set(last_store, &mut self.ci.nodes);
+            match [base_class, last_store] {
+                [_, MEM] => {}
+                [MEM, a] => {
+                    self.ci.scope.aclasses[0].last_store.set(a, &mut self.ci.nodes);
+                }
+                [a, b] => {
+                    let a = self.ci.nodes.new_node_nop(ty::Id::VOID, Kind::Join, [0, a, b]);
+                    self.ci.scope.aclasses[0].last_store.set(a, &mut self.ci.nodes);
+                }
             }
         }
 
@@ -3649,7 +3664,11 @@ impl<'a> Codegen<'a> {
                         dest_class.last_store.set(scope_class.last_store.get(), &mut self.ci.nodes);
                     }
 
-                    debug_assert!(!self.ci.nodes[dest_class.last_store.get()].is_lazy_phi(node));
+                    debug_assert!(
+                        !self.ci.nodes[dest_class.last_store.get()].is_lazy_phi(node),
+                        "{:?}",
+                        self.ci.nodes[dest_class.last_store.get()]
+                    );
                 }
 
                 scope.clear(&mut self.ci.nodes);

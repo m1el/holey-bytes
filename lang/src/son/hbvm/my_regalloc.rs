@@ -468,6 +468,7 @@ impl HbvmBackend {
                     | Kind::Then
                     | Kind::Else
                     | Kind::Phi
+                    | Kind::Join
                     | Kind::Assert { .. }) => unreachable!("{e:?}"),
                 }
             }
@@ -731,7 +732,7 @@ impl<'a> Function<'a> {
             | Kind::Load { .. }
             | Kind::Stre
             | Kind::Stck => self.add_instr(nid),
-            Kind::End | Kind::Phi | Kind::Arg | Kind::Mem | Kind::Loops => {}
+            Kind::End | Kind::Phi | Kind::Arg | Kind::Mem | Kind::Loops | Kind::Join => {}
             Kind::Assert { .. } => unreachable!(),
         }
     }
