@@ -241,8 +241,23 @@ impl HbvmBackend {
                     }),
                     Kind::UnOp { op } => {
                         let op = op
-                            .unop(node.ty, fuc.nodes[node.inputs[1]].ty)
-                            .expect("TODO: unary operator not supported");
+                            .unop(
+                                node.ty,
+                                tys.inner_of(fuc.nodes[node.inputs[1]].ty)
+                                    .unwrap_or(fuc.nodes[node.inputs[1]].ty),
+                            )
+                            .unwrap_or_else(|| {
+                                panic!(
+                                    "TODO: unary operator not supported: {op} {} {}",
+                                    ty::Display::new(tys, files, node.ty),
+                                    ty::Display::new(
+                                        tys,
+                                        files,
+                                        tys.inner_of(fuc.nodes[node.inputs[1]].ty)
+                                            .unwrap_or(fuc.nodes[node.inputs[1]].ty)
+                                    )
+                                )
+                            });
                         let &[dst, oper] = allocs else { unreachable!() };
                         self.emit(op(atr(dst), atr(oper)));
                     }
@@ -264,8 +279,8 @@ impl HbvmBackend {
                         } else if let Some(against) = op.cmp_against() {
                             let op_ty = fuc.nodes[rh].ty;
 
-                            self.emit(extend(fuc.nodes[lh].ty, fuc.nodes[lh].ty.extend(), 1, 1));
-                            self.emit(extend(fuc.nodes[rh].ty, fuc.nodes[rh].ty.extend(), 2, 2));
+                            //self.emit(extend(fuc.nodes[lh].ty, fuc.nodes[lh].ty.extend(), 1, 1));
+                            //self.emit(extend(fuc.nodes[rh].ty, fuc.nodes[rh].ty.extend(), 2, 2));
                             let &[dst, lhs, rhs] = allocs else { unreachable!() };
 
                             if op_ty.is_float() && matches!(op, TokenKind::Le | TokenKind::Ge) {

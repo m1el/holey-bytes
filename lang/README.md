@@ -268,6 +268,21 @@ main := fn(): uint {
 }
 ```
 
+#### wrong_dead_code_elimination
+```hb
+Color := struct {b: u8}
+main := fn(): void {
+	color := Color.(0)
+	n := @as(u8, 1)
+	loop {
+		if color.b == 255 | color.b == 0 {
+			n = -n
+		}
+		color.b += n
+	}
+}
+```
+
 #### struct_operators
 ```hb
 Point := struct {

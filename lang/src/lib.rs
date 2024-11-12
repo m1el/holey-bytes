@@ -385,7 +385,7 @@ pub mod ty {
     }
 
     impl Id {
-        pub const DEFAULT_INT: Self = Self::UINT;
+        pub const DINT: Self = Self::UINT;
 
         pub fn bin_ret(self, op: TokenKind) -> Id {
             use TokenKind as T;
@@ -787,7 +787,7 @@ pub struct Sig {
     ret: ty::Id,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, Copy)]
 struct Func {
     file: Module,
     name: Ident,
@@ -798,7 +798,7 @@ struct Func {
     comp_state: [CompState; 2],
 }
 
-#[derive(Default, PartialEq, Eq)]
+#[derive(Default, PartialEq, Eq, Clone, Copy)]
 enum CompState {
     #[default]
     Dead,

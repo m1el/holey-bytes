@@ -1,30 +1,29 @@
 main:
     ADDI64 r254, r254, -12d
-    LI8 r1, 255b
-    ST r1, r254, 0a, 1h
-    LI8 r4, 0b
-    ST r4, r254, 1a, 1h
-    ST r4, r254, 2a, 1h
-    ST r1, r254, 3a, 1h
-    LI32 r9, 0w
-    ST r9, r254, 4a, 4h
-    LD r4, r254, 4a, 4h
-    LI32 r1, 2w
-    ST r1, r254, 8a, 4h
-    LD r5, r254, 8a, 4h
-    ANDI r5, r5, 4294967295d
-    ANDI r1, r1, 4294967295d
-    JEQ r5, r1, :0
     LI64 r1, 0d
+    LI8 r2, 255b
+    ST r2, r254, 0a, 1h
+    LI8 r5, 0b
+    ST r5, r254, 1a, 1h
+    ST r5, r254, 2a, 1h
+    ST r2, r254, 3a, 1h
+    LI32 r10, 0w
+    ST r10, r254, 4a, 4h
+    LD r8, r254, 4a, 4h
+    LI32 r2, 2w
+    ST r2, r254, 8a, 4h
+    LD r5, r254, 8a, 4h
+    LI64 r9, 2d
+    ANDI r10, r5, 4294967295d
+    JEQ r10, r9, :0
     JMP :1
- 0: ANDI r4, r4, 4294967295d
-    ANDI r9, r9, 4294967295d
-    JEQ r4, r9, :2
+ 0: ANDI r2, r8, 4294967295d
+    JEQ r2, r1, :2
     LI64 r1, 64d
     JMP :1
  2: LI64 r1, 512d
  1: ADDI64 r254, r254, 12d
     JALA r0, r31, 0a
-code size: 257
+code size: 245
 ret: 512
 status: Ok(())

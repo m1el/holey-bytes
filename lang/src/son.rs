@@ -231,7 +231,7 @@ impl Nodes {
         let mut deepest = self[node].inputs[0];
         for &inp in self[node].inputs[1..].iter() {
             if self.idepth(inp) > self.idepth(deepest) {
-                if matches!(self[inp].kind, Kind::Call { .. }) {
+                if self[inp].kind.is_call() {
                     deepest = inp;
                 } else {
                     debug_assert!(!self.is_cfg(inp));
@@ -250,8 +250,7 @@ impl Nodes {
         self[current].outputs.remove(index);
         self[node].inputs[0] = deepest;
         debug_assert!(
-            !self[deepest].outputs.contains(&node)
-                || matches!(self[deepest].kind, Kind::Call { .. }),
+            !self[deepest].outputs.contains(&node) || self[deepest].kind.is_call(),
             "{node} {:?} {deepest} {:?}",
             self[node],
             self[deepest]
@@ -937,9 +936,12 @@ impl Nodes {
                 let &[_, oper] = self[target].inputs.as_slice() else { unreachable!() };
                 let ty = self[target].ty;
 
-                let is_float = self[oper].ty.is_float();
+                if matches!(op, TokenKind::Number | TokenKind::Float) && ty == self[oper].ty {
+                    return Some(oper);
+                }
 
                 if let K::CInt { value } = self[oper].kind {
+                    let is_float = self[oper].ty.is_float();
                     return Some(self.new_const(ty, op.apply_unop(value, is_float)));
                 }
             }
@@ -1089,7 +1091,7 @@ impl Nodes {
                         mem::swap(&mut a, &mut b);
                     }
 
-                    if matches!(self[a].kind, Kind::Call { .. })
+                    if self[a].kind.is_call()
                         && self[a].inputs.last() == Some(&target)
                         && self[b].kind == Kind::Load
                         && let &[store] = self[b].outputs.as_slice()
@@ -1851,6 +1853,14 @@ pub enum Kind {
 }
 
 impl Kind {
+    fn is_call(&self) -> bool {
+        matches!(self, Kind::Call { .. })
+    }
+
+    fn is_eca(&self) -> bool {
+        matches!(self, Kind::Call { func: ty::Func::ECA, .. })
+    }
+
     fn is_pinned(&self) -> bool {
         self.is_cfg() || matches!(self, Self::Phi | Self::Arg | Self::Mem | Self::Loops)
     }
@@ -2580,24 +2590,12 @@ impl<'a> Codegen<'a> {
             {
                 Some(self.ci.nodes.new_const_lit(ty, (value as f64).to_bits() as i64))
             }
-            Expr::Number { value, .. } => Some(
-                self.ci.nodes.new_const_lit(
-                    ctx.ty
-                        .map(|ty| self.tys.inner_of(ty).unwrap_or(ty))
-                        .filter(|ty| ty.is_integer())
-                        .unwrap_or(ty::Id::DEFAULT_INT),
-                    value,
-                ),
-            ),
-            Expr::Float { value, .. } => Some(
-                self.ci.nodes.new_const_lit(
-                    ctx.ty
-                        .map(|ty| self.tys.inner_of(ty).unwrap_or(ty))
-                        .filter(|ty| ty.is_float())
-                        .unwrap_or(ty::Id::F32),
-                    value as i64,
-                ),
-            ),
+            Expr::Number { value, .. } => {
+                self.gen_inferred_const(ctx, ty::Id::DINT, value, ty::Id::is_integer)
+            }
+            Expr::Float { value, .. } => {
+                self.gen_inferred_const(ctx, ty::Id::F32, value as i64, ty::Id::is_float)
+            }
             Expr::Ident { id, .. }
                 if let Some(index) = self.ci.scope.vars.iter().rposition(|v| v.id == id) =>
             {
@@ -2937,13 +2935,25 @@ impl<'a> Codegen<'a> {
                         self.strip_var(&mut rhs);
                         self.implicit_unwrap(right.pos(), &mut rhs);
                         let (ty, aclass) = self.binop_ty(pos, &mut lhs, &mut rhs, op);
+                        let fty = ty.bin_ret(op);
+                        if fty == ty::Id::BOOL {
+                            if lhs.ty.is_float() {
+                            } else {
+                                self.ci.nodes.lock(rhs.id);
+                                let lty = lhs.ty.extend();
+                                if lty != lhs.ty {
+                                    self.extend(&mut lhs, lty);
+                                }
+                                self.ci.nodes.unlock(rhs.id);
+                                let rty = rhs.ty.extend();
+                                if rty != rhs.ty {
+                                    self.extend(&mut rhs, rty);
+                                }
+                            }
+                        }
                         let inps = [VOID, lhs.id, rhs.id];
-                        let bop = self.ci.nodes.new_node_lit(
-                            ty.bin_ret(op),
-                            Kind::BinOp { op },
-                            inps,
-                            self.tys,
-                        );
+                        let bop =
+                            self.ci.nodes.new_node_lit(fty, Kind::BinOp { op }, inps, self.tys);
                         self.ci.nodes.pass_aclass(aclass, bop.id);
                         Some(bop)
                     }
@@ -2988,8 +2998,8 @@ impl<'a> Codegen<'a> {
                 };
 
                 let elem = self.tys.ins.slices[s].elem;
-                let mut idx = self.expr_ctx(index, Ctx::default().with_ty(ty::Id::DEFAULT_INT))?;
-                self.assert_ty(index.pos(), &mut idx, ty::Id::DEFAULT_INT, "subscript");
+                let mut idx = self.expr_ctx(index, Ctx::default().with_ty(ty::Id::DINT))?;
+                self.assert_ty(index.pos(), &mut idx, ty::Id::DINT, "subscript");
                 let size = self.ci.nodes.new_const(ty::Id::INT, self.tys.size_of(elem));
                 let inps = [VOID, idx.id, size];
                 let offset = self.ci.nodes.new_node(
@@ -3018,27 +3028,12 @@ impl<'a> Codegen<'a> {
             }
             Expr::Directive { name: "sizeof", args: [ty], .. } => {
                 let ty = self.ty(ty);
-                Some(
-                    self.ci.nodes.new_const_lit(
-                        ctx.ty
-                            .map(|ty| self.tys.inner_of(ty).unwrap_or(ty))
-                            .filter(|ty| ty.is_integer())
-                            .unwrap_or(ty::Id::DEFAULT_INT),
-                        self.tys.size_of(ty),
-                    ),
-                )
+                self.gen_inferred_const(ctx, ty::Id::DINT, self.tys.size_of(ty), ty::Id::is_integer)
             }
             Expr::Directive { name: "alignof", args: [ty], .. } => {
                 let ty = self.ty(ty);
-                Some(
-                    self.ci.nodes.new_const_lit(
-                        ctx.ty
-                            .map(|ty| self.tys.inner_of(ty).unwrap_or(ty))
-                            .filter(|ty| ty.is_integer())
-                            .unwrap_or(ty::Id::DEFAULT_INT),
-                        self.tys.align_of(ty),
-                    ),
-                )
+                let align = self.tys.align_of(ty);
+                self.gen_inferred_const(ctx, ty::Id::DINT, align, ty::Id::is_integer)
             }
             Expr::Directive { name: "bitcast", args: [val], pos } => {
                 let mut val = self.raw_expr(val)?;
@@ -3744,6 +3739,24 @@ impl<'a> Codegen<'a> {
         }
     }
 
+    fn gen_inferred_const(
+        &mut self,
+        ctx: Ctx,
+        fallback: ty::Id,
+        value: impl Into<i64>,
+        filter: impl Fn(ty::Id) -> bool,
+    ) -> Option<Value> {
+        Some(
+            self.ci.nodes.new_const_lit(
+                ctx.ty
+                    .map(|ty| self.tys.inner_of(ty).unwrap_or(ty))
+                    .filter(|&ty| filter(ty))
+                    .unwrap_or(fallback),
+                value,
+            ),
+        )
+    }
+
     fn gen_call(&mut self, func: &Expr, args: &[Expr], inline: bool) -> Option<Value> {
         let ty = self.ty(func);
         let ty::Kind::Func(mut fu) = ty.expand() else {
@@ -3851,10 +3864,8 @@ impl<'a> Codegen<'a> {
             let (v, ctrl, scope) = mem::replace(&mut self.ci.inline_ret, prev_inline_ret)?;
             if is_inline
                 && ctrl.get() != prev_ctrl
-                && (!matches!(self.ci.nodes[ctrl.get()].kind, Kind::Call {
-                    func: ty::Func::ECA,
-                    ..
-                }) || self.ci.nodes[ctrl.get()].inputs[0] != prev_ctrl)
+                && (!self.ci.nodes[ctrl.get()].kind.is_eca()
+                    || self.ci.nodes[ctrl.get()].inputs[0] != prev_ctrl)
             {
                 self.report(body.pos(), "function is makred inline but it contains controlflow");
             }
@@ -4067,17 +4078,10 @@ impl<'a> Codegen<'a> {
 
             let sym = SymKey::FuncInst(*func, args);
             let ct = |ins: &mut crate::TypeIns| {
-                let fuc = &ins.funcs[*func];
+                let fuc = ins.funcs[*func];
+                debug_assert!(fuc.comp_state.iter().all(|&s| s == CompState::default()));
                 ins.funcs
-                    .push(Func {
-                        file: fuc.file,
-                        name: fuc.name,
-                        base: Some(*func),
-                        sig: Some(Sig { args, ret }),
-                        expr: fuc.expr,
-                        is_inline: fuc.is_inline,
-                        ..Default::default()
-                    })
+                    .push(Func { base: Some(*func), sig: Some(Sig { args, ret }), ..fuc })
                     .into()
             };
             let ty::Kind::Func(f) =
@@ -4628,10 +4632,9 @@ impl<'a> Codegen<'a> {
 
     fn extend(&mut self, value: &mut Value, to: ty::Id) {
         self.strip_ptr(value);
-        let mask = self.ci.nodes.new_const(to, (1i64 << (self.tys.size_of(value.ty) * 8)) - 1);
-        let inps = [VOID, value.id, mask];
+        let inps = [VOID, value.id];
         *value =
-            self.ci.nodes.new_node_lit(to, Kind::BinOp { op: TokenKind::Band }, inps, self.tys);
+            self.ci.nodes.new_node_lit(to, Kind::UnOp { op: TokenKind::Number }, inps, self.tys);
         value.ty = to;
     }
 
@@ -4810,6 +4813,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        wrong_dead_code_elimination;
         memory_swap;
         very_nested_loops;
         generic_type_mishap;

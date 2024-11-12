@@ -266,10 +266,8 @@ impl TokenKind {
             Self::Not => (value == 0) as _,
             Self::Float if float => value,
             Self::Float => (value as f64).to_bits() as _,
-            Self::Number => {
-                debug_assert!(float);
-                f64::from_bits(value as _) as _
-            }
+            Self::Number if float => f64::from_bits(value as _) as _,
+            Self::Number => value,
             s => todo!("{s}"),
         }
     }
