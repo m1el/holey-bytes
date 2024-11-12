@@ -1088,7 +1088,7 @@ main := fn(): uint {
 		i += 1
 	}
 
-	return arr[0].u
+	return arr[2].u
 }
 ```
 

@@ -107,13 +107,19 @@ macro_rules! inference {
 #[derive(Clone)]
 pub struct Nodes {
     values: Vec<Result<Node, (Nid, debug::Trace)>>,
+    queued_peeps: Vec<Nid>,
     free: Nid,
     lookup: Lookup,
 }
 
 impl Default for Nodes {
     fn default() -> Self {
-        Self { values: Default::default(), free: Nid::MAX, lookup: Default::default() }
+        Self {
+            values: Default::default(),
+            queued_peeps: Default::default(),
+            free: Nid::MAX,
+            lookup: Default::default(),
+        }
     }
 }
 
@@ -673,6 +679,7 @@ impl Nodes {
         let id = self.new_node_nop(ty, kind, inps);
         if let Some(opt) = self.peephole(id, tys) {
             debug_assert_ne!(opt, id);
+            self.queued_peeps.clear();
             self.lock(opt);
             self.remove(id);
             self.unlock(opt);
@@ -731,6 +738,7 @@ impl Nodes {
 
     fn late_peephole(&mut self, target: Nid, tys: &Types) -> Option<Nid> {
         if let Some(id) = self.peephole(target, tys) {
+            self.queued_peeps.clear();
             self.replace(target, id);
             return None;
         }
@@ -759,6 +767,11 @@ impl Nodes {
             }
 
             if let Some(new) = self.peephole(node, tys) {
+                let plen = stack.len();
+                stack.append(&mut self.queued_peeps);
+                for &p in &stack[plen..] {
+                    self.lock(p);
+                }
                 self.replace(node, new);
                 self.push_adjacent_nodes(new, stack);
             }
@@ -1043,18 +1056,14 @@ impl Nodes {
             K::Phi => {
                 let &[ctrl, lhs, rhs] = self[target].inputs.as_slice() else { unreachable!() };
 
-                if rhs == target {
-                    return Some(lhs);
-                }
-
-                if lhs == rhs {
+                if rhs == target || lhs == rhs {
                     return Some(lhs);
                 }
 
                 if self[lhs].kind == Kind::Stre
                     && self[rhs].kind == Kind::Stre
                     && self[lhs].ty == self[rhs].ty
-                    && !matches!(self[lhs].ty.expand(), ty::Kind::Struct(_))
+                    && self[lhs].ty.loc(tys) == Loc::Reg
                     && self[lhs].inputs[2] == self[rhs].inputs[2]
                     && self[lhs].inputs[3] == self[rhs].inputs[3]
                 {
@@ -1098,11 +1107,18 @@ impl Nodes {
                 }
             }
             K::Stre => {
+                if target == 79 {
+                    std::dbg!(std::backtrace::Backtrace::capture());
+                }
+
                 let &[_, value, region, store, ..] = self[target].inputs.as_slice() else {
                     unreachable!()
                 };
 
                 if self[value].kind == Kind::Load && self[value].inputs[1] == region {
+                    if target == 79 {
+                        std::dbg!(1);
+                    }
                     return Some(store);
                 }
 
@@ -1121,6 +1137,9 @@ impl Nodes {
 
                 'eliminate: {
                     if self[target].outputs.is_empty() {
+                        if target == 79 {
+                            std::dbg!(2);
+                        }
                         break 'eliminate;
                     }
 
@@ -1130,6 +1149,9 @@ impl Nodes {
                         for &ele in self[value].outputs.clone().iter().filter(|&&n| n != target) {
                             self[ele].peep_triggers.push(target);
                         }
+                        if target == 79 {
+                            std::dbg!(3);
+                        }
                         break 'eliminate;
                     }
 
@@ -1138,6 +1160,9 @@ impl Nodes {
                     };
 
                     if self[stack].ty != self[value].ty || self[stack].kind != Kind::Stck {
+                        if target == 79 {
+                            std::dbg!(3);
+                        }
                         break 'eliminate;
                     }
 
@@ -1162,8 +1187,22 @@ impl Nodes {
                         }
                         let Some(index) = unidentifed.iter().position(|&n| n == contact_point)
                         else {
+                            if target == 79 {
+                                std::dbg!(5);
+                            }
                             break 'eliminate;
                         };
+                        if self[self[cursor].inputs[1]].kind == Kind::Load
+                            && self[value].outputs.iter().any(|&n| {
+                                self.aclass_index(self[self[cursor].inputs[1]].inputs[1]).0
+                                    == self.aclass_index(self[n].inputs[2]).0
+                            })
+                        {
+                            if target == 79 {
+                                std::dbg!(6);
+                            }
+                            break 'eliminate;
+                        }
                         unidentifed.remove(index);
                         saved.push(contact_point);
                         first_store = cursor;
@@ -1175,6 +1214,9 @@ impl Nodes {
                     }
 
                     if !unidentifed.is_empty() {
+                        if target == 79 {
+                            std::dbg!(7);
+                        }
                         break 'eliminate;
                     }
 
@@ -1214,7 +1256,8 @@ impl Nodes {
                         debug_assert_eq!(inps.len(), 4);
                         inps[2] = region;
                         inps[3] = prev_store;
-                        prev_store = self.new_node(self[oper].ty, Kind::Stre, inps, tys);
+                        prev_store = self.new_node_nop(self[oper].ty, Kind::Stre, inps);
+                        self.queued_peeps.push(prev_store);
                     }
 
                     return Some(prev_store);
@@ -1279,6 +1322,15 @@ impl Nodes {
                     if self[cursor].inputs[0] == ctrl
                         && self[cursor].inputs[2] == region
                         && self[cursor].ty == self[target].ty
+                        && (self[self[cursor].inputs[1]].kind != Kind::Load
+                            || (!self[target].outputs.is_empty()
+                                && self[target].outputs.iter().all(|&n| {
+                                    self[n].kind != Kind::Stre
+                                        || self
+                                            .aclass_index(self[self[cursor].inputs[1]].inputs[1])
+                                            .0
+                                            != self.aclass_index(self[n].inputs[2]).0
+                                })))
                     {
                         return Some(self[cursor].inputs[1]);
                     }

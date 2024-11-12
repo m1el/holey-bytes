@@ -1,5 +1,5 @@
 main:
-    ADDI64 r254, r254, -32d
+    ADDI64 r254, r254, -40d
     LI64 r7, 1d
     LI64 r6, 4d
     LI64 r4, 0d
@@ -7,36 +7,38 @@ main:
     CP r8, r4
  6: JNE r8, r6, :0
     LI64 r6, 2d
+    ADDI64 r3, r254, 32d
     CP r8, r4
- 4: LD r1, r254, 0a, 8h
+ 4: LD r1, r254, 16a, 8h
     JNE r8, r7, :1
     JMP :2
- 1: MUL64 r11, r8, r6
+ 1: MUL64 r12, r8, r6
     ADD64 r8, r8, r7
     SUB64 r9, r6, r8
     MUL64 r9, r9, r6
-    CP r2, r4
- 5: JNE r2, r6, :3
+    CP r11, r4
+ 5: JNE r11, r6, :3
     JMP :4
- 3: ADD64 r10, r2, r7
-    ADD64 r12, r9, r2
-    MULI64 r12, r12, 8d
-    ADD64 r1, r11, r2
-    ADD64 r12, r5, r12
+ 3: ADD64 r10, r11, r7
+    ADD64 r1, r12, r11
+    ADD64 r2, r9, r11
     MULI64 r1, r1, 8d
+    MULI64 r11, r2, 8d
     ADD64 r1, r5, r1
-    BMC r12, r1, 8h
-    BMC r1, r12, 8h
-    CP r2, r10
+    ADD64 r11, r5, r11
+    BMC r1, r3, 8h
+    BMC r11, r1, 8h
+    BMC r3, r11, 8h
+    CP r11, r10
     JMP :5
- 0: ADD64 r12, r8, r7
-    MULI64 r10, r8, 8d
-    ADD64 r1, r5, r10
-    ST r8, r1, 0a, 8h
-    CP r8, r12
+ 0: ADD64 r2, r8, r7
+    MULI64 r12, r8, 8d
+    ADD64 r3, r5, r12
+    ST r8, r3, 0a, 8h
+    CP r8, r2
     JMP :6
- 2: ADDI64 r254, r254, 32d
+ 2: ADDI64 r254, r254, 40d
     JALA r0, r31, 0a
-code size: 255
-ret: 2
+code size: 271
+ret: 0
 status: Ok(())
