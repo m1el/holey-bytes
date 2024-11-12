@@ -2936,7 +2936,15 @@ impl<'a> Codegen<'a> {
                         self.implicit_unwrap(right.pos(), &mut rhs);
                         let (ty, aclass) = self.binop_ty(pos, &mut lhs, &mut rhs, op);
                         let fty = ty.bin_ret(op);
-                        if fty == ty::Id::BOOL {
+                        if matches!(
+                            op,
+                            TokenKind::Lt
+                                | TokenKind::Gt
+                                | TokenKind::Ge
+                                | TokenKind::Le
+                                | TokenKind::Ne
+                                | TokenKind::Eq
+                        ) {
                             if lhs.ty.is_float() {
                             } else {
                                 self.ci.nodes.lock(rhs.id);
@@ -4235,6 +4243,8 @@ impl<'a> Codegen<'a> {
 
         self.pool.push_ci(file, Some(sig.ret), 0, &mut self.ci);
         let prev_err_len = self.errors.borrow().len();
+
+        log::info!("{}", self.ast_display(expr));
 
         let &Expr::Closure { body, args, pos, .. } = expr else {
             unreachable!("{}", self.ast_display(expr))

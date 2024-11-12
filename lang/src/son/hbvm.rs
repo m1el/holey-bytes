@@ -584,14 +584,19 @@ impl TokenKind {
             Self::Number if src.is_float() && dst.is_integer() => {
                 [|a, b| instrs::fti32(a, b, 1), |a, b| instrs::fti64(a, b, 1)][src_idx - 2]
             }
-            Self::Number if src.is_signed() && dst.is_integer() => {
+            Self::Number if src.is_signed() && (dst.is_integer() || dst.is_pointer()) => {
                 [instrs::sxt8, instrs::sxt16, instrs::sxt32][src_idx]
             }
-            Self::Number if (src.is_unsigned() || src == ty::Id::BOOL) && dst.is_integer() => [
-                |a, b| instrs::andi(a, b, 0xff),
-                |a, b| instrs::andi(a, b, 0xffff),
-                |a, b| instrs::andi(a, b, 0xffffffff),
-            ][src_idx],
+            Self::Number
+                if (src.is_unsigned() || src == ty::Id::BOOL)
+                    && (dst.is_integer() || dst.is_pointer()) =>
+            {
+                [
+                    |a, b| instrs::andi(a, b, 0xff),
+                    |a, b| instrs::andi(a, b, 0xffff),
+                    |a, b| instrs::andi(a, b, 0xffffffff),
+                ][src_idx]
+            }
             Self::Float if dst.is_float() && src.is_float() => {
                 [instrs::fc32t64, |a, b| instrs::fc64t32(a, b, 1)][src_idx - 2]
             }
