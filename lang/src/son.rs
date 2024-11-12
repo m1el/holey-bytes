@@ -1107,18 +1107,11 @@ impl Nodes {
                 }
             }
             K::Stre => {
-                if target == 79 {
-                    std::dbg!(std::backtrace::Backtrace::capture());
-                }
-
                 let &[_, value, region, store, ..] = self[target].inputs.as_slice() else {
                     unreachable!()
                 };
 
                 if self[value].kind == Kind::Load && self[value].inputs[1] == region {
-                    if target == 79 {
-                        std::dbg!(1);
-                    }
                     return Some(store);
                 }
 
@@ -1137,9 +1130,6 @@ impl Nodes {
 
                 'eliminate: {
                     if self[target].outputs.is_empty() {
-                        if target == 79 {
-                            std::dbg!(2);
-                        }
                         break 'eliminate;
                     }
 
@@ -1149,9 +1139,6 @@ impl Nodes {
                         for &ele in self[value].outputs.clone().iter().filter(|&&n| n != target) {
                             self[ele].peep_triggers.push(target);
                         }
-                        if target == 79 {
-                            std::dbg!(3);
-                        }
                         break 'eliminate;
                     }
 
@@ -1160,9 +1147,6 @@ impl Nodes {
                     };
 
                     if self[stack].ty != self[value].ty || self[stack].kind != Kind::Stck {
-                        if target == 79 {
-                            std::dbg!(3);
-                        }
                         break 'eliminate;
                     }
 
@@ -1187,9 +1171,6 @@ impl Nodes {
                         }
                         let Some(index) = unidentifed.iter().position(|&n| n == contact_point)
                         else {
-                            if target == 79 {
-                                std::dbg!(5);
-                            }
                             break 'eliminate;
                         };
                         if self[self[cursor].inputs[1]].kind == Kind::Load
@@ -1198,9 +1179,6 @@ impl Nodes {
                                     == self.aclass_index(self[n].inputs[2]).0
                             })
                         {
-                            if target == 79 {
-                                std::dbg!(6);
-                            }
                             break 'eliminate;
                         }
                         unidentifed.remove(index);
@@ -1214,9 +1192,6 @@ impl Nodes {
                     }
 
                     if !unidentifed.is_empty() {
-                        if target == 79 {
-                            std::dbg!(7);
-                        }
                         break 'eliminate;
                     }
 
@@ -4828,6 +4803,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        memory_swap;
         very_nested_loops;
         generic_type_mishap;
         storing_into_nullable_struct;

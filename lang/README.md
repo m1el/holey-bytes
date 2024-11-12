@@ -1092,6 +1092,23 @@ main := fn(): uint {
 }
 ```
 
+#### memory_swap
+```hb
+U := struct {u: uint, v: uint, g: uint}
+main := fn(): uint {
+	a := decide(0)
+	b := decide(1)
+
+	c := a
+	a = b
+	b = c
+
+	return b.u + a.u
+}
+
+decide := fn(u: uint): U return .(u, 0, 0)
+```
+
 #### wide_ret
 ```hb
 OemIdent := struct {
