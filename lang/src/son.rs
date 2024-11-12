@@ -27,7 +27,6 @@ use {
     },
     hashbrown::hash_map,
     hbbytecode::DisasmError,
-    std::backtrace,
 };
 
 const VOID: Nid = 0;
@@ -583,11 +582,11 @@ impl Nodes {
         log::info!("{out}");
     }
 
-    fn graphviz_in_browser(&self, disp: ty::Display) {
-        #[cfg(all(debug_assertions, feature = "std"))]
+    fn graphviz_in_browser(&self, _disp: ty::Display) {
+        #[cfg(all(test, feature = "std"))]
         {
             let out = &mut String::new();
-            _ = self.graphviz_low(disp, out);
+            _ = self.graphviz_low(_disp, out);
             if !std::process::Command::new("brave")
                 .arg(format!("https://dreampuf.github.io/GraphvizOnline/#{out}"))
                 .status()
@@ -714,12 +713,6 @@ impl Nodes {
     fn remove(&mut self, target: Nid) -> bool {
         if !self[target].is_dangling() {
             return false;
-        }
-
-        if self[target].kind == (Kind::BinOp { op: TokenKind::Add })
-            && self[target].ty == ty::Id::U8
-        {
-            log::info!("{}", std::backtrace::Backtrace::capture());
         }
 
         for i in 0..self[target].inputs.len() {
@@ -2388,7 +2381,7 @@ impl<'a> Codegen<'a> {
 
     pub fn assemble_comptime(&mut self) -> Comptime {
         self.ct.code.clear();
-        self.ct_backend.assemble_bin(ty::Func::MAIN, self.tys, &mut self.ct.code);
+        self.backend.assemble_bin(ty::Func::MAIN, self.tys, &mut self.ct.code);
         self.ct.reset();
         core::mem::take(self.ct)
     }
