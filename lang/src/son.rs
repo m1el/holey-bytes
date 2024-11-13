@@ -3871,7 +3871,7 @@ impl<'a> Codegen<'a> {
                 var.remove(&mut self.ci.nodes);
             }
 
-            let (v, ctrl, scope) = mem::replace(&mut self.ci.inline_ret, prev_inline_ret)?;
+            let (v, ctrl, mut scope) = mem::replace(&mut self.ci.inline_ret, prev_inline_ret)?;
             if is_inline
                 && ctrl.get() != prev_ctrl
                 && (!self.ci.nodes[ctrl.get()].kind.is_eca()
@@ -3880,11 +3880,12 @@ impl<'a> Codegen<'a> {
                 self.report(body.pos(), "function is makred inline but it contains controlflow");
             }
 
+            scope.vars.drain(var_base..).for_each(|v| v.remove(&mut self.ci.nodes));
+            scope.aclasses.drain(aclass_base..).for_each(|v| v.remove(&mut self.ci.nodes));
+            scope.aclasses.extend(self.ci.scope.aclasses.drain(aclass_base..));
             self.ci.nodes.unlock(v.id);
             self.ci.scope.clear(&mut self.ci.nodes);
             self.ci.scope = scope;
-            self.ci.scope.vars.drain(var_base..).for_each(|v| v.remove(&mut self.ci.nodes));
-            self.ci.scope.aclasses.drain(aclass_base..).for_each(|v| v.remove(&mut self.ci.nodes));
 
             mem::replace(&mut self.ci.ctrl, ctrl).remove(&mut self.ci.nodes);
 
