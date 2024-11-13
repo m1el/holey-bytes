@@ -1752,6 +1752,7 @@ impl Nodes {
         match self[n].kind {
             Kind::Return => self[n].inputs[1] == nid,
             _ if self.is_cfg(n) && !matches!(self[n].kind, Kind::Call { .. } | Kind::If) => false,
+            Kind::Join => false,
             Kind::Stre => self[n].inputs[3] != nid,
             Kind::Load => self[n].inputs[2] != nid,
             _ => self[n].inputs[0] != nid || self[n].inputs[1..].contains(&nid),
@@ -3794,7 +3795,6 @@ impl<'a> Codegen<'a> {
         let Some(sig) = self.compute_signature(&mut fu, func.pos(), args) else {
             return Value::NEVER;
         };
-        self.make_func_reachable(fu);
 
         let Func { expr, file, is_inline, .. } = self.tys.ins.funcs[fu];
         let ast = &self.files[file.index()];
@@ -3907,6 +3907,8 @@ impl<'a> Codegen<'a> {
 
             Some(v)
         } else {
+            self.make_func_reachable(fu);
+
             let mut inps = Vc::from([NEVER]);
             let mut tys = sig.args.args();
             let mut cargs = cargs.iter();
@@ -4049,20 +4051,23 @@ impl<'a> Codegen<'a> {
     }
 
     fn compute_signature(&mut self, func: &mut ty::Func, pos: Pos, args: &[Expr]) -> Option<Sig> {
-        let fuc = &self.tys.ins.funcs[*func];
-        let fast = self.files[fuc.file.index()].clone();
-        let &Expr::Closure { args: cargs, ret, .. } = fuc.expr.get(&fast) else {
+        let Func { file, expr, sig, .. } = self.tys.ins.funcs[*func];
+        let fast = self.files[file.index()].clone();
+        let &Expr::Closure { args: cargs, ret, .. } = expr.get(&fast) else {
             unreachable!();
         };
 
-        Some(if let Some(sig) = fuc.sig {
+        Some(if let Some(sig) = sig {
             sig
         } else {
             let arg_base = self.tys.tmp.args.len();
 
             let base = self.ci.scope.vars.len();
             for (arg, carg) in args.iter().zip(cargs) {
+                let prev_file = mem::replace(&mut self.ci.file, file);
                 let ty = self.ty(&carg.ty);
+                self.ci.file = prev_file;
+
                 self.tys.tmp.args.push(ty);
                 let sym = parser::find_symbol(&fast.symbols, carg.id);
                 let ty = if sym.flags & idfl::COMPTIME == 0 {

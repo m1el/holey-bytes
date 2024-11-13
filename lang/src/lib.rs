@@ -892,6 +892,7 @@ impl Array {
     }
 }
 
+#[derive(Clone, Copy)]
 enum PLoc {
     Reg(u8, u16),
     WideReg(u8, u16),
