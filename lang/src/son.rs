@@ -3819,41 +3819,24 @@ impl<'a> Codegen<'a> {
             );
         }
 
+        let (mut tys, mut args, mut cargs) = (sig.args.args(), args.iter(), cargs.iter());
         if is_inline || inline {
-            let mut tys = sig.args.args();
-            let mut args = args.iter();
-            let mut cargs = cargs.iter();
             let var_base = self.ci.scope.vars.len();
             let aclass_base = self.ci.scope.aclasses.len();
-            while let Some(aty) = tys.next(self.tys) {
+            while let (Some(aty), Some(arg)) = (tys.next(self.tys), args.next()) {
                 let carg = cargs.next().unwrap();
-                let Some(arg) = args.next() else { break };
-                match aty {
-                    Arg::Type(id) => {
-                        self.ci.scope.vars.push(Variable::new(
-                            carg.id,
-                            id,
-                            false,
-                            NEVER,
-                            &mut self.ci.nodes,
-                        ));
-                    }
+                let var = match aty {
+                    Arg::Type(id) => Variable::new(carg.id, id, false, NEVER, &mut self.ci.nodes),
                     Arg::Value(ty) => {
                         let mut value = self.raw_expr_ctx(arg, Ctx::default().with_ty(ty))?;
                         self.strip_var(&mut value);
                         debug_assert_ne!(self.ci.nodes[value.id].kind, Kind::Stre);
                         debug_assert_ne!(value.id, 0);
                         self.assert_ty(arg.pos(), &mut value, ty, fa!("argument {}", carg.name));
-
-                        self.ci.scope.vars.push(Variable::new(
-                            carg.id,
-                            ty,
-                            value.ptr,
-                            value.id,
-                            &mut self.ci.nodes,
-                        ));
+                        Variable::new(carg.id, ty, value.ptr, value.id, &mut self.ci.nodes)
                     }
-                }
+                };
+                self.ci.scope.vars.push(var);
             }
 
             let prev_var_base = mem::replace(&mut self.ci.inline_var_base, var_base);
@@ -3871,7 +3854,7 @@ impl<'a> Codegen<'a> {
                     self.report(
                         body.pos(),
                         "expected all paths in the fucntion to return \
-                                    or the return type to be 'void'",
+                        or the return type to be 'void'",
                     );
                 }
             }
@@ -3908,15 +3891,10 @@ impl<'a> Codegen<'a> {
             Some(v)
         } else {
             self.make_func_reachable(fu);
-
             let mut inps = Vc::from([NEVER]);
-            let mut tys = sig.args.args();
-            let mut cargs = cargs.iter();
-            let mut args = args.iter();
             let mut clobbered_aliases = BitSet::default();
-            while let Some(ty) = tys.next(self.tys) {
+            while let (Some(ty), Some(arg)) = (tys.next(self.tys), args.next()) {
                 let carg = cargs.next().unwrap();
-                let Some(arg) = args.next() else { break };
                 let Arg::Value(ty) = ty else { continue };
 
                 let mut value = self.raw_expr_ctx(arg, Ctx::default().with_ty(ty))?;
@@ -4064,9 +4042,7 @@ impl<'a> Codegen<'a> {
 
             let base = self.ci.scope.vars.len();
             for (arg, carg) in args.iter().zip(cargs) {
-                let prev_file = mem::replace(&mut self.ci.file, file);
-                let ty = self.ty(&carg.ty);
-                self.ci.file = prev_file;
+                let ty = self.ty_in(file, &carg.ty);
 
                 self.tys.tmp.args.push(ty);
                 let sym = parser::find_symbol(&fast.symbols, carg.id);
@@ -4104,9 +4080,7 @@ impl<'a> Codegen<'a> {
                 self.report(pos, "function instance has too many arguments");
                 return None;
             };
-            let prev_file = mem::replace(&mut self.ci.file, file);
-            let ret = self.ty(ret);
-            self.ci.file = prev_file;
+            let ret = self.ty_in(file, ret);
 
             self.ci.scope.vars.drain(base..).for_each(|v| v.remove(&mut self.ci.nodes));
 
@@ -4445,7 +4419,11 @@ impl<'a> Codegen<'a> {
     }
 
     fn ty(&mut self, expr: &Expr) -> ty::Id {
-        self.parse_ty(self.ci.file, expr, None, self.files)
+        self.ty_in(self.ci.file, expr)
+    }
+
+    fn ty_in(&mut self, file: Module, expr: &Expr) -> ty::Id {
+        self.parse_ty(file, expr, None, self.files)
     }
 
     fn ty_display(&self, ty: ty::Id) -> ty::Display {
