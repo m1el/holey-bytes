@@ -1465,6 +1465,19 @@ main := fn(): uint {
 }
 ```
 
+#### global_variable_wiredness
+```hb
+ports := false
+
+inb := fn(): uint return 0
+
+main := fn(): void {
+	if ports {
+		ports = inb() == 0x0
+	}
+}
+```
+
 ### Just Testing Optimizations
 
 #### null_check_test

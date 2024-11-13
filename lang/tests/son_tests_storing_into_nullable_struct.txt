@@ -50,18 +50,20 @@ optional:
     JALA r0, r31, 0a
 optionala:
     ADDI64 r254, r254, -48d
-    ADDI64 r5, r254, 0d
+    ADDI64 r5, r254, 8d
     ADDI64 r4, r254, 16d
     ST r5, r254, 16a, 8h
     LI64 r9, 1d
     ST r9, r254, 24a, 8h
-    ADDI64 r12, r254, 8d
+    ADDI64 r12, r254, 0d
     ST r12, r254, 32a, 8h
     LI64 r11, 0d
+    ST r11, r254, 0a, 8h
+    ST r11, r254, 8a, 8h
     ST r11, r254, 40a, 8h
     BMC r4, r1, 32h
     ADDI64 r254, r254, 48d
     JALA r0, r31, 0a
-code size: 577
+code size: 603
 ret: 100
 status: Ok(())

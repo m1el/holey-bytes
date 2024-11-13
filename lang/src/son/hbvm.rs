@@ -236,7 +236,12 @@ impl Backend for HbvmBackend {
                 if !matches!(nodes[stck].kind, Kind::Stck | Kind::Arg) {
                     debug_assert_matches!(
                         nodes[stck].kind,
-                        Kind::Phi | Kind::Return | Kind::Load | Kind::Call { .. } | Kind::Stre
+                        Kind::Phi
+                            | Kind::Return
+                            | Kind::Load
+                            | Kind::Call { .. }
+                            | Kind::Stre
+                            | Kind::Join
                     );
                     continue;
                 }
@@ -334,40 +339,18 @@ impl Backend for HbvmBackend {
 impl Nodes {
     fn reschedule_block(&mut self, from: Nid, outputs: &mut Vc) {
         // NOTE: this code is horible
-        let from = Some(&from);
+        let fromc = Some(&from);
         let mut buf = Vec::with_capacity(outputs.len());
         let mut seen = BitSet::default();
         seen.clear(self.values.len());
 
         for &o in outputs.iter() {
-            if !self.is_cfg(o) {
-                continue;
-            }
-
-            seen.set(o);
-
-            let mut cursor = buf.len();
-            buf.push(o);
-            while let Some(&n) = buf.get(cursor) {
-                for &i in &self[n].inputs[1..] {
-                    if from == self[i].inputs.first()
-                        && self[i]
-                            .outputs
-                            .iter()
-                            .all(|&o| self[o].inputs.first() != from || seen.get(o))
-                        && seen.set(i)
-                    {
-                        for &o in outputs.iter().filter(|&&n| n == i) {
-                            buf.push(o);
-                        }
-                    }
-                }
-                cursor += 1;
-            }
-        }
-
-        for &o in outputs.iter() {
-            if !seen.set(o) {
+            if (!self.is_cfg(o)
+                && self[o].outputs.iter().any(|&oi| {
+                    self[oi].kind != Kind::Phi && self[oi].inputs.first() == fromc && !seen.get(oi)
+                }))
+                || !seen.set(o)
+            {
                 continue;
             }
             let mut cursor = buf.len();
@@ -376,11 +359,12 @@ impl Nodes {
             }
             while let Some(&n) = buf.get(cursor) {
                 for &i in &self[n].inputs[1..] {
-                    if from == self[i].inputs.first()
-                        && self[i]
-                            .outputs
-                            .iter()
-                            .all(|&o| self[o].inputs.first() != from || seen.get(o))
+                    if fromc == self[i].inputs.first()
+                        && self[i].outputs.iter().all(|&o| {
+                            self[o].kind == Kind::Phi
+                                || self[o].inputs.first() != fromc
+                                || seen.get(o)
+                        })
                         && seen.set(i)
                     {
                         for &o in outputs.iter().filter(|&&n| n == i) {
@@ -392,7 +376,18 @@ impl Nodes {
             }
         }
 
-        buf.sort_by_key(|&n| !self.is_cfg(n));
+        debug_assert_eq!(
+            outputs.iter().filter(|&&n| !seen.get(n)).copied().collect::<Vec<_>>(),
+            vec![],
+            "{:?} {from:?} {:?}",
+            outputs
+                .iter()
+                .filter(|&&n| !seen.get(n))
+                .copied()
+                .map(|n| (n, &self[n]))
+                .collect::<Vec<_>>(),
+            self[from]
+        );
 
         if outputs.len() != buf.len() {
             panic!("{:?} {:?}", outputs, buf);

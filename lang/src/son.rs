@@ -4874,6 +4874,7 @@ mod tests {
         writing_into_string;
         request_page;
         tests_ptr_to_ptr_copy;
+        global_variable_wiredness;
 
         // Just Testing Optimizations;
         const_folding_with_arg;
