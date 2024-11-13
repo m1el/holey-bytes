@@ -2,7 +2,7 @@ main:
     ADDI64 r254, r254, -56d
     ST r31, r254, 16a, 40h
     ADDI64 r32, r254, 0d
-    LI64 r4, 0d
+    CP r4, r0
     CP r3, r4
     JAL r31, r0, :maina
     ST r1, r254, 0a, 16h
@@ -14,44 +14,42 @@ main:
     ADDI64 r254, r254, 56d
     JALA r0, r31, 0a
 maina:
-    ADDI64 r254, r254, -68d
-    ST r31, r254, 20a, 48h
+    ADDI64 r254, r254, -60d
+    ST r31, r254, 20a, 40h
     ADDI64 r32, r254, 16d
     JAL r31, r0, :small_struct
     ST r1, r254, 16a, 4h
-    LI8 r33, 0b
-    ADDI64 r34, r254, 0d
-    ST r33, r254, 0a, 1h
-    ST r33, r254, 1a, 1h
-    ST r33, r254, 2a, 1h
-    LI8 r35, 3b
-    ST r35, r254, 3a, 1h
-    LI8 r36, 1b
-    ST r36, r254, 4a, 1h
-    ST r33, r254, 5a, 1h
-    ST r33, r254, 6a, 1h
-    ST r33, r254, 7a, 1h
-    ST r33, r254, 8a, 1h
-    ST r33, r254, 9a, 1h
-    ST r33, r254, 10a, 1h
-    ST r35, r254, 11a, 1h
-    ST r36, r254, 12a, 1h
-    ST r33, r254, 13a, 1h
-    ST r33, r254, 14a, 1h
-    ST r33, r254, 15a, 1h
-    LD r1, r34, 0a, 16h
-    LD r31, r254, 20a, 48h
-    ADDI64 r254, r254, 68d
+    ADDI64 r33, r254, 0d
+    ST r0, r254, 0a, 1h
+    ST r0, r254, 1a, 1h
+    ST r0, r254, 2a, 1h
+    LI8 r34, 3b
+    ST r34, r254, 3a, 1h
+    LI8 r35, 1b
+    ST r35, r254, 4a, 1h
+    ST r0, r254, 5a, 1h
+    ST r0, r254, 6a, 1h
+    ST r0, r254, 7a, 1h
+    ST r0, r254, 8a, 1h
+    ST r0, r254, 9a, 1h
+    ST r0, r254, 10a, 1h
+    ST r34, r254, 11a, 1h
+    ST r35, r254, 12a, 1h
+    ST r0, r254, 13a, 1h
+    ST r0, r254, 14a, 1h
+    ST r0, r254, 15a, 1h
+    LD r1, r33, 0a, 16h
+    LD r31, r254, 20a, 40h
+    ADDI64 r254, r254, 60d
     JALA r0, r31, 0a
 small_struct:
     ADDI64 r254, r254, -4d
-    LI16 r2, 0h
     ADDI64 r3, r254, 0d
-    ST r2, r254, 0a, 2h
-    ST r2, r254, 2a, 2h
+    ST r0, r254, 0a, 2h
+    ST r0, r254, 2a, 2h
     LD r1, r3, 0a, 4h
     ADDI64 r254, r254, 4d
     JALA r0, r31, 0a
-code size: 570
+code size: 556
 ret: 2
 status: Ok(())

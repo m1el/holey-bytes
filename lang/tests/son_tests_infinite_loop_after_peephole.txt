@@ -1,9 +1,9 @@
 main:
-    LI64 r2, 0d
- 0: ADDI64 r2, r2, 1d
+    CP r4, r0
+ 0: ADDI64 r4, r4, 1d
     JMP :0
     JALA r0, r31, 0a
 timed out
-code size: 45
+code size: 38
 ret: 0
 status: Ok(())

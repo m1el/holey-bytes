@@ -9,7 +9,7 @@ main:
     ADDI64 r254, r254, -64d
     ST r31, r254, 0a, 64h
     JAL r31, r0, :check_platform
-    LI64 r32, 0d
+    CP r32, r0
     LI64 r33, 30d
     LI64 r34, 100d
     CP r35, r32
@@ -42,12 +42,12 @@ main:
     ADDI64 r254, r254, 64d
     JALA r0, r31, 0a
 set_pixel:
-    MUL64 r7, r3, r4
-    ADD64 r1, r7, r2
+    MUL64 r9, r3, r4
+    ADD64 r1, r9, r2
     JALA r0, r31, 0a
 x86_fb_ptr:
     LI64 r1, 100d
     JALA r0, r31, 0a
-code size: 330
+code size: 323
 ret: 3000
 status: Ok(())

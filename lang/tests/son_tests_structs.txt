@@ -16,7 +16,7 @@ main:
     CP r2, r34
     JAL r31, r0, :pass
     JMP :1
- 0: LI64 r1, 0d
+ 0: CP r1, r0
  1: LD r31, r254, 32a, 40h
     ADDI64 r254, r254, 72d
     JALA r0, r31, 0a
@@ -30,6 +30,6 @@ odher_pass:
 pass:
     LD r1, r2, 0a, 8h
     JALA r0, r31, 0a
-code size: 308
+code size: 301
 ret: 4
 status: Ok(())

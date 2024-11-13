@@ -1,11 +1,11 @@
 cond:
-    LI64 r1, 0d
+    CP r1, r0
     JALA r0, r31, 0a
 main:
     ADDI64 r254, r254, -24d
     ST r31, r254, 0a, 24h
     JAL r31, r0, :cond
-    LI64 r32, 0d
+    CP r32, r0
     CP r33, r32
     JNE r1, r33, :0
     CP r32, r33
@@ -15,6 +15,6 @@ main:
  1: LD r31, r254, 0a, 24h
     ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
-code size: 134
+code size: 120
 ret: 0
 status: Ok(())

@@ -11,16 +11,16 @@ main:
     ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
 str_len:
-    LI64 r3, 0d
-    CP r1, r3
- 2: LD r7, r2, 0a, 1h
-    ANDI r9, r7, 255d
-    JNE r9, r3, :0
+    CP r5, r0
+    CP r1, r5
+ 2: LD r9, r2, 0a, 1h
+    ANDI r11, r9, 255d
+    JNE r11, r5, :0
     JMP :1
  0: ADDI64 r2, r2, 1d
     ADDI64 r1, r1, 1d
     JMP :2
  1: JALA r0, r31, 0a
-code size: 205
+code size: 198
 ret: 16
 status: Ok(())

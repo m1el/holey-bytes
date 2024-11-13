@@ -14,12 +14,12 @@ deinit:
     ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
 free:
-    CP r10, r2
-    LRA r7, r0, :FREE_SYS_CALL
-    LD r2, r7, 0a, 8h
+    CP r11, r2
+    LRA r9, r0, :FREE_SYS_CALL
+    LD r2, r9, 0a, 8h
     CP r5, r4
     CP r4, r3
-    CP r3, r10
+    CP r3, r11
     ECA 
     JALA r0, r31, 0a
 main:
@@ -40,86 +40,83 @@ main:
     ADDI64 r254, r254, 56d
     JALA r0, r31, 0a
 malloc:
-    CP r9, r2
-    LRA r5, r0, :MALLOC_SYS_CALL
-    LD r2, r5, 0a, 8h
+    CP r10, r2
+    LRA r7, r0, :MALLOC_SYS_CALL
+    LD r2, r7, 0a, 8h
     CP r4, r3
-    CP r3, r9
+    CP r3, r10
     ECA 
     JALA r0, r31, 0a
 new:
     ADDI64 r254, r254, -24d
-    LI64 r4, 0d
     ADDI64 r5, r254, 0d
-    ST r4, r254, 0a, 8h
-    ST r4, r254, 8a, 8h
-    ST r4, r254, 16a, 8h
+    ST r0, r254, 0a, 8h
+    ST r0, r254, 8a, 8h
+    ST r0, r254, 16a, 8h
     BMC r5, r1, 24h
     ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
 push:
-    ADDI64 r254, r254, -176d
-    ST r31, r254, 0a, 176h
+    ADDI64 r254, r254, -168d
+    ST r31, r254, 0a, 168h
     CP r32, r3
     LI64 r33, 1d
     LD r34, r2, 8a, 8h
     LD r35, r2, 16a, 8h
     CP r36, r2
     JNE r35, r34, :0
-    LI64 r37, 0d
-    JNE r35, r37, :1
-    CP r38, r33
+    JNE r35, r0, :1
+    CP r37, r33
     JMP :2
- 1: MULI64 r38, r35, 2d
- 2: LI64 r39, 8d
-    MUL64 r2, r38, r39
-    CP r3, r39
+ 1: MULI64 r37, r35, 2d
+ 2: LI64 r38, 8d
+    MUL64 r2, r37, r38
+    CP r3, r38
     JAL r31, r0, :malloc
-    CP r40, r1
-    CP r41, r36
-    ST r38, r41, 16a, 8h
-    LI64 r1, 0d
-    CP r42, r40
-    JNE r42, r1, :3
+    CP r39, r36
+    ST r37, r39, 16a, 8h
+    JNE r1, r0, :3
+    CP r1, r0
     JMP :4
- 3: CP r40, r42
-    MULI64 r43, r34, 8d
-    LD r44, r41, 0a, 8h
-    ADD64 r45, r44, r43
-    CP r46, r40
- 9: LD r2, r41, 0a, 8h
-    LD r47, r41, 8a, 8h
-    JNE r45, r44, :5
-    JEQ r47, r37, :6
-    CP r4, r39
-    MUL64 r3, r47, r4
+ 3: CP r40, r1
+    CP r1, r0
+    MULI64 r41, r34, 8d
+    LD r42, r39, 0a, 8h
+    ADD64 r43, r42, r41
+    CP r44, r40
+ 9: LD r2, r39, 0a, 8h
+    LD r45, r39, 8a, 8h
+    JNE r43, r42, :5
+    JEQ r45, r1, :6
+    CP r4, r38
+    MUL64 r3, r45, r4
     JAL r31, r0, :free
-    CP r1, r40
+    CP r46, r40
     JMP :7
- 6: CP r1, r40
- 7: ST r1, r41, 0a, 8h
+ 6: CP r46, r40
+ 7: ST r46, r39, 0a, 8h
     JMP :8
- 5: CP r1, r40
-    CP r4, r39
-    ADDI64 r48, r46, 8d
-    ADDI64 r42, r44, 8d
-    LD r49, r44, 0a, 8h
-    ST r49, r46, 0a, 8h
-    CP r44, r42
-    CP r46, r48
+ 5: CP r4, r38
+    CP r46, r40
+    ADDI64 r47, r44, 8d
+    ADDI64 r48, r42, 8d
+    LD r49, r42, 0a, 8h
+    ST r49, r44, 0a, 8h
+    CP r42, r48
+    CP r44, r47
     JMP :9
- 0: CP r41, r36
- 8: LD r50, r41, 8a, 8h
-    MULI64 r51, r50, 8d
-    LD r52, r41, 0a, 8h
-    ADD64 r1, r52, r51
+ 0: CP r39, r36
+ 8: LD r35, r39, 8a, 8h
+    MULI64 r50, r35, 8d
+    LD r46, r39, 0a, 8h
+    ADD64 r1, r46, r50
     CP r3, r32
     ST r3, r1, 0a, 8h
-    ADD64 r39, r50, r33
-    ST r39, r41, 8a, 8h
- 4: LD r31, r254, 0a, 176h
-    ADDI64 r254, r254, 176d
+    ADD64 r51, r35, r33
+    ST r51, r39, 8a, 8h
+ 4: LD r31, r254, 0a, 168h
+    ADDI64 r254, r254, 168d
     JALA r0, r31, 0a
-code size: 929
+code size: 899
 ret: 69
 status: Ok(())

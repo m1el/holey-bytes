@@ -1,6 +1,6 @@
 clobber:
-    LI64 r3, 4d
-    ST r3, r2, 0a, 8h
+    LI64 r5, 4d
+    ST r5, r2, 0a, 8h
     JALA r0, r31, 0a
 main:
     ADDI64 r254, r254, -40d

@@ -1,7 +1,6 @@
 clobber:
-    LRA r1, r0, :var
-    LI64 r3, 0d
-    ST r3, r1, 0a, 8h
+    LRA r3, r0, :var
+    ST r0, r3, 0a, 8h
     JALA r0, r31, 0a
 main:
     ADDI64 r254, r254, -24d
@@ -14,6 +13,6 @@ main:
     LD r31, r254, 0a, 24h
     ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
-code size: 166
+code size: 156
 ret: 0
 status: Ok(())

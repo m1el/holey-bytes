@@ -1,10 +1,10 @@
 main:
     ADDI64 r254, r254, -72d
     ST r31, r254, 0a, 72h
-    LI8 r32, 0b
+    CP r32, r0
     LI64 r33, 65536d
     LI8 r34, 1b
-    LI64 r35, 0d
+    CP r35, r0
     CP r36, r35
  7: JAL r31, r0, :opaque
     JLTU r36, r1, :0
@@ -30,6 +30,6 @@ opaque:
     LI64 r1, 2147483648d
     JALA r0, r31, 0a
 timed out
-code size: 218
+code size: 211
 ret: 2147483648
 status: Ok(())

@@ -223,6 +223,7 @@ impl HbvmBackend {
                     Kind::Die => {
                         self.emit(instrs::un());
                     }
+                    Kind::CInt { value: 0 } => self.emit(instrs::cp(atr(allocs[0]), reg::ZERO)),
                     Kind::CInt { value } if node.ty.is_float() => {
                         self.emit(match node.ty {
                             ty::Id::F32 => instrs::li32(
@@ -563,7 +564,11 @@ impl<'a> Function<'a> {
             }
         );
         debug_assert!(self.nodes[nid].kind != Kind::Phi || self.nodes[nid].ty != ty::Id::VOID);
-        regalloc2::VReg::new(nid as _, regalloc2::RegClass::Int)
+        if self.nodes.is_hard_zero(nid) {
+            regalloc2::VReg::new(NEVER as _, regalloc2::RegClass::Int)
+        } else {
+            regalloc2::VReg::new(nid as _, regalloc2::RegClass::Int)
+        }
     }
 
     fn emit_node(&mut self, nid: Nid, prev: Nid) {
@@ -680,12 +685,18 @@ impl<'a> Function<'a> {
                 self.add_instr(nid, vec![]);
                 self.emit_node(node.outputs[0], nid);
             }
+            Kind::CInt { value: 0 } if self.nodes.is_hard_zero(nid) => {}
             Kind::CInt { .. } => {
                 let ops = vec![self.drg(nid)];
                 self.add_instr(nid, ops);
             }
             Kind::Entry => {
                 self.backrefs[nid as usize] = self.add_block(nid);
+
+                self.add_instr(NEVER, vec![regalloc2::Operand::reg_fixed_def(
+                    regalloc2::VReg::new(NEVER as _, regalloc2::RegClass::Int),
+                    regalloc2::PReg::new(0, regalloc2::RegClass::Int),
+                )]);
 
                 let (ret, mut parama) = self.tys.parama(self.sig.ret);
                 let mut typs = self.sig.args.args();

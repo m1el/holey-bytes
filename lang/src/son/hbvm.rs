@@ -398,7 +398,8 @@ impl Nodes {
     fn is_never_used(&self, nid: Nid, tys: &Types) -> bool {
         let node = &self[nid];
         match node.kind {
-            Kind::CInt { .. } => node.outputs.iter().all(|&o| {
+            Kind::CInt { value: 0 } => false,
+            Kind::CInt { value: 1.. } => node.outputs.iter().all(|&o| {
                 matches!(self[o].kind, Kind::BinOp { op }
                         if op.imm_binop(self[o].ty).is_some()
                             && self.is_const(self[o].inputs[2])

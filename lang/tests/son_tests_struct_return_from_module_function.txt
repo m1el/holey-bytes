@@ -1,12 +1,12 @@
 foo:
     ADDI64 r254, r254, -16d
-    LI64 r3, 3d
-    ADDI64 r2, r254, 0d
-    ST r3, r254, 0a, 8h
-    LI32 r6, 2w
-    ST r6, r254, 8a, 4h
-    ST r6, r254, 12a, 4h
-    LD r1, r2, 0a, 16h
+    LI64 r5, 3d
+    ADDI64 r4, r254, 0d
+    ST r5, r254, 0a, 8h
+    LI32 r8, 2w
+    ST r8, r254, 8a, 4h
+    ST r8, r254, 12a, 4h
+    LD r1, r4, 0a, 16h
     ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
 main:

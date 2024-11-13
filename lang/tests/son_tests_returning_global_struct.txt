@@ -19,8 +19,8 @@ main:
     ADDI64 r254, r254, 100d
     JALA r0, r31, 0a
 random_color:
-    LRA r1, r0, :white
-    LD r1, r1, 0a, 4h
+    LRA r3, r0, :white
+    LD r1, r3, 0a, 4h
     JALA r0, r31, 0a
 code size: 241
 ret: 1020

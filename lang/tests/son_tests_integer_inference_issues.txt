@@ -8,10 +8,10 @@ integer_range:
     ECA 
     CP r2, r32
     CP r3, r33
-    SUB64 r11, r3, r2
-    ADDI64 r3, r11, 1d
-    DIRU64 r0, r3, r1, r3
-    ADD64 r1, r3, r2
+    SUB64 r3, r3, r2
+    ADDI64 r3, r3, 1d
+    DIRU64 r0, r5, r1, r3
+    ADD64 r1, r5, r2
     LD r32, r254, 0a, 16h
     ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
@@ -19,11 +19,11 @@ main:
     ADDI64 r254, r254, -8d
     ST r31, r254, 0a, 8h
     LI64 r3, 1000d
-    LI64 r2, 0d
+    CP r2, r0
     JAL r31, r0, :integer_range
     LD r31, r254, 0a, 8h
     ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
-code size: 210
+code size: 203
 ret: 42
 status: Ok(())

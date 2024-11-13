@@ -10,34 +10,34 @@ main:
     ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
 sin:
-    LI32 r4, 1124073472w
-    LI32 r5, 1078530011w
-    FMUL32 r7, r2, r4
-    FDIV32 r9, r7, r5
-    FTI32 r11, r9, 1b
-    ANDI r10, r11, 255d
-    ITF64 r5, r11
-    MULI64 r4, r10, 4d
-    LRA r3, r0, :SIN_TABLE
-    LI32 r7, 1086918619w
-    FC64T32 r9, r5, 1b
-    ADDI64 r5, r11, 64d
-    ADD64 r8, r3, r4
-    LI32 r1, 1132462080w
-    FMUL32 r6, r9, r7
-    ANDI r7, r5, 255d
-    LI32 r5, 1056964608w
-    LD r4, r8, 0a, 4h
-    FDIV32 r8, r6, r1
-    MULI64 r6, r7, 4d
-    FMUL32 r10, r4, r5
-    FSUB32 r11, r2, r8
-    ADD64 r9, r3, r6
-    FMUL32 r2, r11, r10
-    LD r12, r9, 0a, 4h
-    FSUB32 r5, r12, r2
-    FMUL32 r7, r5, r11
-    FADD32 r1, r4, r7
+    LI32 r6, 1124073472w
+    LI32 r7, 1078530011w
+    FMUL32 r9, r2, r6
+    FDIV32 r11, r9, r7
+    FTI32 r1, r11, 1b
+    ANDI r12, r1, 255d
+    ITF64 r6, r1
+    MULI64 r5, r12, 4d
+    LRA r4, r0, :SIN_TABLE
+    LI32 r9, 1086918619w
+    FC64T32 r11, r6, 1b
+    ADDI64 r6, r1, 64d
+    ADD64 r10, r4, r5
+    LI32 r3, 1132462080w
+    FMUL32 r8, r11, r9
+    ANDI r9, r6, 255d
+    LI32 r7, 1056964608w
+    LD r5, r10, 0a, 4h
+    FDIV32 r10, r8, r3
+    MULI64 r8, r9, 4d
+    FMUL32 r12, r5, r7
+    FSUB32 r1, r2, r10
+    ADD64 r11, r4, r8
+    FMUL32 r4, r1, r12
+    LD r2, r11, 0a, 4h
+    FSUB32 r7, r2, r4
+    FMUL32 r9, r7, r1
+    FADD32 r1, r5, r9
     JALA r0, r31, 0a
 code size: 1303
 ret: 826

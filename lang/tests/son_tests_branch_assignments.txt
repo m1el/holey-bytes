@@ -2,12 +2,11 @@ main:
     LI64 r1, 1d
     JNE r2, r1, :0
     JMP :1
- 0: LI64 r7, 0d
-    JNE r2, r7, :2
+ 0: JNE r2, r0, :2
     LI64 r1, 2d
     JMP :1
  2: LI64 r1, 3d
  1: JALA r0, r31, 0a
-code size: 79
+code size: 69
 ret: 2
 status: Ok(())

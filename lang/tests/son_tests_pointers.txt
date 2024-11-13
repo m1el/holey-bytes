@@ -15,8 +15,8 @@ main:
     ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
 modify:
-    LI64 r3, 2d
-    ST r3, r2, 0a, 8h
+    LI64 r5, 2d
+    ST r5, r2, 0a, 8h
     JALA r0, r31, 0a
 code size: 187
 ret: 0

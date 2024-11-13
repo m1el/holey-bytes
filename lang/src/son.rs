@@ -1765,6 +1765,11 @@ impl Nodes {
             (*target, self[*target].outputs.as_slice())
         }
     }
+
+    fn is_hard_zero(&self, nid: Nid) -> bool {
+        self[nid].kind == Kind::CInt { value: 0 }
+            && self[nid].outputs.iter().all(|&n| self[n].kind != Kind::Phi)
+    }
 }
 
 enum CondOptRes {
@@ -2943,7 +2948,6 @@ impl<'a> Codegen<'a> {
                         self.strip_var(&mut rhs);
                         self.implicit_unwrap(right.pos(), &mut rhs);
                         let (ty, aclass) = self.binop_ty(pos, &mut lhs, &mut rhs, op);
-                        let fty = ty.bin_ret(op);
                         if matches!(
                             op,
                             TokenKind::Lt
@@ -2967,9 +2971,12 @@ impl<'a> Codegen<'a> {
                                 }
                             }
                         }
-                        let inps = [VOID, lhs.id, rhs.id];
-                        let bop =
-                            self.ci.nodes.new_node_lit(fty, Kind::BinOp { op }, inps, self.tys);
+                        let bop = self.ci.nodes.new_node_lit(
+                            ty.bin_ret(op),
+                            Kind::BinOp { op },
+                            [VOID, lhs.id, rhs.id],
+                            self.tys,
+                        );
                         self.ci.nodes.pass_aclass(aclass, bop.id);
                         Some(bop)
                     }
