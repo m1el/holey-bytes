@@ -4104,7 +4104,9 @@ impl<'a> Codegen<'a> {
                 self.report(pos, "function instance has too many arguments");
                 return None;
             };
+            let prev_file = mem::replace(&mut self.ci.file, file);
             let ret = self.ty(ret);
+            self.ci.file = prev_file;
 
             self.ci.scope.vars.drain(base..).for_each(|v| v.remove(&mut self.ci.nodes));
 
