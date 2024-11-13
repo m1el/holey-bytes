@@ -283,6 +283,19 @@ main := fn(): void {
 }
 ```
 
+#### inline_return_stack
+```hb
+$fun := fn(): [uint; 3] {
+	res := [uint].(0, 1, 2)
+	return res
+}
+
+main := fn(): uint {
+	vl := fun()
+	return vl[0]
+}
+```
+
 #### struct_operators
 ```hb
 Point := struct {

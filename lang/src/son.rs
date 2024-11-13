@@ -2158,7 +2158,7 @@ pub struct ItemCtx {
     inline_var_base: usize,
     inline_aclass_base: usize,
     inline_depth: u16,
-    inline_ret: Option<(Value, StrongRef, Scope)>,
+    inline_ret: Option<(Value, StrongRef, Scope, Option<AClass>)>,
     nodes: Nodes,
     ctrl: StrongRef,
     loops: Vec<Loop>,
@@ -2683,7 +2683,11 @@ impl<'a> Codegen<'a> {
                     self.ci.ctrl.set(NEVER, &mut self.ci.nodes);
                     self.ci.nodes[ret].pos = pos;
                     self.ci.nodes.bind(ret, NEVER);
-                } else if let Some((pv, ctrl, scope)) = &mut self.ci.inline_ret {
+                } else if let Some((pv, ctrl, scope, aclass)) = &mut self.ci.inline_ret {
+                    debug_assert!(
+                        aclass.is_none(),
+                        "TODO: oh no, we cant return structs from divergent branches"
+                    );
                     ctrl.set(
                         self.ci.nodes.new_node(
                             ty::Id::VOID,
@@ -2726,8 +2730,14 @@ impl<'a> Codegen<'a> {
                         .for_each(|v| v.remove(&mut self.ci.nodes));
 
                     let repl = StrongRef::new(NEVER, &mut self.ci.nodes);
+                    let (index, _) = self
+                        .ci
+                        .nodes
+                        .aclass_index(*self.ci.nodes[value.id].inputs.get(1).unwrap_or(&VOID));
+                    let aclass = (self.ci.inline_aclass_base <= index)
+                        .then(|| self.ci.scope.aclasses[index].dup(&mut self.ci.nodes));
                     self.ci.inline_ret =
-                        Some((value, mem::replace(&mut self.ci.ctrl, repl), scope));
+                        Some((value, mem::replace(&mut self.ci.ctrl, repl), scope, aclass));
                 }
 
                 None
@@ -3871,7 +3881,8 @@ impl<'a> Codegen<'a> {
                 var.remove(&mut self.ci.nodes);
             }
 
-            let (v, ctrl, mut scope) = mem::replace(&mut self.ci.inline_ret, prev_inline_ret)?;
+            let (v, ctrl, mut scope, aclass) =
+                mem::replace(&mut self.ci.inline_ret, prev_inline_ret)?;
             if is_inline
                 && ctrl.get() != prev_ctrl
                 && (!self.ci.nodes[ctrl.get()].kind.is_eca()
@@ -3882,10 +3893,15 @@ impl<'a> Codegen<'a> {
 
             scope.vars.drain(var_base..).for_each(|v| v.remove(&mut self.ci.nodes));
             scope.aclasses.drain(aclass_base..).for_each(|v| v.remove(&mut self.ci.nodes));
-            scope.aclasses.extend(self.ci.scope.aclasses.drain(aclass_base..));
             self.ci.nodes.unlock(v.id);
             self.ci.scope.clear(&mut self.ci.nodes);
             self.ci.scope = scope;
+
+            if let Some(aclass) = aclass {
+                let (_, reg) = self.ci.nodes.aclass_index(v.id);
+                self.ci.nodes[reg].aclass = self.ci.scope.aclasses.len() as _;
+                self.ci.scope.aclasses.push(aclass);
+            }
 
             mem::replace(&mut self.ci.ctrl, ctrl).remove(&mut self.ci.nodes);
 
@@ -4868,6 +4884,7 @@ mod tests {
         request_page;
         tests_ptr_to_ptr_copy;
         global_variable_wiredness;
+        inline_return_stack;
 
         // Just Testing Optimizations;
         const_folding_with_arg;

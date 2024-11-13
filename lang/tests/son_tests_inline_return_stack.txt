@@ -1,0 +1,6 @@
+main:
+    CP r1, r0
+    JALA r0, r31, 0a
+code size: 22
+ret: 0
+status: Ok(())
