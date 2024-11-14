@@ -39,6 +39,7 @@ pub struct Options {
     pub fmt: bool,
     pub fmt_stdout: bool,
     pub dump_asm: bool,
+    pub in_house_regalloc: bool,
     pub extra_threads: usize,
 }
 
@@ -54,6 +55,7 @@ impl Options {
             fmt: args.contains(&"--fmt"),
             fmt_stdout: args.contains(&"--fmt-stdout"),
             dump_asm: args.contains(&"--dump-asm"),
+            in_house_regalloc: args.contains(&"--in-house-regalloc"),
             extra_threads: args
                 .iter()
                 .position(|&a| a == "--threads")
@@ -92,6 +94,8 @@ pub fn run_compiler(root_file: &str, options: Options, out: &mut Vec<u8>) -> std
         write!(out, "{}", &parsed.ast[0])?;
     } else {
         let mut backend = HbvmBackend::default();
+        backend.use_in_house_regalloc = options.in_house_regalloc;
+
         let mut ctx = crate::son::CodegenCtx::default();
         *ctx.parser.errors.get_mut() = parsed.errors;
         let mut codegen = son::Codegen::new(&mut backend, &parsed.ast, &mut ctx);

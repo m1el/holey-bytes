@@ -49,6 +49,8 @@ struct Assembler {
 
 #[derive(Default)]
 pub struct HbvmBackend {
+    pub use_in_house_regalloc: bool,
+
     funcs: EntVec<ty::Func, FuncDt>,
     globals: EntVec<ty::Global, GlobalDt>,
     asm: Assembler,
@@ -258,8 +260,11 @@ impl Backend for HbvmBackend {
             nodes[MEM].outputs = mems;
         }
 
-        let (saved, tail) = self.emit_body_code(nodes, sig, tys, files);
-        //let (saved, tail) = self.emit_body_code_my(nodes, sig, tys, files);
+        let (saved, tail) = if self.use_in_house_regalloc {
+            self.emit_body_code_my(nodes, sig, tys, files)
+        } else {
+            self.emit_body_code(nodes, sig, tys, files)
+        };
 
         if let Some(last_ret) = self.ret_relocs.last()
             && last_ret.offset as usize == self.code.len() - 5
