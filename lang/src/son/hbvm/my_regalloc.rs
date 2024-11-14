@@ -649,7 +649,7 @@ impl<'a> Env<'a> {
                 );
 
                 range.end = new;
-                debug_assert!(range.start < range.end);
+                debug_assert!(range.start < range.end, "{:?}", range);
 
                 bundle.add(range);
             });
