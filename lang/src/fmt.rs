@@ -149,7 +149,7 @@ impl<'a> Formatter<'a> {
                 if let Some(expr) = list.get(i + 1)
                     && let Some(rest) = self.source.get(expr.posi() as usize..)
                 {
-                    if insert_needed_semicolon(rest) {
+                    if sep.is_empty() && insert_needed_semicolon(rest) {
                         f.write_str(";")?;
                     }
                     if preserve_newlines(&self.source[..expr.posi() as usize]) > 1 {

@@ -240,7 +240,10 @@ impl HbvmBackend {
                             };
                         }
 
-                        if let Some(PLoc::Ref(r, ..)) = ret {
+                        if node.ty.loc(tys) == Loc::Stack
+                            && let Some(PLoc::Reg(r, ..) | PLoc::WideReg(r, ..) | PLoc::Ref(r, ..)) =
+                                ret
+                        {
                             alloc_buf.push(atr(*node.inputs.last().unwrap()));
                             self.emit(instrs::cp(r, *alloc_buf.last().unwrap()))
                         }
