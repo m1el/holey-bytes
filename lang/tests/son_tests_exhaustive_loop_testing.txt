@@ -1,16 +1,16 @@
 continue_and_state_change:
-    LI64 r9, 3d
-    LI64 r10, 4d
-    LI64 r11, 2d
-    LI64 r12, 10d
- 6: JLTU r2, r12, :0
+    CP r1, r0
+    LI64 r10, 3d
+    LI64 r11, 4d
+    LI64 r12, 2d
+    LI64 r3, 10d
+ 6: JLTU r2, r3, :0
     CP r1, r2
     JMP :1
- 0: JNE r2, r11, :2
-    CP r2, r10
+ 0: JNE r2, r12, :2
+    CP r2, r11
     JMP :3
- 2: JNE r2, r9, :4
-    CP r1, r0
+ 2: JNE r2, r10, :4
  1: JMP :5
  4: ADDI64 r2, r2, 1d
  3: JMP :6

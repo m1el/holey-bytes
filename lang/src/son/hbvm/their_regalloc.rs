@@ -1,7 +1,6 @@
 use {
     super::{HbvmBackend, Nid, Nodes},
     crate::{
-        lexer::TokenKind,
         parser, reg,
         son::{debug_assert_matches, Kind, ARG_START, MEM, NEVER, VOID},
         ty::{self, Arg, Loc},
@@ -540,6 +539,8 @@ impl<'a> Function<'a> {
                         self.rg(*node.inputs.last().unwrap()),
                         regalloc2::PReg::new(r as _, regalloc2::RegClass::Int),
                     ));
+                } else if node.ty.loc(self.tys) == Loc::Stack {
+                    ops.push(self.urg(*node.inputs.last().unwrap()));
                 }
 
                 self.add_instr(nid, ops);
@@ -565,13 +566,7 @@ impl<'a> Function<'a> {
             Kind::Assert { .. } => unreachable!(),
             Kind::End | Kind::Phi | Kind::Arg | Kind::Mem | Kind::Loops | Kind::Join => {}
             Kind::Load { .. } => {
-                let mut region = node.inputs[1];
-                if self.nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
-                    && self.nodes.is_const(self.nodes[region].inputs[2])
-                    && node.ty.loc(self.tys) == Loc::Reg
-                {
-                    region = self.nodes[region].inputs[1]
-                }
+                let (region, _) = self.nodes.strip_offset(node.inputs[1], node.ty, self.tys);
                 let ops = match self.nodes[region].kind {
                     Kind::Stck => vec![self.drg(nid)],
                     _ => vec![self.drg(nid), self.urg(region)],
@@ -580,13 +575,7 @@ impl<'a> Function<'a> {
             }
             Kind::Stre => {
                 debug_assert_ne!(self.tys.size_of(node.ty), 0);
-                let mut region = node.inputs[2];
-                if self.nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
-                    && self.nodes.is_const(self.nodes[region].inputs[2])
-                    && node.ty.loc(self.tys) == Loc::Reg
-                {
-                    region = self.nodes[region].inputs[1]
-                }
+                let (region, _) = self.nodes.strip_offset(node.inputs[2], node.ty, self.tys);
                 let ops = match self.nodes[region].kind {
                     _ if node.ty.loc(self.tys) == Loc::Stack => {
                         if self.nodes[node.inputs[1]].kind == Kind::Arg {

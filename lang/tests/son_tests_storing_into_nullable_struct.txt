@@ -21,7 +21,7 @@ main:
     CP r34, r1
     ADDI64 r35, r254, 0d
     JAL r31, r0, :optional
-    ST r1, r254, 0a, 16h
+    ST r1, r35, 0a, 16h
     LD r36, r254, 0a, 1h
     ANDI r36, r36, 255d
     ANDI r0, r0, 255d

@@ -1,0 +1,82 @@
+main:
+    ADDI64 r254, r254, -208d
+    ST r31, r254, 80a, 128h
+    LRA r32, r0, :glob_stru
+    JAL r31, r0, :new_stru
+    ST r1, r32, 0a, 16h
+    CP r1, r0
+    LD r33, r32, 0a, 8h
+    JEQ r33, r1, :0
+    LI64 r1, 300d
+    JMP :1
+ 0: LI64 r34, 1d
+    ST r34, r32, 0a, 8h
+    ST r34, r32, 8a, 8h
+    ST r1, r32, 0a, 8h
+    LD r35, r32, 0a, 8h
+    JEQ r35, r1, :2
+    LI64 r1, 200d
+    JMP :1
+ 2: CP r36, r1
+    LI64 r37, 3d
+    ST r34, r32, 0a, 8h
+    ST r34, r32, 8a, 8h
+    ADDI64 r38, r254, 16d
+    ST r34, r254, 16a, 8h
+    ST r34, r254, 24a, 8h
+    ST r34, r254, 32a, 8h
+    ST r34, r254, 40a, 8h
+    ST r34, r254, 48a, 8h
+    ST r34, r254, 56a, 8h
+    CP r39, r36
+ 8: JNE r39, r37, :3
+    LD r40, r254, 48a, 8h
+    CP r1, r36
+    JEQ r40, r1, :4
+    LI64 r1, 100d
+    JMP :1
+ 4: ST r1, r254, 0a, 8h
+    ST r1, r254, 8a, 8h
+    ST r1, r254, 64a, 8h
+    ST r1, r254, 72a, 8h
+    ST r34, r254, 16a, 8h
+    ST r34, r254, 24a, 8h
+    ST r34, r254, 32a, 8h
+    ST r34, r254, 40a, 8h
+    ST r34, r254, 48a, 8h
+    ST r34, r254, 56a, 8h
+    CP r41, r1
+ 7: LD r42, r254, 48a, 8h
+    JNE r41, r37, :5
+    JEQ r42, r1, :6
+    LI64 r1, 10d
+    JMP :1
+ 6: JMP :1
+ 5: ADD64 r43, r41, r34
+    MULI64 r44, r41, 16d
+    ADD64 r45, r38, r44
+    ST r1, r45, 0a, 8h
+    ST r1, r45, 8a, 8h
+    CP r36, r1
+    CP r41, r43
+    JMP :7
+ 3: MULI64 r46, r39, 16d
+    ADD64 r43, r38, r46
+    JAL r31, r0, :new_stru
+    ST r1, r43, 0a, 16h
+    ADD64 r39, r39, r34
+    JMP :8
+ 1: LD r31, r254, 80a, 128h
+    ADDI64 r254, r254, 208d
+    JALA r0, r31, 0a
+new_stru:
+    ADDI64 r254, r254, -16d
+    ADDI64 r3, r254, 0d
+    ST r0, r254, 0a, 8h
+    ST r0, r254, 8a, 8h
+    LD r1, r3, 0a, 16h
+    ADDI64 r254, r254, 16d
+    JALA r0, r31, 0a
+code size: 759
+ret: 0
+status: Ok(())

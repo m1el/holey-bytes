@@ -1,7 +1,6 @@
 use {
     super::{HbvmBackend, Nid, Nodes},
     crate::{
-        lexer::TokenKind,
         parser,
         reg::{self, Reg},
         son::{debug_assert_matches, Kind, ARG_START, MEM, VOID},
@@ -10,7 +9,8 @@ use {
         PLoc, Sig, Types,
     },
     alloc::{borrow::ToOwned, vec::Vec},
-    core::{mem, ops::Range},
+    core::{cell::RefCell, mem, ops::Range},
+    hashbrown::HashSet,
     hbbytecode::{self as instrs},
 };
 
@@ -101,6 +101,28 @@ impl HbvmBackend {
                 let node = &fuc.nodes[nid];
                 alloc_buf.clear();
 
+                let atr = |allc: Nid| {
+                    let allc = strip_load(allc);
+                    debug_assert_eq!(
+                        fuc.nodes[allc].lock_rc,
+                        0,
+                        "{:?} {}",
+                        fuc.nodes[allc],
+                        ty::Display::new(tys, files, fuc.nodes[allc].ty)
+                    );
+                    debug_assert!(
+                        fuc.marked.borrow().contains(&(allc, nid))
+                            || nid == allc
+                            || fuc.nodes.is_hard_zero(allc)
+                            || allc == MEM
+                            || matches!(node.kind, Kind::Loop | Kind::Region),
+                        "{nid} {:?}\n{allc} {:?}",
+                        fuc.nodes[nid],
+                        fuc.nodes[allc]
+                    );
+                    res.node_to_reg[allc as usize]
+                };
+
                 let mut is_next_block = false;
                 match node.kind {
                     Kind::If => {
@@ -170,13 +192,14 @@ impl HbvmBackend {
                     }
                     Kind::Return => {
                         let &[_, ret, ..] = node.inputs.as_slice() else { unreachable!() };
-                        alloc_buf.push(atr(ret));
                         match retl {
                             Some(PLoc::Reg(r, _)) if sig.ret.loc(tys) == Loc::Reg => {
+                                alloc_buf.push(atr(ret));
                                 self.emit(instrs::cp(r, atr(ret)));
                             }
-                            Some(PLoc::Ref(..)) => alloc_buf.push(atr(MEM)),
-                            _ => {}
+                            Some(PLoc::Ref(..)) => alloc_buf.extend([atr(ret), atr(MEM)]),
+                            Some(_) => alloc_buf.push(atr(ret)),
+                            None => {}
                         }
                     }
                     Kind::Die => self.emit(instrs::un()),
@@ -224,12 +247,7 @@ impl HbvmBackend {
                     }
                     Kind::Stck | Kind::Global { .. } => alloc_buf.push(atr(nid)),
                     Kind::Load => {
-                        let mut region = node.inputs[1];
-                        if fuc.nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
-                            && let Kind::CInt { .. } = fuc.nodes[fuc.nodes[region].inputs[2]].kind
-                        {
-                            region = fuc.nodes[region].inputs[1];
-                        }
+                        let (region, _) = fuc.nodes.strip_offset(node.inputs[1], node.ty, tys);
                         if node.ty.loc(tys) != Loc::Stack {
                             alloc_buf.push(atr(nid));
                             match fuc.nodes[region].kind {
@@ -240,14 +258,7 @@ impl HbvmBackend {
                     }
                     Kind::Stre if node.inputs[1] == VOID => {}
                     Kind::Stre => {
-                        let mut region = node.inputs[2];
-                        if matches!(fuc.nodes[region].kind, Kind::BinOp {
-                            op: TokenKind::Add | TokenKind::Sub
-                        }) && let Kind::CInt { .. } = fuc.nodes[fuc.nodes[region].inputs[2]].kind
-                            && node.ty.loc(tys) == Loc::Reg
-                        {
-                            region = fuc.nodes[region].inputs[1];
-                        }
+                        let (region, _) = fuc.nodes.strip_offset(node.inputs[2], node.ty, tys);
                         match fuc.nodes[region].kind {
                             Kind::Stck if node.ty.loc(tys) == Loc::Reg => {
                                 alloc_buf.push(atr(node.inputs[1]))
@@ -313,6 +324,7 @@ pub struct Function<'a> {
     tys: &'a Types,
     visited: BitSet,
     func: Func,
+    marked: RefCell<HashSet<(Nid, Nid), crate::FnvBuildHasher>>,
 }
 
 impl Function<'_> {
@@ -334,6 +346,7 @@ impl Function<'_> {
             .filter(|&(o, &n)| self.nodes.is_data_dep(o, n))
             .map(|(p, &n)| (self.use_block(p, n), n))
             .inspect(|&(_, n)| debug_assert_eq!(self.nodes[n].lock_rc, 0))
+            .inspect(|&(_, n)| _ = self.marked.borrow_mut().insert((nid, n)))
             .collect_into(buf);
     }
 
@@ -347,20 +360,11 @@ impl Function<'_> {
 
     fn phi_inputs_of(&self, nid: Nid, buf: &mut Vec<Nid>) {
         match self.nodes[nid].kind {
-            Kind::Region => {
+            Kind::Region | Kind::Loop => {
                 for &inp in self.nodes[nid].outputs.as_slice() {
                     if self.nodes[inp].is_data_phi() {
+                        buf.push(inp);
                         buf.extend(&self.nodes[inp].inputs[1..]);
-                        buf.push(inp);
-                    }
-                }
-            }
-            Kind::Loop => {
-                for &inp in self.nodes[nid].outputs.as_slice() {
-                    if self.nodes[inp].is_data_phi() {
-                        buf.push(self.nodes[inp].inputs[1]);
-                        buf.push(inp);
-                        buf.push(self.nodes[inp].inputs[2]);
                     }
                 }
             }
@@ -412,6 +416,7 @@ impl<'a> Function<'a> {
             sig,
             visited: Default::default(),
             func: Default::default(),
+            marked: Default::default(),
         };
         s.visited.clear(s.nodes.values.len());
         s.emit_node(VOID);
@@ -580,13 +585,25 @@ impl<'a> Env<'a> {
         let mut use_buf = mem::take(&mut self.res.use_buf);
 
         let mut phi_input_buf = mem::take(&mut self.res.phi_input_buf);
-        for block in &self.func.blocks {
+        for block in self.func.blocks.iter().rev() {
             self.ctx.phi_inputs_of(block.entry, &mut phi_input_buf);
-            for param in phi_input_buf.drain(..) {
-                if !visited.set(param) {
-                    continue;
+            for [a, rest @ ..] in phi_input_buf.drain(..).array_chunks::<3>() {
+                if visited.set(a) {
+                    self.append_bundle(a, &mut bundle, &mut use_buf, None);
                 }
-                self.append_bundle(param, &mut bundle, &mut use_buf);
+
+                for r in rest {
+                    if !visited.set(r) {
+                        continue;
+                    }
+
+                    self.append_bundle(
+                        r,
+                        &mut bundle,
+                        &mut use_buf,
+                        Some(self.res.node_to_reg[a as usize] as usize - 1),
+                    );
+                }
             }
         }
         self.res.phi_input_buf = phi_input_buf;
@@ -595,13 +612,19 @@ impl<'a> Env<'a> {
             if visited.get(inst) || inst == 0 {
                 continue;
             }
-            self.append_bundle(inst, &mut bundle, &mut use_buf);
+            self.append_bundle(inst, &mut bundle, &mut use_buf, None);
         }
 
         self.res.use_buf = use_buf;
     }
 
-    fn append_bundle(&mut self, inst: Nid, bundle: &mut Bundle, use_buf: &mut Vec<(Nid, Nid)>) {
+    fn append_bundle(
+        &mut self,
+        inst: Nid,
+        bundle: &mut Bundle,
+        use_buf: &mut Vec<(Nid, Nid)>,
+        prefered: Option<usize>,
+    ) {
         let dom = self.ctx.idom_of(inst);
         self.ctx.uses_of(inst, use_buf);
         for (cursor, uinst) in use_buf.drain(..) {
@@ -611,7 +634,7 @@ impl<'a> Env<'a> {
                 range.start =
                     range.start.max(self.ctx.instr_of(inst).map_or(0, |n| n + 1) as usize);
                 debug_assert!(range.start < range.end, "{:?}", range);
-                range.end = range.end.min(
+                let new = range.end.min(
                     self.ctx
                         .instr_of(uinst)
                         .filter(|_| {
@@ -621,6 +644,8 @@ impl<'a> Env<'a> {
                         })
                         .map_or(Nid::MAX, |n| n + 1) as usize,
                 );
+
+                range.end = new;
                 debug_assert!(range.start < range.end);
 
                 bundle.add(range);
@@ -632,15 +657,25 @@ impl<'a> Env<'a> {
             return;
         }
 
-        match self.res.bundles.iter_mut().enumerate().find(|(_, b)| !b.overlaps(bundle)) {
-            Some((i, other)) => {
-                other.merge(bundle);
-                bundle.clear();
-                self.res.node_to_reg[inst as usize] = i as Reg + 1;
-            }
-            None => {
-                self.res.bundles.push(mem::replace(bundle, Bundle::new(self.func.instrs.len())));
-                self.res.node_to_reg[inst as usize] = self.res.bundles.len() as Reg;
+        if let Some(prefered) = prefered
+            && !self.res.bundles[prefered].overlaps(bundle)
+        {
+            self.res.bundles[prefered].merge(bundle);
+            bundle.clear();
+            self.res.node_to_reg[inst as usize] = prefered as Reg + 1;
+        } else {
+            match self.res.bundles.iter_mut().enumerate().find(|(_, b)| !b.overlaps(bundle)) {
+                Some((i, other)) => {
+                    other.merge(bundle);
+                    bundle.clear();
+                    self.res.node_to_reg[inst as usize] = i as Reg + 1;
+                }
+                None => {
+                    self.res
+                        .bundles
+                        .push(mem::replace(bundle, Bundle::new(self.func.instrs.len())));
+                    self.res.node_to_reg[inst as usize] = self.res.bundles.len() as Reg;
+                }
             }
         }
     }

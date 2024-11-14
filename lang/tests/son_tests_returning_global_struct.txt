@@ -3,7 +3,7 @@ main:
     ST r31, r254, 4a, 96h
     ADDI64 r32, r254, 0d
     JAL r31, r0, :random_color
-    ST r1, r254, 0a, 4h
+    ST r1, r32, 0a, 4h
     LD r33, r254, 0a, 1h
     LD r34, r254, 1a, 1h
     LD r35, r254, 2a, 1h

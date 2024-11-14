@@ -1,12 +1,12 @@
 main:
     ADDI64 r254, r254, -16d
-    ADDI64 r4, r254, 0d
+    ADDI64 r7, r254, 0d
     CP r3, r0
     CP r4, r0
     CP r5, r0
     CP r6, r0
     ECA 
-    ST r1, r254, 0a, 16h
+    ST r1, r7, 0a, 16h
     LD r7, r254, 0a, 1h
     ANDI r7, r7, 255d
     ANDI r0, r0, 255d

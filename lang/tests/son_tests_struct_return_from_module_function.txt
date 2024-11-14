@@ -14,13 +14,13 @@ main:
     ST r31, r254, 48a, 80h
     ADDI64 r32, r254, 32d
     JAL r31, r0, :foo
-    ST r1, r254, 32a, 16h
+    ST r1, r32, 0a, 16h
     ADDI64 r33, r254, 16d
     JAL r31, r0, :foo
-    ST r1, r254, 16a, 16h
+    ST r1, r33, 0a, 16h
     ADDI64 r34, r254, 0d
     JAL r31, r0, :foo
-    ST r1, r254, 0a, 16h
+    ST r1, r34, 0a, 16h
     LD r35, r254, 24a, 4h
     LD r36, r254, 12a, 4h
     ANDI r37, r35, 4294967295d

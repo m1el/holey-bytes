@@ -45,22 +45,21 @@ main:
     JNE r40, r39, :9
     LI64 r1, 69d
     JMP :3
- 9: ADDI64 r3, r254, 40d
-    CP r41, r3
+ 9: ADDI64 r41, r254, 40d
     JAL r31, r0, :new_foo
-    ST r1, r254, 40a, 16h
+    ST r1, r41, 0a, 16h
+    CP r3, r41
     LD r42, r254, 40a, 8h
     JNE r42, r0, :10
     LI64 r1, 999d
     JMP :3
 10: LRA r4, r0, :"foo\0"
-    CP r3, r41
     CP r2, r3
     LD r2, r2, 0a, 16h
     JAL r31, r0, :use_foo
     ADDI64 r43, r254, 0d
     JAL r31, r0, :no_foo
-    ST r1, r254, 0a, 16h
+    ST r1, r43, 0a, 16h
     JAL r31, r0, :decide
     ANDI r1, r1, 255d
     JNE r1, r0, :11
@@ -126,6 +125,6 @@ use_foo:
     ADDI64 r2, r254, 0d
     ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
-code size: 1100
+code size: 1097
 ret: 0
 status: Ok(())

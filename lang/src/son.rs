@@ -125,52 +125,34 @@ impl Default for Nodes {
 
 impl Nodes {
     fn loop_depth(&self, target: Nid) -> LoopDepth {
-        if self[target].loop_depth.get() != 0 {
-            return self[target].loop_depth.get();
-        }
-
         self[target].loop_depth.set(match self[target].kind {
-            Kind::Entry | Kind::Then | Kind::Else | Kind::Call { .. } | Kind::Return | Kind::If => {
-                let dpth = self.loop_depth(self[target].inputs[0]);
+            Kind::Region | Kind::Entry | Kind::Then | Kind::Else | Kind::Call { .. } | Kind::If => {
                 if self[target].loop_depth.get() != 0 {
                     return self[target].loop_depth.get();
                 }
-                dpth
-            }
-            Kind::Region => {
-                let l = self.loop_depth(self[target].inputs[0]);
-                let r = self.loop_depth(self[target].inputs[1]);
-                debug_assert_eq!(l, r);
-                l
+                self.loop_depth(self[target].inputs[0])
             }
             Kind::Loop => {
-                let depth = Self::loop_depth(self, self[target].inputs[0]) + 1;
+                if self[target].loop_depth.get() == self.loop_depth(self[target].inputs[0]) + 1 {
+                    return self[target].loop_depth.get();
+                }
+                let depth = self.loop_depth(self[target].inputs[0]) + 1;
                 self[target].loop_depth.set(depth);
                 let mut cursor = self[target].inputs[1];
                 while cursor != target {
                     self[cursor].loop_depth.set(depth);
-                    let next = if self[cursor].kind == Kind::Region {
-                        self.loop_depth(self[cursor].inputs[0]);
-                        self[cursor].inputs[1]
-                    } else {
-                        self.idom(cursor)
-                    };
-                    debug_assert_ne!(next, VOID);
+                    let next = self.idom(cursor);
+                    debug_assert_ne!(next, 0);
                     if matches!(self[cursor].kind, Kind::Then | Kind::Else) {
-                        let other = *self[next]
-                            .outputs
-                            .iter()
-                            .find(|&&n| self[n].kind != self[cursor].kind)
-                            .unwrap();
-                        if self[other].loop_depth.get() == 0 {
-                            self[other].loop_depth.set(depth - 1);
-                        }
+                        debug_assert_eq!(self[next].kind, Kind::If);
+                        let other = self[next].outputs[(self[next].outputs[0] == cursor) as usize];
+                        self[other].loop_depth.set(depth - 1);
                     }
                     cursor = next;
                 }
                 depth
             }
-            Kind::Start | Kind::End | Kind::Die => 1,
+            Kind::Start | Kind::End | Kind::Die | Kind::Return => 1,
             u => unreachable!("{u:?}"),
         });
 
@@ -194,21 +176,22 @@ impl Nodes {
         self[target].depth.get()
     }
 
-    fn fix_loops(&mut self) {
-        'o: for l in self[LOOPS].outputs.clone() {
-            let mut cursor = self[l].inputs[1];
-            let depth = self.loop_depth(cursor);
-            while cursor != l {
-                if self[cursor].kind == Kind::If
-                    && self[cursor].outputs.iter().any(|&b| self.loop_depth(b) < depth)
-                {
-                    continue 'o;
-                }
-                cursor = self.idom(cursor);
-            }
+    fn fix_loops(&mut self, stack: &mut Vec<Nid>, seen: &mut BitSet) {
+        debug_assert!(stack.is_empty());
 
-            self[l].outputs.push(NEVER);
-            self[NEVER].inputs.push(l);
+        stack.push(NEVER);
+
+        while let Some(node) = stack.pop() {
+            if seen.set(node) && self.is_cfg(node) {
+                stack.extend(self[node].inputs.iter());
+            }
+        }
+
+        for l in self[LOOPS].outputs.clone() {
+            if !seen.get(l) {
+                self[l].outputs.push(NEVER);
+                self[NEVER].inputs.push(l);
+            }
         }
     }
 
@@ -599,7 +582,8 @@ impl Nodes {
     }
 
     fn gcm(&mut self, rpo: &mut Vec<Nid>, visited: &mut BitSet) {
-        self.fix_loops();
+        visited.clear(self.values.len());
+        self.fix_loops(rpo, visited);
         visited.clear(self.values.len());
         self.push_up(rpo, visited);
         visited.clear(self.values.len());
@@ -947,6 +931,10 @@ impl Nodes {
                 }
             }
             K::If => {
+                if self[target].inputs[0] == NEVER {
+                    return Some(NEVER);
+                }
+
                 if self[target].ty == ty::Id::VOID {
                     match self.try_opt_cond(target) {
                         CondOptRes::Unknown => {}
@@ -962,6 +950,10 @@ impl Nodes {
                 }
             }
             K::Then => {
+                if self[target].inputs[0] == NEVER {
+                    return Some(NEVER);
+                }
+
                 if self[self[target].inputs[0]].ty == ty::Id::LEFT_UNREACHABLE {
                     return Some(NEVER);
                 } else if self[self[target].inputs[0]].ty == ty::Id::RIGHT_UNREACHABLE {
@@ -969,6 +961,10 @@ impl Nodes {
                 }
             }
             K::Else => {
+                if self[target].inputs[0] == NEVER {
+                    return Some(NEVER);
+                }
+
                 if self[self[target].inputs[0]].ty == ty::Id::RIGHT_UNREACHABLE {
                     return Some(NEVER);
                 } else if self[self[target].inputs[0]].ty == ty::Id::LEFT_UNREACHABLE {
@@ -1354,6 +1350,7 @@ impl Nodes {
                     return Some(self[target].inputs[0]);
                 }
             }
+            _ if self.is_cfg(target) && self.idom(target) == NEVER => panic!(),
             _ => {}
         }
 
@@ -1665,6 +1662,40 @@ impl Nodes {
         }
     }
 
+    fn check_loop_depth_integrity(&self, disp: ty::Display) {
+        if !cfg!(debug_assertions) {
+            return;
+        }
+
+        let mut failed = false;
+        for &loob in self[LOOPS].outputs.iter() {
+            let mut stack = vec![self[loob].inputs[1]];
+            let mut seen = BitSet::default();
+            seen.set(loob);
+            let depth = self.loop_depth(loob);
+            while let Some(nid) = stack.pop() {
+                if seen.set(nid) {
+                    if depth > self.loop_depth(nid) {
+                        failed = true;
+                        log::error!("{depth} {} {nid} {:?}", self.loop_depth(nid), self[nid]);
+                    }
+
+                    match self[nid].kind {
+                        Kind::Loop | Kind::Region => {
+                            stack.extend(&self[nid].inputs[..2]);
+                        }
+                        _ => stack.push(self[nid].inputs[0]),
+                    }
+                }
+            }
+        }
+
+        if failed {
+            self.graphviz_in_browser(disp);
+            panic!()
+        }
+    }
+
     fn load_loop_var(&mut self, index: usize, var: &mut Variable, loops: &mut [Loop]) {
         if var.value() != VOID {
             return;
@@ -1748,14 +1779,16 @@ impl Nodes {
         }
     }
 
-    fn is_data_dep(&self, nid: Nid, n: Nid) -> bool {
-        match self[n].kind {
-            Kind::Return => self[n].inputs[1] == nid,
-            _ if self.is_cfg(n) && !matches!(self[n].kind, Kind::Call { .. } | Kind::If) => false,
+    fn is_data_dep(&self, val: Nid, user: Nid) -> bool {
+        match self[user].kind {
+            Kind::Return => self[user].inputs[1] == val,
+            _ if self.is_cfg(user) && !matches!(self[user].kind, Kind::Call { .. } | Kind::If) => {
+                false
+            }
             Kind::Join => false,
-            Kind::Stre => self[n].inputs[3] != nid,
-            Kind::Load => self[n].inputs[2] != nid,
-            _ => self[n].inputs[0] != nid || self[n].inputs[1..].contains(&nid),
+            Kind::Stre => self[user].inputs[3] != val,
+            Kind::Load => self[user].inputs[2] != val,
+            _ => self[user].inputs[0] != val || self[user].inputs[1..].contains(&val),
         }
     }
 
@@ -4426,6 +4459,7 @@ impl<'a> Codegen<'a> {
             self.ci.nodes.check_final_integrity(self.ty_display(ty::Id::VOID));
             self.ci.nodes.graphviz(self.ty_display(ty::Id::VOID));
             self.ci.nodes.gcm(&mut self.pool.nid_stack, &mut self.pool.nid_set);
+            self.ci.nodes.check_loop_depth_integrity(self.ty_display(ty::Id::VOID));
             self.ci.nodes.basic_blocks();
             self.ci.nodes.graphviz(self.ty_display(ty::Id::VOID));
         } else {
@@ -4844,6 +4878,7 @@ mod tests {
         fb_driver;
 
         // Purely Testing Examples;
+        different_function_destinations;
         triggering_store_in_divergent_branch;
         wrong_dead_code_elimination;
         memory_swap;

@@ -1,4 +1,5 @@
 #![feature(
+    iter_array_chunks,
     assert_matches,
     let_chains,
     if_let_guard,

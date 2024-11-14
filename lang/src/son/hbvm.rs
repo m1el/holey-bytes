@@ -336,6 +336,18 @@ impl Backend for HbvmBackend {
 }
 
 impl Nodes {
+    fn strip_offset(&self, region: Nid, ty: ty::Id, tys: &Types) -> (Nid, Offset) {
+        if matches!(self[region].kind, Kind::BinOp { op: TokenKind::Add | TokenKind::Sub })
+            && self[region].lock_rc != 0
+            && let Kind::CInt { value } = self[self[region].inputs[2]].kind
+            && ty.loc(tys) == Loc::Reg
+        {
+            (self[region].inputs[1], value as _)
+        } else {
+            (region, 0)
+        }
+    }
+
     fn reschedule_block(&mut self, from: Nid, outputs: &mut Vc) {
         // NOTE: this code is horible
         let fromc = Some(&from);
@@ -638,17 +650,10 @@ impl HbvmBackend {
                     self.emit(instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
                 }
 
-                if let Some(PLoc::WideReg(r, size)) = ret {
-                    debug_assert_eq!(nodes[*node.inputs.last().unwrap()].kind, Kind::Stck);
-                    let stck = self.offsets[*node.inputs.last().unwrap() as usize];
-                    self.emit(instrs::st(r, reg::STACK_PTR, stck as _, size));
-                }
-                if let Some(PLoc::Reg(r, size)) = ret
-                    && node.ty.loc(tys) == Loc::Stack
+                if node.ty.loc(tys) == Loc::Stack
+                    && let Some(PLoc::Reg(r, size) | PLoc::WideReg(r, size)) = ret
                 {
-                    debug_assert_eq!(nodes[*node.inputs.last().unwrap()].kind, Kind::Stck);
-                    let stck = self.offsets[*node.inputs.last().unwrap() as usize];
-                    self.emit(instrs::st(r, reg::STACK_PTR, stck as _, size));
+                    self.emit(instrs::st(r, *allocs.last().unwrap(), 0, size));
                 }
             }
             Kind::Global { global } => {
@@ -662,14 +667,7 @@ impl HbvmBackend {
                 self.emit(instrs::addi64(allocs[0], base, offset as _));
             }
             Kind::Load => {
-                let mut region = node.inputs[1];
-                let mut offset = 0;
-                if nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
-                    && let Kind::CInt { value } = nodes[nodes[region].inputs[2]].kind
-                {
-                    region = nodes[region].inputs[1];
-                    offset = value as Offset;
-                }
+                let (region, offset) = nodes.strip_offset(node.inputs[1], node.ty, tys);
                 let size = tys.size_of(node.ty);
                 if node.ty.loc(tys) != Loc::Stack {
                     let (base, offset) = match nodes[region].kind {
@@ -681,16 +679,8 @@ impl HbvmBackend {
             }
             Kind::Stre if node.inputs[1] == VOID => {}
             Kind::Stre => {
-                let mut region = node.inputs[2];
-                let mut offset = 0;
+                let (region, offset) = nodes.strip_offset(node.inputs[2], node.ty, tys);
                 let size = u16::try_from(tys.size_of(node.ty)).expect("TODO");
-                if nodes[region].kind == (Kind::BinOp { op: TokenKind::Add })
-                    && let Kind::CInt { value } = nodes[nodes[region].inputs[2]].kind
-                    && node.ty.loc(tys) == Loc::Reg
-                {
-                    region = nodes[region].inputs[1];
-                    offset = value as Offset;
-                }
                 let (base, offset, src) = match nodes[region].kind {
                     Kind::Stck if node.ty.loc(tys) == Loc::Reg => {
                         (reg::STACK_PTR, self.offsets[region as usize] + offset, allocs[0])

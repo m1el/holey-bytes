@@ -646,6 +646,41 @@ main := fn(): uint {
 
 ### Purely Testing Examples
 
+#### different_function_destinations
+```hb
+Stru := struct {a: uint, b: uint}
+new_stru := fn(): Stru return .(0, 0)
+
+glob_stru := Stru.(1, 1)
+
+main := fn(): uint {
+	glob_stru = new_stru()
+	if glob_stru.a != 0 return 300
+	glob_stru = .(1, 1)
+	glob_stru = @inline(new_stru)
+	if glob_stru.a != 0 return 200
+
+	glob_stru = .(1, 1)
+	strus := [Stru].(glob_stru, glob_stru, glob_stru)
+	i := 0
+	loop if i == 3 break else {
+		strus[i] = new_stru()
+		i += 1
+	}
+	if strus[2].a != 0 return 100
+
+	strus = [Stru].(glob_stru, glob_stru, glob_stru)
+	i = 0
+	loop if i == 3 break else {
+		strus[i] = @inline(new_stru)
+		i += 1
+	}
+	if strus[2].a != 0 return 10
+
+	return 0
+}
+```
+
 #### triggering_store_in_divergent_branch
 ```hb
 opaque := fn(): uint {

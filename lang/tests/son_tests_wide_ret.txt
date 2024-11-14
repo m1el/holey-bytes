@@ -5,7 +5,7 @@ main:
     CP r4, r0
     CP r3, r4
     JAL r31, r0, :maina
-    ST r1, r254, 0a, 16h
+    ST r1, r32, 0a, 16h
     LD r33, r254, 12a, 1h
     LD r34, r254, 3a, 1h
     SUB8 r35, r34, r33
@@ -18,7 +18,7 @@ maina:
     ST r31, r254, 20a, 40h
     ADDI64 r32, r254, 16d
     JAL r31, r0, :small_struct
-    ST r1, r254, 16a, 4h
+    ST r1, r32, 0a, 4h
     ADDI64 r33, r254, 0d
     ST r0, r254, 0a, 1h
     ST r0, r254, 1a, 1h
