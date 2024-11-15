@@ -429,7 +429,7 @@ impl Nodes {
                         && node.outputs.iter().all(|&n| self[n].uses_direct_offset_of(nid, tys)))
             }
             Kind::BinOp { op } => {
-                op.cond_op(node.ty).is_some()
+                op.cond_op(self[node.inputs[1]].ty).is_some()
                     && node.outputs.iter().all(|&n| self[n].kind == Kind::If)
             }
             Kind::Stck if tys.size_of(node.ty) == 0 => true,
@@ -585,7 +585,7 @@ impl HbvmBackend {
                 self.emit(op(dst, oper));
             }
             Kind::BinOp { op } => {
-                let &[.., lh, rh] = node.inputs.as_slice() else { unreachable!() };
+                let &[.., rh] = node.inputs.as_slice() else { unreachable!() };
 
                 if let Kind::CInt { value } = nodes[rh].kind
                     && nodes[rh].lock_rc != 0
@@ -593,20 +593,18 @@ impl HbvmBackend {
                 {
                     let &[dst, lhs] = allocs else { unreachable!() };
                     self.emit(op(dst, lhs, value as _));
-                } else if let Some(op) = op.binop(node.ty).or(op.float_cmp(nodes[lh].ty)) {
-                    let &[dst, lhs, rhs] = allocs else { unreachable!() };
-                    self.emit(op(dst, lhs, rhs));
                 } else if let Some(against) = op.cmp_against() {
                     let op_ty = nodes[rh].ty;
                     let &[dst, lhs, rhs] = allocs else { unreachable!() };
-
-                    if op_ty.is_float() && matches!(op, TokenKind::Le | TokenKind::Ge) {
-                        let opop = match op {
+                    if let Some(op) = op.float_cmp(op_ty) {
+                        self.emit(op(dst, lhs, rhs));
+                    } else if op_ty.is_float() && matches!(op, TokenKind::Le | TokenKind::Ge) {
+                        let op = match op {
                             TokenKind::Le => TokenKind::Gt,
                             TokenKind::Ge => TokenKind::Lt,
                             _ => unreachable!(),
                         };
-                        let op_fn = opop.float_cmp(op_ty).unwrap();
+                        let op_fn = op.float_cmp(op_ty).unwrap();
                         self.emit(op_fn(dst, lhs, rhs));
                         self.emit(instrs::not(dst, dst));
                     } else {
@@ -617,6 +615,9 @@ impl HbvmBackend {
                             self.emit(instrs::not(dst, dst));
                         }
                     }
+                } else if let Some(op) = op.binop(node.ty) {
+                    let &[dst, lhs, rhs] = allocs else { unreachable!() };
+                    self.emit(op(dst, lhs, rhs));
                 } else {
                     todo!("unhandled operator: {op}");
                 }
@@ -772,7 +773,7 @@ impl TokenKind {
     }
 
     fn binop(self, ty: ty::Id) -> Option<fn(u8, u8, u8) -> EncodedInstr> {
-        let size = ty.simple_size().unwrap();
+        let size = ty.simple_size().unwrap_or_else(|| panic!("{:?}", ty.expand()));
         if ty.is_integer() || ty == ty::Id::BOOL || ty.is_pointer() {
             macro_rules! div { ($($op:ident),*) => {[$(|a, b, c| $op(a, 0, b, c)),*]}; }
             macro_rules! rem { ($($op:ident),*) => {[$(|a, b, c| $op(0, a, b, c)),*]}; }
