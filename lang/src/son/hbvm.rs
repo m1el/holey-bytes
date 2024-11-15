@@ -361,7 +361,7 @@ impl Nodes {
         }
     }
 
-    fn reschedule_block(&mut self, from: Nid, outputs: &mut Vc) {
+    fn reschedule_block(&self, from: Nid, outputs: &mut Vc) {
         // NOTE: this code is horible
         let fromc = Some(&from);
         let mut buf = Vec::with_capacity(outputs.len());

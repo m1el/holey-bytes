@@ -307,20 +307,20 @@ impl Nodes {
         }
     }
 
-    fn push_down(&mut self, node: Nid, visited: &mut BitSet) {
+    fn push_down(&mut self, node: Nid, visited: &mut BitSet, antideps: &mut [Nid]) {
         if !visited.set(node) {
             return;
         }
 
         for usage in self[node].outputs.clone() {
             if self.is_forward_edge(usage, node) && self[node].kind == Kind::Stre {
-                self.push_down(usage, visited);
+                self.push_down(usage, visited, antideps);
             }
         }
 
         for usage in self[node].outputs.clone() {
             if self.is_forward_edge(usage, node) {
-                self.push_down(usage, visited);
+                self.push_down(usage, visited, antideps);
             }
         }
 
@@ -347,18 +347,18 @@ impl Nodes {
         }
 
         if self[node].kind == Kind::Load {
-            min = self.find_antideps(node, min);
+            min = self.find_antideps(node, min, antideps);
         }
 
         if self[node].kind == Kind::Stre {
-            self[node].antidep = self[node].inputs[0];
+            antideps[node as usize] = self[node].inputs[0];
         }
 
         if self[min].kind.ends_basic_block() {
             min = self.idom(min);
         }
 
-        self.check_dominance(node, min, true);
+        self.assert_dominance(node, min, true);
 
         let prev = self[node].inputs[0];
         debug_assert!(self.idepth(min) >= self.idepth(prev));
@@ -368,14 +368,14 @@ impl Nodes {
         self[min].outputs.push(node);
     }
 
-    fn find_antideps(&mut self, load: Nid, mut min: Nid) -> Nid {
+    fn find_antideps(&mut self, load: Nid, mut min: Nid, antideps: &mut [Nid]) -> Nid {
         debug_assert!(self[load].kind == Kind::Load);
 
         let (aclass, _) = self.aclass_index(self[load].inputs[1]);
 
         let mut cursor = min;
         while cursor != self[load].inputs[0] {
-            self[cursor].antidep = load;
+            antideps[cursor as usize] = load;
             if self[cursor].clobbers.get(aclass as _) {
                 min = self[cursor].inputs[0];
                 break;
@@ -391,8 +391,8 @@ impl Nodes {
             match self[out].kind {
                 Kind::Stre => {
                     let mut cursor = self[out].inputs[0];
-                    while cursor != self[out].antidep {
-                        if self[cursor].antidep == load {
+                    while cursor != antideps[out as usize] {
+                        if antideps[cursor as usize] == load {
                             min = self.common_dom(min, cursor);
                             if min == cursor {
                                 self.bind(load, out);
@@ -409,8 +409,8 @@ impl Nodes {
                         .position(|&n| n == self[load].inputs[2])
                         .unwrap();
                     let mut cursor = self[self[out].inputs[0]].inputs[n];
-                    while cursor != self[out].antidep {
-                        if self[cursor].antidep == load {
+                    while cursor != antideps[out as usize] {
+                        if antideps[cursor as usize] == load {
                             min = self.common_dom(min, cursor);
                             break;
                         }
@@ -587,7 +587,10 @@ impl Nodes {
         visited.clear(self.values.len());
         self.push_up(rpo, visited);
         visited.clear(self.values.len());
-        self.push_down(VOID, visited);
+        debug_assert!(rpo.is_empty());
+        rpo.resize(self.values.len(), VOID);
+        self.push_down(VOID, visited, rpo);
+        rpo.clear();
     }
 
     fn clear(&mut self) {
@@ -874,6 +877,8 @@ impl Nodes {
                         let new_lhs = self.new_node(ty, K::BinOp { op }, [ctrl, a, rhs], tys);
                         return Some(self.new_node(ty, K::BinOp { op }, [ctrl, new_lhs, b], tys));
                     }
+
+                    self.add_trigger(b, target);
                 }
 
                 if op == T::Add
@@ -936,7 +941,7 @@ impl Nodes {
                 }
 
                 if self[target].ty == ty::Id::VOID {
-                    match self.try_opt_cond(target) {
+                    match self.try_match_cond(target) {
                         CondOptRes::Unknown => {}
                         CondOptRes::Known { value, .. } => {
                             let ty = if value {
@@ -1009,7 +1014,7 @@ impl Nodes {
                     if let Some(&load) =
                         self[n].outputs.iter().find(|&&n| self[n].kind == Kind::Load)
                     {
-                        self[load].peep_triggers.push(target);
+                        self.add_trigger(load, target);
                         continue;
                     }
 
@@ -1040,7 +1045,7 @@ impl Nodes {
                         if let Some(&load) =
                             self[cursor].outputs.iter().find(|&&n| self[n].kind == Kind::Load)
                         {
-                            self[load].peep_triggers.push(target);
+                            self.add_trigger(load, target);
                             continue 'a;
                         }
 
@@ -1054,6 +1059,7 @@ impl Nodes {
             }
             K::Phi => {
                 let &[ctrl, lhs, rhs] = self[target].inputs.as_slice() else { unreachable!() };
+                let ty = self[target].ty;
 
                 if rhs == target || lhs == rhs {
                     return Some(lhs);
@@ -1072,14 +1078,20 @@ impl Nodes {
                         [ctrl, self[lhs].inputs[1], self[rhs].inputs[1]],
                         tys,
                     );
-                    let mut vc = Vc::from([VOID, pick_value, self[lhs].inputs[2]]);
-                    for &rest in &self[lhs].inputs[3..] {
-                        vc.push(rest);
-                    }
-                    for &rest in &self[rhs].inputs[4..] {
-                        vc.push(rest);
-                    }
+                    let mut vc = self[lhs].inputs.clone();
+                    vc[1] = pick_value;
                     return Some(self.new_node(self[lhs].ty, Kind::Stre, vc, tys));
+                }
+
+                if let Kind::BinOp { op } = self[lhs].kind
+                    && self[rhs].kind == (Kind::BinOp { op })
+                {
+                    debug_assert!(ty != ty::Id::VOID);
+                    let inps = [ctrl, self[lhs].inputs[1], self[rhs].inputs[1]];
+                    let nlhs = self.new_node(ty, Kind::Phi, inps, tys);
+                    let inps = [ctrl, self[lhs].inputs[2], self[rhs].inputs[2]];
+                    let nrhs = self.new_node(ty, Kind::Phi, inps, tys);
+                    return Some(self.new_node(ty, Kind::BinOp { op }, [VOID, nlhs, nrhs], tys));
                 }
             }
             K::Stck => {
@@ -1136,7 +1148,7 @@ impl Nodes {
                         || self[value].outputs.iter().any(|&n| self[n].kind != Kind::Stre)
                     {
                         for &ele in self[value].outputs.clone().iter().filter(|&&n| n != target) {
-                            self[ele].peep_triggers.push(target);
+                            self.add_trigger(ele, target);
                         }
                         break 'eliminate;
                     }
@@ -1240,7 +1252,7 @@ impl Nodes {
                 if let Some(&load) =
                     self[target].outputs.iter().find(|&&n| self[n].kind == Kind::Load)
                 {
-                    self[load].peep_triggers.push(target);
+                    self.add_trigger(load, target);
                 } else if value != VOID
                     && self[value].kind != Kind::Load
                     && self[store].kind == Kind::Stre
@@ -1313,7 +1325,7 @@ impl Nodes {
                         cursor = self[cursor].inputs[3];
                     } else {
                         let reg = self.aclass_index(self[cursor].inputs[2]).1;
-                        self[reg].peep_triggers.push(target);
+                        self.add_trigger(reg, target);
                         break;
                     }
                 }
@@ -1357,7 +1369,7 @@ impl Nodes {
         None
     }
 
-    fn try_opt_cond(&self, target: Nid) -> CondOptRes {
+    fn try_match_cond(&self, target: Nid) -> CondOptRes {
         let &[ctrl, cond, ..] = self[target].inputs.as_slice() else { unreachable!() };
         if let Kind::CInt { value } = self[cond].kind {
             return CondOptRes::Known { value: value != 0, pin: None };
@@ -1739,7 +1751,7 @@ impl Nodes {
         aclass.last_store.set(lvar.last_store.get(), self);
     }
 
-    fn check_dominance(&mut self, nd: Nid, min: Nid, check_outputs: bool) {
+    fn assert_dominance(&mut self, nd: Nid, min: Nid, check_outputs: bool) {
         if !cfg!(debug_assertions) {
             return;
         }
@@ -1803,6 +1815,12 @@ impl Nodes {
     fn is_hard_zero(&self, nid: Nid) -> bool {
         self[nid].kind == Kind::CInt { value: 0 }
             && self[nid].outputs.iter().all(|&n| self[n].kind != Kind::Phi)
+    }
+
+    fn add_trigger(&mut self, blocker: Nid, target: Nid) {
+        if !self[blocker].peep_triggers.contains(&target) {
+            self[blocker].peep_triggers.push(target);
+        }
     }
 }
 
@@ -1961,12 +1979,11 @@ pub struct Node {
     peep_triggers: Vc,
     clobbers: BitSet,
     ty: ty::Id,
+    pos: Pos,
     depth: Cell<IDomDepth>,
     lock_rc: LockRc,
     loop_depth: Cell<LoopDepth>,
     aclass: AClassId,
-    antidep: Nid,
-    pos: Pos,
 }
 
 impl Node {
@@ -4370,7 +4387,7 @@ impl<'a> Codegen<'a> {
         for (id, node) in self.ci.nodes.iter() {
             let Kind::Assert { kind, pos } = node.kind else { continue };
 
-            let res = self.ci.nodes.try_opt_cond(id);
+            let res = self.ci.nodes.try_match_cond(id);
 
             // TODO: highlight the pin position
             let msg = match (kind, res) {

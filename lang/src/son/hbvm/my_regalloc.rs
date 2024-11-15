@@ -15,7 +15,7 @@ use {
 };
 
 impl HbvmBackend {
-    pub fn emit_body_code_my(
+    pub(super) fn emit_body_code_my(
         &mut self,
         nodes: &mut Nodes,
         sig: Sig,
@@ -317,7 +317,7 @@ impl HbvmBackend {
     }
 }
 
-pub struct Function<'a> {
+struct Function<'a> {
     sig: Sig,
     tail: bool,
     backrefs: Vec<u16>,
@@ -560,18 +560,18 @@ impl<'a> Function<'a> {
     }
 }
 
-pub struct Env<'a> {
+struct Env<'a> {
     ctx: &'a Function<'a>,
     func: &'a Func,
     res: &'a mut Res,
 }
 
 impl<'a> Env<'a> {
-    pub fn new(ctx: &'a Function<'a>, func: &'a Func, res: &'a mut Res) -> Self {
+    fn new(ctx: &'a Function<'a>, func: &'a Func, res: &'a mut Res) -> Self {
         Self { ctx, func, res }
     }
 
-    pub fn run(&mut self) {
+    fn run(&mut self) {
         self.res.bundles.clear();
         self.res.node_to_reg.clear();
         self.res.node_to_reg.resize(self.ctx.vreg_count(), 0);
@@ -722,16 +722,16 @@ impl<'a> Env<'a> {
 }
 
 #[derive(Default)]
-pub struct Res {
-    pub bundles: Vec<Bundle>,
-    pub node_to_reg: Vec<Reg>,
+pub(super) struct Res {
+    bundles: Vec<Bundle>,
+    node_to_reg: Vec<Reg>,
     use_buf: Vec<(Nid, Nid)>,
     phi_input_buf: Vec<Nid>,
     dfs_buf: Vec<Nid>,
     dfs_seem: BitSet,
 }
 
-pub struct Bundle {
+struct Bundle {
     taken: Vec<bool>,
 }
 
@@ -759,12 +759,12 @@ impl Bundle {
 }
 
 #[derive(Default)]
-pub struct Func {
-    pub blocks: Vec<Block>,
-    pub instrs: Vec<Nid>,
+struct Func {
+    blocks: Vec<Block>,
+    instrs: Vec<Nid>,
 }
 
-pub struct Block {
-    pub range: Range<usize>,
-    pub entry: Nid,
+struct Block {
+    range: Range<usize>,
+    entry: Nid,
 }
