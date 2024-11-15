@@ -1362,8 +1362,36 @@ impl Nodes {
                     return Some(self[target].inputs[0]);
                 }
             }
+            K::Die => {
+                if self[target].inputs[0] == NEVER {
+                    return Some(NEVER);
+                }
+            }
+            K::Assert { kind, .. } => 'b: {
+                let pin = match (kind, self.try_match_cond(target)) {
+                    (AssertKind::NullCheck, CondOptRes::Known { value: false, pin }) => pin,
+                    (AssertKind::UnwrapCheck, CondOptRes::Unknown) => None,
+                    _ => break 'b,
+                }
+                .unwrap_or(self[target].inputs[0]);
+
+                for out in self[target].outputs.clone() {
+                    if !self[out].kind.is_pinned() && self[out].inputs[0] != pin {
+                        self.modify_input(out, 0, pin);
+                    }
+                }
+                return Some(self[target].inputs[2]);
+            }
             _ if self.is_cfg(target) && self.idom(target) == NEVER => panic!(),
-            _ => {}
+            K::Start
+            | K::Entry
+            | K::Mem
+            | K::Loops
+            | K::End
+            | K::CInt { .. }
+            | K::Arg
+            | K::Global { .. }
+            | K::Join => {}
         }
 
         None
@@ -1923,7 +1951,8 @@ impl Kind {
     }
 
     fn is_pinned(&self) -> bool {
-        self.is_cfg() || matches!(self, Self::Phi | Self::Arg | Self::Mem | Self::Loops)
+        self.is_cfg()
+            || matches!(self, Self::Phi | Self::Arg | Self::Mem | Self::Loops | Kind::Assert { .. })
     }
 
     fn is_cfg(&self) -> bool {
@@ -1937,7 +1966,6 @@ impl Kind {
                 | Self::Then
                 | Self::Else
                 | Self::Call { .. }
-                | Self::Assert { .. }
                 | Self::If
                 | Self::Region
                 | Self::Loop
@@ -2257,9 +2285,7 @@ impl ItemCtx {
         mem::take(&mut self.ctrl).soft_remove(&mut self.nodes);
 
         self.nodes.iter_peeps(1000, stack, tys);
-    }
 
-    fn unlock(&mut self) {
         self.nodes.unlock(MEM);
         self.nodes.unlock(NEVER);
         self.nodes.unlock(LOOPS);
@@ -4383,7 +4409,7 @@ impl<'a> Codegen<'a> {
 
         self.ci.finalize(&mut self.pool.nid_stack, self.tys, self.files);
 
-        let mut to_remove = vec![];
+        //let mut to_remove = vec![];
         for (id, node) in self.ci.nodes.iter() {
             let Kind::Assert { kind, pos } = node.kind else { continue };
 
@@ -4408,49 +4434,10 @@ impl<'a> Codegen<'a> {
                     or explicitly check for null and handle it \
                     ('if <opt> == null { /* handle */ } else { /* use opt */ }')"
                 }
-                (AK::NullCheck, CR::Known { value: false, pin }) => {
-                    to_remove.push((id, pin));
-                    continue;
-                }
-                (AK::UnwrapCheck, CR::Unknown) => {
-                    to_remove.push((id, None));
-                    continue;
-                }
+                _ => unreachable!(),
             };
             self.report(pos, msg);
         }
-        to_remove.into_iter().for_each(|(n, pin)| {
-            let pin = pin.unwrap_or_else(|| {
-                let mut pin = self.ci.nodes[n].inputs[0];
-                while matches!(self.ci.nodes[pin].kind, Kind::Assert { .. }) {
-                    pin = self.ci.nodes[n].inputs[0];
-                }
-                pin
-            });
-            for mut out in self.ci.nodes[n].outputs.clone() {
-                if self.ci.nodes.is_cfg(out) {
-                    let index = self.ci.nodes[out].inputs.iter().position(|&p| p == n).unwrap();
-                    self.ci.nodes.modify_input(out, index, self.ci.nodes[n].inputs[0]);
-                } else {
-                    if !self.ci.nodes[out].kind.is_pinned() && self.ci.nodes[out].inputs[0] != pin {
-                        out = self.ci.nodes.modify_input(out, 0, pin);
-                    }
-                    let index =
-                        self.ci.nodes[out].inputs[1..].iter().position(|&p| p == n).unwrap() + 1;
-                    self.ci.nodes.modify_input(out, index, self.ci.nodes[n].inputs[2]);
-                }
-            }
-            debug_assert!(
-                self.ci.nodes.values[n as usize]
-                    .as_ref()
-                    .map_or(true, |n| !matches!(n.kind, Kind::Assert { .. })),
-                "{:?} {:?}",
-                self.ci.nodes[n],
-                self.ci.nodes[n].outputs.iter().map(|&o| &self.ci.nodes[o]).collect::<Vec<_>>(),
-            );
-        });
-
-        self.ci.unlock();
 
         for &node in self.ci.nodes[NEVER].inputs.iter() {
             if self.ci.nodes[node].kind == Kind::Return
@@ -4607,16 +4594,13 @@ impl<'a> Codegen<'a> {
         self.unwrap_opt_unchecked(ty, oty, opt);
 
         // TODO: extract the if check int a fucntion
-        self.ci.ctrl.set(
-            self.ci.nodes.new_node_nop(oty, Kind::Assert { kind, pos }, [
-                self.ci.ctrl.get(),
-                null_check,
-                opt.id,
-            ]),
-            &mut self.ci.nodes,
-        );
-        self.ci.nodes.pass_aclass(self.ci.nodes.aclass_index(opt.id).1, self.ci.ctrl.get());
-        opt.id = self.ci.ctrl.get();
+        let ass = self.ci.nodes.new_node_nop(oty, Kind::Assert { kind, pos }, [
+            self.ci.ctrl.get(),
+            null_check,
+            opt.id,
+        ]);
+        self.ci.nodes.pass_aclass(self.ci.nodes.aclass_index(opt.id).1, ass);
+        opt.id = ass;
     }
 
     fn unwrap_opt_unchecked(&mut self, ty: ty::Id, oty: ty::Id, opt: &mut Value) {

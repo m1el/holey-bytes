@@ -957,10 +957,10 @@ main := fn(): int {
 ```hb
 main := fn(): uint {
 	always_nn := @as(?^uint, &0)
-	ptr := @unwrap(always_nn)
+	ptr1 := @unwrap(always_nn)
 	always_n := @as(?^uint, null)
-	ptr = @unwrap(always_n)
-	return *ptr
+	ptr2 := @unwrap(always_n)
+	return *ptr1 + *ptr2
 }
 ```
 

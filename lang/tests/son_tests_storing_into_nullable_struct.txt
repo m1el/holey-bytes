@@ -4,8 +4,8 @@ do_stuff:
 just_read:
     JALA r0, r31, 0a
 main:
-    ADDI64 r254, r254, -104d
-    ST r31, r254, 48a, 56h
+    ADDI64 r254, r254, -96d
+    ST r31, r254, 48a, 48h
     ADDI64 r32, r254, 16d
     CP r1, r32
     JAL r31, r0, :optionala
@@ -28,13 +28,11 @@ main:
     JNE r36, r0, :2
     LI64 r1, 20d
     JMP :1
- 2: LI64 r37, 100d
-    ST r37, r254, 8a, 8h
-    LD r2, r254, 8a, 8h
+ 2: LI64 r2, 100d
     JAL r31, r0, :do_stuff
     ADD64 r1, r1, r34
- 1: LD r31, r254, 48a, 56h
-    ADDI64 r254, r254, 104d
+ 1: LD r31, r254, 48a, 48h
+    ADDI64 r254, r254, 96d
     JALA r0, r31, 0a
 optional:
     ADDI64 r254, r254, -16d
@@ -61,6 +59,6 @@ optionala:
     BMC r6, r1, 32h
     ADDI64 r254, r254, 48d
     JALA r0, r31, 0a
-code size: 580
+code size: 554
 ret: 100
 status: Ok(())
