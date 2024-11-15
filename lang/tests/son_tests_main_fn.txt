@@ -1,6 +1,11 @@
 main:
-    LI64 r1, 1d
+    ADDI64 r254, r254, -8d
+    ST r32, r254, 0a, 8h
+    LI64 r13, 1d
+    CP r1, r13
+    LD r32, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
-code size: 29
+code size: 80
 ret: 1
 status: Ok(())

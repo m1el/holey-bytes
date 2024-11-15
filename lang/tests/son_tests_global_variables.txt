@@ -1,9 +1,14 @@
 main:
-    LRA r3, r0, :complex_global_var
-    LD r5, r3, 0a, 8h
-    ADDI64 r1, r5, 5d
-    ST r1, r3, 0a, 8h
+    ADDI64 r254, r254, -16d
+    ST r32, r254, 0a, 16h
+    LRA r13, r0, :complex_global_var
+    LD r14, r13, 0a, 8h
+    ADDI64 r14, r14, 5d
+    ST r14, r13, 0a, 8h
+    CP r1, r14
+    LD r32, r254, 0a, 16h
+    ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
-code size: 71
+code size: 122
 ret: 55
 status: Ok(())

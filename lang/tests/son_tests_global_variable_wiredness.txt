@@ -2,21 +2,22 @@ inb:
     CP r1, r0
     JALA r0, r31, 0a
 main:
-    ADDI64 r254, r254, -32d
-    ST r31, r254, 0a, 32h
+    ADDI64 r254, r254, -40d
+    ST r31, r254, 0a, 40h
     LRA r32, r0, :ports
     LD r33, r32, 0a, 1h
     ANDI r33, r33, 255d
     JNE r33, r0, :0
     JMP :1
  0: JAL r31, r0, :inb
-    CMPU r34, r1, r0
+    CP r33, r1
+    CMPU r34, r33, r0
     CMPUI r34, r34, 0d
     NOT r34, r34
     ST r34, r32, 0a, 1h
- 1: LD r31, r254, 0a, 32h
-    ADDI64 r254, r254, 32d
+ 1: LD r31, r254, 0a, 40h
+    ADDI64 r254, r254, 40d
     JALA r0, r31, 0a
-code size: 161
+code size: 164
 ret: 0
 status: Ok(())

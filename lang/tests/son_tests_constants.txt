@@ -1,6 +1,11 @@
 main:
-    LI32 r1, 69w
+    ADDI64 r254, r254, -8d
+    ST r32, r254, 0a, 8h
+    LI32 r13, 69w
+    CP r1, r13
+    LD r32, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
-code size: 25
+code size: 76
 ret: 69
 status: Ok(())

@@ -1,55 +1,67 @@
 main:
-    ADDI64 r254, r254, -98d
-    ST r31, r254, 26a, 72h
+    ADDI64 r254, r254, -74d
+    ST r31, r254, 26a, 48h
     JAL r31, r0, :returner_fn
     CP r32, r1
-    ADDI64 r1, r254, 2d
+    ADDI64 r33, r254, 2d
+    CP r1, r33
     JAL r31, r0, :returner_bn
-    ADDI64 r33, r254, 0d
+    ADDI64 r34, r254, 0d
+    CP r1, r34
     JAL r31, r0, :returner_cn
-    ST r1, r33, 0a, 2h
-    LD r34, r254, 2a, 1h
-    CP r1, r32
-    CMPU r35, r1, r0
-    CMPUI r35, r35, 0d
-    CMPU r32, r34, r0
+    ST r1, r34, 0a, 2h
+    LD r33, r254, 2a, 1h
+    CMPU r32, r32, r0
     CMPUI r32, r32, 0d
-    LD r36, r254, 0a, 1h
-    AND r37, r32, r35
-    CMPU r38, r36, r0
-    CMPUI r38, r38, 0d
-    AND r39, r38, r37
-    ANDI r39, r39, 255d
-    JNE r39, r0, :0
+    CMPU r33, r33, r0
+    CMPUI r33, r33, 0d
+    LD r34, r254, 0a, 1h
+    AND r32, r33, r32
+    CMPU r33, r34, r0
+    CMPUI r33, r33, 0d
+    AND r32, r33, r32
+    ANDI r32, r32, 255d
+    JNE r32, r0, :0
     CP r1, r0
     JMP :1
- 0: LI64 r1, 1d
- 1: LD r31, r254, 26a, 72h
-    ADDI64 r254, r254, 98d
+ 0: LI64 r32, 1d
+    CP r1, r32
+ 1: LD r31, r254, 26a, 48h
+    ADDI64 r254, r254, 74d
     JALA r0, r31, 0a
 returner_bn:
-    ADDI64 r254, r254, -24d
-    LI8 r7, 1b
-    ADDI64 r6, r254, 0d
-    ST r7, r254, 0a, 1h
+    ADDI64 r254, r254, -40d
+    ST r32, r254, 24a, 16h
+    CP r15, r1
+    LI8 r14, 1b
+    ADDI64 r13, r254, 0d
+    ST r14, r254, 0a, 1h
     ST r0, r254, 8a, 8h
     ST r0, r254, 16a, 8h
-    BMC r6, r1, 24h
-    ADDI64 r254, r254, 24d
+    BMC r13, r15, 24h
+    LD r32, r254, 24a, 16h
+    ADDI64 r254, r254, 40d
     JALA r0, r31, 0a
 returner_cn:
-    ADDI64 r254, r254, -2d
-    LI8 r5, 1b
-    ADDI64 r4, r254, 0d
-    ST r5, r254, 0a, 1h
+    ADDI64 r254, r254, -18d
+    ST r32, r254, 2a, 16h
+    LI8 r13, 1b
+    ADDI64 r14, r254, 0d
+    ST r13, r254, 0a, 1h
     ST r0, r254, 1a, 1h
-    LD r1, r4, 0a, 2h
-    ADDI64 r254, r254, 2d
+    LD r1, r14, 0a, 2h
+    LD r32, r254, 2a, 16h
+    ADDI64 r254, r254, 18d
     JALA r0, r31, 0a
 returner_fn:
-    LD r3, r254, 0a, 0h
-    ORI r1, r3, 128d
+    ADDI64 r254, r254, -8d
+    ST r32, r254, 0a, 8h
+    LD r13, r254, 0a, 0h
+    ORI r13, r13, 128d
+    CP r1, r13
+    LD r32, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
-code size: 454
+code size: 566
 ret: 1
 status: Ok(())

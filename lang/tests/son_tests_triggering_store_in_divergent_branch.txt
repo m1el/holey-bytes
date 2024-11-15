@@ -1,35 +1,42 @@
 main:
     ADDI64 r254, r254, -72d
     ST r31, r254, 0a, 72h
-    CP r32, r0
-    LI64 r33, 65536d
-    LI8 r34, 1b
-    CP r35, r0
-    CP r36, r35
+    CP r34, r0
+    LI64 r37, 65536d
+    LI8 r35, 1b
+    CP r36, r0
+    CP r32, r36
  7: JAL r31, r0, :opaque
-    JLTU r36, r1, :0
+    CP r33, r1
+    JLTU r32, r33, :0
     JMP :1
- 0: CP r37, r35
+ 0: CP r33, r36
  8: JAL r31, r0, :opaque
-    JLTU r37, r1, :2
-    CP r38, r34
+    CP r38, r1
+    JLTU r33, r38, :2
+    CP r33, r35
     JMP :3
- 2: JNE r37, r33, :4
-    CP r38, r32
- 3: ANDI r39, r38, 255d
-    JNE r39, r35, :5
+ 2: JNE r33, r37, :4
+    CP r33, r34
+ 3: ANDI r33, r33, 255d
+    JNE r33, r36, :5
     JMP :6
- 5: ADDI64 r36, r36, 1d
+ 5: ADDI64 r32, r32, 1d
  6: JMP :7
- 4: ADDI64 r37, r37, 1d
+ 4: ADDI64 r33, r33, 1d
     JMP :8
  1: LD r31, r254, 0a, 72h
     ADDI64 r254, r254, 72d
     JALA r0, r31, 0a
 opaque:
-    LI64 r1, 2147483648d
+    ADDI64 r254, r254, -8d
+    ST r32, r254, 0a, 8h
+    LI64 r13, 2147483648d
+    CP r1, r13
+    LD r32, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
 timed out
-code size: 211
+code size: 268
 ret: 2147483648
 status: Ok(())

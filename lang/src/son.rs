@@ -926,7 +926,11 @@ impl Nodes {
                 let &[_, oper] = self[target].inputs.as_slice() else { unreachable!() };
                 let ty = self[target].ty;
 
-                if matches!(op, TokenKind::Number | TokenKind::Float) && ty == self[oper].ty {
+                if matches!(op, TokenKind::Number | TokenKind::Float)
+                    && tys.size_of(self[oper].ty) == tys.size_of(ty)
+                    && self[oper].ty.is_integer()
+                    && ty.is_integer()
+                {
                     return Some(oper);
                 }
 
@@ -1059,7 +1063,6 @@ impl Nodes {
             }
             K::Phi => {
                 let &[ctrl, lhs, rhs] = self[target].inputs.as_slice() else { unreachable!() };
-                let ty = self[target].ty;
 
                 if rhs == target || lhs == rhs {
                     return Some(lhs);
@@ -1083,6 +1086,8 @@ impl Nodes {
                     return Some(self.new_node(self[lhs].ty, Kind::Stre, vc, tys));
                 }
 
+                // broken
+                //let ty = self[target].ty;
                 //if let Kind::BinOp { op } = self[lhs].kind
                 //    && self[rhs].kind == (Kind::BinOp { op })
                 //{

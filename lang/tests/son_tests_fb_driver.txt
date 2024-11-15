@@ -1,53 +1,64 @@
 check_platform:
-    ADDI64 r254, r254, -8d
-    ST r31, r254, 0a, 8h
+    ADDI64 r254, r254, -24d
+    ST r31, r254, 0a, 24h
     JAL r31, r0, :x86_fb_ptr
-    LD r31, r254, 0a, 8h
-    ADDI64 r254, r254, 8d
+    CP r32, r1
+    CP r1, r32
+    LD r31, r254, 0a, 24h
+    ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
 main:
     ADDI64 r254, r254, -64d
     ST r31, r254, 0a, 64h
     JAL r31, r0, :check_platform
-    CP r32, r0
-    LI64 r33, 30d
-    LI64 r34, 100d
-    CP r35, r32
-    CP r36, r32
-    CP r37, r32
- 5: JLTU r35, r33, :0
-    ADDI64 r36, r36, 1d
-    CP r2, r32
-    CP r3, r36
-    CP r4, r33
+    CP r0, r1
+    CP r33, r0
+    LI64 r36, 30d
+    LI64 r37, 100d
+    CP r35, r33
+    CP r34, r33
+    CP r32, r33
+ 5: JLTU r32, r36, :0
+    ADDI64 r34, r34, 1d
+    CP r2, r33
+    CP r3, r34
+    CP r4, r36
     JAL r31, r0, :set_pixel
-    JEQ r1, r37, :1
-    CP r1, r32
+    CP r32, r1
+    JEQ r32, r35, :1
+    CP r1, r33
     JMP :2
- 1: CP r38, r32
-    JNE r36, r34, :3
-    CP r1, r37
+ 1: JNE r34, r37, :3
+    CP r1, r35
     JMP :2
- 3: CP r1, r37
-    CP r35, r38
+ 3: CP r32, r33
     JMP :4
- 0: CP r1, r37
-    CP r38, r32
-    ADDI64 r1, r1, 1d
-    ADDI64 r35, r35, 1d
- 4: CP r32, r38
-    CP r37, r1
-    JMP :5
+ 0: ADDI64 r35, r35, 1d
+    ADDI64 r32, r32, 1d
+ 4: JMP :5
  2: LD r31, r254, 0a, 64h
     ADDI64 r254, r254, 64d
     JALA r0, r31, 0a
 set_pixel:
-    MUL64 r9, r3, r4
-    ADD64 r1, r9, r2
+    ADDI64 r254, r254, -24d
+    ST r32, r254, 0a, 24h
+    CP r13, r2
+    CP r14, r3
+    CP r15, r4
+    MUL64 r14, r14, r15
+    ADD64 r13, r14, r13
+    CP r1, r13
+    LD r32, r254, 0a, 24h
+    ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
 x86_fb_ptr:
-    LI64 r1, 100d
+    ADDI64 r254, r254, -8d
+    ST r32, r254, 0a, 8h
+    LI64 r13, 100d
+    CP r1, r13
+    LD r32, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
-code size: 323
+code size: 428
 ret: 3000
 status: Ok(())

@@ -3,27 +3,38 @@ main:
     ST r31, r254, 4a, 32h
     LRA r32, r0, :white
     ADDI64 r33, r254, 0d
-    LD r2, r32, 0a, 4h
+    LD r32, r32, 0a, 4h
+    CP r2, r32
+    CP r1, r33
     JAL r31, r0, :u32_to_color
     ST r1, r33, 0a, 4h
-    LD r34, r254, 0a, 1h
-    ANDI r1, r34, 255d
+    LD r32, r254, 0a, 1h
+    ANDI r32, r32, 255d
+    CP r1, r32
     LD r31, r254, 4a, 32h
     ADDI64 r254, r254, 36d
     JALA r0, r31, 0a
 u32_to_color:
-    ADDI64 r254, r254, -20d
-    ST r31, r254, 4a, 16h
+    ADDI64 r254, r254, -36d
+    ST r31, r254, 4a, 32h
+    CP r32, r2
+    CP r2, r32
     JAL r31, r0, :u32_to_u32
-    ADDI64 r32, r254, 0d
-    ST r1, r254, 0a, 4h
-    LD r1, r32, 0a, 4h
-    LD r31, r254, 4a, 16h
-    ADDI64 r254, r254, 20d
+    CP r32, r1
+    ADDI64 r33, r254, 0d
+    ST r32, r254, 0a, 4h
+    LD r1, r33, 0a, 4h
+    LD r31, r254, 4a, 32h
+    ADDI64 r254, r254, 36d
     JALA r0, r31, 0a
 u32_to_u32:
-    CP r1, r2
+    ADDI64 r254, r254, -8d
+    ST r32, r254, 0a, 8h
+    CP r13, r2
+    CP r1, r13
+    LD r32, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
-code size: 263
+code size: 332
 ret: 255
 status: Ok(())

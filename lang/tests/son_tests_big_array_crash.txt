@@ -1,7 +1,12 @@
 main:
-    LRA r3, r0, :SIN_TABLE
-    LD r1, r3, 80a, 8h
+    ADDI64 r254, r254, -8d
+    ST r32, r254, 0a, 8h
+    LRA r13, r0, :SIN_TABLE
+    LD r13, r13, 80a, 8h
+    CP r1, r13
+    LD r32, r254, 0a, 8h
+    ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
-code size: 767
+code size: 818
 ret: 1736
 status: Ok(())

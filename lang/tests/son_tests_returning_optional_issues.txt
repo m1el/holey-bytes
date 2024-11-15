@@ -1,30 +1,35 @@
 get_format:
-    ADDI64 r254, r254, -16d
-    LI8 r7, 1b
-    ADDI64 r6, r254, 0d
-    LRA r5, r0, :BMP
-    ST r7, r254, 0a, 1h
-    LD r8, r5, 0a, 8h
-    ST r8, r254, 8a, 8h
-    LD r1, r6, 0a, 16h
-    ADDI64 r254, r254, 16d
+    ADDI64 r254, r254, -40d
+    ST r32, r254, 16a, 24h
+    LI8 r13, 1b
+    ADDI64 r14, r254, 0d
+    LRA r15, r0, :BMP
+    ST r13, r254, 0a, 1h
+    LD r13, r15, 0a, 8h
+    ST r13, r254, 8a, 8h
+    LD r1, r14, 0a, 16h
+    LD r32, r254, 16a, 24h
+    ADDI64 r254, r254, 40d
     JALA r0, r31, 0a
 main:
-    ADDI64 r254, r254, -40d
-    ST r31, r254, 16a, 24h
+    ADDI64 r254, r254, -48d
+    ST r31, r254, 16a, 32h
     ADDI64 r32, r254, 0d
+    CP r1, r32
     JAL r31, r0, :get_format
     ST r1, r32, 0a, 16h
     LD r33, r254, 0a, 1h
     ANDI r33, r33, 255d
     ANDI r0, r0, 255d
     JNE r33, r0, :0
-    LI64 r1, 1d
+    LI64 r32, 1d
+    CP r1, r32
     JMP :1
- 0: LD r1, r254, 8a, 8h
- 1: LD r31, r254, 16a, 24h
-    ADDI64 r254, r254, 40d
+ 0: LD r32, r254, 8a, 8h
+    CP r1, r32
+ 1: LD r31, r254, 16a, 32h
+    ADDI64 r254, r254, 48d
     JALA r0, r31, 0a
-code size: 280
+code size: 315
 ret: 0
 status: Ok(())

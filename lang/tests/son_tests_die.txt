@@ -1,5 +1,6 @@
 main:
     UN 
-code size: 9
+    UN 
+code size: 10
 ret: 0
 status: Err(Unreachable)

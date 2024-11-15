@@ -1,21 +1,26 @@
 main:
-    ADDI64 r254, r254, -16d
-    ADDI64 r7, r254, 0d
+    ADDI64 r254, r254, -32d
+    ST r32, r254, 16a, 16h
+    ADDI64 r13, r254, 0d
     CP r3, r0
     CP r4, r0
     CP r5, r0
     CP r6, r0
+    CP r1, r13
     ECA 
-    ST r1, r7, 0a, 16h
-    LD r7, r254, 0a, 1h
-    ANDI r7, r7, 255d
+    ST r1, r13, 0a, 16h
+    LD r14, r254, 0a, 1h
+    ANDI r14, r14, 255d
     ANDI r0, r0, 255d
-    JNE r7, r0, :0
+    JNE r14, r0, :0
     UN 
- 0: LD r1, r254, 8a, 8h
-    ADDI64 r254, r254, 16d
+    UN 
+ 0: LD r13, r254, 8a, 8h
+    CP r1, r13
+    LD r32, r254, 16a, 16h
+    ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
 unknown ecall: 0
-code size: 132
+code size: 165
 ret: 0
-status: Err(Unreachable)
+status: Ok(())

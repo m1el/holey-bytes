@@ -1,44 +1,48 @@
 main:
-    ADDI64 r254, r254, -40d
-    LI64 r9, 1d
-    LI64 r8, 4d
-    CP r6, r0
-    ADDI64 r7, r254, 0d
-    CP r10, r6
- 6: JNE r10, r8, :0
-    LI64 r8, 2d
-    ADDI64 r5, r254, 32d
-    CP r10, r6
- 4: LD r1, r254, 16a, 8h
-    JNE r10, r9, :1
+    ADDI64 r254, r254, -128d
+    ST r32, r254, 40a, 88h
+    LI64 r17, 1d
+    LI64 r16, 4d
+    CP r14, r0
+    ADDI64 r18, r254, 0d
+    CP r13, r14
+ 6: JNE r13, r16, :0
+    LI64 r19, 2d
+    ADDI64 r20, r254, 32d
+    CP r13, r14
+ 4: LD r15, r254, 16a, 8h
+    JNE r13, r17, :1
+    CP r1, r15
     JMP :2
- 1: MUL64 r2, r10, r8
-    ADD64 r10, r10, r9
-    SUB64 r11, r8, r10
-    MUL64 r11, r11, r8
-    CP r1, r6
- 5: JNE r1, r8, :3
+ 1: MUL64 r21, r13, r19
+    ADD64 r16, r13, r17
+    SUB64 r13, r19, r16
+    MUL64 r22, r13, r19
+    CP r13, r14
+ 5: JNE r13, r19, :3
+    CP r13, r16
     JMP :4
- 3: ADD64 r12, r1, r9
-    ADD64 r3, r2, r1
-    ADD64 r4, r11, r1
-    MULI64 r3, r3, 8d
-    MULI64 r1, r4, 8d
-    ADD64 r3, r7, r3
-    ADD64 r1, r7, r1
-    BMC r3, r5, 8h
-    BMC r1, r3, 8h
-    BMC r5, r1, 8h
-    CP r1, r12
+ 3: ADD64 r15, r13, r17
+    ADD64 r23, r21, r13
+    ADD64 r13, r22, r13
+    MULI64 r23, r23, 8d
+    MULI64 r13, r13, 8d
+    ADD64 r23, r18, r23
+    ADD64 r13, r18, r13
+    BMC r23, r20, 8h
+    BMC r13, r23, 8h
+    BMC r20, r13, 8h
+    CP r13, r15
     JMP :5
- 0: ADD64 r4, r10, r9
-    MULI64 r2, r10, 8d
-    ADD64 r5, r7, r2
-    ST r10, r5, 0a, 8h
-    CP r10, r4
+ 0: ADD64 r15, r13, r17
+    MULI64 r19, r13, 8d
+    ADD64 r19, r18, r19
+    ST r13, r19, 0a, 8h
+    CP r13, r15
     JMP :6
- 2: ADDI64 r254, r254, 40d
+ 2: LD r32, r254, 40a, 88h
+    ADDI64 r254, r254, 128d
     JALA r0, r31, 0a
-code size: 264
+code size: 296
 ret: 0
 status: Ok(())

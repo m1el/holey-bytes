@@ -1,29 +1,38 @@
 main:
-    ADDI64 r254, r254, -8d
-    ST r31, r254, 0a, 8h
-    LI64 r2, 100d
+    ADDI64 r254, r254, -24d
+    ST r31, r254, 0a, 24h
+    LI64 r32, 100d
+    CP r2, r32
     JAL r31, r0, :sqrt
-    LD r31, r254, 0a, 8h
-    ADDI64 r254, r254, 8d
+    CP r32, r1
+    CP r1, r32
+    LD r31, r254, 0a, 24h
+    ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
 sqrt:
-    LI64 r9, 15d
-    LI64 r10, 32768d
-    CP r7, r0
-    CP r1, r7
- 3: JNE r10, r7, :0
+    ADDI64 r254, r254, -48d
+    ST r32, r254, 0a, 48h
+    CP r13, r2
+    LI64 r16, 15d
+    LI64 r15, 32768d
+    CP r17, r0
+    CP r14, r17
+ 3: JNE r15, r17, :0
+    CP r1, r14
     JMP :1
- 0: SLUI64 r6, r1, 1b
-    ADDI64 r9, r9, -1d
-    ADD64 r11, r6, r10
-    SLU64 r11, r11, r9
-    JLTU r2, r11, :2
-    ADD64 r1, r10, r1
-    SUB64 r2, r2, r11
+ 0: SLUI64 r18, r14, 1b
+    ADDI64 r16, r16, -1d
+    ADD64 r18, r18, r15
+    SLU64 r18, r18, r16
+    JLTU r13, r18, :2
+    ADD64 r14, r15, r14
+    SUB64 r13, r13, r18
     JMP :2
- 2: SRUI64 r10, r10, 1b
+ 2: SRUI64 r15, r15, 1b
     JMP :3
- 1: JALA r0, r31, 0a
-code size: 181
+ 1: LD r32, r254, 0a, 48h
+    ADDI64 r254, r254, 48d
+    JALA r0, r31, 0a
+code size: 244
 ret: 14
 status: Ok(())

@@ -15,7 +15,6 @@ use {
 };
 
 mod my_regalloc;
-mod their_regalloc;
 
 struct FuncDt {
     offset: Offset,
@@ -54,7 +53,6 @@ pub struct HbvmBackend {
     funcs: EntVec<ty::Func, FuncDt>,
     globals: EntVec<ty::Global, GlobalDt>,
     asm: Assembler,
-    ralloc: their_regalloc::Regalloc,
     ralloc_my: my_regalloc::Res,
 
     ret_relocs: Vec<Reloc>,
@@ -260,11 +258,7 @@ impl Backend for HbvmBackend {
             nodes[MEM].outputs = mems;
         }
 
-        let (saved, tail) = if self.use_in_house_regalloc {
-            self.emit_body_code_my(nodes, sig, tys, files)
-        } else {
-            self.emit_body_code(nodes, sig, tys, files)
-        };
+        let (saved, tail) = self.emit_body_code_my(nodes, sig, tys, files);
 
         if let Some(last_ret) = self.ret_relocs.last()
             && last_ret.offset as usize == self.code.len() - 5

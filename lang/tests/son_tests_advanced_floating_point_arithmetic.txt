@@ -1,44 +1,52 @@
 main:
-    ADDI64 r254, r254, -24d
-    ST r31, r254, 0a, 24h
+    ADDI64 r254, r254, -32d
+    ST r31, r254, 0a, 32h
     LI32 r32, 1148846080w
     CP r2, r32
     JAL r31, r0, :sin
-    FMUL32 r33, r1, r32
-    FTI32 r1, r33, 1b
-    LD r31, r254, 0a, 24h
-    ADDI64 r254, r254, 24d
+    CP r33, r1
+    FMUL32 r32, r33, r32
+    FTI32 r32, r32, 1b
+    CP r1, r32
+    LD r31, r254, 0a, 32h
+    ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
 sin:
-    LI32 r6, 1124073472w
-    LI32 r7, 1078530011w
-    FMUL32 r9, r2, r6
-    FDIV32 r11, r9, r7
-    FTI32 r1, r11, 1b
-    ANDI r12, r1, 255d
-    ITF64 r6, r1
-    MULI64 r5, r12, 4d
-    LRA r4, r0, :SIN_TABLE
-    LI32 r9, 1086918619w
-    FC64T32 r11, r6, 1b
-    ADDI64 r6, r1, 64d
-    ADD64 r10, r4, r5
-    LI32 r3, 1132462080w
-    FMUL32 r8, r11, r9
-    ANDI r9, r6, 255d
-    LI32 r7, 1056964608w
-    LD r5, r10, 0a, 4h
-    FDIV32 r10, r8, r3
-    MULI64 r8, r9, 4d
-    FMUL32 r12, r5, r7
-    FSUB32 r1, r2, r10
-    ADD64 r11, r4, r8
-    FMUL32 r4, r1, r12
-    LD r2, r11, 0a, 4h
-    FSUB32 r7, r2, r4
-    FMUL32 r9, r7, r1
-    FADD32 r1, r5, r9
+    ADDI64 r254, r254, -56d
+    ST r32, r254, 0a, 56h
+    CP r13, r2
+    LI32 r14, 1124073472w
+    LI32 r15, 1078530011w
+    FMUL32 r14, r13, r14
+    FDIV32 r14, r14, r15
+    FTI32 r14, r14, 1b
+    ANDI r15, r14, 255d
+    ITF64 r16, r14
+    MULI64 r15, r15, 4d
+    LRA r17, r0, :SIN_TABLE
+    LI32 r18, 1086918619w
+    FC64T32 r16, r16, 1b
+    ADDI64 r14, r14, 64d
+    ADD64 r15, r17, r15
+    LI32 r19, 1132462080w
+    FMUL32 r16, r16, r18
+    ANDI r14, r14, 255d
+    LI32 r18, 1056964608w
+    LD r15, r15, 0a, 4h
+    FDIV32 r16, r16, r19
+    MULI64 r14, r14, 4d
+    FMUL32 r18, r15, r18
+    FSUB32 r13, r13, r16
+    ADD64 r14, r17, r14
+    FMUL32 r16, r13, r18
+    LD r14, r14, 0a, 4h
+    FSUB32 r14, r14, r16
+    FMUL32 r13, r14, r13
+    FADD32 r13, r15, r13
+    CP r1, r13
+    LD r32, r254, 0a, 56h
+    ADDI64 r254, r254, 56d
     JALA r0, r31, 0a
-code size: 1303
+code size: 1363
 ret: 826
 status: Ok(())

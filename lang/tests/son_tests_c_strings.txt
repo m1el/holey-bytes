@@ -1,26 +1,36 @@
 main:
-    ADDI64 r254, r254, -16d
-    ST r31, r254, 0a, 16h
-    LRA r2, r0, :"abඞ\n\r\t56789\0"
+    ADDI64 r254, r254, -32d
+    ST r31, r254, 0a, 32h
+    LRA r32, r0, :"abඞ\n\r\t56789\0"
+    CP r2, r32
     JAL r31, r0, :str_len
     CP r32, r1
-    LRA r2, r0, :"fff\0"
+    LRA r33, r0, :"fff\0"
+    CP r2, r33
     JAL r31, r0, :str_len
-    ADD64 r1, r1, r32
-    LD r31, r254, 0a, 16h
-    ADDI64 r254, r254, 16d
+    CP r33, r1
+    ADD64 r32, r33, r32
+    CP r1, r32
+    LD r31, r254, 0a, 32h
+    ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
 str_len:
-    CP r5, r0
-    CP r1, r5
- 2: LD r9, r2, 0a, 1h
-    ANDI r11, r9, 255d
-    JNE r11, r5, :0
+    ADDI64 r254, r254, -32d
+    ST r32, r254, 0a, 32h
+    CP r15, r2
+    CP r14, r0
+    CP r13, r14
+ 2: LD r16, r15, 0a, 1h
+    ANDI r16, r16, 255d
+    JNE r16, r14, :0
+    CP r1, r13
     JMP :1
- 0: ADDI64 r2, r2, 1d
-    ADDI64 r1, r1, 1d
+ 0: ADDI64 r15, r15, 1d
+    ADDI64 r13, r13, 1d
     JMP :2
- 1: JALA r0, r31, 0a
-code size: 198
+ 1: LD r32, r254, 0a, 32h
+    ADDI64 r254, r254, 32d
+    JALA r0, r31, 0a
+code size: 264
 ret: 16
 status: Ok(())

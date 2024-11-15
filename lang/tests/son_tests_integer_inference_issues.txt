@@ -1,29 +1,33 @@
 integer_range:
-    ADDI64 r254, r254, -16d
-    ST r32, r254, 0a, 16h
-    CP r32, r2
-    CP r33, r3
-    LI64 r3, 4d
-    LI64 r2, 3d
+    ADDI64 r254, r254, -32d
+    ST r32, r254, 0a, 32h
+    CP r13, r2
+    CP r14, r3
+    LI64 r15, 4d
+    LI64 r16, 3d
+    CP r2, r16
+    CP r3, r15
     ECA 
-    CP r2, r32
-    CP r3, r33
-    SUB64 r3, r3, r2
-    ADDI64 r3, r3, 1d
-    DIRU64 r0, r5, r1, r3
-    ADD64 r1, r5, r2
-    LD r32, r254, 0a, 16h
-    ADDI64 r254, r254, 16d
+    CP r15, r1
+    SUB64 r14, r14, r13
+    ADDI64 r14, r14, 1d
+    DIRU64 r0, r14, r15, r14
+    ADD64 r13, r14, r13
+    CP r1, r13
+    LD r32, r254, 0a, 32h
+    ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
 main:
-    ADDI64 r254, r254, -8d
-    ST r31, r254, 0a, 8h
-    LI64 r3, 1000d
+    ADDI64 r254, r254, -24d
+    ST r31, r254, 0a, 24h
+    LI64 r32, 1000d
     CP r2, r0
+    CP r3, r32
     JAL r31, r0, :integer_range
-    LD r31, r254, 0a, 8h
-    ADDI64 r254, r254, 8d
+    CP r0, r1
+    LD r31, r254, 0a, 24h
+    ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
-code size: 203
+code size: 215
 ret: 42
 status: Ok(())

@@ -1,108 +1,106 @@
 main:
-    ADDI64 r254, r254, -90d
-    ST r31, r254, 58a, 32h
+    ADDI64 r254, r254, -130d
+    ST r31, r254, 58a, 72h
     ADDI64 r32, r254, 33d
-    ADDI64 r2, r254, 34d
-    ADDI64 r6, r254, 1d
-    ADDI64 r4, r254, 17d
+    ADDI64 r33, r254, 34d
+    ADDI64 r34, r254, 1d
+    ADDI64 r35, r254, 17d
     ST r32, r254, 34a, 8h
-    LI64 r33, 100d
-    ADDI64 r7, r254, 0d
-    LI8 r34, 1b
+    LI64 r36, 100d
+    ADDI64 r37, r254, 0d
+    LI8 r38, 1b
     ST r0, r254, 1a, 8h
     ST r0, r254, 17a, 8h
-    ST r33, r254, 42a, 8h
-    ST r34, r254, 0a, 1h
+    ST r36, r254, 42a, 8h
+    ST r38, r254, 0a, 1h
     ST r0, r254, 9a, 8h
     ST r0, r254, 25a, 8h
-    ST r33, r254, 50a, 8h
+    ST r36, r254, 50a, 8h
     ST r0, r254, 33a, 1h
-    CP r3, r4
-    CP r5, r6
-    LD r3, r3, 0a, 16h
-    LD r5, r5, 0a, 16h
-    LD r7, r7, 0a, 1h
+    CP r2, r33
+    LD r3, r35, 0a, 16h
+    LD r5, r34, 0a, 16h
+    LD r7, r37, 0a, 1h
     JAL r31, r0, :put_filled_rect
-    LD r31, r254, 58a, 32h
-    ADDI64 r254, r254, 90d
+    LD r31, r254, 58a, 72h
+    ADDI64 r254, r254, 130d
     JALA r0, r31, 0a
 put_filled_rect:
-    ADDI64 r254, r254, -220d
-    ST r32, r254, 108a, 112h
+    ADDI64 r254, r254, -236d
+    ST r32, r254, 108a, 128h
+    CP r14, r2
     ST r3, r254, 92a, 16h
     ADDI64 r3, r254, 92d
+    CP r15, r3
     ST r5, r254, 76a, 16h
     ADDI64 r5, r254, 76d
+    CP r13, r5
     ST r7, r254, 75a, 1h
     ADDI64 r7, r254, 75d
-    LI64 r8, 25d
-    LI64 r32, 2d
-    LI64 r6, 8d
-    ADDI64 r33, r254, 25d
-    ADDI64 r34, r254, 50d
-    LI8 r35, 5b
-    ST r35, r254, 25a, 1h
-    LD r36, r5, 0a, 8h
-    ST r36, r254, 26a, 4h
-    LI64 r37, 1d
-    ST r37, r254, 30a, 4h
-    ST r7, r254, 34a, 8h
-    ST r35, r254, 50a, 1h
-    ST r36, r254, 51a, 4h
-    ST r37, r254, 55a, 4h
-    ST r7, r254, 59a, 8h
-    CP r38, r7
-    LD r7, r3, 8a, 8h
-    LD r39, r5, 8a, 8h
-    ADD64 r11, r39, r7
-    SUB64 r4, r11, r37
-    LD r40, r2, 8a, 8h
-    MUL64 r5, r40, r4
-    LD r10, r2, 0a, 8h
-    ADD64 r9, r10, r5
-    LD r41, r3, 0a, 8h
-    ADD64 r42, r41, r9
-    MUL64 r43, r40, r7
- 3: ADD64 r43, r43, r10
-    ADD64 r9, r43, r41
-    JGTU r39, r37, :0
-    JNE r39, r37, :1
-    ADDI64 r4, r254, 0d
-    ST r35, r254, 0a, 1h
-    ST r36, r254, 1a, 4h
-    ST r37, r254, 5a, 4h
-    ST r38, r254, 9a, 8h
-    ST r9, r254, 17a, 8h
-    CP r2, r6
-    CP r3, r32
-    CP r5, r8
+    CP r16, r7
+    LI64 r17, 25d
+    LI64 r18, 2d
+    LI64 r19, 8d
+    ADDI64 r20, r254, 25d
+    ADDI64 r21, r254, 50d
+    LI8 r22, 5b
+    ST r22, r254, 25a, 1h
+    LD r23, r13, 0a, 8h
+    ST r23, r254, 26a, 4h
+    LI64 r24, 1d
+    ST r24, r254, 30a, 4h
+    ST r16, r254, 34a, 8h
+    ST r22, r254, 50a, 1h
+    ST r23, r254, 51a, 4h
+    ST r24, r254, 55a, 4h
+    ST r16, r254, 59a, 8h
+    LD r25, r15, 8a, 8h
+    LD r13, r13, 8a, 8h
+    ADD64 r26, r13, r25
+    SUB64 r26, r26, r24
+    LD r27, r14, 8a, 8h
+    MUL64 r26, r27, r26
+    LD r14, r14, 0a, 8h
+    ADD64 r26, r14, r26
+    LD r28, r15, 0a, 8h
+    ADD64 r15, r28, r26
+    MUL64 r25, r27, r25
+    ADD64 r14, r14, r25
+    ADD64 r14, r28, r14
+ 3: JGTU r13, r24, :0
+    JNE r13, r24, :1
+    ADDI64 r13, r254, 0d
+    ST r22, r254, 0a, 1h
+    ST r23, r254, 1a, 4h
+    ST r24, r254, 5a, 4h
+    ST r16, r254, 9a, 8h
+    ST r14, r254, 17a, 8h
+    CP r2, r19
+    CP r3, r18
+    CP r4, r13
+    CP r5, r17
     ECA 
     JMP :1
  1: JMP :2
- 0: CP r3, r32
-    CP r44, r6
-    CP r45, r8
-    ST r9, r254, 67a, 8h
-    CP r2, r44
-    CP r4, r34
-    CP r5, r45
+ 0: ST r14, r254, 67a, 8h
+    CP r2, r19
+    CP r3, r18
+    CP r4, r21
+    CP r5, r17
     ECA 
-    ST r42, r254, 42a, 8h
-    CP r2, r44
-    CP r3, r32
-    CP r4, r33
-    CP r5, r45
+    ST r15, r254, 42a, 8h
+    CP r2, r19
+    CP r3, r18
+    CP r4, r20
+    CP r5, r17
     ECA 
-    SUB64 r42, r42, r40
-    SUB64 r39, r39, r32
-    CP r10, r41
-    CP r41, r40
-    CP r8, r45
-    CP r6, r44
+    SUB64 r15, r15, r27
+    ADD64 r14, r27, r14
+    SUB64 r13, r13, r18
     JMP :3
- 2: LD r32, r254, 108a, 112h
-    ADDI64 r254, r254, 220d
+ 2: LD r32, r254, 108a, 128h
+    ADDI64 r254, r254, 236d
     JALA r0, r31, 0a
-code size: 906
+code size: 901
 ret: 0
 status: Ok(())

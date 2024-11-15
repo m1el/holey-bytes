@@ -1,27 +1,29 @@
 main:
-    ADDI64 r254, r254, -1d
-    LI64 r6, 255d
-    LI8 r1, 1b
+    ADDI64 r254, r254, -41d
+    ST r32, r254, 1a, 40h
+    LI64 r14, 255d
+    LI8 r13, 1b
     ST r0, r254, 0a, 1h
- 2: LD r8, r254, 0a, 1h
-    ANDI r10, r8, 255d
-    CMPU r2, r10, r6
-    CMPUI r2, r2, 0d
-    NOT r2, r2
-    CMPU r3, r10, r0
-    CMPUI r3, r3, 0d
-    NOT r3, r3
-    OR r5, r3, r2
-    ANDI r5, r5, 255d
-    JNE r5, r0, :0
+ 2: LD r15, r254, 0a, 1h
+    ANDI r16, r15, 255d
+    CMPU r17, r16, r14
+    CMPUI r17, r17, 0d
+    NOT r17, r17
+    CMPU r16, r16, r0
+    CMPUI r16, r16, 0d
+    NOT r16, r16
+    OR r16, r16, r17
+    ANDI r16, r16, 255d
+    JNE r16, r0, :0
     JMP :1
- 0: SUB8 r1, r0, r1
- 1: ADD8 r2, r8, r1
-    ST r2, r254, 0a, 1h
+ 0: SUB8 r13, r0, r13
+ 1: ADD8 r15, r15, r13
+    ST r15, r254, 0a, 1h
     JMP :2
-    ADDI64 r254, r254, 1d
+    LD r32, r254, 1a, 40h
+    ADDI64 r254, r254, 41d
     JALA r0, r31, 0a
 timed out
-code size: 178
-ret: 1
+code size: 204
+ret: 0
 status: Ok(())

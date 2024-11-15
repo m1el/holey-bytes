@@ -2,22 +2,23 @@ get_ptr:
     CP r1, r0
     JALA r0, r31, 0a
 main:
-    ADDI64 r254, r254, -32d
-    ST r31, r254, 0a, 32h
+    ADDI64 r254, r254, -40d
+    ST r31, r254, 0a, 40h
     JAL r31, r0, :get_ptr
-    JNE r1, r0, :0
+    CP r32, r1
+    JNE r32, r0, :0
     CP r1, r0
     JMP :1
- 0: LI64 r32, 10d
-    CP r33, r1
- 2: LD r1, r33, 0a, 8h
-    JEQ r1, r32, :1
-    ADDI64 r34, r1, 1d
-    ST r34, r33, 0a, 8h
-    JMP :2
- 1: LD r31, r254, 0a, 32h
-    ADDI64 r254, r254, 32d
+ 0: LI64 r33, 10d
+ 3: LD r34, r32, 0a, 8h
+    JEQ r34, r33, :2
+    ADDI64 r34, r34, 1d
+    ST r34, r32, 0a, 8h
+    JMP :3
+ 2: CP r1, r34
+ 1: LD r31, r254, 0a, 40h
+    ADDI64 r254, r254, 40d
     JALA r0, r31, 0a
-code size: 161
+code size: 164
 ret: 0
 status: Ok(())

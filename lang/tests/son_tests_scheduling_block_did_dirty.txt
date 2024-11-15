@@ -1,31 +1,40 @@
 constructor:
-    ADDI64 r254, r254, -32d
-    ST r31, r254, 16a, 16h
-    CP r2, r3
+    ADDI64 r254, r254, -48d
+    ST r31, r254, 16a, 32h
+    CP r32, r3
+    CP r2, r32
     JAL r31, r0, :opaque
-    ADDI64 r32, r254, 0d
-    ST r1, r254, 0a, 8h
-    ST r1, r254, 8a, 8h
-    LD r1, r32, 0a, 16h
-    LD r31, r254, 16a, 16h
-    ADDI64 r254, r254, 32d
+    CP r32, r1
+    ADDI64 r33, r254, 0d
+    ST r32, r254, 0a, 8h
+    ST r32, r254, 8a, 8h
+    LD r1, r33, 0a, 16h
+    LD r31, r254, 16a, 32h
+    ADDI64 r254, r254, 48d
     JALA r0, r31, 0a
 main:
-    ADDI64 r254, r254, -32d
-    ST r31, r254, 16a, 16h
+    ADDI64 r254, r254, -40d
+    ST r31, r254, 16a, 24h
     ADDI64 r32, r254, 0d
     CP r3, r0
+    CP r1, r32
     JAL r31, r0, :constructor
     ST r1, r32, 0a, 16h
-    LD r31, r254, 16a, 16h
-    ADDI64 r254, r254, 32d
+    LD r31, r254, 16a, 24h
+    ADDI64 r254, r254, 40d
     JALA r0, r31, 0a
 opaque:
-    LRA r5, r0, :file
-    ADD64 r7, r5, r2
-    LD r9, r7, 0a, 1h
-    ANDI r1, r9, 255d
+    ADDI64 r254, r254, -16d
+    ST r32, r254, 0a, 16h
+    CP r13, r2
+    LRA r14, r0, :file
+    ADD64 r13, r14, r13
+    LD r13, r13, 0a, 1h
+    ANDI r13, r13, 255d
+    CP r1, r13
+    LD r32, r254, 0a, 16h
+    ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
-code size: 267
+code size: 330
 ret: 255
 status: Ok(())

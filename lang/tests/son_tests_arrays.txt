@@ -1,27 +1,36 @@
 main:
-    ADDI64 r254, r254, -56d
-    ST r31, r254, 24a, 32h
+    ADDI64 r254, r254, -64d
+    ST r31, r254, 24a, 40h
     LI64 r32, 1d
-    ADDI64 r2, r254, 0d
+    ADDI64 r33, r254, 0d
     ST r32, r254, 0a, 8h
-    LI64 r33, 2d
-    ST r33, r254, 8a, 8h
+    LI64 r34, 2d
+    ST r34, r254, 8a, 8h
     LI64 r34, 4d
     ST r34, r254, 16a, 8h
+    CP r2, r33
     JAL r31, r0, :pass
-    ADD64 r1, r1, r32
-    LD r31, r254, 24a, 32h
-    ADDI64 r254, r254, 56d
+    CP r33, r1
+    ADD64 r32, r33, r32
+    CP r1, r32
+    LD r31, r254, 24a, 40h
+    ADDI64 r254, r254, 64d
     JALA r0, r31, 0a
 pass:
-    LD r6, r2, 8a, 8h
-    MULI64 r9, r6, 8d
-    LD r7, r2, 0a, 8h
-    ADD64 r12, r9, r2
-    ADD64 r11, r6, r7
-    LD r3, r12, 0a, 8h
-    ADD64 r1, r3, r11
+    ADDI64 r254, r254, -32d
+    ST r32, r254, 0a, 32h
+    CP r13, r2
+    LD r14, r13, 8a, 8h
+    MULI64 r15, r14, 8d
+    LD r16, r13, 0a, 8h
+    ADD64 r13, r15, r13
+    ADD64 r14, r14, r16
+    LD r13, r13, 0a, 8h
+    ADD64 r13, r13, r14
+    CP r1, r13
+    LD r32, r254, 0a, 32h
+    ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
-code size: 231
+code size: 294
 ret: 8
 status: Ok(())
