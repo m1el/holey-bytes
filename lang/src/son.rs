@@ -3307,7 +3307,7 @@ impl<'a> Codegen<'a> {
                 ))
             }
             Expr::Directive { name: "itf", args: [expr], .. } => {
-                let mut val = self.expr(expr)?;
+                let mut val = self.expr_ctx(expr, Ctx::default().with_ty(ty::Id::INT))?;
 
                 let (ret_ty, expected) = match val.ty.simple_size().unwrap() {
                     8 => (ty::Id::F64, ty::Id::INT),
