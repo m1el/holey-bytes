@@ -332,21 +332,19 @@ impl<'a> Function<'a> {
             Kind::If => {
                 self.backrefs[nid as usize] = self.backrefs[prev as usize];
 
-                let &[_, cond] = node.inputs.as_slice() else { unreachable!() };
+                let &[_, cnd] = node.inputs.as_slice() else { unreachable!() };
                 let &[mut then, mut else_] = node.outputs.as_slice() else { unreachable!() };
 
-                if let Kind::BinOp { op } = self.nodes[cond].kind
-                    && let Some((_, swapped)) = op.cond_op(node.ty)
-                {
+                if let Some((_, swapped)) = self.nodes.cond_op(cnd) {
                     if swapped {
                         mem::swap(&mut then, &mut else_);
                     }
-                    let &[_, lhs, rhs] = self.nodes[cond].inputs.as_slice() else { unreachable!() };
+                    let &[_, lhs, rhs] = self.nodes[cnd].inputs.as_slice() else { unreachable!() };
                     let ops = vec![self.urg(lhs), self.urg(rhs)];
                     self.add_instr(nid, ops);
                 } else {
                     mem::swap(&mut then, &mut else_);
-                    let ops = vec![self.urg(cond)];
+                    let ops = vec![self.urg(cnd)];
                     self.add_instr(nid, ops);
                 }
 

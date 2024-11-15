@@ -4064,10 +4064,7 @@ impl<'a> Codegen<'a> {
                     if !self.struct_op(pos, op, is, dst, lhs, rhs) {
                         self.report(
                             pos,
-                            fa!(
-                                "... when appliing '{0} {op} {0}'",
-                                self.ty_display(ty::Kind::Struct(s).compress())
-                            ),
+                            fa!("... when appliing '{0} {op} {0}'", self.ty_display(s.into())),
                         );
                     }
                 }

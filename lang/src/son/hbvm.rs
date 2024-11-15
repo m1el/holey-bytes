@@ -104,7 +104,7 @@ impl Backend for HbvmBackend {
 
         self.globals.shadow(types.ins.globals.len());
 
-        self.asm.frontier.push(ty::Kind::Func(from).compress());
+        self.asm.frontier.push(from.into());
         while let Some(itm) = self.asm.frontier.pop() {
             match itm.expand() {
                 ty::Kind::Func(func) => {
@@ -341,6 +341,14 @@ impl Backend for HbvmBackend {
 }
 
 impl Nodes {
+    fn cond_op(&self, cnd: Nid) -> CondRet {
+        let Kind::BinOp { op } = self[cnd].kind else { return None };
+        if self[cnd].lock_rc == 0 {
+            return None;
+        }
+        op.cond_op(self[self[cnd].inputs[1]].ty)
+    }
+
     fn strip_offset(&self, region: Nid, ty: ty::Id, tys: &Types) -> (Nid, Offset) {
         if matches!(self[region].kind, Kind::BinOp { op: TokenKind::Add | TokenKind::Sub })
             && self[region].lock_rc != 0
@@ -493,9 +501,7 @@ impl HbvmBackend {
         match node.kind {
             Kind::If => {
                 let &[_, cnd] = node.inputs.as_slice() else { unreachable!() };
-                if let Kind::BinOp { op } = nodes[cnd].kind
-                    && let Some((op, swapped)) = op.cond_op(nodes[nodes[cnd].inputs[1]].ty)
-                {
+                if let Some((op, swapped)) = nodes.cond_op(cnd) {
                     let &[lhs, rhs] = allocs else { unreachable!() };
                     let &[_, lh, rh] = nodes[cnd].inputs.as_slice() else { unreachable!() };
 
@@ -584,7 +590,6 @@ impl HbvmBackend {
                 let &[dst, oper] = allocs else { unreachable!() };
                 self.emit(op(dst, oper));
             }
-            Kind::BinOp { .. } if node.lock_rc != 0 => {}
             Kind::BinOp { op } => {
                 let &[.., lh, rh] = node.inputs.as_slice() else { unreachable!() };
 
@@ -649,7 +654,7 @@ impl HbvmBackend {
                     self.emit(instrs::eca());
                 } else {
                     self.relocs.push(TypedReloc {
-                        target: ty::Kind::Func(func).compress(),
+                        target: func.into(),
                         reloc: Reloc::new(self.code.len(), 3, 4),
                     });
                     self.emit(instrs::jal(reg::RET_ADDR, reg::ZERO, 0));
@@ -663,7 +668,7 @@ impl HbvmBackend {
             }
             Kind::Global { global } => {
                 let reloc = Reloc::new(self.code.len(), 3, 4);
-                self.relocs.push(TypedReloc { target: ty::Kind::Global(global).compress(), reloc });
+                self.relocs.push(TypedReloc { target: global.into(), reloc });
                 self.emit(instrs::lra(allocs[0], 0, 0));
             }
             Kind::Stck => {
@@ -724,12 +729,14 @@ impl Node {
     }
 }
 
+type CondRet = Option<(fn(u8, u8, i16) -> EncodedInstr, bool)>;
+
 impl TokenKind {
     fn cmp_against(self) -> Option<u64> {
         Some(match self {
-            TokenKind::Le | TokenKind::Gt => 1,
-            TokenKind::Ne | TokenKind::Eq => 0,
-            TokenKind::Ge | TokenKind::Lt => (-1i64) as _,
+            Self::Le | Self::Gt => 1,
+            Self::Ne | Self::Eq => 0,
+            Self::Ge | Self::Lt => (-1i64) as _,
             _ => return None,
         })
     }
@@ -741,22 +748,21 @@ impl TokenKind {
         let size = ty.simple_size().unwrap();
 
         let ops = match self {
-            TokenKind::Gt => [instrs::fcmpgt32, instrs::fcmpgt64],
-            TokenKind::Lt => [instrs::fcmplt32, instrs::fcmplt64],
+            Self::Gt => [instrs::fcmpgt32, instrs::fcmpgt64],
+            Self::Lt => [instrs::fcmplt32, instrs::fcmplt64],
             _ => return None,
         };
 
         Some(ops[size.ilog2() as usize - 2])
     }
 
-    #[expect(clippy::type_complexity)]
-    fn cond_op(self, ty: ty::Id) -> Option<(fn(u8, u8, i16) -> EncodedInstr, bool)> {
-        if ty.is_float() {
-            return None;
-        }
+    fn cond_op(self, ty: ty::Id) -> CondRet {
         let signed = ty.is_signed();
         Some((
             match self {
+                Self::Eq => instrs::jne,
+                Self::Ne => instrs::jeq,
+                _ if ty.is_float() => return None,
                 Self::Le if signed => instrs::jgts,
                 Self::Le => instrs::jgtu,
                 Self::Lt if signed => instrs::jlts,
@@ -765,11 +771,9 @@ impl TokenKind {
                 Self::Ge => instrs::jltu,
                 Self::Gt if signed => instrs::jgts,
                 Self::Gt => instrs::jgtu,
-                Self::Eq => instrs::jne,
-                Self::Ne => instrs::jeq,
                 _ => return None,
             },
-            matches!(self, Self::Lt | TokenKind::Gt),
+            matches!(self, Self::Lt | Self::Gt),
         ))
     }
 

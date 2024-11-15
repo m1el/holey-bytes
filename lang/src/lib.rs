@@ -1106,7 +1106,7 @@ trait TypeParser {
         files: &[parser::Ast],
     ) -> ty::Id {
         match *expr {
-            Expr::Mod { id, .. } => ty::Kind::Module(id).compress(),
+            Expr::Mod { id, .. } => id.into(),
             Expr::UnOp { op: TokenKind::Xor, val, .. } => {
                 let base = self.parse_ty(file, val, None, files);
                 self.tys().make_ptr(base)

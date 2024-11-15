@@ -127,9 +127,7 @@ impl HbvmBackend {
                 match node.kind {
                     Kind::If => {
                         let &[_, cnd] = node.inputs.as_slice() else { unreachable!() };
-                        if let Kind::BinOp { op } = fuc.nodes[cnd].kind
-                            && op.cond_op(fuc.nodes[fuc.nodes[cnd].inputs[1]].ty).is_some()
-                        {
+                        if fuc.nodes.cond_op(cnd).is_some() {
                             let &[_, lh, rh] = fuc.nodes[cnd].inputs.as_slice() else {
                                 unreachable!()
                             };
@@ -475,12 +473,10 @@ impl<'a> Function<'a> {
                 self.emit_node(node.outputs[0])
             }
             Kind::If => {
-                let &[_, cond] = node.inputs.as_slice() else { unreachable!() };
+                let &[_, cnd] = node.inputs.as_slice() else { unreachable!() };
                 let &[mut then, mut else_] = node.outputs.as_slice() else { unreachable!() };
 
-                if let Kind::BinOp { op } = self.nodes[cond].kind
-                    && let Some((_, swapped)) = op.cond_op(node.ty)
-                {
+                if let Some((_, swapped)) = self.nodes.cond_op(cnd) {
                     if swapped {
                         mem::swap(&mut then, &mut else_);
                     }
@@ -506,6 +502,11 @@ impl<'a> Function<'a> {
             }
             Kind::Entry => {
                 let (ret, mut parama) = self.tys.parama(self.sig.ret);
+
+                if let Some(PLoc::Ref(..)) = ret {
+                    self.add_instr(MEM);
+                }
+
                 let mut typs = self.sig.args.args();
                 #[expect(clippy::unnecessary_to_owned)]
                 let mut args = self.nodes[VOID].outputs[ARG_START..].to_owned().into_iter();
@@ -516,10 +517,6 @@ impl<'a> Function<'a> {
                         None => {}
                         Some(_) => self.add_instr(arg),
                     }
-                }
-
-                if let Some(PLoc::Ref(..)) = ret {
-                    self.add_instr(MEM);
                 }
 
                 self.nodes.reschedule_block(nid, &mut node.outputs);
@@ -649,7 +646,7 @@ impl<'a> Env<'a> {
                 );
 
                 range.end = new;
-                debug_assert!(range.start < range.end, "{:?}", range);
+                debug_assert!(range.start < range.end, "{:?} {inst} {uinst}", range);
 
                 bundle.add(range);
             });
