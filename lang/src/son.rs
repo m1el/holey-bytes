@@ -1083,16 +1083,30 @@ impl Nodes {
                     return Some(self.new_node(self[lhs].ty, Kind::Stre, vc, tys));
                 }
 
-                if let Kind::BinOp { op } = self[lhs].kind
-                    && self[rhs].kind == (Kind::BinOp { op })
-                {
-                    debug_assert!(ty != ty::Id::VOID);
-                    let inps = [ctrl, self[lhs].inputs[1], self[rhs].inputs[1]];
-                    let nlhs = self.new_node(ty, Kind::Phi, inps, tys);
-                    let inps = [ctrl, self[lhs].inputs[2], self[rhs].inputs[2]];
-                    let nrhs = self.new_node(ty, Kind::Phi, inps, tys);
-                    return Some(self.new_node(ty, Kind::BinOp { op }, [VOID, nlhs, nrhs], tys));
-                }
+                //if let Kind::BinOp { op } = self[lhs].kind
+                //    && self[rhs].kind == (Kind::BinOp { op })
+                //{
+                //    debug_assert!(ty != ty::Id::VOID);
+                //    debug_assert_eq!(
+                //        self[lhs].ty.simple_size(),
+                //        ty.simple_size(),
+                //        "{:?} {:?}",
+                //        self[lhs].ty.expand(),
+                //        ty.expand()
+                //    );
+                //    debug_assert_eq!(
+                //        self[rhs].ty.simple_size(),
+                //        ty.simple_size(),
+                //        "{:?} {:?}",
+                //        self[rhs].ty.expand(),
+                //        ty.expand()
+                //    );
+                //    let inps = [ctrl, self[lhs].inputs[1], self[rhs].inputs[1]];
+                //    let nlhs = self.new_node(ty, Kind::Phi, inps, tys);
+                //    let inps = [ctrl, self[lhs].inputs[2], self[rhs].inputs[2]];
+                //    let nrhs = self.new_node(ty, Kind::Phi, inps, tys);
+                //    return Some(self.new_node(ty, Kind::BinOp { op }, [VOID, nlhs, nrhs], tys));
+                //}
             }
             K::Stck => {
                 if let &[mut a, mut b] = self[target].outputs.as_slice() {
