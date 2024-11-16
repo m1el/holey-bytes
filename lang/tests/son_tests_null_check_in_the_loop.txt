@@ -2,8 +2,7 @@ main:
     ADDI64 r254, r254, -38d
     ST r31, r254, 6a, 32h
     ADDI64 r32, r254, 0d
- 2: CP r1, r32
-    JAL r31, r0, :return_fn
+ 2: JAL r31, r0, :return_fn
     ST r1, r32, 0a, 6h
     LD r33, r254, 0a, 1h
     ANDI r33, r33, 255d
@@ -30,6 +29,6 @@ return_fn:
     LD r32, r254, 6a, 16h
     ADDI64 r254, r254, 22d
     JALA r0, r31, 0a
-code size: 317
+code size: 314
 ret: 1
 status: Ok(())

@@ -15,15 +15,12 @@ main:
     ADDI64 r254, r254, -96d
     ST r31, r254, 48a, 48h
     ADDI64 r32, r254, 32d
-    CP r1, r32
     JAL r31, r0, :foo
     ST r1, r32, 0a, 16h
     ADDI64 r33, r254, 16d
-    CP r1, r33
     JAL r31, r0, :foo
     ST r1, r33, 0a, 16h
     ADDI64 r34, r254, 0d
-    CP r1, r34
     JAL r31, r0, :foo
     ST r1, r34, 0a, 16h
     LD r33, r254, 24a, 4h
@@ -39,6 +36,6 @@ main:
     LD r31, r254, 48a, 48h
     ADDI64 r254, r254, 96d
     JALA r0, r31, 0a
-code size: 393
+code size: 384
 ret: 0
 status: Ok(())

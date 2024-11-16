@@ -15,7 +15,6 @@ main:
     ADDI64 r254, r254, -48d
     ST r31, r254, 16a, 32h
     ADDI64 r32, r254, 0d
-    CP r1, r32
     JAL r31, r0, :get_format
     ST r1, r32, 0a, 16h
     LD r33, r254, 0a, 1h
@@ -29,6 +28,6 @@ main:
  1: LD r31, r254, 16a, 32h
     ADDI64 r254, r254, 48d
     JALA r0, r31, 0a
-code size: 304
+code size: 301
 ret: 0
 status: Ok(())

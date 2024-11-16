@@ -7,7 +7,6 @@ main:
     CP r1, r33
     JAL r31, r0, :returner_bn
     ADDI64 r34, r254, 0d
-    CP r1, r34
     JAL r31, r0, :returner_cn
     ST r1, r34, 0a, 2h
     LD r33, r254, 2a, 1h
@@ -62,6 +61,6 @@ returner_fn:
     LD r32, r254, 0a, 8h
     ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
-code size: 566
+code size: 563
 ret: 1
 status: Ok(())

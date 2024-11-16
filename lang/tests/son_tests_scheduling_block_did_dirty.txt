@@ -17,7 +17,6 @@ main:
     ST r31, r254, 16a, 24h
     ADDI64 r32, r254, 0d
     CP r3, r0
-    CP r1, r32
     JAL r31, r0, :constructor
     ST r1, r32, 0a, 16h
     LD r31, r254, 16a, 24h
@@ -35,6 +34,6 @@ opaque:
     LD r32, r254, 0a, 16h
     ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
-code size: 330
+code size: 327
 ret: 255
 status: Ok(())

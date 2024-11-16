@@ -7,7 +7,6 @@ main:
     LI64 r32, 3d
     ST r32, r254, 24a, 8h
     ADDI64 r34, r254, 0d
-    CP r1, r34
     LD r3, r33, 0a, 16h
     JAL r31, r0, :odher_pass
     ST r1, r34, 0a, 16h
@@ -41,6 +40,6 @@ pass:
     LD r32, r254, 0a, 8h
     ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
-code size: 390
+code size: 387
 ret: 4
 status: Ok(())

@@ -7,7 +7,6 @@ main:
     LI64 r34, 4d
     ST r34, r254, 0a, 8h
     ST r33, r254, 8a, 8h
-    CP r1, r32
     JAL r31, r0, :opaque
     ST r1, r32, 0a, 16h
     LD r34, r254, 8a, 8h
@@ -31,6 +30,6 @@ opaque:
     LD r32, r254, 16a, 16h
     ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
-code size: 339
+code size: 336
 ret: 0
 status: Ok(())

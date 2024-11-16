@@ -6,7 +6,6 @@ main:
     CP r4, r0
     CP r5, r0
     CP r6, r0
-    CP r1, r13
     ECA 
     ST r1, r13, 0a, 16h
     LD r14, r254, 0a, 1h
@@ -19,6 +18,6 @@ main:
     ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
 unknown ecall: 0
-code size: 153
+code size: 150
 ret: 0
-status: Ok(())
+status: Err(Unreachable)

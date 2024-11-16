@@ -5,7 +5,6 @@ main:
     ADDI64 r33, r254, 0d
     LD r32, r32, 0a, 4h
     CP r2, r32
-    CP r1, r33
     JAL r31, r0, :u32_to_color
     ST r1, r33, 0a, 4h
     LD r32, r254, 0a, 1h
@@ -35,6 +34,6 @@ u32_to_u32:
     LD r32, r254, 0a, 8h
     ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
-code size: 332
+code size: 329
 ret: 255
 status: Ok(())

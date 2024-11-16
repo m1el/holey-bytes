@@ -2,7 +2,6 @@ main:
     ADDI64 r254, r254, -60d
     ST r31, r254, 4a, 56h
     ADDI64 r32, r254, 0d
-    CP r1, r32
     JAL r31, r0, :random_color
     ST r1, r32, 0a, 4h
     LD r34, r254, 0a, 1h
@@ -28,6 +27,6 @@ random_color:
     LD r32, r254, 0a, 8h
     ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
-code size: 295
+code size: 292
 ret: 1020
 status: Ok(())

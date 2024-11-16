@@ -28,7 +28,6 @@ main:
     JAL r31, r0, :do_stuff
     CP r32, r1
     ADDI64 r33, r254, 0d
-    CP r1, r33
     JAL r31, r0, :optional
     ST r1, r33, 0a, 16h
     LD r33, r254, 0a, 1h
@@ -76,6 +75,6 @@ optionala:
     LD r32, r254, 48a, 32h
     ADDI64 r254, r254, 80d
     JALA r0, r31, 0a
-code size: 673
+code size: 670
 ret: 100
 status: Ok(())

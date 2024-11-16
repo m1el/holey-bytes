@@ -2,7 +2,6 @@ main:
     ADDI64 r254, r254, -160d
     ST r31, r254, 80a, 80h
     LRA r32, r0, :glob_stru
-    CP r1, r32
     JAL r31, r0, :new_stru
     ST r1, r32, 0a, 16h
     CP r33, r0
@@ -65,7 +64,6 @@ main:
     JMP :7
  3: MULI64 r39, r32, 16d
     ADD64 r39, r37, r39
-    CP r1, r39
     JAL r31, r0, :new_stru
     ST r1, r39, 0a, 16h
     ADD64 r32, r32, r35
@@ -83,6 +81,6 @@ new_stru:
     LD r32, r254, 16a, 8h
     ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
-code size: 797
+code size: 791
 ret: 0
 status: Ok(())

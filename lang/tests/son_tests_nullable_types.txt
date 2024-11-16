@@ -55,7 +55,6 @@ main:
     CP r1, r32
     JMP :3
  9: ADDI64 r33, r254, 40d
-    CP r1, r33
     JAL r31, r0, :new_foo
     ST r1, r33, 0a, 16h
     LD r37, r254, 40a, 8h
@@ -68,7 +67,6 @@ main:
     LD r2, r33, 0a, 16h
     JAL r31, r0, :use_foo
     ADDI64 r33, r254, 0d
-    CP r1, r33
     JAL r31, r0, :no_foo
     ST r1, r33, 0a, 16h
     JAL r31, r0, :decide
@@ -150,6 +148,6 @@ use_foo:
     CP r0, r4
     ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
-code size: 1252
+code size: 1246
 ret: 0
 status: Ok(())
