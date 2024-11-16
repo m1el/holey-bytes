@@ -11,7 +11,6 @@
     slice_partition_dedup,
     portable_simd,
     iter_collect_into,
-    new_uninit,
     ptr_metadata,
     slice_ptr_get,
     slice_take,
@@ -22,14 +21,12 @@
     str_from_raw_parts,
     ptr_sub_ptr,
     slice_from_ptr_range,
-    is_sorted,
     iter_next_chunk,
     pointer_is_aligned_to,
-    maybe_uninit_fill,
-    precise_capturing
+    maybe_uninit_fill
 )]
 #![warn(clippy::dbg_macro)]
-#![expect(stable_features, internal_features)]
+#![expect(internal_features)]
 #![no_std]
 
 #[cfg(feature = "std")]
