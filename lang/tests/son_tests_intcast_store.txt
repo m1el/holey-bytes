@@ -1,31 +1,29 @@
 main:
-    ADDI64 r254, r254, -72d
-    ST r31, r254, 16a, 56h
+    ADDI64 r254, r254, -56d
+    ST r31, r254, 16a, 40h
     ADDI64 r32, r254, 0d
     ADDI64 r33, r254, 8d
     ST r0, r254, 0a, 8h
     ST r0, r254, 8a, 8h
-    LI64 r36, 1024d
+    LI64 r34, 1024d
     CP r2, r33
     CP r3, r32
-    CP r4, r36
+    CP r4, r34
     JAL r31, r0, :set
     CP r32, r1
     ANDI r32, r32, 4294967295d
     CP r1, r32
-    LD r31, r254, 16a, 56h
-    ADDI64 r254, r254, 72d
+    LD r31, r254, 16a, 40h
+    ADDI64 r254, r254, 56d
     JALA r0, r31, 0a
 set:
     ADDI64 r254, r254, -8d
     ST r32, r254, 0a, 8h
-    CP r0, r2
-    CP r0, r3
     CP r13, r4
     CP r1, r13
     LD r32, r254, 0a, 8h
     ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
-code size: 229
+code size: 223
 ret: 1024
 status: Ok(())

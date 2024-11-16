@@ -6,11 +6,10 @@ main:
     ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
 opaque:
-    CP r0, r2
     JALA r0, r31, 0a
 process:
-    ADDI64 r254, r254, -64d
-    ST r31, r254, 16a, 48h
+    ADDI64 r254, r254, -56d
+    ST r31, r254, 16a, 40h
     LI64 r32, 1000d
     ADDI64 r33, r254, 0d
     ST r0, r254, 0a, 1h
@@ -18,16 +17,16 @@ process:
     JMP :1
  0: CP r2, r33
     JAL r31, r0, :opaque
-    LD r35, r254, 0a, 1h
-    ANDI r35, r35, 255d
-    JEQ r35, r0, :2
+    LD r34, r254, 0a, 1h
+    ANDI r34, r34, 255d
+    JEQ r34, r0, :2
     JMP :3
  2: ADDI64 r32, r32, -1d
  1: JMP :4
- 3: LD r31, r254, 16a, 48h
-    ADDI64 r254, r254, 64d
+ 3: LD r31, r254, 16a, 40h
+    ADDI64 r254, r254, 56d
     JALA r0, r31, 0a
 timed out
-code size: 251
+code size: 248
 ret: 0
 status: Ok(())

@@ -11,7 +11,6 @@ main:
     ADDI64 r254, r254, -64d
     ST r31, r254, 0a, 64h
     JAL r31, r0, :check_platform
-    CP r0, r1
     CP r33, r0
     LI64 r36, 30d
     LI64 r37, 100d
@@ -59,6 +58,6 @@ x86_fb_ptr:
     LD r32, r254, 0a, 8h
     ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
-code size: 428
+code size: 425
 ret: 3000
 status: Ok(())

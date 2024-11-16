@@ -20,8 +20,8 @@ main:
     JAL r31, r0, :decide
     ADDI64 r34, r254, 24d
     BMC r32, r34, 24h
-    LI64 r36, 1d
-    CP r2, r36
+    LI64 r35, 1d
+    CP r2, r35
     CP r1, r34
     JAL r31, r0, :decide
     ADDI64 r36, r254, 0d

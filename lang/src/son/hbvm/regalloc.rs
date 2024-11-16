@@ -75,7 +75,7 @@ impl HbvmBackend {
                 PLoc::WideReg(rg, size) => (rg, size),
                 PLoc::Reg(rg, size) if ty.loc(tys) == Loc::Stack => (rg, size),
                 PLoc::Reg(r, ..) | PLoc::Ref(r, ..) => {
-                    self.emit(instrs::cp(atr(arg), r));
+                    self.emit_cp(atr(arg), r);
                     continue;
                 }
             };
@@ -83,13 +83,13 @@ impl HbvmBackend {
             if nodes.is_unlocked(arg) {
                 self.emit(instrs::addi64(rg, reg::STACK_PTR, self.offsets[arg as usize] as _));
             }
-            self.emit(instrs::cp(atr(arg), rg));
+            self.emit_cp(atr(arg), rg);
         }
 
         let mut alloc_buf = vec![];
         for (i, block) in res.blocks.iter().enumerate() {
             self.offsets[block.entry as usize] = self.code.len() as _;
-            for &nid in &res.instrs[block.range.clone()] {
+            for &nid in &res.instrs[block.range()] {
                 if nid == VOID {
                     continue;
                 }
@@ -289,7 +289,7 @@ impl HbvmBackend {
                     match ret {
                         Some(PLoc::WideReg(..)) => {}
                         Some(PLoc::Reg(..)) if node.ty.loc(tys) == Loc::Stack => {}
-                        Some(PLoc::Reg(r, ..)) => self.emit(instrs::cp(atr(nid), r)),
+                        Some(PLoc::Reg(r, ..)) => self.emit_cp(atr(nid), r),
                         None | Some(PLoc::Ref(..)) => {}
                     }
                 }
@@ -309,6 +309,12 @@ impl HbvmBackend {
             tail,
         )
     }
+
+    fn emit_cp(&mut self, dst: Reg, src: Reg) {
+        if dst != 0 {
+            self.emit(instrs::cp(dst, src));
+        }
+    }
 }
 
 struct Function<'a> {
@@ -323,7 +329,7 @@ impl core::fmt::Debug for Function<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         for block in &self.func.blocks {
             writeln!(f, "{:?}", self.nodes[block.entry].kind)?;
-            for &instr in &self.func.instrs[block.range.clone()] {
+            for &instr in &self.func.instrs[block.range()] {
                 writeln!(f, "{:?}", self.nodes[instr].kind)?;
             }
         }
@@ -344,9 +350,11 @@ impl<'a> Function<'a> {
     }
 
     fn add_block(&mut self, entry: Nid) {
-        self.func
-            .blocks
-            .push(Block { range: self.func.instrs.len()..self.func.instrs.len(), entry });
+        self.func.blocks.push(Block {
+            start: self.func.instrs.len() as _,
+            end: self.func.instrs.len() as _,
+            entry,
+        });
         self.func.backrefs[entry as usize] = self.func.blocks.len() as u16 - 1;
     }
 
@@ -357,7 +365,7 @@ impl<'a> Function<'a> {
             self.func.instrs.push(exit);
         }
         let prev = self.func.blocks.last_mut().unwrap();
-        prev.range.end = self.func.instrs.len();
+        prev.end = self.func.instrs.len() as _;
     }
 
     fn add_instr(&mut self, nid: Nid) {
@@ -562,6 +570,8 @@ impl<'a> Regalloc<'a> {
     fn run_low(&mut self) {
         self.res.bundles.clear();
         self.res.node_to_reg.clear();
+        #[cfg(debug_assertions)]
+        self.res.marked.clear();
         self.res.node_to_reg.resize(self.nodes.vreg_count(), 0);
 
         debug_assert!(self.res.dfs_buf.is_empty());
@@ -591,7 +601,7 @@ impl<'a> Regalloc<'a> {
 
         let instrs = mem::take(&mut self.res.instrs);
         for &inst in &instrs {
-            if self.res.visited.get(inst) || inst == 0 {
+            if self.nodes[inst].has_no_value() || self.res.visited.get(inst) || inst == 0 {
                 continue;
             }
             self.append_bundle(inst, &mut bundle, None);
@@ -599,13 +609,18 @@ impl<'a> Regalloc<'a> {
         self.res.instrs = instrs;
     }
 
-    fn append_bundle(&mut self, inst: Nid, bundle: &mut Bundle, prefered: Option<usize>) {
+    fn collect_bundle(&mut self, inst: Nid, into: &mut Bundle) {
         let dom = self.nodes.idom_of(inst);
+        self.res.dfs_seem.clear(self.nodes.values.len());
         for (cursor, uinst) in self.nodes.uses_of(inst) {
+            if !self.res.dfs_seem.set(uinst) {
+                continue;
+            }
             #[cfg(debug_assertions)]
-            self.res.marked.insert((inst, uinst));
+            debug_assert!(self.res.marked.insert((inst, uinst)));
+
             self.reverse_cfg_dfs(cursor, dom, |s, n, b| {
-                let mut range = b.range.clone();
+                let mut range = b.range();
                 debug_assert!(range.start < range.end);
                 range.start = range.start.max(s.instr_of(inst).map_or(0, |n| n + 1) as usize);
                 debug_assert!(range.start < range.end, "{:?}", range);
@@ -621,32 +636,37 @@ impl<'a> Regalloc<'a> {
                 range.end = new;
                 debug_assert!(range.start < range.end, "{:?} {inst} {uinst}", range);
 
-                bundle.add(range);
+                into.add(range);
             });
         }
+    }
 
-        if !bundle.taken.contains(&true) {
+    fn append_bundle(&mut self, inst: Nid, tmp: &mut Bundle, prefered: Option<usize>) {
+        self.collect_bundle(inst, tmp);
+
+        if tmp.is_empty() {
             self.res.node_to_reg[inst as usize] = u8::MAX;
             return;
         }
 
         if let Some(prefered) = prefered
-            && !self.res.bundles[prefered].overlaps(bundle)
+            && !self.res.bundles[prefered].overlaps(tmp)
         {
-            self.res.bundles[prefered].merge(bundle);
-            bundle.clear();
+            self.res.bundles[prefered].merge(tmp);
+            tmp.clear();
             self.res.node_to_reg[inst as usize] = prefered as Reg + 1;
-        } else {
-            match self.res.bundles.iter_mut().enumerate().find(|(_, b)| !b.overlaps(bundle)) {
-                Some((i, other)) => {
-                    other.merge(bundle);
-                    bundle.clear();
-                    self.res.node_to_reg[inst as usize] = i as Reg + 1;
-                }
-                None => {
-                    self.res.bundles.push(mem::replace(bundle, Bundle::new(bundle.taken.len())));
-                    self.res.node_to_reg[inst as usize] = self.res.bundles.len() as Reg;
-                }
+            return;
+        }
+
+        match self.res.bundles.iter_mut().enumerate().find(|(_, b)| !b.overlaps(tmp)) {
+            Some((i, other)) => {
+                other.merge(tmp);
+                tmp.clear();
+                self.res.node_to_reg[inst as usize] = i as Reg + 1;
+            }
+            None => {
+                self.res.bundles.push(tmp.take());
+                self.res.node_to_reg[inst as usize] = self.res.bundles.len() as Reg;
             }
         }
     }
@@ -659,13 +679,12 @@ impl<'a> Regalloc<'a> {
     ) {
         debug_assert!(self.res.dfs_buf.is_empty());
         self.res.dfs_buf.push(from);
-        self.res.dfs_seem.clear(self.nodes.values.len());
 
         debug_assert!(self.nodes.dominates(until, from));
 
         while let Some(nid) = self.res.dfs_buf.pop() {
             debug_assert!(self.nodes.dominates(until, nid), "{until} {:?}", self.nodes[until]);
-            each(self, nid, self.res.blocks[self.block_of(nid) as usize].clone());
+            each(self, nid, self.res.blocks[self.block_of(nid) as usize]);
             if nid == until {
                 continue;
             }
@@ -729,10 +748,25 @@ impl Bundle {
     fn clear(&mut self) {
         self.taken.fill(false);
     }
+
+    fn is_empty(&self) -> bool {
+        !self.taken.contains(&true)
+    }
+
+    fn take(&mut self) -> Self {
+        mem::replace(self, Self::new(self.taken.len()))
+    }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 struct Block {
-    range: Range<usize>,
+    start: u16,
+    end: u16,
     entry: Nid,
+}
+
+impl Block {
+    pub fn range(&self) -> Range<usize> {
+        self.start as usize..self.end as usize
+    }
 }

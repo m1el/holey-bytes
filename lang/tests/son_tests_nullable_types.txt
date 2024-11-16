@@ -7,8 +7,8 @@ decide:
     ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
 main:
-    ADDI64 r254, r254, -144d
-    ST r31, r254, 80a, 64h
+    ADDI64 r254, r254, -136d
+    ST r31, r254, 80a, 56h
     JAL r31, r0, :decide
     CP r32, r1
     CP r33, r0
@@ -57,22 +57,22 @@ main:
  9: ADDI64 r33, r254, 40d
     JAL r31, r0, :new_foo
     ST r1, r33, 0a, 16h
-    LD r37, r254, 40a, 8h
-    JNE r37, r0, :10
+    LD r36, r254, 40a, 8h
+    JNE r36, r0, :10
     LI64 r32, 999d
     CP r1, r32
     JMP :3
-10: LRA r37, r0, :"foo\0"
-    CP r4, r37
+10: LRA r36, r0, :"foo\0"
+    CP r4, r36
     LD r2, r33, 0a, 16h
     JAL r31, r0, :use_foo
     ADDI64 r33, r254, 0d
     JAL r31, r0, :no_foo
     ST r1, r33, 0a, 16h
     JAL r31, r0, :decide
-    CP r37, r1
-    ANDI r37, r37, 255d
-    JNE r37, r0, :11
+    CP r36, r1
+    ANDI r36, r36, 255d
+    JNE r36, r0, :11
     JMP :12
 11: ST r34, r254, 0a, 8h
     ST r35, r254, 8a, 8h
@@ -102,8 +102,8 @@ main:
     ANDI r32, r32, 65535d
     SUB64 r32, r32, r33
     CP r1, r32
- 3: LD r31, r254, 80a, 64h
-    ADDI64 r254, r254, 144d
+ 3: LD r31, r254, 80a, 56h
+    ADDI64 r254, r254, 136d
     JALA r0, r31, 0a
 new_bar:
     ADDI64 r254, r254, -48d
@@ -144,10 +144,8 @@ use_foo:
     ADDI64 r254, r254, -16d
     ST r2, r254, 0a, 16h
     ADDI64 r2, r254, 0d
-    CP r0, r2
-    CP r0, r4
     ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
-code size: 1246
+code size: 1240
 ret: 0
 status: Ok(())

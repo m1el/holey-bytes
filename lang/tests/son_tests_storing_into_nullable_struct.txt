@@ -7,7 +7,6 @@ do_stuff:
     ADDI64 r254, r254, 8d
     JALA r0, r31, 0a
 just_read:
-    CP r0, r2
     JALA r0, r31, 0a
 main:
     ADDI64 r254, r254, -88d
@@ -75,6 +74,6 @@ optionala:
     LD r32, r254, 48a, 32h
     ADDI64 r254, r254, 80d
     JALA r0, r31, 0a
-code size: 670
+code size: 667
 ret: 100
 status: Ok(())

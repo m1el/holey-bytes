@@ -14,12 +14,11 @@ main:
     CP r6, r13
     LD r3, r14, 0a, 16h
     ECA 
-    CP r0, r1
     CP r1, r0
     LD r32, r254, 16a, 32h
     ADDI64 r254, r254, 48d
     JALA r0, r31, 0a
 ev: Ecall
-code size: 183
+code size: 180
 ret: 0
 status: Ok(())

@@ -20,11 +20,9 @@ create_back_buffer:
  2: JLTS r32, r33, :3
     CP r2, r34
     JAL r31, r0, :request_page
-    CP r0, r1
     JMP :4
  3: CP r2, r32
     JAL r31, r0, :request_page
-    CP r0, r1
  4: SUB64 r32, r32, r33
     JMP :5
  1: LD r31, r254, 0a, 48h
@@ -36,29 +34,28 @@ main:
     LI64 r32, 400d
     CP r2, r32
     JAL r31, r0, :create_back_buffer
-    CP r0, r1
     LD r31, r254, 0a, 24h
     ADDI64 r254, r254, 24d
     JALA r0, r31, 0a
 request_page:
-    ADDI64 r254, r254, -40d
-    ST r32, r254, 0a, 40h
+    ADDI64 r254, r254, -32d
+    ST r32, r254, 0a, 32h
     CP r13, r2
     LRA r14, r0, :"\0\u{1}xxxxxxxx\0"
     ST r13, r14, 1a, 1h
-    LI64 r15, 12d
-    LI64 r16, 2d
-    LI64 r17, 3d
-    CP r2, r17
-    CP r3, r16
+    LI64 r13, 12d
+    LI64 r15, 2d
+    LI64 r16, 3d
+    CP r2, r16
+    CP r3, r15
     CP r4, r14
-    CP r5, r15
+    CP r5, r13
     ECA 
     CP r13, r1
     CP r1, r13
-    LD r32, r254, 0a, 40h
-    ADDI64 r254, r254, 40d
+    LD r32, r254, 0a, 32h
+    ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
-code size: 408
+code size: 399
 ret: 42
 status: Ok(())

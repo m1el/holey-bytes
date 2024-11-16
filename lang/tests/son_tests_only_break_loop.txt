@@ -32,9 +32,7 @@ main:
     ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
 outb:
-    CP r0, r2
-    CP r0, r3
     JALA r0, r31, 0a
-code size: 257
+code size: 251
 ret: 1
 status: Ok(())

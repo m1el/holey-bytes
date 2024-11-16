@@ -2066,6 +2066,11 @@ impl Node {
     fn is_data_phi(&self) -> bool {
         self.kind == Kind::Phi && self.ty != ty::Id::VOID
     }
+
+    fn has_no_value(&self) -> bool {
+        (self.kind.is_cfg() && (!self.kind.is_call() || self.ty == ty::Id::VOID))
+            || matches!(self.kind, Kind::Stre)
+    }
 }
 
 type LoopDepth = u16;

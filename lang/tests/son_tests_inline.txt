@@ -1,12 +1,12 @@
 main:
-    ADDI64 r254, r254, -24d
-    ST r32, r254, 0a, 24h
+    ADDI64 r254, r254, -16d
+    ST r32, r254, 0a, 16h
     LI64 r13, 8d
     CP r2, r13
     ECA 
     LI64 r14, 6d
-    LRA r15, r0, :gb
-    LD r13, r15, 0a, 8h
+    LRA r13, r0, :gb
+    LD r13, r13, 0a, 8h
     CMPU r13, r13, r0
     CMPUI r13, r13, 0d
     OR r13, r13, r0
@@ -17,8 +17,8 @@ main:
  0: LI64 r13, 1d
  1: SUB64 r13, r13, r14
     CP r1, r13
-    LD r32, r254, 0a, 24h
-    ADDI64 r254, r254, 24d
+    LD r32, r254, 0a, 16h
+    ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
 code size: 179
 ret: 0
