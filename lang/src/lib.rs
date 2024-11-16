@@ -1440,32 +1440,6 @@ impl OffsetIter {
     }
 }
 
-type HashMap<K, V> = hashbrown::HashMap<K, V, FnvBuildHasher>;
-type FnvBuildHasher = core::hash::BuildHasherDefault<FnvHasher>;
-
-struct FnvHasher(u64);
-
-impl core::hash::Hasher for FnvHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        self.0 = bytes.iter().fold(self.0, |hash, &byte| {
-            let mut hash = hash;
-            hash ^= byte as u64;
-            hash = hash.wrapping_mul(0x100000001B3);
-            hash
-        });
-    }
-}
-
-impl Default for FnvHasher {
-    fn default() -> Self {
-        Self(0xCBF29CE484222325)
-    }
-}
-
 #[cfg(test)]
 pub fn run_test(
     name: &'static str,
@@ -1681,4 +1655,29 @@ pub fn quad_sort<T>(mut slice: &mut [T], mut cmp: impl FnMut(&T, &T) -> core::cm
         }
     }
     debug_assert!(slice.is_sorted_by(|a, b| cmp(a, b) != core::cmp::Ordering::Greater));
+}
+
+type FnvBuildHasher = core::hash::BuildHasherDefault<FnvHasher>;
+
+struct FnvHasher(u64);
+
+impl core::hash::Hasher for FnvHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        self.0 = bytes.iter().fold(self.0, |hash, &byte| {
+            let mut hash = hash;
+            hash ^= byte as u64;
+            hash = hash.wrapping_mul(0x100000001B3);
+            hash
+        });
+    }
+}
+
+impl Default for FnvHasher {
+    fn default() -> Self {
+        Self(0xCBF29CE484222325)
+    }
 }

@@ -12,17 +12,12 @@ name = "fuzz"
 path = "src/fuzz_main.rs"
 
 [dependencies]
-hashbrown = { version = "0.15.0", default-features = false, features = ["raw-entry", "allocator-api2"] }
 hbbytecode = { workspace = true, features = ["disasm"] }
 hbvm = { workspace = true, features = ["nightly"] }
+hashbrown = { version = "0.15.0", default-features = false, features = ["raw-entry"] }
 log = "0.4.22"
 
-[dependencies.regalloc2]
-git = "https://github.com/jakubDoka/regalloc2"
-branch = "reuse-allocations"
-default-features = false
-
 [features]
-default = ["std", "regalloc2/trace-log"]
+default = ["std"]
 std = []
 no_log = ["log/max_level_off"]

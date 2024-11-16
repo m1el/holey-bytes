@@ -2,7 +2,7 @@ use {
     crate::{
         parser::{Ast, Ctx, FileKind},
         son::{self, hbvm::HbvmBackend},
-        ty,
+        ty, FnvBuildHasher,
     },
     alloc::{string::String, vec::Vec},
     core::{fmt::Write, num::NonZeroUsize, ops::Deref},
@@ -17,6 +17,8 @@ use {
         sync::Mutex,
     },
 };
+
+type HashMap<K, V> = hashbrown::HashMap<K, V, FnvBuildHasher>;
 
 pub struct Logger;
 
@@ -249,8 +251,8 @@ pub fn parse_from_fs(extra_threads: usize, root: &str) -> io::Result<Loaded> {
 
     type Task = (usize, PathBuf);
 
-    let seen_modules = Mutex::new(crate::HashMap::<PathBuf, usize>::default());
-    let seen_embeds = Mutex::new(crate::HashMap::<PathBuf, usize>::default());
+    let seen_modules = Mutex::new(HashMap::<PathBuf, usize>::default());
+    let seen_embeds = Mutex::new(HashMap::<PathBuf, usize>::default());
     let tasks = TaskQueue::<Task>::new(extra_threads + 1);
     let ast = Mutex::new(Vec::<io::Result<Ast>>::new());
     let embeds = Mutex::new(Vec::<Vec<u8>>::new());

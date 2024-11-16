@@ -9,7 +9,7 @@ use {
         PLoc, Sig, Types,
     },
     alloc::{borrow::ToOwned, vec::Vec},
-    core::{borrow::Borrow, mem, ops::Range},
+    core::{mem, ops::Range},
     hbbytecode::{self as instrs},
 };
 
@@ -108,7 +108,7 @@ impl HbvmBackend {
                     );
                     #[cfg(debug_assertions)]
                     debug_assert!(
-                        res.marked.borrow().contains(&(allc, nid))
+                        res.marked.contains(&(allc, nid))
                             || nid == allc
                             || nodes.is_hard_zero(allc)
                             || allc == MEM
