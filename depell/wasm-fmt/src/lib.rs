@@ -28,7 +28,15 @@ unsafe extern "C" fn fmt() {
 }
 
 #[no_mangle]
+unsafe extern "C" fn tok() {
+    let code = core::slice::from_raw_parts_mut(
+        core::ptr::addr_of_mut!(OUTPUT).cast(), OUTPUT_LEN);
+    OUTPUT_LEN = fmt::get_token_kinds(code);
+}
+
+#[no_mangle]
 unsafe extern "C" fn minify() {
-    let code = core::str::from_raw_parts_mut(core::ptr::addr_of_mut!(OUTPUT).cast(), OUTPUT_LEN);
+    let code = core::str::from_raw_parts_mut(
+        core::ptr::addr_of_mut!(OUTPUT).cast(), OUTPUT_LEN);
     OUTPUT_LEN = fmt::minify(code);
 }

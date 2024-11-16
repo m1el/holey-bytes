@@ -26,6 +26,75 @@ pub fn display_radix(radix: Radix, mut value: u64, buf: &mut [u8; 64]) -> &str {
     unreachable!()
 }
 
+#[repr(u8)]
+enum TokenGroup {
+    Blank = 0,
+    Comment = 1,
+    Keyword = 2,
+    Identifier = 3,
+    Directive = 4,
+    Number = 5,
+    String = 6,
+    Op = 7,
+    Assign = 8,
+    Paren = 9,
+    Bracket = 10,
+    Colon = 11,
+    Comma = 12,
+    Dot = 13,
+    Ctor = 14,
+}
+
+fn token_group(kind: TokenKind) -> TokenGroup {
+    use crate::lexer::TokenKind::*;
+    match kind {
+        // unused/unimplemented
+        | BSlash | Pound | Eof | Ct => TokenGroup::Blank,
+        | Comment => TokenGroup::Comment,
+        | Directive => TokenGroup::Directive,
+        | Colon => TokenGroup::Colon,
+        | Semi | Comma => TokenGroup::Comma,
+        | Dot => TokenGroup::Dot,
+        | Ctor | Tupl => TokenGroup::Ctor,
+        | LParen | RParen => TokenGroup::Paren,
+        | LBrace | RBrace | LBrack | RBrack => TokenGroup::Bracket,
+        | Number | Float => TokenGroup::Number,
+        | Under | CtIdent | Ident => TokenGroup::Identifier,
+        | Tick | Tilde | Que
+        | Not | Mod | Band | Bor | Xor
+        | Mul | Add | Sub | Div
+        | Shl | Shr | Or | And
+        | Lt | Gt | Eq | Le | Ge | Ne => TokenGroup::Op,
+        | Decl | Assign
+        | BorAss | XorAss | BandAss
+        | AddAss | SubAss | MulAss | DivAss | ModAss
+        | ShrAss | ShlAss => TokenGroup::Assign,
+        | DQuote | Quote => TokenGroup::String,
+        | Return | If | Else | Loop | Break | Continue | Fn | Idk | Die
+        | Struct | Packed | True | False | Null => TokenGroup::Keyword,
+    }
+}
+
+pub fn get_token_kinds(mut source: &mut [u8]) -> usize {
+    let len = source.len();
+    loop {
+        let src = unsafe { core::str::from_utf8_unchecked(source) };
+        let mut token = lexer::Lexer::new(src).eat();
+        match token.kind {
+            TokenKind::Eof => break,
+            // ???
+            TokenKind::CtIdent | TokenKind::Directive => token.start -= 1,
+            _ => {}
+        }
+        let start = token.start as usize;
+        let end = token.end as usize;
+        source[..start].fill(0);
+        source[start..end].fill(token_group(token.kind) as u8);
+        source = &mut source[end..];
+    }
+    len
+}
+
 pub fn minify(source: &mut str) -> usize {
     fn needs_space(c: u8) -> bool {
         matches!(c, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | 127..)

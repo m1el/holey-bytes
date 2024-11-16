@@ -50,18 +50,20 @@ function modifyCode(instance, code, action) {
 	let {
 		INPUT, INPUT_LEN,
 		OUTPUT, OUTPUT_LEN,
-		memory, fmt, minify
+		memory, fmt, tok, minify
 	} = instance.exports;
 
+	let funs = { fmt, tok, minify };
 	if (!(true
 		&& memory instanceof WebAssembly.Memory
 		&& INPUT instanceof WebAssembly.Global
 		&& INPUT_LEN instanceof WebAssembly.Global
 		&& OUTPUT instanceof WebAssembly.Global
 		&& OUTPUT_LEN instanceof WebAssembly.Global
-		&& typeof fmt === "function"
-		&& typeof minify === "function"
+		&& funs.hasOwnProperty(action)
+		&& typeof funs[action] === "function"
 	)) never();
+	let fun = funs[action];
 
 	if (action !== "fmt") {
 		INPUT = OUTPUT;
@@ -72,8 +74,14 @@ function modifyCode(instance, code, action) {
 	dw.setUint32(INPUT_LEN.value, code.length, true);
 	new Uint8Array(memory.buffer, INPUT.value).set(new TextEncoder().encode(code));
 
-	return runWasmFunction(instance, action === "fmt" ? fmt : minify) ?
-		bufToString(memory, OUTPUT, OUTPUT_LEN) : undefined;
+	if (!runWasmFunction(instance, fun)) {
+		return undefined;
+	}
+	if (action === "tok") {
+		return bufSlice(memory, OUTPUT, OUTPUT_LEN);
+	} else {
+		return bufToString(memory, OUTPUT, OUTPUT_LEN);
+	}
 }
 
 
@@ -117,6 +125,15 @@ function packPosts(posts, view) {
 		buf.set(enc.encode(post.code), len); len += post.code.length;
 	}
 	return len;
+}
+
+/** @param {WebAssembly.Memory} mem
+ * @param {WebAssembly.Global} ptr
+ * @param {WebAssembly.Global} len
+ * @return {Uint8Array} */
+function bufSlice(mem, ptr, len) {
+	return new Uint8Array(mem.buffer, ptr.value,
+			new DataView(mem.buffer).getUint32(len.value, true));
 }
 
 /** @param {WebAssembly.Memory} mem
@@ -265,19 +282,80 @@ async function bindCodeEdit(target) {
 	edit.dispatchEvent(new InputEvent("input"));
 }
 
-/** @type {{ [key: string]: (content: string) => Promise<string> | string }} */
+/**
+ * @type {{ Array<string> }}
+ * to be synched with `enum TokenGroup` in bytecode/src/fmt.rs */
+const TOK_CLASSES = [
+    'Blank',
+    'Comment',
+    'Keyword',
+    'Identifier',
+    'Directive',
+    'Number',
+    'String',
+    'Op',
+    'Assign',
+    'Paren',
+    'Bracket',
+    'Colon',
+    'Comma',
+    'Dot',
+    'Ctor',
+];
+
+/** @type {{ [key: string]: (el: HTMLElement) => undefined | Promise<undefined> }} */
 const applyFns = {
-	timestamp: (content) => new Date(parseInt(content) * 1000).toLocaleString(),
-	fmt: (content) => getFmtInstance().then(i => modifyCode(i, content, "fmt") ?? "invalid code"),
+	timestamp: (el) => {
+		const timestamp = el.innerText;
+		const date = new Date(parseInt(timestamp) * 1000);
+		el.innerText = date.toLocaleString();
+	},
+	fmt,
 };
+
+/**
+ * @param {HTMLElement} target
+ * @param {string} code */
+async function fmt(target) {
+	const code = target.innerText;
+	const instance = await getFmtInstance();
+	const decoder = new TextDecoder('utf-8');
+	const fmt = modifyCode(instance, code, 'fmt');
+	const codeBytes = new TextEncoder('utf-8').encode(fmt);
+	const tok = modifyCode(instance, fmt, 'tok');
+	target.innerHTML = '';
+	let start = 0;
+	let kind = tok[0];
+	for (let ii = 1; ii <= tok.length; ii += 1) {
+		// split over same tokens and buffer end
+		if (tok[ii] === kind && ii < tok.length) {
+			continue;
+		}
+		const text = decoder.decode(codeBytes.subarray(start, ii));
+		const textNode = document.createTextNode(text);;
+		if (kind === 0) {
+			target.appendChild(textNode);
+		} else {
+			const el = document.createElement('span');
+			el.classList.add('syn');
+			el.classList.add(TOK_CLASSES[kind]);
+			el.appendChild(textNode);
+			target.appendChild(el);
+		}
+		if (ii == tok.length) {
+			break;
+		}
+		start = ii;
+		kind = tok[ii];
+	}
+}
+
 /** @param {HTMLElement} target */
-function execApply(target) {
+async function execApply(target) {
 	for (const elem of target.querySelectorAll('[apply]')) {
 		if (!(elem instanceof HTMLElement)) continue;
 		const funcname = elem.getAttribute('apply') ?? never();
-		let res = applyFns[funcname](elem.textContent ?? "");
-		if (res instanceof Promise) res.then(c => elem.textContent = c);
-		else elem.textContent = res;
+		applyFns[funcname](elem);
 	}
 }
 

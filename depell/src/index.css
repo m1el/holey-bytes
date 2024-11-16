@@ -141,3 +141,24 @@ div#dep-list {
 		}
 	}
 }
+
+.fmt {
+	font-family: monospace;
+}
+.syn {
+	font-family: monospace;
+	&.Comment { color: #939f91; }
+	&.Keyword { color: #f85552; }
+	&.Identifier { color: #3a94c5; }
+	&.Directive { color: #3a94c5; }
+	&.Number {}
+	&.String { color: #8da101; }
+	&.Op { color: #f57d26; }
+	&.Assign { color: #f57d26; }
+	&.Paren { color: #5c6a72; }
+	&.Bracket { color: #5c6a72; }
+	&.Colon { color: #5c6a72; }
+	&.Comma { color: #5c6a72; }
+	&.Dot { color: #5c6a72; }
+	&.Ctor { color: #3a94c5; }
+}
