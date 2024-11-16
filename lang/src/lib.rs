@@ -25,7 +25,8 @@
     is_sorted,
     iter_next_chunk,
     pointer_is_aligned_to,
-    maybe_uninit_fill
+    maybe_uninit_fill,
+    precise_capturing
 )]
 #![warn(clippy::dbg_macro)]
 #![expect(stable_features, internal_features)]
