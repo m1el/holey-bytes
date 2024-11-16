@@ -458,6 +458,10 @@ struct InstrCtx<'a> {
 
 impl HbvmBackend {
     fn extend(&mut self, base: ty::Id, dest: ty::Id, reg: Reg, tys: &Types, files: &[parser::Ast]) {
+        if reg == 0 {
+            return;
+        }
+
         let (bsize, dsize) = (tys.size_of(base), tys.size_of(dest));
         debug_assert!(bsize <= 8, "{}", ty::Display::new(tys, files, base));
         debug_assert!(dsize <= 8, "{}", ty::Display::new(tys, files, dest));
