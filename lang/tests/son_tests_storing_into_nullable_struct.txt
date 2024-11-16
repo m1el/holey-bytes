@@ -33,7 +33,6 @@ main:
     ST r1, r33, 0a, 16h
     LD r33, r254, 0a, 1h
     ANDI r33, r33, 255d
-    ANDI r0, r0, 255d
     JNE r33, r0, :2
     LI64 r32, 20d
     CP r1, r32
@@ -77,6 +76,6 @@ optionala:
     LD r32, r254, 48a, 32h
     ADDI64 r254, r254, 80d
     JALA r0, r31, 0a
-code size: 684
+code size: 673
 ret: 100
 status: Ok(())

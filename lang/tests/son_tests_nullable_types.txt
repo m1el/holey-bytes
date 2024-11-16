@@ -36,7 +36,6 @@ main:
  4: ST r0, r254, 56a, 1h
  5: LD r32, r254, 56a, 1h
     ANDI r32, r32, 255d
-    ANDI r0, r0, 255d
     JEQ r32, r0, :6
     LI64 r32, 42d
     CP r1, r32
@@ -96,7 +95,6 @@ main:
 14: ST r0, r254, 16a, 1h
 15: LD r34, r254, 16a, 1h
     ANDI r34, r34, 255d
-    ANDI r0, r0, 255d
     JEQ r34, r0, :16
     LI64 r32, 420d
     CP r1, r32
@@ -152,6 +150,6 @@ use_foo:
     CP r0, r4
     ADDI64 r254, r254, 16d
     JALA r0, r31, 0a
-code size: 1274
+code size: 1252
 ret: 0
 status: Ok(())

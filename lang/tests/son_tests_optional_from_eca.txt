@@ -11,9 +11,7 @@ main:
     ST r1, r13, 0a, 16h
     LD r14, r254, 0a, 1h
     ANDI r14, r14, 255d
-    ANDI r0, r0, 255d
     JNE r14, r0, :0
-    UN 
     UN 
  0: LD r13, r254, 8a, 8h
     CP r1, r13
@@ -21,6 +19,6 @@ main:
     ADDI64 r254, r254, 32d
     JALA r0, r31, 0a
 unknown ecall: 0
-code size: 165
+code size: 153
 ret: 0
 status: Ok(())

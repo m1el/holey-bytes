@@ -9,7 +9,6 @@ foo:
     ST r1, r32, 0a, 16h
     LD r33, r254, 64a, 1h
     ANDI r33, r33, 255d
-    ANDI r0, r0, 255d
     JNE r33, r0, :0
     ADDI64 r32, r254, 48d
     ST r0, r254, 48a, 1h
@@ -69,7 +68,6 @@ main:
     ST r1, r32, 0a, 16h
     LD r33, r254, 0a, 1h
     ANDI r33, r33, 255d
-    ANDI r0, r0, 255d
     JNE r33, r0, :0
     LI64 r32, 100d
     CP r1, r32
@@ -79,6 +77,6 @@ main:
  1: LD r31, r254, 16a, 32h
     ADDI64 r254, r254, 48d
     JALA r0, r31, 0a
-code size: 793
+code size: 771
 ret: 0
 status: Ok(())

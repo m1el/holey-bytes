@@ -200,7 +200,7 @@ impl HbvmBackend {
                             None => {}
                         }
                     }
-                    Kind::Die => self.emit(instrs::un()),
+                    Kind::Die => {}
                     Kind::CInt { .. } => alloc_buf.push(atr(nid)),
                     Kind::UnOp { .. } => alloc_buf.extend([atr(nid), atr(node.inputs[1])]),
                     Kind::BinOp { .. } if node.lock_rc != 0 => {}
