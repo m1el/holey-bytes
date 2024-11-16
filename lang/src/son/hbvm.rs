@@ -14,7 +14,7 @@ use {
     hbbytecode::{self as instrs, *},
 };
 
-mod my_regalloc;
+mod regalloc;
 
 struct FuncDt {
     offset: Offset,
@@ -53,7 +53,7 @@ pub struct HbvmBackend {
     funcs: EntVec<ty::Func, FuncDt>,
     globals: EntVec<ty::Global, GlobalDt>,
     asm: Assembler,
-    ralloc_my: my_regalloc::Res,
+    ralloc: regalloc::Res,
 
     ret_relocs: Vec<Reloc>,
     relocs: Vec<TypedReloc>,
@@ -258,7 +258,7 @@ impl Backend for HbvmBackend {
             nodes[MEM].outputs = mems;
         }
 
-        let (saved, tail) = self.emit_body_code_my(nodes, sig, tys, files);
+        let (saved, tail) = self.emit_body_code(nodes, sig, tys, files);
 
         if let Some(last_ret) = self.ret_relocs.last()
             && last_ret.offset as usize == self.code.len() - 5
@@ -337,7 +337,7 @@ impl Backend for HbvmBackend {
 impl Nodes {
     fn cond_op(&self, cnd: Nid) -> CondRet {
         let Kind::BinOp { op } = self[cnd].kind else { return None };
-        if self[cnd].lock_rc == 0 {
+        if self.is_unlocked(cnd) {
             return None;
         }
         op.cond_op(self[self[cnd].inputs[1]].ty)
@@ -345,7 +345,7 @@ impl Nodes {
 
     fn strip_offset(&self, region: Nid, ty: ty::Id, tys: &Types) -> (Nid, Offset) {
         if matches!(self[region].kind, Kind::BinOp { op: TokenKind::Add | TokenKind::Sub })
-            && self[region].lock_rc != 0
+            && self.is_locked(region)
             && let Kind::CInt { value } = self[self[region].inputs[2]].kind
             && ty.loc(tys) == Loc::Reg
         {
@@ -424,7 +424,7 @@ impl Nodes {
                             && op.cond_op(self[o].ty).is_none())
             }),
             Kind::BinOp { op: TokenKind::Add | TokenKind::Sub } => {
-                self[node.inputs[1]].lock_rc != 0
+                self.is_locked(node.inputs[1])
                     || (self.is_const(node.inputs[2])
                         && node.outputs.iter().all(|&n| self[n].uses_direct_offset_of(nid, tys)))
             }
@@ -592,7 +592,7 @@ impl HbvmBackend {
                 let &[.., rh] = node.inputs.as_slice() else { unreachable!() };
 
                 if let Kind::CInt { value } = nodes[rh].kind
-                    && nodes[rh].lock_rc != 0
+                    && nodes.is_locked(rh)
                     && let Some(op) = op.imm_binop(node.ty)
                 {
                     let &[dst, lhs] = allocs else { unreachable!() };

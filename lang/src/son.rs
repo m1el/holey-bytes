@@ -518,9 +518,9 @@ impl Nodes {
 
         for (i, node) in self.iter() {
             let color = match () {
-                _ if node.lock_rc == Nid::MAX => "orange",
-                _ if node.lock_rc == Nid::MAX - 1 => "blue",
-                _ if node.lock_rc != 0 => "red",
+                _ if node.lock_rc.get() == Nid::MAX => "orange",
+                _ if node.lock_rc.get() == Nid::MAX - 1 => "blue",
+                _ if node.lock_rc.get() != 0 => "red",
                 _ if node.outputs.is_empty() => "purple",
                 _ if node.is_mem() => "green",
                 _ if self.is_cfg(i) => "yellow",
@@ -688,13 +688,21 @@ impl Nodes {
         Value::new(self.new_node(ty, kind, inps, tys)).ty(ty)
     }
 
-    fn lock(&mut self, target: Nid) {
-        self[target].lock_rc += 1;
+    fn is_locked(&self, target: Nid) -> bool {
+        self[target].lock_rc.get() != 0
+    }
+
+    fn is_unlocked(&self, target: Nid) -> bool {
+        self[target].lock_rc.get() == 0
+    }
+
+    fn lock(&self, target: Nid) {
+        self[target].lock_rc.set(self[target].lock_rc.get() + 1);
     }
 
     #[track_caller]
-    fn unlock(&mut self, target: Nid) {
-        self[target].lock_rc -= 1;
+    fn unlock(&self, target: Nid) {
+        self[target].lock_rc.set(self[target].lock_rc.get() - 1);
     }
 
     fn remove(&mut self, target: Nid) -> bool {
@@ -745,10 +753,6 @@ impl Nodes {
         {
             fuel -= 1;
 
-            if self[node].outputs.is_empty() {
-                self.push_adjacent_nodes(node, stack);
-            }
-
             if self.unlock_remove(node) {
                 continue;
             }
@@ -781,7 +785,10 @@ impl Nodes {
             .chain(self[of].inputs.iter())
             .chain(self[of].peep_triggers.iter())
         {
-            if self.values[i as usize].is_ok() && self[i].kind.is_peeped() && self[i].lock_rc == 0 {
+            if self.values[i as usize].is_ok()
+                && self[i].kind.is_peeped()
+                && self[i].lock_rc.get() == 0
+            {
                 stack.push(i);
             }
         }
@@ -1522,7 +1529,7 @@ impl Nodes {
 
     #[track_caller]
     fn unlock_remove(&mut self, id: Nid) -> bool {
-        self[id].lock_rc -= 1;
+        self.unlock(id);
         self.remove(id)
     }
 
@@ -1695,8 +1702,8 @@ impl Nodes {
 
         let mut failed = false;
         for (id, node) in self.iter() {
-            if node.lock_rc != 0 {
-                log::error!("{} {} {:?}", node.lock_rc, 0, node.kind);
+            if self.is_locked(id) {
+                log::error!("{} {} {:?}", node.lock_rc.get(), 0, node.kind);
                 failed = true;
             }
             if !matches!(node.kind, Kind::End | Kind::Mem | Kind::Arg | Kind::Loops)
@@ -1852,7 +1859,7 @@ impl Nodes {
     }
 
     fn this_or_delegates<'a>(&'a self, source: Nid, target: &'a Nid) -> (Nid, &'a [Nid]) {
-        if self[*target].lock_rc == 0 {
+        if self.is_unlocked(*target) {
             (source, core::slice::from_ref(target))
         } else {
             (*target, self[*target].outputs.as_slice())
@@ -2028,14 +2035,14 @@ pub struct Node {
     ty: ty::Id,
     pos: Pos,
     depth: Cell<IDomDepth>,
-    lock_rc: LockRc,
+    lock_rc: Cell<LockRc>,
     loop_depth: Cell<LoopDepth>,
     aclass: AClassId,
 }
 
 impl Node {
     fn is_dangling(&self) -> bool {
-        self.outputs.len() + self.lock_rc as usize == 0 && self.kind != Kind::Arg
+        self.outputs.is_empty() && self.lock_rc.get() == 0 && self.kind != Kind::Arg
     }
 
     fn key(&self) -> (Kind, &[Nid], ty::Id) {
@@ -2613,7 +2620,7 @@ impl<'a> Codegen<'a> {
     fn load_mem(&mut self, region: Nid, ty: ty::Id) -> Nid {
         debug_assert_ne!(region, VOID);
         debug_assert_ne!({ self.ci.nodes[region].ty }, ty::Id::VOID, "{:?}", {
-            self.ci.nodes[region].lock_rc = Nid::MAX;
+            self.ci.nodes[region].lock_rc.set(Nid::MAX);
             self.ci.nodes.graphviz_in_browser(self.ty_display(ty::Id::VOID));
         });
         debug_assert!(

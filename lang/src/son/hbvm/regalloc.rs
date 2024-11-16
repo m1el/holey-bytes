@@ -9,48 +9,44 @@ use {
         PLoc, Sig, Types,
     },
     alloc::{borrow::ToOwned, vec::Vec},
-    core::{cell::RefCell, mem, ops::Range},
-    hashbrown::HashSet,
+    core::{borrow::Borrow, mem, ops::Range},
     hbbytecode::{self as instrs},
 };
 
 impl HbvmBackend {
-    pub(super) fn emit_body_code_my(
+    pub(super) fn emit_body_code(
         &mut self,
-        nodes: &mut Nodes,
+        nodes: &Nodes,
         sig: Sig,
         tys: &Types,
         files: &[parser::Ast],
     ) -> (usize, bool) {
-        let fuc = Function::new(nodes, tys, sig);
-        log::info!("{fuc:?}");
+        let tail = Function::build(nodes, tys, &mut self.ralloc, sig);
 
-        let strip_load = |value| match fuc.nodes[value].kind {
-            Kind::Load { .. } if fuc.nodes[value].ty.loc(tys) == Loc::Stack => {
-                fuc.nodes[value].inputs[1]
-            }
+        let strip_load = |value| match nodes[value].kind {
+            Kind::Load { .. } if nodes[value].ty.loc(tys) == Loc::Stack => nodes[value].inputs[1],
             _ => value,
         };
 
-        let mut res = mem::take(&mut self.ralloc_my);
+        let mut res = mem::take(&mut self.ralloc);
 
-        Env::new(&fuc, &fuc.func, &mut res).run();
+        Regalloc::run(nodes, &mut res);
 
         '_open_function: {
             self.emit(instrs::addi64(reg::STACK_PTR, reg::STACK_PTR, 0));
-            self.emit(instrs::st(reg::RET_ADDR + fuc.tail as u8, reg::STACK_PTR, 0, 0));
+            self.emit(instrs::st(reg::RET_ADDR + tail as u8, reg::STACK_PTR, 0, 0));
         }
 
         res.node_to_reg[MEM as usize] = res.bundles.len() as u8 + 1;
 
-        let reg_offset = if fuc.tail { reg::RET + 12 } else { reg::RET_ADDR + 1 };
+        let reg_offset = if tail { reg::RET + 12 } else { reg::RET_ADDR + 1 };
 
         res.node_to_reg.iter_mut().filter(|r| **r != 0).for_each(|r| {
             if *r == u8::MAX {
                 *r = 0
             } else {
                 *r += reg_offset - 1;
-                if fuc.tail && *r >= reg::RET_ADDR {
+                if tail && *r >= reg::RET_ADDR {
                     *r += 1;
                 }
             }
@@ -59,18 +55,18 @@ impl HbvmBackend {
         let atr = |allc: Nid| {
             let allc = strip_load(allc);
             debug_assert_eq!(
-                fuc.nodes[allc].lock_rc,
+                nodes[allc].lock_rc.get(),
                 0,
                 "{:?} {}",
-                fuc.nodes[allc],
-                ty::Display::new(tys, files, fuc.nodes[allc].ty)
+                nodes[allc],
+                ty::Display::new(tys, files, nodes[allc].ty)
             );
             res.node_to_reg[allc as usize]
         };
 
         let (retl, mut parama) = tys.parama(sig.ret);
         let mut typs = sig.args.args();
-        let mut args = fuc.nodes[VOID].outputs[ARG_START..].iter();
+        let mut args = nodes[VOID].outputs[ARG_START..].iter();
         while let Some(aty) = typs.next(tys) {
             let Arg::Value(ty) = aty else { continue };
             let Some(loc) = parama.next(ty, tys) else { continue };
@@ -84,41 +80,42 @@ impl HbvmBackend {
                 }
             };
             self.emit(instrs::st(rg, reg::STACK_PTR, self.offsets[arg as usize] as _, size));
-            if fuc.nodes[arg].lock_rc == 0 {
+            if nodes.is_unlocked(arg) {
                 self.emit(instrs::addi64(rg, reg::STACK_PTR, self.offsets[arg as usize] as _));
             }
             self.emit(instrs::cp(atr(arg), rg));
         }
 
         let mut alloc_buf = vec![];
-        for (i, block) in fuc.func.blocks.iter().enumerate() {
+        for (i, block) in res.blocks.iter().enumerate() {
             self.offsets[block.entry as usize] = self.code.len() as _;
-            for &nid in &fuc.func.instrs[block.range.clone()] {
+            for &nid in &res.instrs[block.range.clone()] {
                 if nid == VOID {
                     continue;
                 }
 
-                let node = &fuc.nodes[nid];
+                let node = &nodes[nid];
                 alloc_buf.clear();
 
                 let atr = |allc: Nid| {
                     let allc = strip_load(allc);
                     debug_assert_eq!(
-                        fuc.nodes[allc].lock_rc,
+                        nodes[allc].lock_rc.get(),
                         0,
                         "{:?} {}",
-                        fuc.nodes[allc],
-                        ty::Display::new(tys, files, fuc.nodes[allc].ty)
+                        nodes[allc],
+                        ty::Display::new(tys, files, nodes[allc].ty)
                     );
+                    #[cfg(debug_assertions)]
                     debug_assert!(
-                        fuc.marked.borrow().contains(&(allc, nid))
+                        res.marked.borrow().contains(&(allc, nid))
                             || nid == allc
-                            || fuc.nodes.is_hard_zero(allc)
+                            || nodes.is_hard_zero(allc)
                             || allc == MEM
                             || matches!(node.kind, Kind::Loop | Kind::Region),
                         "{nid} {:?}\n{allc} {:?}",
-                        fuc.nodes[nid],
-                        fuc.nodes[allc]
+                        nodes[nid],
+                        nodes[allc]
                     );
                     res.node_to_reg[allc as usize]
                 };
@@ -127,10 +124,8 @@ impl HbvmBackend {
                 match node.kind {
                     Kind::If => {
                         let &[_, cnd] = node.inputs.as_slice() else { unreachable!() };
-                        if fuc.nodes.cond_op(cnd).is_some() {
-                            let &[_, lh, rh] = fuc.nodes[cnd].inputs.as_slice() else {
-                                unreachable!()
-                            };
+                        if nodes.cond_op(cnd).is_some() {
+                            let &[_, lh, rh] = nodes[cnd].inputs.as_slice() else { unreachable!() };
                             alloc_buf.extend([atr(lh), atr(rh)]);
                         } else {
                             alloc_buf.push(atr(cnd));
@@ -140,14 +135,14 @@ impl HbvmBackend {
                         let index = node
                             .inputs
                             .iter()
-                            .position(|&n| block.entry == fuc.idom_of(n))
+                            .position(|&n| block.entry == nodes.idom_of(n))
                             .unwrap()
                             + 1;
 
                         let mut moves = vec![];
                         for &out in node.outputs.iter() {
-                            if fuc.nodes[out].is_data_phi() {
-                                let src = fuc.nodes[out].inputs[index];
+                            if nodes[out].is_data_phi() {
+                                let src = nodes[out].inputs[index];
                                 if atr(out) != atr(src) {
                                     moves.push([atr(out), atr(src), 0]);
                                 }
@@ -186,7 +181,7 @@ impl HbvmBackend {
                                 self.emit(instrs::swa(dst, src));
                             }
                         }
-                        is_next_block = fuc.block_of(nid) as usize == i + 1;
+                        is_next_block = res.backrefs[nid as usize] as usize == i + 1;
                     }
                     Kind::Return => {
                         let &[_, ret, ..] = node.inputs.as_slice() else { unreachable!() };
@@ -203,12 +198,11 @@ impl HbvmBackend {
                     Kind::Die => {}
                     Kind::CInt { .. } => alloc_buf.push(atr(nid)),
                     Kind::UnOp { .. } => alloc_buf.extend([atr(nid), atr(node.inputs[1])]),
-                    Kind::BinOp { .. } if node.lock_rc != 0 => {}
                     Kind::BinOp { op } => {
                         let &[.., lhs, rhs] = node.inputs.as_slice() else { unreachable!() };
 
-                        if let Kind::CInt { .. } = fuc.nodes[rhs].kind
-                            && fuc.nodes[rhs].lock_rc != 0
+                        if let Kind::CInt { .. } = nodes[rhs].kind
+                            && nodes.is_locked(rhs)
                             && op.imm_binop(node.ty).is_some()
                         {
                             alloc_buf.extend([atr(nid), atr(lhs)]);
@@ -248,10 +242,10 @@ impl HbvmBackend {
                     }
                     Kind::Stck | Kind::Global { .. } => alloc_buf.push(atr(nid)),
                     Kind::Load => {
-                        let (region, _) = fuc.nodes.strip_offset(node.inputs[1], node.ty, tys);
+                        let (region, _) = nodes.strip_offset(node.inputs[1], node.ty, tys);
                         if node.ty.loc(tys) != Loc::Stack {
                             alloc_buf.push(atr(nid));
-                            match fuc.nodes[region].kind {
+                            match nodes[region].kind {
                                 Kind::Stck => {}
                                 _ => alloc_buf.push(atr(region)),
                             }
@@ -259,8 +253,8 @@ impl HbvmBackend {
                     }
                     Kind::Stre if node.inputs[1] == VOID => {}
                     Kind::Stre => {
-                        let (region, _) = fuc.nodes.strip_offset(node.inputs[2], node.ty, tys);
-                        match fuc.nodes[region].kind {
+                        let (region, _) = nodes.strip_offset(node.inputs[2], node.ty, tys);
+                        match nodes[region].kind {
                             Kind::Stck if node.ty.loc(tys) == Loc::Reg => {
                                 alloc_buf.push(atr(node.inputs[1]))
                             }
@@ -281,10 +275,10 @@ impl HbvmBackend {
                     nid,
                     sig,
                     is_next_block,
-                    is_last_block: i == fuc.func.blocks.len() - 1,
+                    is_last_block: i == res.blocks.len() - 1,
                     retl,
                     allocs: &alloc_buf,
-                    nodes: fuc.nodes,
+                    nodes,
                     tys,
                     files,
                 });
@@ -302,17 +296,17 @@ impl HbvmBackend {
             }
         }
 
-        self.ralloc_my = res;
+        self.ralloc = res;
 
-        let bundle_count = self.ralloc_my.bundles.len() + (reg_offset as usize);
+        let bundle_count = self.ralloc.bundles.len() + (reg_offset as usize);
         (
-            if fuc.tail {
+            if tail {
                 assert!(bundle_count < reg::STACK_PTR as usize, "TODO: spill memory");
-                self.ralloc_my.bundles.len()
+                self.ralloc.bundles.len()
             } else {
                 bundle_count.saturating_sub(reg::RET_ADDR as _)
             },
-            fuc.tail,
+            tail,
         )
     }
 }
@@ -320,78 +314,9 @@ impl HbvmBackend {
 struct Function<'a> {
     sig: Sig,
     tail: bool,
-    backrefs: Vec<u16>,
-    nodes: &'a mut Nodes,
+    nodes: &'a Nodes,
     tys: &'a Types,
-    visited: BitSet,
-    func: Func,
-    marked: RefCell<HashSet<(Nid, Nid), crate::FnvBuildHasher>>,
-}
-
-impl Function<'_> {
-    fn vreg_count(&self) -> usize {
-        self.nodes.values.len()
-    }
-
-    fn uses_of(&self, nid: Nid, buf: &mut Vec<(Nid, Nid)>) {
-        if self.nodes[nid].kind.is_cfg() && !matches!(self.nodes[nid].kind, Kind::Call { .. }) {
-            return;
-        }
-
-        self.nodes[nid]
-            .outputs
-            .iter()
-            .filter(|&&n| self.nodes.is_data_dep(nid, n))
-            .map(|n| self.nodes.this_or_delegates(nid, n))
-            .flat_map(|(p, ls)| ls.iter().map(move |l| (p, l)))
-            .filter(|&(o, &n)| self.nodes.is_data_dep(o, n))
-            .map(|(p, &n)| (self.use_block(p, n), n))
-            .inspect(|&(_, n)| debug_assert_eq!(self.nodes[n].lock_rc, 0))
-            .inspect(|&(_, n)| _ = self.marked.borrow_mut().insert((nid, n)))
-            .collect_into(buf);
-    }
-
-    fn use_block(&self, inst: Nid, uinst: Nid) -> Nid {
-        let mut block = self.nodes.use_block(inst, uinst);
-        while !self.nodes[block].kind.starts_basic_block() {
-            block = self.nodes.idom(block);
-        }
-        block
-    }
-
-    fn phi_inputs_of(&self, nid: Nid, buf: &mut Vec<Nid>) {
-        match self.nodes[nid].kind {
-            Kind::Region | Kind::Loop => {
-                for &inp in self.nodes[nid].outputs.as_slice() {
-                    if self.nodes[inp].is_data_phi() {
-                        buf.push(inp);
-                        buf.extend(&self.nodes[inp].inputs[1..]);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    fn instr_of(&self, nid: Nid) -> Option<Nid> {
-        if self.nodes[nid].kind == Kind::Phi || self.nodes[nid].lock_rc != 0 {
-            return None;
-        }
-        debug_assert_ne!(self.backrefs[nid as usize], Nid::MAX, "{:?}", self.nodes[nid]);
-        Some(self.backrefs[nid as usize])
-    }
-
-    fn block_of(&self, nid: Nid) -> Nid {
-        debug_assert!(self.nodes[nid].kind.starts_basic_block());
-        self.backrefs[nid as usize]
-    }
-
-    fn idom_of(&self, mut nid: Nid) -> Nid {
-        while !self.nodes[nid].kind.starts_basic_block() {
-            nid = self.nodes.idom(nid);
-        }
-        nid
-    }
+    func: &'a mut Res,
 }
 
 impl core::fmt::Debug for Function<'_> {
@@ -408,27 +333,21 @@ impl core::fmt::Debug for Function<'_> {
 }
 
 impl<'a> Function<'a> {
-    fn new(nodes: &'a mut Nodes, tys: &'a Types, sig: Sig) -> Self {
-        let mut s = Self {
-            backrefs: vec![u16::MAX; nodes.values.len()],
-            tail: true,
-            nodes,
-            tys,
-            sig,
-            visited: Default::default(),
-            func: Default::default(),
-            marked: Default::default(),
-        };
-        s.visited.clear(s.nodes.values.len());
+    fn build(nodes: &'a Nodes, tys: &'a Types, func: &'a mut Res, sig: Sig) -> bool {
+        func.blocks.clear();
+        func.instrs.clear();
+        func.backrefs.resize(nodes.values.len(), u16::MAX);
+        func.visited.clear(nodes.values.len());
+        let mut s = Self { tail: true, nodes, tys, sig, func };
         s.emit_node(VOID);
-        s
+        s.tail
     }
 
     fn add_block(&mut self, entry: Nid) {
         self.func
             .blocks
             .push(Block { range: self.func.instrs.len()..self.func.instrs.len(), entry });
-        self.backrefs[entry as usize] = self.func.blocks.len() as u16 - 1;
+        self.func.backrefs[entry as usize] = self.func.blocks.len() as u16 - 1;
     }
 
     fn close_block(&mut self, exit: Nid) {
@@ -443,20 +362,20 @@ impl<'a> Function<'a> {
 
     fn add_instr(&mut self, nid: Nid) {
         debug_assert_ne!(self.nodes[nid].kind, Kind::Loop);
-        self.backrefs[nid as usize] = self.func.instrs.len() as u16;
+        self.func.backrefs[nid as usize] = self.func.instrs.len() as u16;
         self.func.instrs.push(nid);
     }
 
     fn emit_node(&mut self, nid: Nid) {
         if matches!(self.nodes[nid].kind, Kind::Region | Kind::Loop) {
-            match (self.nodes[nid].kind, self.visited.set(nid)) {
+            match (self.nodes[nid].kind, self.func.visited.set(nid)) {
                 (Kind::Loop, false) | (Kind::Region, true) => {
                     self.close_block(nid);
                     return;
                 }
                 _ => {}
             }
-        } else if !self.visited.set(nid) {
+        } else if !self.func.visited.set(nid) {
             return;
         }
 
@@ -560,87 +479,141 @@ impl<'a> Function<'a> {
     }
 }
 
-struct Env<'a> {
-    ctx: &'a Function<'a>,
-    func: &'a Func,
+impl Nodes {
+    fn vreg_count(&self) -> usize {
+        self.values.len()
+    }
+
+    fn use_block_of(&self, inst: Nid, uinst: Nid) -> Nid {
+        let mut block = self.use_block(inst, uinst);
+        while !self[block].kind.starts_basic_block() {
+            block = self.idom(block);
+        }
+        block
+    }
+
+    fn phi_inputs_of(&self, nid: Nid) -> impl Iterator<Item = [Nid; 3]> + use<'_> {
+        match self[nid].kind {
+            Kind::Region | Kind::Loop => Some({
+                self[nid]
+                    .outputs
+                    .as_slice()
+                    .iter()
+                    .filter(|&&n| self[n].is_data_phi())
+                    .map(|&n| [n, self[n].inputs[1], self[n].inputs[2]])
+            })
+            .into_iter()
+            .flatten(),
+            _ => None.into_iter().flatten(),
+        }
+    }
+
+    fn idom_of(&self, mut nid: Nid) -> Nid {
+        while !self[nid].kind.starts_basic_block() {
+            nid = self.idom(nid);
+        }
+        nid
+    }
+
+    fn uses_of(&self, nid: Nid) -> impl Iterator<Item = (Nid, Nid)> + use<'_> {
+        if self[nid].kind.is_cfg() && !matches!(self[nid].kind, Kind::Call { .. }) {
+            return None.into_iter().flatten();
+        }
+
+        Some(
+            self[nid]
+                .outputs
+                .iter()
+                .filter(move |&&n| self.is_data_dep(nid, n))
+                .map(move |n| self.this_or_delegates(nid, n))
+                .flat_map(|(p, ls)| ls.iter().map(move |l| (p, l)))
+                .filter(|&(o, &n)| self.is_data_dep(o, n))
+                .map(|(p, &n)| (self.use_block_of(p, n), n))
+                .inspect(|&(_, n)| debug_assert_eq!(self[n].lock_rc.get(), 0)),
+        )
+        .into_iter()
+        .flatten()
+    }
+}
+
+struct Regalloc<'a> {
+    nodes: &'a Nodes,
     res: &'a mut Res,
 }
 
-impl<'a> Env<'a> {
-    fn new(ctx: &'a Function<'a>, func: &'a Func, res: &'a mut Res) -> Self {
-        Self { ctx, func, res }
+impl<'a> Regalloc<'a> {
+    fn instr_of(&self, nid: Nid) -> Option<Nid> {
+        if self.nodes[nid].kind == Kind::Phi || self.nodes.is_locked(nid) {
+            return None;
+        }
+        debug_assert_ne!(self.res.backrefs[nid as usize], Nid::MAX, "{:?}", self.nodes[nid]);
+        Some(self.res.backrefs[nid as usize])
     }
 
-    fn run(&mut self) {
+    fn block_of(&self, nid: Nid) -> Nid {
+        debug_assert!(self.nodes[nid].kind.starts_basic_block());
+        self.res.backrefs[nid as usize]
+    }
+
+    fn run(ctx: &'a Nodes, res: &'a mut Res) {
+        Self { nodes: ctx, res }.run_low();
+    }
+
+    fn run_low(&mut self) {
         self.res.bundles.clear();
         self.res.node_to_reg.clear();
-        self.res.node_to_reg.resize(self.ctx.vreg_count(), 0);
+        self.res.node_to_reg.resize(self.nodes.vreg_count(), 0);
 
         debug_assert!(self.res.dfs_buf.is_empty());
-        debug_assert!(self.res.use_buf.is_empty());
-        debug_assert!(self.res.phi_input_buf.is_empty());
 
-        let mut bundle = Bundle::new(self.func.instrs.len());
-        let mut visited = BitSet::with_capacity(self.ctx.nodes.values.len());
-        let mut use_buf = mem::take(&mut self.res.use_buf);
+        let mut bundle = Bundle::new(self.res.instrs.len());
+        self.res.visited.clear(self.nodes.values.len());
 
-        let mut phi_input_buf = mem::take(&mut self.res.phi_input_buf);
-        for block in self.func.blocks.iter().rev() {
-            self.ctx.phi_inputs_of(block.entry, &mut phi_input_buf);
-            for [a, rest @ ..] in phi_input_buf.drain(..).array_chunks::<3>() {
-                if visited.set(a) {
-                    self.append_bundle(a, &mut bundle, &mut use_buf, None);
+        for i in (0..self.res.blocks.len()).rev() {
+            for [a, rest @ ..] in self.nodes.phi_inputs_of(self.res.blocks[i].entry) {
+                if self.res.visited.set(a) {
+                    self.append_bundle(a, &mut bundle, None);
                 }
 
                 for r in rest {
-                    if !visited.set(r) {
+                    if !self.res.visited.set(r) {
                         continue;
                     }
 
                     self.append_bundle(
                         r,
                         &mut bundle,
-                        &mut use_buf,
                         Some(self.res.node_to_reg[a as usize] as usize - 1),
                     );
                 }
             }
         }
-        self.res.phi_input_buf = phi_input_buf;
 
-        for &inst in &self.func.instrs {
-            if visited.get(inst) || inst == 0 {
+        let instrs = mem::take(&mut self.res.instrs);
+        for &inst in &instrs {
+            if self.res.visited.get(inst) || inst == 0 {
                 continue;
             }
-            self.append_bundle(inst, &mut bundle, &mut use_buf, None);
+            self.append_bundle(inst, &mut bundle, None);
         }
-
-        self.res.use_buf = use_buf;
+        self.res.instrs = instrs;
     }
 
-    fn append_bundle(
-        &mut self,
-        inst: Nid,
-        bundle: &mut Bundle,
-        use_buf: &mut Vec<(Nid, Nid)>,
-        prefered: Option<usize>,
-    ) {
-        let dom = self.ctx.idom_of(inst);
-        self.ctx.uses_of(inst, use_buf);
-        for (cursor, uinst) in use_buf.drain(..) {
-            self.reverse_cfg_dfs(cursor, dom, |_, n, b| {
+    fn append_bundle(&mut self, inst: Nid, bundle: &mut Bundle, prefered: Option<usize>) {
+        let dom = self.nodes.idom_of(inst);
+        for (cursor, uinst) in self.nodes.uses_of(inst) {
+            #[cfg(debug_assertions)]
+            self.res.marked.insert((inst, uinst));
+            self.reverse_cfg_dfs(cursor, dom, |s, n, b| {
                 let mut range = b.range.clone();
                 debug_assert!(range.start < range.end);
-                range.start =
-                    range.start.max(self.ctx.instr_of(inst).map_or(0, |n| n + 1) as usize);
+                range.start = range.start.max(s.instr_of(inst).map_or(0, |n| n + 1) as usize);
                 debug_assert!(range.start < range.end, "{:?}", range);
                 let new = range.end.min(
-                    self.ctx
-                        .instr_of(uinst)
+                    s.instr_of(uinst)
                         .filter(|_| {
                             n == cursor
-                                && self.ctx.nodes.loop_depth(dom)
-                                    == self.ctx.nodes.loop_depth(cursor)
+                                && self.nodes.loop_depth(dom) == self.nodes.loop_depth(cursor)
                         })
                         .map_or(Nid::MAX, |n| n + 1) as usize,
                 );
@@ -671,9 +644,7 @@ impl<'a> Env<'a> {
                     self.res.node_to_reg[inst as usize] = i as Reg + 1;
                 }
                 None => {
-                    self.res
-                        .bundles
-                        .push(mem::replace(bundle, Bundle::new(self.func.instrs.len())));
+                    self.res.bundles.push(mem::replace(bundle, Bundle::new(bundle.taken.len())));
                     self.res.node_to_reg[inst as usize] = self.res.bundles.len() as Reg;
                 }
             }
@@ -684,31 +655,27 @@ impl<'a> Env<'a> {
         &mut self,
         from: Nid,
         until: Nid,
-        mut each: impl FnMut(&mut Self, Nid, &Block),
+        mut each: impl FnMut(&mut Self, Nid, Block),
     ) {
         debug_assert!(self.res.dfs_buf.is_empty());
         self.res.dfs_buf.push(from);
-        self.res.dfs_seem.clear(self.ctx.nodes.values.len());
+        self.res.dfs_seem.clear(self.nodes.values.len());
 
-        debug_assert!(self.ctx.nodes.dominates(until, from));
+        debug_assert!(self.nodes.dominates(until, from));
 
         while let Some(nid) = self.res.dfs_buf.pop() {
-            debug_assert!(
-                self.ctx.nodes.dominates(until, nid),
-                "{until} {:?}",
-                self.ctx.nodes[until]
-            );
-            each(self, nid, &self.func.blocks[self.ctx.block_of(nid) as usize]);
+            debug_assert!(self.nodes.dominates(until, nid), "{until} {:?}", self.nodes[until]);
+            each(self, nid, self.res.blocks[self.block_of(nid) as usize].clone());
             if nid == until {
                 continue;
             }
-            match self.ctx.nodes[nid].kind {
+            match self.nodes[nid].kind {
                 Kind::Then | Kind::Else | Kind::Region | Kind::Loop => {
-                    for &n in self.ctx.nodes[nid].inputs.iter() {
-                        if self.ctx.nodes[n].kind == Kind::Loops {
+                    for &n in self.nodes[nid].inputs.iter() {
+                        if self.nodes[n].kind == Kind::Loops {
                             continue;
                         }
-                        let d = self.ctx.idom_of(n);
+                        let d = self.nodes.idom_of(n);
                         if self.res.dfs_seem.set(d) {
                             self.res.dfs_buf.push(d);
                         }
@@ -723,12 +690,18 @@ impl<'a> Env<'a> {
 
 #[derive(Default)]
 pub(super) struct Res {
+    blocks: Vec<Block>,
+    instrs: Vec<Nid>,
+    backrefs: Vec<u16>,
+
     bundles: Vec<Bundle>,
     node_to_reg: Vec<Reg>,
-    use_buf: Vec<(Nid, Nid)>,
-    phi_input_buf: Vec<Nid>,
+
+    visited: BitSet,
     dfs_buf: Vec<Nid>,
     dfs_seem: BitSet,
+    #[cfg(debug_assertions)]
+    marked: hashbrown::HashSet<(Nid, Nid), crate::FnvBuildHasher>,
 }
 
 struct Bundle {
@@ -758,12 +731,7 @@ impl Bundle {
     }
 }
 
-#[derive(Default)]
-struct Func {
-    blocks: Vec<Block>,
-    instrs: Vec<Nid>,
-}
-
+#[derive(Clone)]
 struct Block {
     range: Range<usize>,
     entry: Nid,
